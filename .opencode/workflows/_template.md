@@ -1,7 +1,11 @@
 ---
 taskId: task-001
 target: <目标项目目录>
-status: created
+supervisorSessionId: null
+coderTaskId: null
+testerTaskId: null
+reviewerTaskId: null
+status: spec_confirm
 round: 1
 maxRounds: 3
 testVerdict: null
@@ -9,6 +13,7 @@ reviewVerdict: null
 testedSha: null
 reviewedSha: null
 filesChanged: []
+endReason: null
 updatedAt: null
 ---
 
@@ -16,6 +21,9 @@ updatedAt: null
 
 ## 任务原文
 （需求 + 验收标准，写全——这是恢复时唯一的上下文来源）
+
+## 需求确认
+- [ ] 用户已确认（确认后 status=implementing）
 
 ## 轮次记录
 - R1: coder 完成（改动…，自测：…）
