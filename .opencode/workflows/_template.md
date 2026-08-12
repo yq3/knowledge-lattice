@@ -4,7 +4,7 @@ target: <目标项目目录>
 supervisorSessionId: null
 coderTaskId: null
 testerTaskId: null
-reviewerTaskId: null
+committerTaskId: null
 status: spec_confirm
 round: 1
 maxRounds: 3
@@ -29,7 +29,7 @@ updatedAt: null
 ## 轮次记录
 - R1: coder 完成（改动…，自测：…）
 - R1: tester …（用例通过情况）
-- R1: reviewer …（意见摘要）
+- R1: committer …（意见摘要）
 
 ## 最新验证意见原文
-（tester/reviewer 报告逐字保留——恢复时给 coder 的修复依据）
+（tester/committer 报告逐字保留——恢复时给 coder 的修复依据）
