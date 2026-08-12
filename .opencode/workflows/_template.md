@@ -12,6 +12,7 @@ testVerdict: null
 reviewVerdict: null
 testedSha: null
 reviewedSha: null
+# 以上 SHA = coder 最近一轮本地 commit（[taskId] R<n>）后的 HEAD；修复轮 commit 后 reviewedSha 置空待重审
 filesChanged: []
 endReason: null
 updatedAt: null
