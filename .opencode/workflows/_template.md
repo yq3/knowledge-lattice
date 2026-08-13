@@ -15,6 +15,7 @@ reviewedSha: null
 # 以上 SHA = coder 最近一轮本地 commit（[taskId] R<n>）后的 HEAD；修复轮 commit 后 reviewedSha 置空待重审
 filesChanged: []
 endReason: null
+createdAt: null          # 创建时间（30 天清理审计用，见 README §4.5）
 updatedAt: null
 ---
 
