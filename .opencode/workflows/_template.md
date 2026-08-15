@@ -16,7 +16,7 @@ reviewedSha: null
 filesChanged: []
 endReason: null
 createdAt: null          # 创建时间（30 天清理审计用，见 README §4.5）
-updatedAt: null
+updatedAt: null          # 每次写检查点必更新为当前时间（ISO 8601 含时区），不得沿用旧值
 ---
 
 # task-001: 任务标题
