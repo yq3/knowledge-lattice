@@ -1,7 +1,7 @@
 ---
+# 全部字段必填：未产生/未知的值写 null 或 []，禁止删除或省略任何字段（D33 完整性铁律）
 taskId: task-001
 target: <目标项目目录>
-supervisorSessionId: null
 coderTaskId: null
 testerTaskId: null
 committerTaskId: null
