@@ -459,6 +459,12 @@ quality 在 index **之后**异步执行：不阻塞「可搜」时间点（usef
 
 所有端点（除登录）要求 Bearer token；写操作落 audit_events。
 
+### 6.3 与术语层（glossary-agent）的工具组集成（D17）
+
+- **消费侧形态**：deepagents 并挂两个 MCP server——本系统 `search` / `upload` / `list_documents` + glossary-agent 的 `lookup_terms`（与数据字典活查询）。职责边界：本系统只管文档知识，术语归一与黑话定义不在检索范围（agent 侧前置识别/lookup 处理后再调本系统检索）。
+- **演进缝（不进 MVP）**：如需单端点，本系统可加载术语库**运行时投影**（Git YAML → AC 自动机 + FTS 内存索引），以 `lookup_terms` 工具统一暴露——真值源与 PR 治理仍在术语库 Git 仓，本系统只持可刷新投影（`adapters/` 预留 `glossary_loader.py` 位）。
+- **明确不做**：表名字段名/数据字典类查询（真值在源系统、高频变）由术语侧 MCP 活查询直连，本系统不镜像这类数据；L0 常驻核心术语表是术语库构建期导出物（进 agent system prompt），与本系统无关。
+
 ## 7. 技术选型与依赖清单
 
 | 依赖 | 用途 | 备注 |
