@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>knowledge-lattice · 交互原型</title>
+<style>
+/* ============ 设计 token ============
+   主题：晶格（lattice）——维度权限以「晶胞 chip」呈现，格子即信息
+   bg 冷调纸白 / ink 深矿青黑 / accent 矿物深青 / 数据一律等宽
+   层级：组织 → 知识库（分组，不承担权限）→ 文档（维度 ACL）→ chunk */
+:root {
+  --bg: #F7F8F6;
+  --panel: #FFFFFF;
+  --ink: #1C2B2A;
+  --ink-2: #51605D;
+  --ink-3: #7C8A86;
+  --line: #D9DED8;
+  --line-strong: #B9C2BB;
+  --accent: #0E6B63;
+  --accent-bg: #E3EFED;
+  --amber: #A16207;
+  --amber2: #C98A1B;
+  --violet: #6D58B5;
+  --danger: #B42318;
+  --danger-bg: #F9E9E7;
+  --ok: #1B7A3D;
+  --ok-bg: #E6F2EA;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 15px; }
+body {
+  font-family: var(--sans); background: var(--bg); color: var(--ink);
+  display: flex; min-height: 100vh; line-height: 1.55;
+}
+button { font: inherit; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+
+/* ============ 布局骨架 ============ */
+.sidenav {
+  width: 224px; flex-shrink: 0; background: var(--panel);
+  border-right: 1px solid var(--line); padding: 20px 0 14px;
+  display: flex; flex-direction: column; gap: 4px;
+  position: sticky; top: 0; height: 100vh;
+}
+/* ============ 左上角组织切换器（dify 工作空间风格）============ */
+.brand-mark {
+  width: 20px; height: 20px; border: 1.5px solid var(--ink); position: relative; flex-shrink: 0;
+  background:
+    linear-gradient(var(--ink) 1.5px, transparent 1.5px) 0 0 / 100% 6.67px,
+    linear-gradient(90deg, var(--ink) 1.5px, transparent 1.5px) 0 0 / 6.67px 100%;
+}
+.brand-mark::after {
+  content: ""; position: absolute; left: 2px; top: 2px; width: 7px; height: 7px;
+  background: var(--accent);
+}
+.org-switcher { position: relative; padding: 0 12px 16px; }
+.org-btn {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  border: 1px solid var(--line); background: var(--bg);
+  padding: 8px 10px; font-size: 0.92rem; font-weight: 600; text-align: left;
+}
+.org-btn:hover { border-color: var(--ink); }
+.org-btn .caret { margin-left: auto; color: var(--ink-3); font-size: 0.72rem; }
+.org-menu {
+  position: absolute; top: calc(100% - 8px); left: 12px; right: 12px; z-index: 40;
+  background: var(--panel); border: 1px solid var(--ink); padding: 6px;
+  box-shadow: 4px 4px 0 rgba(28, 43, 42, 0.08);
+}
+.org-menu-title { font-size: 0.7rem; color: var(--ink-3); padding: 4px 10px; }
+.org-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  border: 0; background: none; padding: 8px 10px; text-align: left; font-size: 0.88rem;
+}
+.org-item:hover { background: var(--bg); }
+.org-item.on { background: var(--accent-bg); font-weight: 600; }
+.org-item .om-mark { width: 9px; height: 9px; border: 1px solid var(--ink-3); flex-shrink: 0; }
+.org-item.on .om-mark { background: var(--accent); border-color: var(--accent); }
+.org-item .om-sub { margin-left: auto; font-size: 0.68rem; color: var(--ink-3); font-weight: 400; }
+.org-menu-foot { font-size: 0.7rem; color: var(--ink-3); border-top: 1px dashed var(--line); margin-top: 4px; padding: 6px 10px; }
+.nav-item {
+  display: flex; align-items: center; gap: 10px; padding: 9px 20px;
+  border: 0; border-left: 3px solid transparent; background: none; width: 100%;
+  color: var(--ink-2); text-align: left; font-size: 0.92rem;
+}
+.nav-item:hover { background: var(--bg); color: var(--ink); }
+.nav-item.active { border-left-color: var(--accent); color: var(--ink); font-weight: 600; background: var(--accent-bg); }
+.nav-item .n-ico { font-family: var(--mono); font-size: 0.75rem; color: var(--ink-3); width: 18px; }
+.nav-spacer { flex: 1; }
+.nav-foot { padding: 8px 20px 0; font-size: 0.72rem; color: var(--ink-3); }
+.nav-foot code { font-family: var(--mono); }
+
+main { flex: 1; padding: 32px 40px 64px; max-width: 1180px; min-width: 0; }
+.page { display: none; }
+.page.active { display: block; }
+.page-head { margin-bottom: 22px; }
+.page-head h1 { font-size: 1.28rem; font-weight: 650; letter-spacing: -0.01em; }
+.page-head h1 .org-tag {
+  font-family: var(--mono); font-size: 0.72rem; font-weight: 500; color: var(--accent);
+  background: var(--accent-bg); padding: 2px 8px; vertical-align: 2px; margin-left: 8px;
+}
+.page-head p { color: var(--ink-2); font-size: 0.88rem; margin-top: 4px; max-width: 680px; }
+
+/* ============ 晶胞 chip（signature）============ */
+.cell {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--line-strong); background: var(--panel);
+  padding: 1px 8px 1px 3px; font-size: 0.78rem; line-height: 1.5;
+  font-family: var(--mono); vertical-align: middle;
+}
+.cell::before { content: ""; width: 9px; height: 9px; border: 1px solid var(--ink-3); background: var(--panel); flex-shrink: 0; }
+.cell.d-region::before { background: var(--accent); border-color: var(--accent); }
+.cell.d-tax_type::before { background: var(--amber2); border-color: var(--amber2); }
+.cell.d-biz_line::before { background: var(--violet); border-color: var(--violet); }
+.cell.dim { color: var(--ink-2); }
+.cell.pick { cursor: pointer; user-select: none; padding: 3px 10px 3px 4px; font-size: 0.84rem; }
+.cell.pick::before { background: var(--panel); border-color: var(--line-strong); }
+.cell.pick.on[data-k="region"]::before { background: var(--accent); border-color: var(--accent); }
+.cell.pick.on[data-k="tax_type"]::before { background: var(--amber2); border-color: var(--amber2); }
+.cell.pick.on[data-k="biz_line"]::before { background: var(--violet); border-color: var(--violet); }
+.cell.pick.on { border-color: var(--ink); font-weight: 600; background: var(--bg); }
+.cell .lbl { font-family: var(--sans); font-weight: 400; color: var(--ink-3); font-size: 0.72rem; }
+.ds-pill {
+  font-family: var(--mono); font-size: 0.74rem; color: var(--ink-2);
+  border: 1px solid var(--line-strong); border-left: 3px solid var(--ink); padding: 0 7px;
+  background: var(--panel); white-space: nowrap;
+}
+
+/* ============ 通用组件 ============ */
+.panel { background: var(--panel); border: 1px solid var(--line); padding: 18px 20px; }
+.btn {
+  border: 1px solid var(--ink); background: var(--ink); color: #fff;
+  padding: 7px 16px; font-size: 0.88rem;
+}
+.btn:hover { background: #2A3B39; }
+.btn:disabled { background: var(--line-strong); border-color: var(--line-strong); cursor: not-allowed; }
+.btn.ghost { background: none; color: var(--ink); border-color: var(--line-strong); }
+.btn.ghost:hover { border-color: var(--ink); background: var(--bg); }
+.btn.small { padding: 3px 10px; font-size: 0.8rem; }
+.sel { font: inherit; font-size: 0.86rem; padding: 5px 8px; border: 1px solid var(--line-strong); background: #fff; }
+.mono { font-family: var(--mono); font-size: 0.82em; }
+.muted { color: var(--ink-3); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 980px) { .grid2 { grid-template-columns: 1fr; } }
+
+table.tbl { width: 100%; border-collapse: collapse; font-size: 0.86rem; background: var(--panel); }
+.tbl th {
+  text-align: left; font-weight: 600; font-size: 0.76rem; color: var(--ink-2);
+  border-bottom: 1.5px solid var(--line-strong); padding: 8px 10px; white-space: nowrap;
+}
+.tbl td { border-bottom: 1px solid var(--line); padding: 9px 10px; vertical-align: top; }
+.tbl tr:hover td { background: #FBFCFA; }
+
+.badge { display: inline-flex; align-items: center; gap: 6px; font-size: 0.76rem; padding: 1px 8px; white-space: nowrap; }
+.badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; }
+.badge.uploaded::before, .badge.pending::before { background: var(--ink-3); }
+.badge.parsing::before, .badge.chunked::before, .badge.embedded::before, .badge.leased::before, .badge.running::before { background: var(--amber2); animation: pulse 1.2s infinite; }
+.badge.indexed::before, .badge.done::before { background: var(--ok); }
+.badge.failed::before { background: var(--danger); }
+.badge.b-parsing { color: var(--amber); background: var(--amber2, #F6EEDD); background: #F6EEDD; }
+.badge.b-ok { color: var(--ok); background: var(--ok-bg); }
+.badge.b-fail { color: var(--danger); background: var(--danger-bg); }
+.badge.b-muted { color: var(--ink-2); background: var(--bg); }
+@keyframes pulse { 50% { opacity: 0.35; } }
+
+/* ============ 上传页 ============ */
+.dim-picker { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+.dim-group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.dim-group .dim-name { font-size: 0.8rem; color: var(--ink-2); }
+.dim-required { color: var(--danger); font-size: 0.75rem; }
+.dropzone {
+  border: 1.5px dashed var(--line-strong); background: var(--panel);
+  padding: 34px; text-align: center; color: var(--ink-2); margin: 14px 0;
+}
+.dropzone strong { color: var(--ink); }
+.dropzone .hint { font-size: 0.78rem; color: var(--ink-3); margin-top: 4px; }
+
+/* ============ 检索页 ============ */
+.who-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--panel); border: 1px solid var(--line); padding: 10px 14px; margin-bottom: 16px;
+}
+.who-bar label { font-size: 0.82rem; color: var(--ink-2); }
+.who-grants { display: flex; gap: 5px; flex-wrap: wrap; }
+.search-box { display: flex; gap: 10px; margin-bottom: 18px; }
+.search-box input {
+  flex: 1; font: inherit; font-size: 1rem; padding: 11px 14px;
+  border: 1.5px solid var(--line-strong); background: #fff;
+}
+.search-box input:focus { border-color: var(--accent); outline: none; }
+.filter-note {
+  font-size: 0.8rem; color: var(--amber); background: #F6EEDD;
+  border-left: 3px solid var(--amber); padding: 7px 12px; margin-bottom: 14px;
+}
+.hit { background: var(--panel); border: 1px solid var(--line); padding: 14px 16px; margin-bottom: 12px; }
+.hit-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.hit-title { font-weight: 650; font-size: 0.94rem; }
+.hit-snippet { font-size: 0.88rem; color: var(--ink-2); border-left: 3px solid var(--line); padding-left: 12px; margin: 6px 0 10px; }
+.hit-snippet mark { background: var(--accent-bg); color: var(--accent); font-weight: 650; padding: 0 1px; }
+.hit-meta { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; font-family: var(--mono); font-size: 0.75rem; color: var(--ink-3); }
+.hit-meta b { color: var(--ink); font-weight: 600; }
+.hit-score { font-family: var(--mono); font-weight: 700; color: var(--accent); font-size: 0.9rem; }
+
+/* ============ 质量报告（模态）============ */
+.overlay {
+  position: fixed; inset: 0; background: rgba(28, 43, 42, 0.45);
+  display: none; align-items: flex-start; justify-content: center; padding: 6vh 20px; z-index: 50;
+}
+.overlay.open { display: flex; }
+.modal {
+  background: var(--panel); border: 1px solid var(--ink); max-width: 780px; width: 100%;
+  max-height: 82vh; overflow: auto;
+}
+.modal-head { display: flex; justify-content: space-between; align-items: center; padding: 14px 20px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); }
+.modal-head h2 { font-size: 1rem; }
+.modal-close { border: 0; background: none; font-size: 1.1rem; color: var(--ink-3); padding: 4px; }
+.modal-body { padding: 18px 20px; }
+.q-item { border: 1px solid var(--line); padding: 12px 14px; margin-bottom: 12px; background: #FDFDFC; }
+.q-top { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+.q-reason { font-size: 0.75rem; color: var(--amber); background: #F6EEDD; padding: 1px 8px; white-space: nowrap; }
+.q-snippet { font-size: 0.84rem; color: var(--ink-2); margin: 8px 0; border-left: 3px solid var(--amber); padding-left: 10px; }
+.q-kw { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+.q-kw .klabel { font-size: 0.74rem; color: var(--ink-3); }
+.kw-chip {
+  font-family: var(--mono); font-size: 0.75rem; border: 1px solid var(--line-strong);
+  padding: 1px 7px; background: #fff; display: inline-flex; gap: 5px; align-items: center;
+}
+.kw-chip.auto { border-color: var(--accent); color: var(--accent); }
+.kw-chip button { border: 0; background: none; color: var(--ink-3); padding: 0; font-size: 0.8rem; }
+.kw-add { display: inline-flex; gap: 4px; }
+.kw-add input { width: 110px; font: inherit; font-size: 0.78rem; padding: 1px 6px; border: 1px solid var(--line-strong); }
+.q-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+/* ============ 库与维度管理 ============ */
+.ds-card { background: var(--panel); border: 1px solid var(--line); border-top: 3px solid var(--ink); padding: 14px 16px; }
+.ds-card .ds-name { font-weight: 650; font-size: 0.95rem; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ds-card .ds-desc { font-size: 0.82rem; color: var(--ink-2); margin: 6px 0 10px; }
+.ds-card .ds-stats { display: flex; gap: 16px; font-family: var(--mono); font-size: 0.75rem; color: var(--ink-3); }
+.ds-card .ds-stats b { color: var(--ink); }
+.ds-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+.ds-new { border: 1.5px dashed var(--line-strong); background: none; display: flex; align-items: center; justify-content: center; color: var(--ink-3); font-size: 0.85rem; min-height: 100px; cursor: pointer; }
+.ds-new:hover { color: var(--ink); border-color: var(--ink); }
+.ds-add-row { display: flex; gap: 8px; margin-top: 10px; }
+.ds-add-row input { flex: 1; font: inherit; font-size: 0.86rem; padding: 6px 10px; border: 1px solid var(--line-strong); }
+.dim-card { background: var(--panel); border: 1px solid var(--line); padding: 16px 18px; }
+.dim-card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.dim-card-head h3 { font-size: 0.95rem; display: flex; align-items: center; gap: 8px; }
+.dim-key { font-family: var(--mono); font-size: 0.75rem; color: var(--ink-3); }
+.val-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.toggle { font-size: 0.78rem; color: var(--ink-2); display: inline-flex; gap: 4px; align-items: center; }
+.user-list { display: flex; flex-direction: column; gap: 2px; }
+.user-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 12px; border: 1px solid transparent; cursor: pointer; }
+.user-row:hover { background: var(--bg); }
+.user-row.sel { border-color: var(--accent); background: var(--accent-bg); }
+.grant-box h4 { font-size: 0.85rem; color: var(--ink-2); margin: 14px 0 8px; }
+.and-note { font-size: 0.78rem; color: var(--ink-3); border-top: 1px dashed var(--line-strong); padding-top: 10px; margin-top: 16px; }
+
+/* ============ 审计 ============ */
+.audit-line { display: flex; gap: 12px; padding: 8px 2px; border-bottom: 1px solid var(--line); font-size: 0.84rem; }
+.audit-line .t { font-family: var(--mono); color: var(--ink-3); font-size: 0.75rem; white-space: nowrap; padding-top: 2px; }
+.audit-line .act { font-family: var(--mono); min-width: 120px; }
+.audit-line .out-refused { color: var(--danger); }
+.audit-line .out-accepted { color: var(--ok); }
+
+.proto-note {
+  margin-top: 40px; padding: 12px 16px; border: 1px dashed var(--line-strong);
+  font-size: 0.78rem; color: var(--ink-3); background: var(--panel);
+}
+@media (max-width: 860px) {
+  body { flex-direction: column; }
+  .sidenav { width: 100%; height: auto; position: static; flex-direction: row; align-items: center; padding: 8px; overflow-x: auto; }
+  .brand { padding: 0 10px; }
+  .nav-item { border-left: 0; border-bottom: 3px solid transparent; white-space: nowrap; padding: 8px 12px; }
+  .nav-item.active { border-bottom-color: var(--accent); }
+  .nav-spacer, .nav-foot { display: none; }
+  .org-switcher { min-width: 150px; }
+  main { padding: 20px 16px 48px; }
+  .ds-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<nav class="sidenav">
+  <div class="org-switcher">
+    <button class="org-btn" id="orgBtn" aria-haspopup="true" aria-expanded="false">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span id="orgName"></span>
+      <span class="caret">▼</span>
+    </button>
+    <div class="org-menu" id="orgMenu" hidden>
+      <div class="org-menu-title">切换组织 · 系统管理员视角</div>
+      <div id="orgItems"></div>
+      <div class="org-menu-foot">同一用户可在多个组织拥有不同角色与数据维度权限；切换后整套上下文（库/维度/授权）随之切换。</div>
+    </div>
+  </div>
+  <button class="nav-item active" data-page="upload"><span class="n-ico">[1]</span>上传与文档</button>
+  <button class="nav-item" data-page="search"><span class="n-ico">[2]</span>检索测试</button>
+  <button class="nav-item" data-page="admin"><span class="n-ico">[3]</span>知识库与维度</button>
+  <button class="nav-item" data-page="ops"><span class="n-ico">[4]</span>任务与审计</button>
+  <div class="nav-spacer"></div>
+  <div class="nav-foot">knowledge-lattice 原型 v0.3 · mock 数据<br>实现基准：<code>docs/design.md §6</code></div>
+</nav>
+
+<main>
+
+<!-- ==================== 1 上传与文档 ==================== -->
+<section class="page active" id="page-upload">
+  <div class="page-head">
+    <h1>上传与文档<span class="org-tag" id="orgTag1"></span></h1>
+    <p>上传时先选目标知识库，再选数据维度——权限按维度过滤（库不承担权限）。同一文件内数据分属不同维度时，请拆成多个文档分别上传。</p>
+  </div>
+
+  <div class="panel" style="margin-bottom:16px">
+    <div class="dim-group" style="margin-bottom:10px">
+      <span class="dim-name">目标知识库 <span class="dim-required">*</span></span>
+      <select class="sel" id="dsSelect"></select>
+    </div>
+    <div class="dim-picker" id="uploadDims"></div>
+    <div class="dropzone">
+      <strong>拖拽文件到此处，或点击选择</strong>
+      <div class="hint">支持 docx / xlsx / pptx / pdf / txt · 每个维度仅可选一个值 · 必选项未选齐时无法上传</div>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center">
+      <button class="btn" id="btnUpload" disabled>上传文档</button>
+      <span class="muted" style="font-size:0.8rem" id="uploadHint"></span>
+      <span style="flex:1"></span>
+      <button class="btn ghost small" id="btnAdvance">▶ 演示：推进任务</button>
+    </div>
+  </div>
+
+  <table class="tbl" id="docTable">
+    <thead><tr><th style="width:30%">文档</th><th>知识库</th><th>维度</th><th>状态</th><th>chunks</th><th>低区分</th><th>上传人</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div class="proto-note">「演示：推进任务」模拟 worker 处理进度（解析 → 分块 → 嵌入 → 索引 → 质量检测）。真实系统由异步任务驱动，见 design.md §5.3。</div>
+</section>
+
+<!-- ==================== 2 检索测试 ==================== -->
+<section class="page" id="page-search">
+  <div class="page-head">
+    <h1>检索测试<span class="org-tag" id="orgTag2"></span></h1>
+    <p>上传后的自查入口：默认检索当前组织内权限可见的全部文档，可按知识库收窄。切换身份可验证维度过滤。</p>
+  </div>
+
+  <div class="who-bar">
+    <label for="whoSelect">当前身份</label>
+    <select class="sel" id="whoSelect"></select>
+    <label for="dsFilter" style="margin-left:8px">知识库</label>
+    <select class="sel" id="dsFilter"></select>
+    <span style="flex:1"></span>
+    <span style="font-size:0.8rem;color:var(--ink-2)">权限（AND 语义）：</span>
+    <span class="who-grants" id="whoGrants"></span>
+  </div>
+
+  <div class="search-box">
+    <input id="qInput" placeholder="试试：中国区 VAT 留抵退税 条件，或 transfer pricing documentation" aria-label="检索词">
+    <button class="btn" id="btnSearch">检索</button>
+  </div>
+
+  <div class="filter-note" id="filterNote" style="display:none"></div>
+  <div id="hits"></div>
+</section>
+
+<!-- ==================== 3 知识库与维度 ==================== -->
+<section class="page" id="page-admin">
+  <div class="page-head">
+    <h1>知识库与维度<span class="org-tag" id="orgTag3"></span></h1>
+    <p>知识库是组织内的业务分组与管理单元（批量管理、检索收窄），<b>不承担权限</b>；权限坐标系由维度定义，文档可见 ⇔ 每个维度的取值都在授权集合内。</p>
+  </div>
+
+  <h3 style="font-size:0.92rem;margin-bottom:10px">知识库</h3>
+  <div class="ds-grid" id="dsGrid"></div>
+
+  <h3 style="font-size:0.92rem;margin:20px 0 10px">维度定义（组织作用域）</h3>
+  <div class="grid2" id="dimCards"></div>
+
+  <h3 style="font-size:0.92rem;margin:22px 0 10px">用户与维度授权</h3>
+  <div class="grid2">
+    <div class="panel">
+      <h3 style="font-size:0.95rem;margin-bottom:10px">用户</h3>
+      <div class="user-list" id="userList"></div>
+    </div>
+    <div class="panel grant-box" id="grantBox">
+      <h3 style="font-size:0.95rem">授权设置</h3>
+      <p class="muted" style="font-size:0.8rem">从左侧选择用户</p>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 4 任务与审计 ==================== -->
+<section class="page" id="page-ops">
+  <div class="page-head">
+    <h1>任务与审计<span class="org-tag" id="orgTag4"></span></h1>
+    <p>摄取任务带心跳与租约（worker 崩溃后任务可被重新认领）；审计 append-only，覆盖查询级（谁、何时、查了什么、返回哪些来源）。</p>
+  </div>
+
+  <table class="tbl" style="margin-bottom:28px" id="taskTable">
+    <thead><tr><th>task</th><th>知识库</th><th>文档</th><th>类型</th><th>状态</th><th>心跳</th><th>attempts</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <h3 style="font-size:0.95rem;margin-bottom:8px">审计流</h3>
+  <div id="auditFlow"></div>
+</section>
+
+</main>
+
+<!-- ============ 质量报告模态 ============ -->
+<div class="overlay" id="qOverlay" role="dialog" aria-modal="true" aria-labelledby="qTitle">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="qTitle">质量报告</h2>
+      <button class="modal-close" id="qClose" aria-label="关闭">✕</button>
+    </div>
+    <div class="modal-body" id="qBody"></div>
+  </div>
+</div>
+
+<script>
+/* ================= mock 数据（全局用户 + 多组织成员：同一用户在各组织角色/授权独立） ================= */
+const USERS = [
+  { id: "u1", name: "张会计" }, { id: "u2", name: "李顾问" }, { id: "u3", name: "王实习" },
+  { id: "f1", name: "陈出纳" }, { id: "f2", name: "赵审核" },
+];
+const ORGS = [
+  {
+    id: "org:tax", name: "税务事业部",
+    dims: {
+      region:   { label: "作业区域", required: true,  values: { CN: "中国区", OS: "海外区" } },
+      tax_type: { label: "税种",     required: true,  values: { VAT: "增值税", CIT: "企业所得税", GST: "GST", PIT: "个人所得税" } },
+    },
+    datasets: [
+      { id: "ds:vat",  name: "VAT 实务库",  desc: "申报指南、政策摘要、操作口径" },
+      { id: "ds:intl", name: "国际税收库",  desc: "转让定价、海外合规、跨境规则" },
+    ],
+    members: [
+      { uid: "u1", role: "member",    grants: { region: ["CN"], tax_type: ["VAT", "CIT"] } },
+      { uid: "u2", role: "member",    grants: { region: ["CN", "OS"], tax_type: ["VAT", "GST"] } },  // 跨组织：在财务中心是 org_admin
+      { uid: "u3", role: "member",    grants: { region: ["CN"], tax_type: ["CIT"] } },
+    ],
+    docs: [
+      { id: "01J8A1", ds: "ds:vat", title: "2026年Q3 中国区增值税申报操作指南.docx", dims: { region: "CN", tax_type: "VAT" },
+        status: "indexed", chunks: 143, flags: 3, owner: "张会计" },
+      { id: "01J8A2", ds: "ds:intl", title: "Overseas Transfer Pricing Manual v2.pdf", dims: { region: "OS", tax_type: "VAT" },
+        status: "indexed", chunks: 96, flags: 1, owner: "李顾问" },
+      { id: "01J8A3", ds: "ds:vat", title: "企业所得税汇算清缴常见问题（2026版）.pdf", dims: { region: "CN", tax_type: "CIT" },
+        status: "embedded", chunks: 58, flags: 0, owner: "张会计" },
+      { id: "01J8A4", ds: "ds:intl", title: "APAC GST Compliance Checklist.xlsx", dims: { region: "OS", tax_type: "GST" },
+        status: "chunked", chunks: 12, flags: 0, owner: "李顾问" },
+      { id: "01J8A5", ds: "ds:vat", title: "留抵退税政策要点摘要.txt", dims: { region: "CN", tax_type: "VAT" },
+        status: "indexed", chunks: 7, flags: 2, owner: "张会计" },
+    ],
+    qflags: {
+      "01J8A1": [
+        { id: "q1", reason: "vector_crowding", detail: "近邻相似度均值 0.86（阈值 0.82）",
+          snippet: "具体操作步骤见本节后续说明，相关要求以主管税务机关解释为准。", auto: ["申报期限", "主管税务机关"] },
+        { id: "q2", reason: "low_idf", detail: "token 平均 IDF 低于语料 P25",
+          snippet: "上述规定自发布之日起施行，此前规定与本规定不一致的，以本规定为准。", auto: ["生效日期", "新旧衔接"] },
+        { id: "q3", reason: "both", detail: "近邻 0.84 / IDF P18",
+          snippet: "注意事项：填表时请核对数据准确性，确保信息完整。", auto: [] },
+      ],
+      "01J8A2": [
+        { id: "q4", reason: "vector_crowding", detail: "near-neighbor mean sim 0.85",
+          snippet: "See the relevant sections of this manual for further details and examples.", auto: ["arm's length", "documentation"] },
+      ],
+      "01J8A5": [
+        { id: "q5", reason: "low_idf", detail: "token 平均 IDF 低于语料 P25",
+          snippet: "本摘要仅供参考，具体以正式文件为准。", auto: ["留抵退税"] },
+        { id: "q6", reason: "vector_crowding", detail: "近邻相似度均值 0.83",
+          snippet: "申请材料包括：申请表、营业执照复印件等。", auto: ["申请材料", "全额退还"] },
+      ],
+    },
+    hits: [
+      { doc: "01J8A5", page: 2, score: 0.91, text: "符合条件的制造业等行业企业，可按月申请全额退还增值税留抵税额。申请时需同时满足纳税信用等级为 A 级或 B 级等条件……" },
+      { doc: "01J8A1", page: 41, score: 0.87, text: "留抵税额退还的申请路径：通过电子税务局「一般退（免）税管理」模块提交……" },
+      { doc: "01J8A1", page: 12, score: 0.78, text: "一般纳税人销售自产货物并同时提供安装服务的，应分别核算货物与安装服务的销售额，适用不同税率或征收率……" },
+      { doc: "01J8A2", page: 8, score: 0.72, text: "For related-party service fees, documentation should include the benchmarking study and the functional analysis……" },
+    ],
+    tasks: [
+      { id: "01JT1", ds: "VAT 实务库", doc: "企业所得税汇算清缴常见问题（2026版）.pdf", type: "ingest", status: "running", hb: "3s 前", att: 0 },
+      { id: "01JT2", ds: "国际税收库", doc: "APAC GST Compliance Checklist.xlsx", type: "ingest", status: "pending", hb: "—", att: 0 },
+      { id: "01JT3", ds: "VAT 实务库", doc: "2026年Q3 中国区增值税申报操作指南.docx", type: "ingest", status: "done", hb: "—", att: 0 },
+      { id: "01JT4", ds: "国际税收库", doc: "Overseas Transfer Pricing Manual v2.pdf", type: "reindex", status: "done", hb: "—", att: 1 },
+    ],
+    audits: [
+      { t: "14:32:08", actor: "agent:tax-copilot:user:u1", act: "search", out: "accepted", detail: "「留抵退税 条件」→ 返回 5 块（01J8A5#2 …）" },
+      { t: "14:29:51", actor: "user:u1", act: "upload", out: "accepted", detail: "2026年Q3 中国区增值税申报操作指南.docx → VAT 实务库" },
+      { t: "14:27:33", actor: "agent:tax-copilot:user:u3", act: "search", out: "refused", detail: "「VAT 留抵」→ 越权过滤 2 份文档" },
+      { t: "14:20:02", actor: "user:admin", act: "grant", out: "accepted", detail: "李顾问 tax_type += GST" },
+      { t: "14:02:47", actor: "user:admin", act: "dataset_create", out: "accepted", detail: "新建知识库「国际税收库」" },
+    ],
+  },
+  {
+    id: "org:fin", name: "财务共享中心",
+    dims: {
+      region:   { label: "作业区域", required: true, values: { CN: "中国区", OS: "海外区" } },
+      biz_line: { label: "业务线",   required: true, values: { GL: "总账", AP: "应付", TE: "差旅" } },
+    },
+    datasets: [
+      { id: "ds:exp", name: "费用制度库", desc: "报销办法、费用标准、操作指引" },
+    ],
+    members: [
+      { uid: "f1", role: "member",    grants: { region: ["CN"], biz_line: ["AP", "TE"] } },
+      { uid: "f2", role: "org_admin", grants: { region: ["CN", "OS"], biz_line: ["GL", "AP"] } },
+      { uid: "u2", role: "org_admin", grants: { region: ["CN"], biz_line: ["TE"] } },  // 李顾问：财务中心管理员，仅差旅线
+    ],
+    docs: [
+      { id: "01J8B1", ds: "ds:exp", title: "差旅费报销管理办法（2026修订）.docx", dims: { region: "CN", biz_line: "TE" },
+        status: "indexed", chunks: 64, flags: 1, owner: "赵审核" },
+      { id: "01J8B2", ds: "ds:exp", title: "海外子公司总账月结流程.pdf", dims: { region: "OS", biz_line: "GL" },
+        status: "indexed", chunks: 38, flags: 0, owner: "赵审核" },
+      { id: "01J8B3", ds: "ds:exp", title: "应付账款对账操作手册.xlsx", dims: { region: "CN", biz_line: "AP" },
+        status: "parsing", chunks: 0, flags: 0, owner: "陈出纳" },
+    ],
+    qflags: {
+      "01J8B1": [
+        { id: "fq1", reason: "low_idf", detail: "token 平均 IDF 低于语料 P25",
+          snippet: "其他未尽事宜参照公司相关财务制度执行。", auto: ["差旅报销"] },
+      ],
+    },
+    hits: [
+      { doc: "01J8B1", page: 3, score: 0.89, text: "员工出差住宿费实行限额标准内据实报销：一类城市每晚不超过 600 元，二类城市不超过 450 元……" },
+      { doc: "01J8B1", page: 12, score: 0.81, text: "报销时限：费用发生后 30 日内提交报销申请，逾期需说明原因并经部门负责人审批……" },
+      { doc: "01J8B3", page: 1, score: 0.74, text: "月末对账三步：核对供应商余额、清理暂挂科目、导出账龄分析表……" },
+    ],
+    tasks: [
+      { id: "01JU1", ds: "费用制度库", doc: "应付账款对账操作手册.xlsx", type: "ingest", status: "running", hb: "8s 前", att: 0 },
+    ],
+    audits: [
+      { t: "11:15:42", actor: "agent:fin-assistant:user:f1", act: "search", out: "accepted", detail: "「差旅 住宿 限额」→ 返回 2 块（01J8B1#3 …）" },
+      { t: "11:08:19", actor: "user:f2", act: "upload", out: "accepted", detail: "差旅费报销管理办法（2026修订）.docx → 费用制度库" },
+      { t: "10:55:03", actor: "agent:fin-assistant:user:f1", act: "search", out: "refused", detail: "「月结流程」→ 越权过滤 1 份文档（海外区/总账）" },
+    ],
+  },
+];
+
+/* ================= 全局状态与工具 ================= */
+const state = { orgId: ORGS[0].id, whoId: null, selUser: null, dsFilter: "all", picked: {} };
+const org = () => ORGS.find(o => o.id === state.orgId);
+const userName = (uid) => USERS.find(u => u.id === uid)?.name || uid;
+const member = () => org().members.find(m => m.uid === state.whoId) || org().members[0];
+const isCrossOrg = (uid) => ORGS.filter(o => o.members.some(m => m.uid === uid)).length > 1;
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => [...document.querySelectorAll(s)];
+const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function cellHTML(dim, val, { label = true } = {}) {
+  const lbl = label && org().dims[dim]?.values[val] ? `<span class="lbl">${org().dims[dim].values[val]}</span>` : "";
+  return `<span class="cell d-${dim}">${lbl}${val}</span>`;
+}
+function dsName(dsId) { return org().datasets.find(d => d.id === dsId)?.name || dsId; }
+function statusBadge(st) {
+  const map = { indexed: "b-ok", done: "b-ok", failed: "b-fail", embedded: "b-parsing", chunked: "b-parsing", parsing: "b-parsing", uploaded: "b-muted", pending: "b-muted", running: "b-parsing" };
+  return `<span class="badge ${st} ${map[st] || ""}">${st}</span>`;
+}
+/* AND 语义可见性（按当前组织的维度体系） */
+function canSee(m, dims) {
+  for (const d of Object.keys(org().dims)) {
+    if (!(m.grants[d] || []).includes(dims[d])) return false;
+  }
+  return true;
+}
+function renderOrgTags() {
+  const t = org().name;
+  for (let i = 1; i <= 4; i++) $("#orgTag" + i).textContent = t;
+}
+
+/* ================= 导航与组织切换 ================= */
+$$(".nav-item").forEach(b => b.addEventListener("click", () => {
+  $$(".nav-item").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  $$(".page").forEach(p => p.classList.remove("active"));
+  $("#page-" + b.dataset.page).classList.add("active");
+}));
+/* 左上角组织切换器 */
+const orgBtn = $("#orgBtn"), orgMenu = $("#orgMenu");
+orgBtn.addEventListener("click", () => {
+  orgMenu.hidden = !orgMenu.hidden;
+  orgBtn.setAttribute("aria-expanded", String(!orgMenu.hidden));
+});
+document.addEventListener("click", e => {
+  if (!orgMenu.hidden && !e.target.closest(".org-switcher")) orgMenu.hidden = true;
+});
+function renderOrgSwitcher() {
+  $("#orgName").textContent = org().name;
+  $("#orgItems").innerHTML = ORGS.map(o => `
+    <button class="org-item ${o.id === state.orgId ? "on" : ""}" data-org="${o.id}">
+      <span class="om-mark"></span>${o.name}
+      <span class="om-sub">${o.members.length} 名成员 · ${o.datasets.length} 个知识库</span>
+    </button>`).join("");
+  $$("#orgItems .org-item").forEach(b => b.addEventListener("click", () => {
+    orgMenu.hidden = true;
+    if (b.dataset.org !== state.orgId) switchOrg(b.dataset.org);
+  }));
+}
+function switchOrg(orgId) {
+  state.orgId = orgId;
+  /* 跨组织用户：若当前身份是新组织成员则保持身份（演示同一人多组织不同权限），否则回退首位成员 */
+  if (!org().members.some(m => m.uid === state.whoId)) state.whoId = null;
+  state.selUser = null; state.dsFilter = "all"; state.picked = {}; state.dsPick = null;
+  renderAll();
+  $("#qInput").value = org().id === "org:fin" ? "差旅 报销 限额" : "留抵退税";
+  doSearch();
+}
+
+/* ================= 上传页 ================= */
+function renderUpload() {
+  const o = org();
+  $("#dsSelect").innerHTML = `<option value="">选择知识库…</option>` +
+    o.datasets.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join("");
+  if (state.dsPick && o.datasets.some(d => d.id === state.dsPick)) $("#dsSelect").value = state.dsPick;
+  $("#uploadDims").innerHTML = Object.entries(o.dims).map(([dk, def]) => `
+    <div class="dim-group"><span class="dim-name">${def.label} ${def.required ? '<span class="dim-required" title="必选维度">*</span>' : ""}</span>
+      ${Object.keys(def.values).map(v => `
+        <span class="cell pick ${state.picked[dk] === v ? "on" : ""}" data-k="${dk}" data-val="${v}"
+          >${def.values[v] ? `<span class="lbl">${def.values[v]}</span>` : ""}${v}</span>`).join("")}
+    </div>`).join("");
+  $$("#uploadDims .cell.pick").forEach(c => c.addEventListener("click", () => {
+    const d = c.dataset.k, v = c.dataset.val;
+    state.picked[d] = state.picked[d] === v ? null : v;
+    renderUpload();
+  }));
+  updateUploadBtn();
+}
+$("#dsSelect").addEventListener("change", e => { state.dsPick = e.target.value || null; updateUploadBtn(); });
+function updateUploadBtn() {
+  const o = org();
+  const need = Object.keys(o.dims).filter(d => o.dims[d].required);
+  const dimsOk = need.every(d => state.picked[d]);
+  const ok = dimsOk && state.dsPick;
+  $("#btnUpload").disabled = !ok;
+  const miss = [];
+  if (!state.dsPick) miss.push("知识库");
+  need.forEach(d => { if (!state.picked[d]) miss.push(o.dims[d].label); });
+  $("#uploadHint").textContent = miss.length ? `待选择：${miss.join("、")}` :
+    `知识库「${dsName(state.dsPick)}」· 维度已选齐：` + Object.entries(state.picked).filter(([,v])=>v).map(([k,v]) => `${k}=${v}`).join(" · ");
+}
+$("#btnUpload").addEventListener("click", () => {
+  org().docs.unshift({
+    id: "01J8N" + (org().docs.length + 1), ds: state.dsPick, title: "新上传文档-demo.docx",
+    dims: { ...state.picked }, status: "uploaded", chunks: 0, flags: 0, owner: "当前用户",
+  });
+  renderDocs(); $("#uploadHint").textContent = "已加入队列（原型演示，文件为虚拟）";
+});
+const FLOW = ["uploaded", "parsing", "chunked", "embedded", "indexed"];
+$("#btnAdvance").addEventListener("click", () => {
+  const d = org().docs.find(x => FLOW.indexOf(x.status) >= 0 && x.status !== "indexed");
+  if (!d) { alert("当前组织全部文档已索引"); return; }
+  d.status = FLOW[FLOW.indexOf(d.status) + 1];
+  if (d.status === "chunked") d.chunks = Math.max(d.chunks, 3);
+  if (d.status === "embedded") d.chunks = Math.max(d.chunks, 11);
+  if (d.status === "indexed") { d.chunks = Math.max(d.chunks, 17); d.flags = 2;
+    org().qflags[d.id] = [{ id: "qn" + d.id, reason: "vector_crowding", detail: "近邻相似度均值 0.84",
+      snippet: "（演示数据）此段内容与库内多个无关 chunk 相似。", auto: ["演示关键词"] }]; }
+  renderDocs();
+});
+function renderDocs() {
+  $("#docTable tbody").innerHTML = org().docs.map(d => `
+    <tr>
+      <td><div>${esc(d.title)}</div><div class="muted mono" style="font-size:0.72rem">${d.id} · ${d.owner}</div></td>
+      <td><span class="ds-pill">${esc(dsName(d.ds))}</span></td>
+      <td>${Object.entries(d.dims).map(([k, v]) => cellHTML(k, v)).join(" ")}</td>
+      <td>${statusBadge(d.status)}</td>
+      <td class="mono">${d.chunks || "—"}</td>
+      <td>${d.flags ? `<button class="btn ghost small" data-qf="${d.id}" style="color:var(--amber);border-color:var(--amber)">${d.flags} 待处理</button>` : '<span class="muted">—</span>'}</td>
+      <td>${d.owner}</td>
+    </tr>`).join("");
+  $$("[data-qf]").forEach(b => b.addEventListener("click", () => openQuality(b.dataset.qf)));
+}
+
+/* ================= 质量报告 ================= */
+const flagState = {};
+function openQuality(docId) {
+  const doc = org().docs.find(d => d.id === docId);
+  const flags = org().qflags[docId] || [];
+  $("#qTitle").textContent = `质量报告 · ${doc.title}`;
+  $("#qBody").innerHTML = `
+    <p style="font-size:0.85rem;color:var(--ink-2);margin-bottom:14px">
+      以下 ${flags.length} 个块区分度较低（向量拥挤 / 词面过于通用），系统已生成建议关键词；
+      可补充标注或忽略——补充的标签会加权进入检索。</p>
+    ${flags.map(f => {
+      const st = flagState[f.id] || { ignored: false, manual: [], removedAuto: [] };
+      const autos = f.auto.filter(k => !st.removedAuto.includes(k));
+      return `
+      <div class="q-item" style="${st.ignored ? "opacity:0.5" : ""}">
+        <div class="q-top">
+          <span class="q-reason">${f.reason === "vector_crowding" ? "向量拥挤" : f.reason === "low_idf" ? "词面通用" : "双信号"}</span>
+          <span class="mono muted" style="font-size:0.72rem">${esc(f.detail)}</span>
+        </div>
+        <div class="q-snippet">${esc(f.snippet)}</div>
+        <div class="q-kw">
+          <span class="klabel">关键词</span>
+          ${autos.map(k => `<span class="kw-chip auto" data-kw="${esc(k)}" data-fid="${f.id}">${esc(k)}<button aria-label="移除">✕</button></span>`).join("")}
+          ${st.manual.map(k => `<span class="kw-chip" data-kw="${esc(k)}" data-fid="${f.id}" data-manual="1">${esc(k)}<button aria-label="移除">✕</button></span>`).join("")}
+          <span class="kw-add"><input placeholder="补充关键词 ↵" data-add="${f.id}"></span>
+        </div>
+        <div class="q-actions">
+          <button class="btn small" data-resolve="${f.id}">标记已处理</button>
+          <button class="btn ghost small" data-ignore="${f.id}">${st.ignored ? "取消忽略" : "忽略（表格/目录类天然低区分）"}</button>
+        </div>
+      </div>`;
+    }).join("")}`;
+  $$("#qBody [data-kw] button").forEach(b => b.addEventListener("click", () => {
+    const chip = b.parentElement, fid = chip.dataset.fid, kw = chip.dataset.kw;
+    const st = flagState[fid] = flagState[fid] || { ignored: false, manual: [], removedAuto: [] };
+    if (chip.dataset.manual) st.manual = st.manual.filter(k => k !== kw);
+    else st.removedAuto.push(kw);
+    openQuality(docId);
+  }));
+  $$("#qBody [data-add]").forEach(inp => inp.addEventListener("keydown", e => {
+    if (e.key === "Enter" && inp.value.trim()) {
+      const st = flagState[inp.dataset.add] = flagState[inp.dataset.add] || { ignored: false, manual: [], removedAuto: [] };
+      st.manual.push(inp.value.trim()); openQuality(docId);
+    }
+  }));
+  $$("#qBody [data-ignore]").forEach(b => b.addEventListener("click", () => {
+    const st = flagState[b.dataset.ignore] = flagState[b.dataset.ignore] || { ignored: false, manual: [], removedAuto: [] };
+    st.ignored = !st.ignored; openQuality(docId);
+  }));
+  $$("#qBody [data-resolve]").forEach(b => b.addEventListener("click", () => {
+    const doc2 = org().docs.find(d => d.id === docId); doc2.flags = Math.max(0, doc2.flags - 1);
+    renderDocs(); $("#qOverlay").classList.remove("open");
+  }));
+  $("#qOverlay").classList.add("open");
+}
+$("#qClose").addEventListener("click", () => $("#qOverlay").classList.remove("open"));
+$("#qOverlay").addEventListener("click", e => { if (e.target === e.currentTarget) $("#qOverlay").classList.remove("open"); });
+
+/* ================= 检索页 ================= */
+function renderSearchBar() {
+  const o = org();
+  $("#whoSelect").innerHTML = o.members.map(m =>
+    `<option value="${m.uid}" ${m.uid === member().uid ? "selected" : ""}>${userName(m.uid)}${m.role === "org_admin" ? "（管理员）" : ""}</option>`).join("");
+  $("#dsFilter").innerHTML = `<option value="all">全部知识库</option>` +
+    o.datasets.map(d => `<option value="${d.id}" ${state.dsFilter === d.id ? "selected" : ""}>${esc(d.name)}</option>`).join("");
+  const m = member();
+  $("#whoGrants").innerHTML = Object.entries(m.grants).map(([d, vs]) =>
+    `<span style="font-size:0.78rem;color:var(--ink-3)">${o.dims[d].label}：</span>` +
+    vs.map(v => cellHTML(d, v, { label: false })).join("")).join("<span style='width:8px'></span>");
+}
+$("#whoSelect").addEventListener("change", e => { state.whoId = e.target.value; renderSearchBar(); doSearch(); });
+$("#dsFilter").addEventListener("change", e => { state.dsFilter = e.target.value; doSearch(); });
+function doSearch() {
+  const o = org();
+  const q = ($("#qInput").value || "").trim().toLowerCase();
+  if (!q) { $("#hits").innerHTML = ""; $("#filterNote").style.display = "none"; return; }
+  const terms = q.split(/\s+/);
+  let visible = 0, blocked = 0, html = "";
+  for (const h of o.hits) {
+    const doc = o.docs.find(d => d.id === h.doc);
+    if (!canSee(member(), doc.dims)) { blocked++; continue; }
+    if (state.dsFilter !== "all" && doc.ds !== state.dsFilter) continue;
+    visible++;
+    const marked = terms.reduce((acc, t) => acc.replace(new RegExp(`(${t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi"), "<mark>$1</mark>"), esc(h.text));
+    html += `
+      <div class="hit">
+        <div class="hit-top">
+          <span class="hit-score">${h.score.toFixed(2)}</span>
+          <span class="hit-title">${esc(doc.title)}</span>
+          <span class="ds-pill">${esc(dsName(doc.ds))}</span>
+          ${Object.entries(doc.dims).map(([k, v]) => cellHTML(k, v)).join(" ")}
+        </div>
+        <div class="hit-snippet">${marked}</div>
+        <div class="hit-meta">
+          <span>chunk <b>${h.doc}#${h.page}</b></span><span>page <b>${h.page}</b></span>
+          <span>rerank_score <b>${h.score}</b></span><span>via <b>fts+vec → rrf → rerank</b></span>
+        </div>
+      </div>`;
+  }
+  $("#hits").innerHTML = html || `<div class="panel muted" style="text-align:center;padding:30px">没有可展示的结果——换一个检索词、切换知识库，或切换到权限更多的身份。</div>`;
+  const fn = $("#filterNote");
+  if (blocked > 0) {
+    fn.style.display = "block";
+    fn.textContent = `维度权限过滤：${blocked} 条命中因当前身份（${userName(member().uid)}@${org().name}）缺少对应维度授权而未展示（AND 语义，仅计数不显示内容）。`;
+  } else { fn.style.display = "none"; fn.textContent = ""; }
+}
+$("#btnSearch").addEventListener("click", doSearch);
+$("#qInput").addEventListener("keydown", e => { if (e.key === "Enter") doSearch(); });
+
+/* ================= 知识库与维度管理 ================= */
+function renderAdmin() {
+  const o = org();
+  /* 库卡片 */
+  $("#dsGrid").innerHTML = o.datasets.map(ds => {
+    const docs = o.docs.filter(d => d.ds === ds.id);
+    const chunks = docs.reduce((s, d) => s + (d.chunks || 0), 0);
+    return `
+    <div class="ds-card">
+      <div class="ds-name">${esc(ds.name)} <span class="dim-key">${ds.id}</span></div>
+      <div class="ds-desc">${esc(ds.desc || "")}</div>
+      <div class="ds-stats"><span>文档 <b>${docs.length}</b></span><span>chunks <b>${chunks}</b></span><span>不承担权限</span></div>
+    </div>`;
+  }).join("") + `
+    <button class="ds-new" id="dsNew">＋ 新建知识库</button>`;
+  $("#dsNew").addEventListener("click", () => {
+    const name = prompt("新知识库名称：");
+    if (!name) return;
+    o.datasets.push({ id: "ds:n" + (o.datasets.length + 1), name, desc: "（描述待补充）" });
+    renderAdmin(); renderUpload(); renderSearchBar();
+  });
+  /* 维度卡 */
+  $("#dimCards").innerHTML = Object.entries(o.dims).map(([dk, def]) => `
+    <div class="dim-card">
+      <div class="dim-card-head">
+        <h3><span class="cell dim d-${dk}">${dk}</span>${def.label}</h3>
+        <span class="toggle"><input type="checkbox" ${def.required ? "checked" : ""} disabled> 必选</span>
+      </div>
+      <div class="val-row">
+        ${Object.entries(def.values).map(([v, lbl]) => `<span class="cell d-${dk}">${lbl ? `<span class="lbl">${lbl}</span>` : ""}${v}</span>`).join("")}
+        <button class="btn ghost small">＋ 添加取值</button>
+      </div>
+    </div>`).join("");
+  /* 成员列表（角色徽标 + 跨组织标记） */
+  $("#userList").innerHTML = o.members.map(m => `
+    <div class="user-row ${state.selUser === m.uid ? "sel" : ""}" data-uu="${m.uid}" tabindex="0" role="button">
+      <span><b style="font-size:0.9rem">${userName(m.uid)}</b>
+        ${m.role === "org_admin" ? ` <span class="badge b-muted">org_admin</span>` : ""}
+        ${isCrossOrg(m.uid) ? ` <span class="badge b-muted" title="该用户同时是其他组织成员">跨组织</span>` : ""}
+      </span>
+      <span>${Object.entries(m.grants).map(([d, vs]) => vs.map(v => cellHTML(d, v, { label: false })).join(" ")).join(" ")}</span>
+    </div>`).join("");
+  $$(".user-row").forEach(r => r.addEventListener("click", () => { state.selUser = r.dataset.uu; renderAdmin(); }));
+  renderGrants();
+}
+function renderGrants() {
+  const m0 = org().members.find(x => x.uid === state.selUser);
+  if (!m0) return;
+  const o = org();
+  $("#grantBox").innerHTML = `
+    <h3 style="font-size:0.95rem">授权设置 · ${userName(m0.uid)}<span class="muted" style="font-size:0.78rem;font-weight:400">（${m0.role === "org_admin" ? "组织管理员" : "成员"}@${o.name}${isCrossOrg(m0.uid) ? "，跨组织用户" : ""}）</span></h3>
+    ${Object.keys(o.dims).map(d => `
+      <h4>${o.dims[d].label}（可多值）</h4>
+      <div class="dim-picker">
+        ${Object.keys(o.dims[d].values).map(v => `
+          <span class="cell pick ${(m0.grants[d] || []).includes(v) ? "on" : ""}" data-k="${d}" data-val="${v}"
+                >${o.dims[d].values[v] ? `<span class="lbl">${o.dims[d].values[v]}</span>` : ""}${v}</span>`).join("")}
+      </div>`).join("")}
+    <p class="and-note">该用户在 <b>${o.name}</b> 内检索时仅能看到「每个维度的取值都在以上授权集合内」的文档；空维度 = 该维度下全库不可见。授权仅作用于本组织${isCrossOrg(m0.uid) ? "（此用户在其他组织的权限与此处无关）" : ""}；变更即时生效（查询时实时展开，无需重建索引）。生产环境：登录走企业 SSO（首登自动建档），授权经管理页或批量导入维护（D16）。</p>`;
+  $$("#grantBox .cell.pick").forEach(c => c.addEventListener("click", () => {
+    const d = c.dataset.k, v = c.dataset.val;
+    m0.grants[d] = m0.grants[d] || [];
+    const arr = m0.grants[d];
+    arr.includes(v) ? arr.splice(arr.indexOf(v), 1) : arr.push(v);
+    renderAdmin(); renderSearchBar();
+    if ($("#page-search").classList.contains("active")) doSearch();
+  }));
+}
+
+/* ================= 任务与审计 ================= */
+function renderOps() {
+  const o = org();
+  $("#taskTable tbody").innerHTML = o.tasks.map(t => `
+    <tr><td class="mono">${t.id}</td><td><span class="ds-pill">${esc(t.ds)}</span></td><td>${esc(t.doc)}</td>
+    <td class="mono">${t.type}</td><td>${statusBadge(t.status)}</td>
+    <td class="muted mono" style="font-size:0.78rem">${t.hb}</td><td class="mono">${t.att}</td></tr>`).join("");
+  $("#auditFlow").innerHTML = o.audits.map(a => `
+    <div class="audit-line">
+      <span class="t">${a.t}</span>
+      <span class="act">${a.act}</span>
+      <span class="mono muted" style="font-size:0.78rem">${esc(a.actor)}</span>
+      <span style="flex:1">${esc(a.detail)}</span>
+      <span class="${a.out === "refused" ? "out-refused" : "out-accepted"} mono" style="font-size:0.78rem">${a.out}</span>
+    </div>`).join("");
+}
+
+/* ================= 渲染编排 ================= */
+function renderAll() {
+  renderOrgSwitcher();
+  renderOrgTags(); renderUpload(); renderDocs(); renderSearchBar(); renderAdmin(); renderOps();
+}
+renderAll();
+$("#qInput").value = "留抵退税";
+doSearch();
+</script>
+</body>
+</html>
