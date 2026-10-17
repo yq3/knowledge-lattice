@@ -59,7 +59,7 @@
 
 **部署形态（NFR-1/9）**：`knowledge-lattice` 主进程 ×1（内含 worker 子进程）+ `lattice.db` ×1 + `data/objects/` 目录 ×1。无消息队列、无独立向量库、无嵌入服务容器——它们分别是 tasks 表轮询、**chunks.embedding BLOB 列 + sqlite-vec 距离函数**、进程内 bge-m3。worker 经 IPC 被唤醒 + 兜底轮询（anything-llm 的最小进程隔离样板：OOM 只杀 worker）。**资源预算**：主进程与 worker 各加载一份模型（嵌入+reranker+docling），峰值 6~8 GB——最低规格 16 GB RAM / 8 核；**CPU 推理全部进线程/进程池**，不阻塞事件循环。
 
-**并发模型（NFR-9）**：SQLite WAL 模式（多读单写）。检索（读）不受摄取（写）阻塞；写竞争治理：`busy_timeout` + worker 短事务分批提交 + 审计异步批量写（竞争激烈时拆独立 `audit.db`）。数百用户检索并发的实际瓶颈在 rerank 计算（§5.2 缓解：候选 32 / ONNX int8 / 信号量）。
+**并发模型（NFR-9）**：SQLite WAL 模式（多读单写）。检索（读）不受摄取（写）阻塞；写竞争治理：`busy_timeout` + worker 短事务分批提交 + **审计按月分库后与业务写天然隔离**（FR-6）。数百用户检索并发的实际瓶颈在 rerank 计算（§5.2 缓解：候选 32 / ONNX int8 / 信号量）。
 
 **备份恢复（NFR-10）**：SQLite `VACUUM INTO` / online backup 定时快照 + `data/objects/` 一并备份；RPO ≤ 24h / RTO ≤ 4h（POC 目标）；恢复演练进 runbook。
 
@@ -72,10 +72,10 @@ knowledge_lattice/
 ├── app.py                  # FastAPI 入口：装配路由/MCP/DB/worker
 ├── config.py               # 全部配置（模型版本、阈值、路径、网关地址）
 ├── api/
-│   ├── upload.py           # POST /api/documents（校验目标库 + 必选维度齐全 + 取值在本人授权内）+ POST /api/uploads（凭证签发——P0-D）
+│   ├── upload.py           # POST /api/orgs/{org}/documents（校验库+维度+授权内）+ POST /api/uploads（凭证签发）+ PUT /api/uploads/{id}
 │   ├── datasets.py         # 知识库 CRUD（组织内，D15）
 │   ├── orgs.py             # 组织 CRUD 与成员管理（系统管理员，D7）
-│   ├── tasks.py            # GET /api/tasks、文档状态
+│   ├── tasks.py            # GET /api/orgs/{org}/tasks（+ cancel）、文档状态
 │   ├── search.py           # POST /api/search（检索测试页用，支持库过滤）
 │   └── admin.py            # 维度/取值/用户/授权 CRUD
 ├── mcp/
@@ -155,8 +155,8 @@ CREATE TABLE dimensions (            -- 维度定义（配置页 CRUD 对象，D
   org_id        TEXT NOT NULL REFERENCES orgs(id),
   key           TEXT NOT NULL,       -- region / tax_type
   name          TEXT NOT NULL,       -- 作业区域 / 税种
-  required      INTEGER NOT NULL DEFAULT 1,  -- 必选：上传时强制选值（D5）；编译器只对「启用+必选」生成条件
-  enabled       INTEGER NOT NULL DEFAULT 1,
+  required      INTEGER NOT NULL DEFAULT 1,  -- 必选：上传时强制选值（D5）；过滤条件只看 enabled（停用仍参与过滤=方案 a，§5.1）
+  enabled       INTEGER NOT NULL DEFAULT 1,  -- 停用=收紧（免上传选值），撤过滤走"退役维度"事件（§6.2）
   grant_source  TEXT NOT NULL DEFAULT 'local',  -- 授权真值源：local | sync:<system>（D16——同步维度管理页只读）
   value_source  TEXT NOT NULL DEFAULT 'local',  -- 取值枚举是否来自企业主数据
   created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -248,6 +248,8 @@ CREATE TRIGGER trg_documents_org_immutable BEFORE UPDATE OF org_id ON documents
 BEGIN SELECT RAISE(ABORT, 'documents.org_id is immutable'); END;
 CREATE TRIGGER trg_datasets_org_immutable  BEFORE UPDATE OF org_id  ON datasets
 BEGIN SELECT RAISE(ABORT, 'datasets.org_id is immutable'); END;
+CREATE TRIGGER trg_dimensions_org_immutable BEFORE UPDATE OF org_id ON dimensions
+BEGIN SELECT RAISE(ABORT, 'dimensions.org_id is immutable'); END;   -- #33 P2-9：三表齐全
 CREATE TRIGGER trg_documents_ds_org_check BEFORE INSERT ON documents
 WHEN (SELECT org_id FROM datasets WHERE id = NEW.dataset_id) != NEW.org_id
 BEGIN SELECT RAISE(ABORT, 'dataset org mismatch'); END;
@@ -675,13 +677,14 @@ COMMIT;
 3. 管理面 API + 最小 UI（§6.2 全端点：维度停用 dry_run/退役/授权 expires_at/任务取消/重索引/审计分级查询）
 4. 审计 outbox + 月库滚动 + 封存；删除级联与 90 天物理清理
 5. 备份快照 + 恢复演练
-6. 验收：outbox 一致性；恢复演练；跨组织隔离；批量导入（sync 不动）
+6. 验收：**杀 worker 不丢任务**（任务租约重认领）；outbox 一致性（权限事件必有审计）；恢复演练通过；跨组织隔离全绿；批量导入 500 行正确（sync 不动——T-CSV）
 
 **M3（第 7~8 周）——评测防线**
 1. 完整黄金集（M1 小型集扩容）+ 响应层指标固化
 2. judge 双语校准（~50 条人工双评）
 3. deepeval 门禁进 CI（预注入回归验证）
 4. 在线引用锚点抽样
+5. 验收：门禁能卡住一次人为注入的检索层回归；judge-人一致性达标；黄金集覆盖中英三态 query
 
 依赖：M1.2/1.3 依赖 M0a.3；M1.4 依赖 M1.2；M0b 结论回写后方可进 M1；M3 扩量依赖待决-1。
 

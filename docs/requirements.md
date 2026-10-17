@@ -101,7 +101,7 @@ agent（MCP，带    │   + LLM 增强（800ms 并行，第三路 BM25）→ RR
 
 ### FR-3 区分度反馈环〔M1，用户明确要求进 MVP〕
 
-- 入库时检测低区分度 chunk，两路信号、零 LLM 成本：向量拥挤度（新 chunk 与库内近邻的相似度分布，**近邻检索用 sqlite-vec topK 召回后精算，不做全量两两比较**——issue #32 P1-8）+ 词面通用度（token 平均 IDF，绝对阈值）。
+- 入库时检测低区分度 chunk，两路信号、零 LLM 成本：向量拥挤度（新 chunk 与库内近邻的相似度分布，入库单块走 **SQL 暴力扫描**（量小），批量重算走 numpy 矩阵乘——见 §5.4/风险表）+ 词面通用度（token 平均 IDF，绝对阈值）。
 - 自动兜底：LLM（内部网关）为低区分度 chunk 自动生成关键词 + 一句定位语，写入**独立的 `llm_keywords` 低权重列（0.5~1，进 FTS）**——只补 BM25 词面信号，非 Contextual Retrieval（后者重嵌入），表述如实。
 - 人工兜底：上传完成页展示**聚合质量报告**（"N 个 chunk 建议补充标注"），点开可补、可忽略——不逐 chunk 打断，不强制。
 - 用户标注落 `keywords`（仅人工词，×5）/`tags`（×8）列；**`keywords` 不混入 jieba 高频词**（高频词已在 content_seg，重复会被加权放大——issue #32 P1-3）。
@@ -133,7 +133,7 @@ agent（MCP，带    │   + LLM 增强（800ms 并行，第三路 BM25）→ RR
 ### FR-5 接口面〔M0 MCP，M1 页面〕
 
 - **MCP server**（FastMCP）：四个工具，工具描述按「写给 LLM 看」的纪律撰写（kotaemon DocSearchTool 样板）：
-  - `search(query, top_k≤20, datasets?, doc_filter?)`：完整检索配方 + 维度过滤，可限定知识库，返回带溯源字段的命中块；**top_k 服务端硬上限 20**（防一次拖库——issue #31 P1-8）；
+  - `search(query, top_k=8 ≤20, datasets?, doc_filter?)`：完整检索配方 + 维度过滤，可限定知识库，返回带溯源字段的命中块（**top_k 服务端硬上限 20**——防一次拖库）；
   - `fetch(chunk_id, window?)`：按 chunk_id 取上下文窗口（前后 N 个 chunk）——支持 agent「先搜后读」剧本；旧版本 tombstone chunk 返回替代提示（FR-1）；
   - `upload(upload_id, dataset, dimensions, doc_id?, title?)`：投摄取任务到指定知识库——**只收不透明 `upload_id`**（凭证由 `POST /api/uploads` 签发，**绑定 sub+org+服务身份**；FR-1 三步式；路径/URL 一律不接受——SSRF 与任意文件读取防线）；覆盖更新显式带 doc_id；返回 task_id/doc_id。**工具参数不含 org 与 filename**（org 来自 token claim；filename 以声明阶段为准）；
   - `list_documents(datasets?, active_status?)`：列出权限内文档（可按库）与状态（**四字段：`active_version/active_status/pending_version/pending_status`**——在用与处理中双态并列，「先看有什么再搜」剧本）。
@@ -229,7 +229,7 @@ agent（MCP，带    │   + LLM 增强（800ms 并行，第三路 BM25）→ RR
 | sqlite-vec 暴力扫描的规模边界 | 数十万 chunk 以上延迟劣化 | 一期目标 ~10 万 chunk 实测（NFR-2）；100 万为升级缝阈值；ACL 先过滤减扫描量；超限走 pgvector/milvus（repository 接口已预留） |
 | docling 系模型权重 license 未核实 | 商用合规 | POC 内用标注风险；商用前逐卡核实（bge 系 Apache-2.0 相对安全） |
 | 区分度检测误报与失真（issue #31 P2 修订） | 相对分位阈值（P25）恒标 ~25%；结果依赖摄取顺序 | 改**绝对阈值 + 分位下限组合**（真实语料校准）；近邻限定组织内且**仅在用版本**（tombstone 不参与，否则新旧互为拥挤近邻——#33 P1-10）；**规模比例 + 抽样重算**（detected_at_scale 标记，批量走 numpy 矩阵乘非 SQL 逐行）；报告页近邻展示过同一套 ACL 或只显示数值（防旁路泄露）；LLM 关键词独立低权重列标来源；口径如实（非 Contextual Retrieval） |
-| P95 延迟超标（无 GPU 同步链路：增强+嵌入+rerank） | 检索体验不可用 | NFR-8 全套（rerank 候选 32 / ONNX int8 / 条件触发增强 / 推理进线程池）；M1 实测基线，超标则砍增强、降候选、评估量化 |
+| P95 延迟超标（无 GPU 同步链路：增强+嵌入+rerank） | 检索体验不可用 | NFR-8 全套（rerank 候选 32 / ONNX int8 / **800ms 并行增强** / 推理进线程池 + 双降级开关）；M0b 压测与 M1 基线，超标则砍增强、降候选、评估量化 |
 | 老格式与编码（.doc/.xls/.ppt、GBK TXT） | 部分语料无法摄取 | M1 定策略：拒收提示转存（不引 LibreOffice 保零中间件）；TXT 编码探测转换进管线 |
 | 权限漂移（自建授权表与业务实际脱节，D16） | 调岗后用户仍可见旧维度文档 | 批量导出对账（季度）+ 审计回放兜底；高敏文档从严选维度；grant_sync 适配器留缝；生产前语义匹配维度切只读同步（D16） |
 | deepagents/内部网关接口变更 | MCP 接入面返工 | 检索 API 契约先稳（薄壳原则）；MCP 工具面四个、参数面窄 |
