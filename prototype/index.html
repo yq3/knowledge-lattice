@@ -458,9 +458,9 @@ const ORGS = [
     ],
     qflags: {
       "01J8A1": [
-        { id: "q1", reason: "vector_crowding", detail: "近邻相似度均值 0.86（阈值 0.82）",
+        { id: "q1", reason: "vector_crowding", detail: "近邻相似度均值 0.86（绝对阈值初值 0.82，待语料校准）",
           snippet: "具体操作步骤见本节后续说明，相关要求以主管税务机关解释为准。", auto: ["申报期限", "主管税务机关"] },
-        { id: "q2", reason: "low_idf", detail: "token 平均 IDF 低于语料 P25",
+        { id: "q2", reason: "low_idf", detail: "token 平均 IDF 低于绝对阈值（初值待校准）",
           snippet: "上述规定自发布之日起施行，此前规定与本规定不一致的，以本规定为准。", auto: ["生效日期", "新旧衔接"] },
         { id: "q3", reason: "both", detail: "近邻 0.84 / IDF P18",
           snippet: "注意事项：填表时请核对数据准确性，确保信息完整。", auto: [] },
@@ -470,7 +470,7 @@ const ORGS = [
           snippet: "See the relevant sections of this manual for further details and examples.", auto: ["arm's length", "documentation"] },
       ],
       "01J8A5": [
-        { id: "q5", reason: "low_idf", detail: "token 平均 IDF 低于语料 P25",
+        { id: "q5", reason: "low_idf", detail: "token 平均 IDF 低于绝对阈值（初值待校准）",
           snippet: "本摘要仅供参考，具体以正式文件为准。", auto: ["留抵退税"] },
         { id: "q6", reason: "vector_crowding", detail: "近邻相似度均值 0.83",
           snippet: "申请材料包括：申请表、营业执照复印件等。", auto: ["申请材料", "全额退还"] },
@@ -520,7 +520,7 @@ const ORGS = [
     ],
     qflags: {
       "01J8B1": [
-        { id: "fq1", reason: "low_idf", detail: "token 平均 IDF 低于语料 P25",
+        { id: "fq1", reason: "low_idf", detail: "token 平均 IDF 低于绝对阈值（初值待校准）",
           snippet: "其他未尽事宜参照公司相关财务制度执行。", auto: ["差旅报销"] },
       ],
     },

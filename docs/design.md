@@ -15,7 +15,7 @@
 | FR-2 检索 | SQLite 内双路（FTS5 + sqlite-vec）→ RRF → 进程内 rerank | §5.2 |
 | FR-3 区分度反馈环 | 摄取管线尾部 quality 阶段 + 质量报告接口 | §5.4 |
 | FR-4 维度权限 | 维度模型五表 + ACL 编译器（查询时展开，引擎内下推） | §4 / §5.1 |
-| FR-5 接口面 | FastMCP 三工具 + REST + 静态薄壳前端 | §6 |
+| FR-5 接口面 | FastMCP 四工具（search/upload/fetch/list_documents）+ REST + 静态薄壳前端 | §6 |
 | FR-6/7 治理与评测 | audit_events 触发器；评测脚本集（黄金集 + 门禁） | §4 / §9 |
 | NFR-1 零中间件 | 全部组件进程内/文件级，无外部常驻服务 | §2 |
 | NFR-5 演进缝 | repository 接口 + 配置级切换点清单 | §7 |
@@ -33,8 +33,9 @@
  ┌───────────────────────────────────────────────────────────┐
  │ knowledge-lattice 主进程（FastAPI，单进程）                    │
  │  · REST 控制面：upload / tasks / search / admin              │
- │  · FastMCP server：search / upload / list_documents         │
- │  · 检索管线（同步）：双路召回→RRF→rerank→维度 ACL 过滤→溯源返回  │
+ │  · FastMCP server：search / upload / fetch / list_documents │
+ │  · 检索管线（同步）：双路召回（ACL 引擎内下推）→RRF→ACL 断言      │
+ │ │    →rerank→返回前二次断言→溯源返回（P2-4 顺序）              │
  │  · 维度 ACL 编译器：用户 token → 维度授权 → SQL WHERE          │
  │  · 任务调度：写 tasks 表 + 唤醒 worker；审计写入                │
  └────────┬────────────────────────────────────┬──────────────┘
@@ -76,7 +77,7 @@ knowledge_lattice/
 │   ├── search.py           # POST /api/search（检索测试页用，支持库过滤）
 │   └── admin.py            # 维度/取值/用户/授权 CRUD
 ├── mcp/
-│   └── server.py           # FastMCP：三工具 + 鉴权中间件（60s 超时）
+│   └── server.py           # FastMCP：四工具（search/upload/fetch/list_documents）+ 鉴权中间件（60s 超时）
 ├── core/
 │   ├── ingest.py           # 摄取管线编排：parse→chunk→embed→index→quality
 │   ├── chunking.py         # 结构感知切分（docling 结构树 + 递归 token）
@@ -100,12 +101,12 @@ knowledge_lattice/
 │   └── vec.py              # sqlite-vec 虚表读写
 ├── domain/
 │   ├── models.py           # pydantic 实体
-│   └── auth.py             # token→user 解析（初版静态 token 表，预留网关 JWT）
+│   └── auth.py             # token→user 解析（SSO 验签 + JIT 建档；静态 token 仅开发/测试——D18；预留委托 token 校验）
 ├── worker/
 │   ├── runner.py           # 子进程入口：任务循环（租约认领/心跳/重试）
 │   └── ipc.py              # 与主进程的唤醒协议
 ├── eval/                   # M3：黄金集运行器 + Recall@k/MRR + ragas 接入
-└── web/                    # 前端薄壳（§5.6，原型见 prototype/）
+└── web/                    # 前端薄壳（§5.7，原型见 prototype/）
 ```
 
 分层纪律：`api/mcp` 只做协议转换；`core` 是纯业务编排（不碰 SQL 细节）；`store` 是唯一碰 SQL 的层；`adapters` 是全部外部依赖的收口（docling/模型/网关），每个 adapter 可独立替换——这是「可二改」（NFR-4）的结构保证。
@@ -160,7 +161,7 @@ CREATE TABLE users (                -- 全局账号（跨组织唯一）
   id            TEXT PRIMARY KEY,
   username      TEXT NOT NULL UNIQUE,
   display_name  TEXT,
-  token_hash    TEXT,               -- 初版静态 token（sha256）；预留网关 JWT 校验
+  token_hash    TEXT,               -- 静态 token（sha256），仅开发/测试与 CI（D18）；生产走 SSO/委托 token
   is_system_admin INTEGER NOT NULL DEFAULT 0,
   created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -204,7 +205,8 @@ CREATE TABLE documents (
   created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at     TIMESTAMP
 );
--- 重复检测键：同库同维度下同内容提示（含维度规范化串——P0-5，通用文档多值挂载见 document_dimensions）
+-- 重复检测：索引按 (dataset_id, content_hash) 粗筛；维度一致性由服务层比对 document_dimensions
+-- 后提示重复（不强制拦截——P0-5；通用文档多值挂载见 document_dimensions）
 CREATE INDEX idx_documents_hash ON documents(dataset_id, content_hash);
 
 CREATE TABLE document_dimensions (   -- 文档维度（**多值**，D19：通用文档可挂 region∈{CN,OS}；内容混杂仍拆分上传 D4）
@@ -338,7 +340,7 @@ CREATE TABLE audit_events (
 
 输入：`user_id` + 请求显式携带的组织上下文 `org_id`；输出：可下推进召回 SQL 的 WHERE 片段（**结构化 builder 生成 AST 再渲染 SQL，禁止字符串拼接**——issue #31 P0-2）。逻辑：
 
-1. **成员关系校验**（第 0 步）：查 `user_org_memberships`——非本组织成员（且非系统管理员）直接拒绝请求，不存在"默认可见"；
+1. **成员关系校验**（第 0 步）：查 `user_org_memberships`——非本组织成员直接拒绝请求（**系统管理员的豁免仅限管理端点**：建组织、指定管理员等；数据端点同样要求成员关系或临时授权——与"系统管理员无数据可见权"P1-2 一致）；
 2. 查该用户**在本组织**的 `user_dimension_grants`（join `dimensions` 按 org 过滤）得 `{dim_key: [values...]}`（查询时实时读取——人员变更即时生效，D6）；维度 key 集合取自该组织 `dimensions`（各组织维度体系不同，D7）；
 3. 对每个「**enabled 且 required**」的维度编译一个「文档取值集合 ∩ 用户授权集 ≠ ∅」条件（维度内 OR、维度间 AND，D19）；**无授权值的必选维度 → 整体不可见**（严格实现，D5）；可选维度不生成条件（空值即不过滤）；
 4. owner 兜底分支（owner 判定同样限本组织）。
@@ -513,7 +515,7 @@ parse（docling→统一块结构；扫描件路由 MinerU；mojibake 质量门�
 
 ### 6.3 与术语层（glossary-agent）的工具组集成（D17）
 
-- **消费侧形态**：deepagents 并挂两个 MCP server——本系统 `search` / `upload` / `list_documents` + glossary-agent 的 `lookup_terms`（与数据字典活查询）。职责边界：本系统只管文档知识，术语归一与黑话定义不在检索范围（agent 侧前置识别/lookup 处理后再调本系统检索）。
+- **消费侧形态**：deepagents 并挂两个 MCP server——本系统 `search` / `upload` / `fetch` / `list_documents` + glossary-agent 的 `lookup_terms`（与数据字典活查询）。职责边界：本系统只管文档知识，术语归一与黑话定义不在检索范围（agent 侧前置识别/lookup 处理后再调本系统检索）。
 - **演进缝（不进 MVP）**：如需单端点，本系统可加载术语库**运行时投影**（Git YAML → AC 自动机 + FTS 内存索引），以 `lookup_terms` 工具统一暴露——真值源与 PR 治理仍在术语库 Git 仓，本系统只持可刷新投影（`adapters/` 预留 `glossary_loader.py` 位）。
 - **明确不做**：表名字段名/数据字典类查询（真值在源系统、高频变）由术语侧 MCP 活查询直连，本系统不镜像这类数据；L0 常驻核心术语表是术语库构建期导出物（进 agent system prompt），与本系统无关。
 
