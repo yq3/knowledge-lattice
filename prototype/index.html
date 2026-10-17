@@ -558,11 +558,12 @@ function statusBadge(st) {
   const map = { indexed: "b-ok", done: "b-ok", failed: "b-fail", embedded: "b-parsing", chunked: "b-parsing", parsing: "b-parsing", uploaded: "b-muted", pending: "b-muted", running: "b-parsing" };
   return `<span class="badge ${st} ${map[st] || ""}">${st}</span>`;
 }
-/* AND 语义可见性（按当前组织的维度体系；只校验「必选」维度——可选维度空值不参与过滤，D5 修订） */
+/* AND 语义可见性（D5+D19：维度间 AND、维度内 OR——文档多值取值与用户授权求非空交集；只校验必选维度） */
 function canSee(m, dims) {
   for (const [d, def] of Object.entries(org().dims)) {
     if (!def.required) continue;
-    if (!(m.grants[d] || []).includes(dims[d])) return false;
+    const docVals = Array.isArray(dims[d]) ? dims[d] : [dims[d]];
+    if (!docVals.some(v => (m.grants[d] || []).includes(v))) return false;
   }
   return true;
 }
