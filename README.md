@@ -17,4 +17,4 @@
 
 ## 项目状态
 
-POC 阶段（lab 仓库先行，验证后拆仓演进）。当前：需求 v0.2 / 设计 v0.2——已吸收 [issue #31](https://github.com/yq3/lab/issues/31) 评审（P0×5 实现缺陷修复、权限真值源模型、SLO 与备份补齐、里程碑重排），**待决-2（SSO 协议）与待决-3（agent 委托 token）随 M0 并行敲定**。
+POC 阶段（lab 仓库先行，验证后拆仓演进）。当前：需求 v0.4 / 设计 v0.4 **（冻结版）**——历轮评审 [#31](https://github.com/yq3/lab/issues/31) → [#32](https://github.com/yq3/lab/issues/32) → [#33](https://github.com/yq3/lab/issues/33)（收口）全部吸收，决策 D1~D22。**设计冻结：此后仅在决策变化时修改文档，实现问题走测试用例与 issue**；下一步 M0a（骨架周）开工，待决-2（SSO 协议）与待决-3（委托 token / 可信子系统）随 M0a 并行敲定。

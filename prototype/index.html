@@ -159,8 +159,8 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 0.86rem; backgrou
 .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 0.76rem; padding: 1px 8px; white-space: nowrap; }
 .badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; }
 .badge.uploaded::before, .badge.pending::before { background: var(--ink-3); }
-.badge.parsing::before, .badge.chunked::before, .badge.embedded::before, .badge.leased::before, .badge.running::before { background: var(--amber2); animation: pulse 1.2s infinite; }
-.badge.indexed::before, .badge.done::before { background: var(--ok); }
+.badge.parsing::before, .badge.chunked::before, .badge.searchable_lexical::before, .badge.leased::before, .badge.running::before { background: var(--amber2); animation: pulse 1.2s infinite; }
+.badge.searchable_full::before, .badge.done::before { background: var(--ok); }
 .badge.failed::before { background: var(--danger); }
 .badge.b-parsing { color: var(--amber); background: var(--amber2, #F6EEDD); background: #F6EEDD; }
 .badge.b-ok { color: var(--ok); background: var(--ok-bg); }
@@ -324,7 +324,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 0.86rem; backgrou
     <div class="dim-picker" id="uploadDims"></div>
     <div class="dropzone">
       <strong>拖拽文件到此处，或点击选择</strong>
-      <div class="hint">支持 docx / xlsx / pptx / pdf / txt · 每个维度仅可选一个值 · 必选项未选齐时无法上传</div>
+      <div class="hint">支持 docx / xlsx / pptx / pdf / txt · 生产环境 agent 上传走凭证制（POST /api/uploads 三步）· 通用文档同一维度可挂多个值（D19，原型演示单值）· 必选项未选齐时无法上传</div>
     </div>
     <div style="display:flex;gap:10px;align-items:center">
       <button class="btn" id="btnUpload" disabled>上传文档</button>
@@ -446,15 +446,16 @@ const ORGS = [
     ],
     docs: [
       { id: "01J8A1", ds: "ds:vat", title: "2026年Q3 中国区增值税申报操作指南.docx", dims: { region: "CN", tax_type: "VAT" },
-        status: "indexed", chunks: 143, flags: 3, owner: "张会计" },
+        status: "searchable_full", chunks: 143, flags: 3, owner: "张会计",
+        pending: { version: 2, status: "searchable_lexical" } },  // 版本在用制：在用 v1 · 处理中 v2
       { id: "01J8A2", ds: "ds:intl", title: "Overseas Transfer Pricing Manual v2.pdf", dims: { region: "OS", tax_type: "VAT" },
-        status: "indexed", chunks: 96, flags: 1, owner: "李顾问" },
+        status: "searchable_full", chunks: 96, flags: 1, owner: "李顾问" },
       { id: "01J8A3", ds: "ds:vat", title: "企业所得税汇算清缴常见问题（2026版）.pdf", dims: { region: "CN", tax_type: "CIT" },
-        status: "embedded", chunks: 58, flags: 0, owner: "张会计" },
+        status: "searchable_lexical", chunks: 58, flags: 0, owner: "张会计" },
       { id: "01J8A4", ds: "ds:intl", title: "APAC GST Compliance Checklist.xlsx", dims: { region: "OS", tax_type: "GST" },
         status: "chunked", chunks: 12, flags: 0, owner: "李顾问" },
-      { id: "01J8A5", ds: "ds:vat", title: "留抵退税政策要点摘要.txt", dims: { region: "CN", tax_type: "VAT" },
-        status: "indexed", chunks: 7, flags: 2, owner: "张会计" },
+      { id: "01J8A5", ds: "ds:vat", title: "留抵退税政策要点摘要.txt", dims: { region: ["CN", "OS"], tax_type: "VAT" }  // D19 多值：通用政策双区域可见,
+        status: "searchable_full", chunks: 7, flags: 2, owner: "张会计" },
     ],
     qflags: {
       "01J8A1": [
@@ -512,9 +513,9 @@ const ORGS = [
     ],
     docs: [
       { id: "01J8B1", ds: "ds:exp", title: "差旅费报销管理办法（2026修订）.docx", dims: { region: "CN", biz_line: "TE" },
-        status: "indexed", chunks: 64, flags: 1, owner: "赵审核" },
+        status: "searchable_full", chunks: 64, flags: 1, owner: "赵审核" },
       { id: "01J8B2", ds: "ds:exp", title: "海外子公司总账月结流程.pdf", dims: { region: "OS", biz_line: "GL" },
-        status: "indexed", chunks: 38, flags: 0, owner: "赵审核" },
+        status: "searchable_full", chunks: 38, flags: 0, owner: "赵审核" },
       { id: "01J8B3", ds: "ds:exp", title: "应付账款对账操作手册.xlsx", dims: { region: "CN", biz_line: "AP" },
         status: "parsing", chunks: 0, flags: 0, owner: "陈出纳" },
     ],
@@ -555,7 +556,7 @@ function cellHTML(dim, val, { label = true } = {}) {
 }
 function dsName(dsId) { return org().datasets.find(d => d.id === dsId)?.name || dsId; }
 function statusBadge(st) {
-  const map = { indexed: "b-ok", done: "b-ok", failed: "b-fail", embedded: "b-parsing", chunked: "b-parsing", parsing: "b-parsing", uploaded: "b-muted", pending: "b-muted", running: "b-parsing" };
+  const map = { searchable_full: "b-ok", done: "b-ok", failed: "b-fail", searchable_lexical: "b-parsing", chunked: "b-parsing", parsing: "b-parsing", uploaded: "b-muted", pending: "b-muted", running: "b-parsing" };
   return `<span class="badge ${st} ${map[st] || ""}">${st}</span>`;
 }
 /* AND 语义可见性（D5+D19：维度间 AND、维度内 OR——文档多值取值与用户授权求非空交集；只校验必选维度） */
@@ -649,14 +650,14 @@ $("#btnUpload").addEventListener("click", () => {
   });
   renderDocs(); $("#uploadHint").textContent = "已加入队列（原型演示，文件为虚拟）";
 });
-const FLOW = ["uploaded", "parsing", "chunked", "embedded", "indexed"];
+const FLOW = ["uploaded", "parsing", "chunked", "searchable_lexical", "searchable_full"];
 $("#btnAdvance").addEventListener("click", () => {
   const d = org().docs.find(x => FLOW.indexOf(x.status) >= 0 && x.status !== "indexed");
   if (!d) { alert("当前组织全部文档已索引"); return; }
   d.status = FLOW[FLOW.indexOf(d.status) + 1];
   if (d.status === "chunked") d.chunks = Math.max(d.chunks, 3);
-  if (d.status === "embedded") d.chunks = Math.max(d.chunks, 11);
-  if (d.status === "indexed") { d.chunks = Math.max(d.chunks, 17); d.flags = 2;
+  if (d.status === "searchable_lexical") d.chunks = Math.max(d.chunks, 11);
+  if (d.status === "searchable_full") { d.chunks = Math.max(d.chunks, 17); d.flags = 2;
     org().qflags[d.id] = [{ id: "qn" + d.id, reason: "vector_crowding", detail: "近邻相似度均值 0.84",
       snippet: "（演示数据）此段内容与库内多个无关 chunk 相似。", auto: ["演示关键词"] }]; }
   renderDocs();
@@ -667,7 +668,7 @@ function renderDocs() {
       <td><div>${esc(d.title)}</div><div class="muted mono" style="font-size:0.72rem">${d.id} · ${d.owner}</div></td>
       <td><span class="ds-pill">${esc(dsName(d.ds))}</span></td>
       <td>${Object.entries(d.dims).map(([k, v]) => cellHTML(k, v)).join(" ")}</td>
-      <td>${statusBadge(d.status)}</td>
+      <td>${statusBadge(d.status)}${d.pending ? `<div class="muted mono" style="font-size:0.68rem">↑在用 · 处理中 v${d.pending.version}（${d.pending.status}）</div>` : ""}</td>`
       <td class="mono">${d.chunks || "—"}</td>
       <td>${d.flags ? `<button class="btn ghost small" data-qf="${d.id}" style="color:var(--amber);border-color:var(--amber)">${d.flags} 待处理</button>` : '<span class="muted">—</span>'}</td>
       <td>${d.owner}</td>
