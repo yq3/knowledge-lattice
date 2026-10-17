@@ -558,9 +558,10 @@ function statusBadge(st) {
   const map = { indexed: "b-ok", done: "b-ok", failed: "b-fail", embedded: "b-parsing", chunked: "b-parsing", parsing: "b-parsing", uploaded: "b-muted", pending: "b-muted", running: "b-parsing" };
   return `<span class="badge ${st} ${map[st] || ""}">${st}</span>`;
 }
-/* AND 语义可见性（按当前组织的维度体系） */
+/* AND 语义可见性（按当前组织的维度体系；只校验「必选」维度——可选维度空值不参与过滤，D5 修订） */
 function canSee(m, dims) {
-  for (const d of Object.keys(org().dims)) {
+  for (const [d, def] of Object.entries(org().dims)) {
+    if (!def.required) continue;
     if (!(m.grants[d] || []).includes(dims[d])) return false;
   }
   return true;

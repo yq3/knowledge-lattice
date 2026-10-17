@@ -1,8 +1,8 @@
 # knowledge-lattice 方案设计
 
-> 版本：v0.1（对应需求文档 v0.1）
-> 日期：2026-10-16
-> 前置阅读：[requirements.md](./requirements.md)（本文所有 FR/NFR/D 编号均指向需求文档）
+> 版本：v0.2（2026-10-17 评审修订：吸收 [issue #31](https://github.com/yq3/lab/issues/31)——P0×5 实现缺陷修复【向量下推/ACL 括号化/FTS5 重做/摄取阶段拆分/维度多值】+ P1 权限安全与性能运维 + P2 一致性修正）
+> 日期：2026-10-16 初稿，2026-10-17 修订
+> 前置阅读：[requirements.md](./requirements.md)（本文所有 FR/NFR/D 编号均指向需求文档 v0.2）
 > 调研依据：[enterprise-rag 调研](../../research/enterprise-rag/)，参考架构基线 `blog/10-build-kb-for-agent.md`
 
 ---
@@ -19,6 +19,7 @@
 | FR-6/7 治理与评测 | audit_events 触发器；评测脚本集（黄金集 + 门禁） | §4 / §9 |
 | NFR-1 零中间件 | 全部组件进程内/文件级，无外部常驻服务 | §2 |
 | NFR-5 演进缝 | repository 接口 + 配置级切换点清单 | §7 |
+| **issue #31 评审修订（v0.2）** | P0 五项修复 + 权限安全 + 性能运维 | §4 / §5.1~5.3 / §5.6 / §8~10 |
 
 ## 2. 进程与部署架构
 
@@ -53,11 +54,13 @@
  └───────────┘ └────────────┘
 ```
 
-**部署形态（NFR-1）**：`knowledge-lattice` 主进程 ×1（内含 worker 子进程）+ `lattice.db` ×1 + `data/objects/` 目录 ×1。无消息队列、无独立向量库、无嵌入服务容器——它们分别是 tasks 表轮询、sqlite-vec 虚表、进程内 bge-m3。worker 经 IPC 被唤醒 + 兜底轮询（anything-llm 的最小进程隔离样板：OOM 只杀 worker）。
+**部署形态（NFR-1/9）**：`knowledge-lattice` 主进程 ×1（内含 worker 子进程）+ `lattice.db` ×1 + `data/objects/` 目录 ×1。无消息队列、无独立向量库、无嵌入服务容器——它们分别是 tasks 表轮询、**chunks.embedding BLOB 列 + sqlite-vec 距离函数**、进程内 bge-m3。worker 经 IPC 被唤醒 + 兜底轮询（anything-llm 的最小进程隔离样板：OOM 只杀 worker）。**资源预算**：主进程与 worker 各加载一份模型（嵌入+reranker+docling），峰值 6~8 GB——最低规格 16 GB RAM / 8 核；**CPU 推理全部进线程/进程池**，不阻塞事件循环。
 
-**并发模型**：SQLite WAL 模式（多读单写）。检索（读）不受摄取（写）阻塞；写串行由 tasks 表单消费者保证。数百用户的检索并发 = 只读连接池，瓶颈预估在 rerank 计算（§5.2 缓解）。
+**并发模型（NFR-9）**：SQLite WAL 模式（多读单写）。检索（读）不受摄取（写）阻塞；写竞争治理：`busy_timeout` + worker 短事务分批提交 + 审计异步批量写（竞争激烈时拆独立 `audit.db`）。数百用户检索并发的实际瓶颈在 rerank 计算（§5.2 缓解：候选 32 / ONNX int8 / 信号量）。
 
-**升级缝（NFR-5 落点）**：存储（repository 接口后换 pgvector/milvus）、嵌入与重排（进程内 → TEI 容器，接口不变）、解析（docling → MinerU api_server，路由表驱动）、多组织（org_id 已贯穿全部表，默认常量 `org:default`）。
+**备份恢复（NFR-10）**：SQLite `VACUUM INTO` / online backup 定时快照 + `data/objects/` 一并备份；RPO ≤ 24h / RTO ≤ 4h（POC 目标）；恢复演练进 runbook。
+
+**升级缝（NFR-5 落点）**：存储（repository 接口后换 pgvector/milvus，触发阈值为 100 万 chunk 或 P95 超标——NFR-2）、嵌入与重排（进程内 → TEI 容器，接口不变）、解析（docling → MinerU api_server，路由表驱动）、授权同步（grant_sync 适配器启用只读同步维度——D16）。
 
 ## 3. 代码模块划分
 
@@ -130,22 +133,24 @@ CREATE TABLE datasets (             -- 知识库：组织内的业务分组/管�
 );
 
 CREATE TABLE dimensions (            -- 维度定义（配置页 CRUD 对象，D9）
-  id          TEXT PRIMARY KEY,      -- ULID
-  org_id      TEXT NOT NULL REFERENCES orgs(id),
-  key         TEXT NOT NULL,         -- region / tax_type
-  name        TEXT NOT NULL,         -- 作业区域 / 税种
-  required    INTEGER NOT NULL DEFAULT 1,  -- 必选：上传时强制选值（D5）
-  enabled     INTEGER NOT NULL DEFAULT 1,
-  created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at  TIMESTAMP,
+  id            TEXT PRIMARY KEY,    -- ULID
+  org_id        TEXT NOT NULL REFERENCES orgs(id),
+  key           TEXT NOT NULL,       -- region / tax_type
+  name          TEXT NOT NULL,       -- 作业区域 / 税种
+  required      INTEGER NOT NULL DEFAULT 1,  -- 必选：上传时强制选值（D5）；编译器只对「启用+必选」生成条件
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  grant_source  TEXT NOT NULL DEFAULT 'local',  -- 授权真值源：local | sync:<system>（D16——同步维度管理页只读）
+  value_source  TEXT NOT NULL DEFAULT 'local',  -- 取值枚举是否来自企业主数据
+  created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    TIMESTAMP,
   UNIQUE(org_id, key)
 );
 
-CREATE TABLE dimension_values (      -- 维度取值枚举
+CREATE TABLE dimension_values (      -- 维度取值枚举（value 即稳定编码——企业主数据码，label 可改不影响引用）
   id           TEXT PRIMARY KEY,
   dimension_id TEXT NOT NULL REFERENCES dimensions(id) ON DELETE CASCADE,
-  value        TEXT NOT NULL,        -- CN / OVERSEAS / VAT / CIT
-  label        TEXT NOT NULL,        -- 中国区 / 海外区 / 增值税 / 企业所得税
+  value        TEXT NOT NULL,        -- CN / OVERSEAS / VAT / CIT（ISO 国家码/税种码，不用中文名）
+  label        TEXT NOT NULL,        -- 中国区 / 海外区（显示名，可改）
   sort_order   INTEGER NOT NULL DEFAULT 0,
   UNIQUE(dimension_id, value)
 );
@@ -167,39 +172,46 @@ CREATE TABLE user_org_memberships ( -- 用户 × 组织 多对多，角色按组
   PRIMARY KEY (user_id, org_id)
 );
 
-CREATE TABLE user_dimension_grants ( -- 授权作用域 = 用户 × 组织（D7）：经 dimension 隐式挂组织
-  user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  dimension_id TEXT NOT NULL REFERENCES dimensions(id) ON DELETE CASCADE,
-  value        TEXT NOT NULL,        -- 同一用户在不同组织（不同维度体系）的授权互不相干
-  granted_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (user_id, dimension_id, value)
+CREATE TABLE user_dimension_grants ( -- 授权作用域 = 用户 × 组织（经 dimension 隐式挂组织，D7）
+  user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  dimension_id  TEXT NOT NULL REFERENCES dimensions(id) ON DELETE CASCADE,
+  value_id      TEXT NOT NULL REFERENCES dimension_values(id) ON DELETE CASCADE,  -- 引用值 id，改名/删除不悬空（issue #31 P1-4）
+  source        TEXT NOT NULL DEFAULT 'local',   -- local | sync:<system>（D16 真值源标记）
+  synced_at     TIMESTAMP,                        -- 同步维度最近刷新时间；失败保留旧快照并告警
+  granted_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, dimension_id, value_id)
 );
+CREATE INDEX idx_grants_dim ON user_dimension_grants(dimension_id);
+-- 注：移出组织的级联由服务层执行（删除 memberships 时同步删除该组织全部维度下的该用户授权——issue #31 P1-3）；
+-- 「文档 org = 库 org = 维度 org」一致性由服务层写入校验 + 触发器断言。
 
 -- ============ 文档（FR-1） ============
 CREATE TABLE documents (
-  id             TEXT PRIMARY KEY,   -- ULID
+  id             TEXT PRIMARY KEY,   -- ULID（覆盖更新显式携带——文档身份唯一锚点，issue #31 P2-6）
   org_id         TEXT NOT NULL REFERENCES orgs(id),
-  dataset_id     TEXT NOT NULL REFERENCES datasets(id),  -- 归属知识库（D15）
+  dataset_id     TEXT NOT NULL REFERENCES datasets(id),  -- 归属知识库（D15）；org 一致性由触发器断言
   title          TEXT NOT NULL,
-  source_uri     TEXT,               -- 上传来源（user:<id> / agent:<name>）
-  content_hash   TEXT NOT NULL,      -- 内容哈希去重 + 更新识别
+  source_uri     TEXT,               -- 上传来源（user:<id> / agent:<id>——agent 代传内容标来源，随检索返回）
+  content_hash   TEXT NOT NULL,      -- 内容哈希（重复**提示**，不强制拦截——P0-5）
   mime_type      TEXT NOT NULL,
   page_count     INTEGER,
   parser         TEXT NOT NULL,      -- docling | mineru
-  status         TEXT NOT NULL,      -- uploaded|parsing|chunked|embedded|indexed|failed
-  owner_user_id  TEXT NOT NULL REFERENCES users(id),  -- owner 恒可见（FR-4 兜底）
+  version        INTEGER NOT NULL DEFAULT 1,  -- 覆盖更新递增；旧版本 chunk 置 tombstone（P1-9）
+  status         TEXT NOT NULL,      -- uploaded|parsing|chunked|searchable_lexical|searchable_full|failed
+  owner_user_id  TEXT NOT NULL REFERENCES users(id),  -- owner 恒可见（FR-4 兜底，限本组织）
   raw_object_key TEXT NOT NULL,      -- 对象目录键（canonical 真相锚点）
   error          TEXT,
   created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at     TIMESTAMP
 );
-CREATE INDEX idx_documents_hash ON documents(org_id, content_hash);
+-- 重复检测键：同库同维度下同内容提示（含维度规范化串——P0-5，通用文档多值挂载见 document_dimensions）
+CREATE INDEX idx_documents_hash ON documents(dataset_id, content_hash);
 
-CREATE TABLE document_dimensions (   -- 文档维度（单值 per dimension，D4/D5）
+CREATE TABLE document_dimensions (   -- 文档维度（**多值**，D19：通用文档可挂 region∈{CN,OS}；内容混杂仍拆分上传 D4）
   doc_id       TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
   dimension_id TEXT NOT NULL REFERENCES dimensions(id) ON DELETE CASCADE,
-  value        TEXT NOT NULL,
-  PRIMARY KEY (doc_id, dimension_id)
+  value_id     TEXT NOT NULL REFERENCES dimension_values(id) ON DELETE CASCADE,
+  PRIMARY KEY (doc_id, dimension_id, value_id)
 );
 
 -- 预留不启用（D 决策：user 级临时共享，与维度过滤 OR 合并）
@@ -214,39 +226,57 @@ CREATE TABLE acl_entries (
   UNIQUE(doc_id, principal_type, principal_id, permission)
 );
 
--- ============ 块与索引（FR-1/2/3） ============
+-- ============ 块与索引（FR-1/2/3，P0-1/P0-3 重做） ============
 CREATE TABLE chunks (
-  id            TEXT PRIMARY KEY,    -- ULID（引用溯源的确定性锚点）
+  rid           INTEGER PRIMARY KEY, -- 显式整数主键（外部内容 FTS 以它关联，VACUUM 后稳定——P0-3a）
+  id            TEXT NOT NULL UNIQUE, -- ULID（引用溯源锚点；确定性 ID 方案评估中：hash(doc,version,seq)——P1-9）
   doc_id        TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
   seq           INTEGER NOT NULL,    -- 文档内序号
-  content       TEXT NOT NULL,       -- 正文原文（rerank 输入口径）
+  version       INTEGER NOT NULL DEFAULT 1,      -- 所属文档版本（覆盖更新新版本原子替换，旧版本置 tombstone）
+  tombstone     INTEGER NOT NULL DEFAULT 0,      -- 旧版本标记：可查、fetch 返回"已被新版本替代"
+  content       TEXT NOT NULL,       -- 正文原文（**不进 FTS**——rerank 专用输入口径）
+  content_seg   TEXT NOT NULL DEFAULT '',  -- jieba 分词后的正文（空格连接，进 FTS 权重 1——P0-3b）
   token_count   INTEGER,
   heading_path  TEXT,                -- 结构感知切分的标题层级
   page_no       INTEGER,
-  sheet_name    TEXT,                -- Excel 切分专用
+  sheet_name    TEXT,                -- Excel 切分专用（行块 chunk 重复表头）
   bbox_json     TEXT,
-  keywords      TEXT NOT NULL DEFAULT '',  -- jieba 预分词 + 标注词（空格连接，进 FTS5）
-  tags          TEXT NOT NULL DEFAULT '',  -- 人工/LLM 标注标签（加权更高）
-  embed_model   TEXT NOT NULL,       -- 钉版本：bge-m3@<rev>（D12）
-  dims_json     TEXT NOT NULL,       -- 文档维度冗余投影 {"region":"CN","tax_type":"VAT"}
+  keywords      TEXT NOT NULL DEFAULT '',  -- jieba 高频词 + 人工标注（FTS 权重 5）
+  llm_keywords  TEXT NOT NULL DEFAULT '',  -- LLM 生成的定位语关键词（独立低权重列，标来源——issue #31 P2）
+  tags          TEXT NOT NULL DEFAULT '',  -- 人工标签（FTS 权重 8）
+  embedding     BLOB,                -- 向量直接存 BLOB 列（P0-1：不做 vec0 虚表 KNN——在 ACL 过滤后的行集上用
+                                     --   vec_distance_cosine() 算距离；NULL = 嵌入未就绪，检索退化 BM25 单路）
+  embed_model   TEXT,                -- 钉版本：bge-m3@<rev>（D12）；NULL 表示未嵌入
+  dims_json     TEXT NOT NULL,       -- 文档维度冗余投影（多值数组化）{"region":["CN","OS"],"tax_type":["VAT"]}
   content_sha   TEXT,                -- 区分度检测缓存（内容指纹，重检跳过）
   created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX idx_chunks_doc ON chunks(doc_id, seq);
+CREATE INDEX idx_chunks_vec_pending ON chunks(doc_id) WHERE embedding IS NULL;  -- useful-early：待嵌入清单
 
--- FTS5：列权重体现 keywords/tags 的检索加权（FR-2/3）
---   bm25() 权重：content 1.0 / keywords 5.0 / tags 8.0（ragflow important_kwd×5 模式）
+-- FTS5（P0-3 重做）：
+--   · 列分权：content_seg 1.0 / keywords 5.0 / tags 8.0（bm25() 列权重）；llm_keywords 不进 FTS 索引或权重 0.5
+--   · 外部内容表 + 三个同步触发器（INSERT/UPDATE/DELETE），覆盖替换后无幽灵命中——P0-3c
+--   · 查询侧：query 先 jieba 切分，每 token 双引号转义后拼 "tok1" OR "tok2"——防 FTS5 语法注入——P0-3c
 CREATE VIRTUAL TABLE chunks_fts USING fts5(
-  content, keywords, tags,
-  content='chunks', content_rowid='rowid', tokenize='unicode61'
+  content_seg, keywords, tags,
+  content='chunks', content_rowid='rid', tokenize='unicode61'
 );
--- 注：写入前由 tokenizer.py 以 jieba 预分词生成 keywords（ES 无服务端中文分词的同构方案）
-
--- sqlite-vec 虚表（暴力扫描，十万级边界由 NFR-2 风险项跟踪）
-CREATE VIRTUAL TABLE vec_chunks USING vec0(
-  chunk_id TEXT PRIMARY KEY,
-  embedding float[1024]              -- bge-m3 输出维度
-);
+CREATE TRIGGER chunks_ai AFTER INSERT ON chunks BEGIN
+  INSERT INTO chunks_fts(rid, content_seg, keywords, tags)
+  VALUES (new.rid, new.content_seg, new.keywords, new.tags);
+END;
+CREATE TRIGGER chunks_ad AFTER DELETE ON chunks BEGIN
+  INSERT INTO chunks_fts(chunks_fts, rid, content_seg, keywords, tags)
+  VALUES ('delete', old.rid, old.content_seg, old.keywords, old.tags);
+END;
+CREATE TRIGGER chunks_au AFTER UPDATE OF content_seg, keywords, tags ON chunks BEGIN
+  INSERT INTO chunks_fts(chunks_fts, rid, content_seg, keywords, tags)
+  VALUES ('delete', old.rid, old.content_seg, old.keywords, old.tags);
+  INSERT INTO chunks_fts(rid, content_seg, keywords, tags)
+  VALUES (new.rid, new.content_seg, new.keywords, new.tags);
+END;
+-- 注：无 vec0 虚表——向量即 chunks.embedding BLOB；容量与量化（int8/bit）见 NFR-2/3，升级缝见 §7。
 
 -- ============ 质量反馈环（FR-3） ============
 CREATE TABLE quality_flags (
@@ -292,101 +322,110 @@ CREATE TABLE audit_events (
   detail_json TEXT,                  -- 查询词、返回的 chunk_id 列表（查询级审计）
   created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
--- append-only 触发器（禁 UPDATE/DELETE/TRUNCATE）与定长清理，上线时补齐
+-- append-only 触发器（禁 UPDATE/DELETE/TRUNCATE）随 M0 schema 一并落地；防篡改升级 = 哈希链（每条含上一条哈希，链头定期锚定外部——issue #31 P1-10，M2 按需）
 ```
 
-设计说明：
+设计说明（v0.2 修订）：
 
-- **组织与库的隔离纪律**：一切检索/列表 SQL 的第一条件是 `org_id = :user_org`（跨组织零可见），库过滤（`dataset_id IN (...)`）是组织内的可选收窄；维度授权与维度定义都在组织作用域内解析。
-- **维度冗余的取舍**：`chunks.dims_json` 是 `document_dimensions` 的投影，检索 SQL 先按 JSON 解析编译成常量条件（§5.1），避免热路径多表 JOIN；文档维度变更时由服务层同步刷投影（UPDATE，不重嵌——D6）。
-- **FTS5 中文**：`unicode61` 分词器只做兜底，真正的中文匹配依赖写入时的 jieba 预分词进 `keywords` 列（中英混排词以空格连接，英文词原样保留——M1 实测验证）。
-- **无独立 vector 表外键**：`vec_chunks.chunk_id` 与 `chunks.id` 逻辑关联，删除文档时由 repo 层两段式清理（先 chunks 后 vec，同事务）。
+- **组织与库的隔离纪律**：一切检索/列表 SQL 的第一条件是 `org_id = :org`（跨组织零可见，owner 判定同样限本组织）；库过滤（`dataset_id IN (...)`）是组织内的可选收窄；维度授权与维度定义都在组织作用域内解析。
+- **维度冗余的取舍**：`chunks.dims_json` 是 `document_dimensions` 的投影（多值数组），检索 SQL 按 JSON 解析编译成常量条件（§5.1），避免热路径多表 JOIN；文档维度变更时由服务层同步刷投影（UPDATE，不重嵌——D6）。
+- **向量存 BLOB 不用 vec0**（P0-1）：vec0 的 KNN 在虚拟表内部取 top-k 后才能 JOIN 过滤，等于 post-trim（授权窄的用户召回塌陷）；BLOB + `vec_distance_cosine()` 在 ACL 过滤后的行集上算距离，"先过滤后扫描"反而更快（扫描量 = 用户可见量）。
+- **FTS5 中文**：`unicode61` 只做兜底分词；正文经 jieba 预分词进 `content_seg`（权重 1），人工词 `keywords`（5）/`tags`（8）独立成列保持加权语义不失真；查询侧同词典切分 + token 双引号转义。
 
 ## 5. 关键设计
 
 ### 5.1 维度 ACL 编译器（core/acl.py）
 
-输入：`user_id` + 请求携带的组织上下文 `org_id`；输出：可下推进召回 SQL 的 WHERE 片段。逻辑：
+输入：`user_id` + 请求显式携带的组织上下文 `org_id`；输出：可下推进召回 SQL 的 WHERE 片段（**结构化 builder 生成 AST 再渲染 SQL，禁止字符串拼接**——issue #31 P0-2）。逻辑：
 
 1. **成员关系校验**（第 0 步）：查 `user_org_memberships`——非本组织成员（且非系统管理员）直接拒绝请求，不存在"默认可见"；
-2. 组织隔离：`d.org_id = :org_id`（跨组织零可见，含 owner 判定）；
-3. 查该用户**在本组织**的 `user_dimension_grants`（join `dimensions` 按 org 过滤）得 `{dim_key: [values...]}`（查询时实时读取——人员变更即时生效，D6）；维度 key 集合取自该组织 `dimensions`（各组织维度体系不同，D7）；
-4. 对每个 `enabled` 维度编译一个「文档该维度值 ∈ 用户授权集」的条件；**无授权值的维度 → 整体不可见**（AND 语义的严格实现，D5）；
-5. owner 兜底以 `OR d.owner_user_id = :uid` 合并（owner 判定同样限定本组织）。
+2. 查该用户**在本组织**的 `user_dimension_grants`（join `dimensions` 按 org 过滤）得 `{dim_key: [values...]}`（查询时实时读取——人员变更即时生效，D6）；维度 key 集合取自该组织 `dimensions`（各组织维度体系不同，D7）；
+3. 对每个「**enabled 且 required**」的维度编译一个「文档取值集合 ∩ 用户授权集 ≠ ∅」条件（维度内 OR、维度间 AND，D19）；**无授权值的必选维度 → 整体不可见**（严格实现，D5）；可选维度不生成条件（空值即不过滤）；
+4. owner 兜底分支（owner 判定同样限本组织）。
 
-编译产物（示意，语句由 repo 层拼进召回 SQL，不是应用层 post-trim）：
+编译产物（示意——**ACL 表达式整体加括号后，org / dataset / doc_filter 等外层约束一律置于最外层 AND**，P0-2）：
 
 ```sql
--- 组织 org:tax 内，用户仅有 region=[CN, OVERSEAS]、tax_type=[VAT]；两维度均必选
+-- 组织 org:tax 内，用户 region=[CN, OVERSEAS]、tax_type=[VAT]；两维度均必选；文档维度多值（D19）
 SELECT c.* FROM chunks c JOIN documents d ON d.id = c.doc_id
-WHERE d.org_id = 'org:tax'
-  AND (
-    json_extract(c.dims_json, '$.region') IN ('CN', 'OVERSEAS')
-    AND json_extract(c.dims_json, '$.tax_type') IN ('VAT')
-  ) OR (d.org_id = 'org:tax' AND d.owner_user_id = :uid)
--- 可选的库过滤（D15）：AND d.dataset_id IN ('ds:vat', 'ds:intl')
--- 无授权维度（如 tax_type=[]）编译为 FALSE，整个 AND 链短路 → 全库不可见
+WHERE (                                          -- ← 整个 ACL 表达式一组括号
+        ( EXISTS(SELECT 1 FROM json_each(c.dims_json,'$.region')   je WHERE je.value IN ('CN','OVERSEAS'))
+      AND EXISTS(SELECT 1 FROM json_each(c.dims_json,'$.tax_type') je WHERE je.value IN ('VAT')) )
+      OR d.owner_user_id = :uid                   -- owner 兜底（限本组织，由下方 org 条件约束）
+      )
+  AND d.org_id = 'org:tax'                       -- ← 外层约束在括号外，作用于全部分支
+  AND d.dataset_id IN ('ds:vat','ds:intl')        -- ← 库过滤同样作用于维度分支与 owner 分支
+  AND d.id IN (:doc_filter)                       --（可选）
+-- 无授权必选维度编译为 FALSE 短路 → 全库不可见；可选维度不生成条件
 ```
 
-性能注：`dims_json` 的 `json_extract` 在百万 chunk 下不可接受时，升级为按维度生成物化列（`dim_region TEXT` 等）+ 索引——迁移已预留（schema 版本 +1），M1 实测后决定。rerank 前兜底断言照抄需求红线：进 prompt 的每个 chunk 二次校验（防御纵深第二层）。
+性能注：`dims_json` 的 `json_each` 在十万级 chunk 下不可接受时，升级为维度物化列 + 索引（schema 版本 +1 迁移预留），M1 实测后决定。**rerank 前兜底断言**（进模型的候选先过 ACL 复核）+ 返回前二次断言（防御纵深）。
 
 ### 5.2 检索管线（core/retrieve.py）
 
 ```
-query ─→ LLM 关键词增强（内部网关，中英混排漏召回的补词）
-     ├─→ FTS5 BM25 路：bm25(chunks_fts, query_kw, weights=[1.0, 5.0, 8.0]) + ACL WHERE
-     ├─→ 向量路：query embed(bge-m3) → vec_chunks kNN（k=1024）+ ACL WHERE
-     ─→ RRF 融合（k=60，默认；0.7/0.3 加权留作配置旋钮但需同尺度校准）
-     ─→ 取 top-64 → rerank（bge-reranker-v2-m3，喂 content 原文）
-     ─→ 分数归一 [0,1]（min-max/clamp 双分支，ragflow NormalizeRerankScores 模式）
-     ─→ ACL 兜底断言 → 返回 top-k（含 chunk_id/doc_id/title/page_no/score/dims）
+query ─→ LLM 关键词增强（**条件触发**：query 过短或中英混排才调，网关超时即降级跳过——NFR-8）
+     ├─→ FTS5 BM25 路：query 经 jieba 切分 + token 双引号转义 →
+     │    bm25(chunks_fts, query_kw, weights=[1.0, 5.0, 8.0]) + ACL WHERE
+     ├─→ 向量路（P0-1 写法）：query embed(bge-m3) →
+     │    SELECT ..., vec_distance_cosine(c.embedding, :q) AS dist
+     │    FROM chunks c JOIN documents d ... WHERE <完整 ACL 条件>      -- ← 先过滤
+     │    AND c.embedding IS NOT NULL
+     │    ORDER BY dist LIMIT :k                                        -- ← 后排序取 top-k
+     ─→ RRF 融合（k=60；向量缺失的 chunk 只在 BM25 路，自然退化单路）
+     ─→ ACL 兜底断言（rerank 前：不该进模型的内容不进模型——P2-4 统一）
+     ─→ 取 top-32 → rerank（bge-reranker-v2-m3，ONNX int8，喂 content 原文）
+     ─→ 分数归一 [0,1]（min-max/clamp 双分支，ragflow 模式）
+     ─→ 返回前二次 ACL 断言 → top-k（≤20，含 chunk_id/doc_id/title/page_no/score/dims/source）
 ```
 
-要点：召回期不做用户阈值过滤（dify #35233 教训）；阈值只作用于归一后的最终分；`useful-early` 降级——`vec_chunks` 中该文档无向量时自动退化为 BM25 单路（摄取进行中的文档即刻可搜，FR-1）；rerank 是同步路径最重的一段，进程内 batch 推理 + 结果 LRU 无意义（查询各异），并发上限用信号量保护（NFR-2 数百用户并发的实际瓶颈位）。
+要点：召回期不做用户阈值过滤（dify #35233 教训）；阈值只作用于归一后的最终分；**useful-early 语义**由"向量 BLOB 可空 + 先过滤后距离"自然成立——`embedding IS NULL` 的 chunk 只走 BM25 路，摄取中的文档即刻可搜（FR-1 阶段拆分）；**CPU 推理（query 嵌入 + rerank）放线程/进程池，绝不阻塞事件循环**；rerank 并发上限信号量保护；`top_k` 服务端硬上限 20。性能预算与 SLO（P95 ≤ 2s）见需求 NFR-8，M1 实测校准。
 
 ### 5.3 摄取管线与 worker（core/ingest.py + worker/runner.py）
 
-任务状态机：`pending → leased → running → (done | failed)`；worker 心跳 5s、租约 60s，租约过期任务可被重认领；`attempts ≥ 3` 进 failed 留人工。断点粒度 = 阶段（parse/chunk/embed/index 各自幂等，重跑从上一完成阶段续）。
+任务状态机：`pending → leased → running → (done | failed)`；worker 心跳 5s、租约 60s，租约过期任务可被重认领；`attempts ≥ 3` 进 failed 留人工。断点粒度 = 阶段（各阶段幂等，重跑从上一完成阶段续）。SQLite 写竞争治理（NFR-9）：`busy_timeout` + worker 短事务分批提交 + 审计异步批量写。
 
-阶段编排：
+阶段编排（**P0-4 拆分：index_fts 先于 embed，BM25 即刻可搜**）：
 
 ```
-parse（docling→统一块结构；PDF 扫描件特征路由 MinerU） 
-→ chunk（结构感知切分 256–512 / Excel 按 sheet 行块）
-→ embed（bge-m3 进程内，分批 64；每 chunk 记 embed_model）
-→ index（chunks + FTS5（jieba 预分词）+ vec 同事务写入；文档状态 indexed）
-→ quality（区分度检测 → quality_flags → LLM 关键词 → 回写 auto_keywords/keywords）
+parse（docling→统一块结构；扫描件路由 MinerU；mojibake 质量门；TXT 编码探测）
+→ chunk（结构感知切分 256–512 / Excel 按 sheet 行块（重复表头）；jieba 生成 content_seg）
+→ index_fts（chunks + FTS 同一事务；文档状态 → searchable_lexical）
+→ embed（bge-m3 分批 64，CPU 线程池；逐批 UPDATE embedding/embed_model）
+→ index_vec（逐批就位；全部完成 → searchable_full）
+→ quality（区分度检测 → quality_flags → LLM 关键词 → 回写 llm_keywords）
 ```
 
-quality 在 index **之后**异步执行：不阻塞「可搜」时间点（useful-early 语义延伸）。文档更新（重传覆盖）：content_hash 变更 → 创建 reindex 任务 → 新 chunk 全部就绪后单事务原子替换（旧 chunks/vec/fts 同事务删除）。
+文档更新（覆盖，显式 doc_id）：新 version 重新走管线 → 新版本 chunk 就绪后单事务原子替换（旧版本 chunk 置 **tombstone** 保留可查，非物理删除——P1-9）；`fetch` 旧 chunk_id 返回"已被 v<N> 替代"提示。
 
-### 5.4 区分度检测（core/quality.py）
+### 5.4 区分度检测（core/quality.py，v0.2 修订）
 
-- **向量拥挤度**：新 chunk 向量在库内取 top-8 近邻，`mean(sim) > 0.82`（初值）判拥挤——它与太多不相关内容相似，缺乏辨识度；
-- **词面通用度**：jieba 分词后计算 chunk 内 token 的库级 IDF 均值，低于语料 P25 分位判通用——BM25 路也拉不开；
-- 两信号任一触发 → `quality_flags`（reason 记录）→ LLM（内部网关）生成 3–5 关键词 + 一句定位语回写；上传完成页聚合展示（FR-3 的质量报告）；
-- 阈值是初值，M1 用真实语料校准（表格/目录段天然低区分，容错靠「可忽略」交互不靠阈值完美）；
-- OneRAG 借鉴项落地处：解析阶段的 **mojibake 质量门**（正常字符比 <0.55 → 告警/重试/失败三档）加在 parse 之后，与区分度检测互不影响。
+- **向量拥挤度**：新 chunk 向量取**组织内** top-8 近邻，`mean(sim) > 阈值` 判拥挤——阈值用**绝对值 + 分位下限组合**（相对分位按定义恒标 ~25%，不可用；bge-m3 相似度分布偏高，初值 M1 真实语料重标定）；
+- **词面通用度**：token 平均 IDF 低于**绝对阈值**（同上组合式）；新组织冷启动引用全局语料 IDF；
+- **顺序依赖治理**：近邻结果依赖摄取顺序（先入库的无近邻）——**每周（或每 N 文档）全量重算** open 状态 flags；
+- 触发 → `quality_flags` → LLM 生成关键词写 **`llm_keywords` 独立低权重列**（标来源，不与人工 `keywords`×5 混列）；
+- **口径如实**：本机制只补 BM25 词面信号，**不是** Contextual Retrieval（后者改写后重新嵌入）——对外描述不得混淆；
+- OneRAG 借鉴项落地处：parse 后 **mojibake 质量门**（正常字符比 <0.55 → 告警/重试/失败三档）。
 
 ### 5.5 鉴权、身份与组织上下文（domain/auth.py + mcp/server.py）
 
-- **登录：企业 SSO（D16）**——token 验签（OIDC 优先，协议待需求待决-2 确认）→ 解析全局用户；**首次登录 JIT 建档**（`users` 表自动落库：id/username/display_name），管理员不建账号只配授权。静态 token（`users.token_hash`）降级为开发/测试模式与 agent 服务场景的鉴权方式。
-- **组织上下文**：token 解析出全局用户后，请求须携带目标组织——REST 用 `X-Org-Id` 请求头（缺省取用户首个 membership），MCP 在连接配置/工具调用中携带；服务端逐请求校验 `user_org_memberships`，非成员拒绝（§5.1 第 0 步）；用户可属多组织，**角色与维度授权按组织独立**（D7）。
-- agent 代人检索（D8）：deepagents 侧配置用户 token（或 agent 网关签发的代理 token——**形态待与 agent 服务约定，需求待决-3**），本系统只做 `token → user → membership → 维度展开`，不感知 agent 逻辑。
+- **登录：企业 SSO（D16）**——token 验签（OIDC 优先，协议待需求待决-2 确认）→ 解析全局用户；**首次登录 JIT 建档**（`users` 表自动落库：id/username/display_name），管理员不建账号只配授权。
+- **agent 代人检索（D8+D18）：委托 token（Token Exchange）**——agent 以用户 token 向 IdP 换取 `aud=knowledge-lattice` 的短期委托 token（`sub`=用户、`act`=agent 标识）；本系统验签后按 `sub` 过滤、`act` 写进审计；**拒绝 token 原样透传（MCP 规范禁止）与请求体权限字段**（一律忽略）。静态 token 仅限开发/测试（含 CI）。
+- **组织上下文显式传递（P1-6）**：REST 用 `X-Org-Id` 请求头、MCP 在连接配置/工具调用中携带——**缺失即 400 报错，无隐式默认**（不取"第一个 membership"）；页面可记住上次选择，API 层不做默认；逐请求校验 `user_org_memberships`，非成员拒绝（§5.1 第 0 步）。
 - MCP server 挂 60s 超时中间件（ragflow 同款纪律）。
 
-### 5.7 权限管理：自建授权表的维护闭环（D16）
+### 5.6 权限管理：授权维护与真值源闭环（D16 v0.2）
 
-维度授权是知识库本地资产（不联邦业务系统），维护闭环四件套：
+维度授权按维度声明真值源（`grant_source`），维护闭环四件套：
 
-1. **管理页单点配置**：组织管理员在授权面板逐用户调整（查询时实时展开，改即生效——D6）；
-2. **批量导入/导出（主通道）**：CSV 模式 `username, org, dim_key, values...`；初次授权与季度调整经此完成；导入走"全量替换该用户×组织"语义（幂等），差异预览后确认；
-3. **对账（漂移治理）**：季度导出授权表 ↔ 业务系统岗位表按映射规则人工比对；审计回放（谁在何时看过什么）作为事后兜底；
-4. **同步适配器（演进缝，默认禁用）**：`adapters/grant_sync.py` 预留——拉取源接口 + 显式映射表（如"申报系统·VAT 申报岗 → tax_type=[VAT]"）+ 定时任务，写同一张 `user_dimension_grants`；未来企业出现权限中心时启用，核心零改动。
+1. **管理页单点配置**：组织管理员逐用户调整（查询时实时展开，改即生效——D6）；**同步维度（`sync:<system>`）管理页只读**、CSV 批量导入时跳过，防人工覆盖真值；
+2. **批量导入/导出（主通道）**：CSV `username, org, dim_key, values...`；导入按「用户×组织」幂等全量替换、差异预览后确认；
+3. **同步适配器（`adapters/grant_sync.py`）**：拉取源接口 + 显式映射表（"申报系统·VAT 申报岗 → tax_type=[VAT]"）+ 定时任务；**幂等全量替换、失败保留旧快照并告警**（不清空不放开）；写 `source='sync:...'` 与 `synced_at`；生产前把语义匹配维度（法人主体/国家）切只读同步；
+4. **对账（漂移治理）**：季度导出 ↔ 业务岗位表映射比对 + 审计回放兜底；离职调岗经 HR/SSO 事件即时撤销（演进项）。
 
-### 5.6 前端薄壳（web/）
+### 5.7 前端薄壳（web/）
 
-三个页面（上传与任务 / 检索测试 / 管理），由 FastAPI 托管静态文件，无构建工具（原生 HTML/JS + 少量 fetch），**UI 永远是薄壳**——所有能力先有 API 契约（§6）再有页面。交互原型见 `prototype/index.html`（本次同步产出，mock 数据、浏览器直接打开），实现时以原型为信息结构基准逐页对接 REST。
+三个页面（上传与任务 / 检索测试 / 管理），由 FastAPI 托管静态文件，无构建工具（原生 HTML/JS + 少量 fetch），**UI 永远是薄壳**——所有能力先有 API 契约（§6）再有页面；M2 管理面**先 API + 最小 UI**（完整页面后置，issue #31 P2）。交互原型见 `prototype/index.html`（mock 数据、浏览器直接打开），实现时以原型为信息结构基准逐页对接 REST。
 
 ## 6. 接口契约
 
@@ -415,29 +454,42 @@ quality 在 index **之后**异步执行：不阻塞「可搜」时间点（usef
 // upload —— "向知识库上传文档（agent 采集到的文件）。必须指定知识库与维度元数据，否则会被拒绝。"
 {
   "name": "upload",
-  "input":  { "filename": "string", "content_b64": "string", "dataset": "ds:vat",
-              "dimensions": { "region": "CN", "tax_type": "VAT" },
+  "input":  { "file_ref": "string",           // 文件引用（agent 侧文件 ID/共享存储路径）或预签名上传 URL——不走 base64（P1-8）
+              "filename": "string", "dataset": "ds:vat",
+              "dimensions": { "region": ["CN"], "tax_type": ["VAT"] },   // 多值数组（D19）；值须在调用者授权内（P1-1）
+              "doc_id": "string?",             // 覆盖更新显式携带（文档身份，P2-6）
               "title": "string?" },
-  "output": { "doc_id": "01J…", "task_id": "01J…", "status": "queued" }
+  "output": { "doc_id": "01J…", "task_id": "01J…", "status": "queued", "version": 2 }
+}
+
+// fetch —— "按 chunk_id 取该块前后相邻的内容窗口（先搜后读）。旧版本块返回替代提示。"
+{
+  "name": "fetch",
+  "input":  { "chunk_id": "01J…", "window": "int=2" },   // 前后各 N 块
+  "output": { "chunks": [{ "chunk_id": "…", "seq": 41, "content": "…", "page_no": 12 }],
+              "replaced_by": "chunk_id?（tombstone 时非空，指向新版本对应块）" }
 }
 
 // list_documents —— "列出权限内可见的知识库与文档及处理状态。先了解库里有什么，再决定搜什么。"
 {
   "name": "list_documents",
   "input":  { "datasets": "string[]?", "status": "string?", "limit": "int=50" },
-  "output": { "datasets": [{ "id": "ds:vat", "name": "VAT 实务库", "doc_count": 12 }],
+  "output": { "datasets": [{ "id": "ds:vat", "name": "VAT 实务库", "doc_count": 12 }],   // ← 全部统计按调用者权限计算（P1-8）
               "documents": [{ "doc_id": "01J…", "dataset": "ds:vat", "title": "…",
-               "status": "indexed", "dims": {…}, "chunk_count": 143, "updated_at": "…" }] }
+               "status": "searchable_full", "version": 1, "dims": {…}, "chunk_count": 143,
+               "source": "user:u1 | agent:tax-copilot", "updated_at": "…" }] }
 }
 ```
 
-纪律：检索参数（权重/阈值/召回窗口）服务端固定，不暴露给 LLM（ragflow 反面教训）；工具描述动态注入文档集概况（库内按维度统计）。
+纪律：检索参数（权重/阈值/召回窗口）服务端固定，不暴露给 LLM（ragflow 反面教训）；`top_k ≤ 20` 服务端硬上限；工具描述动态注入的库/维度概况与一切统计**按调用者权限计算**（不可见文档的存在与数量不泄露）；`search` 返回块带 `source` 字段（agent 代传内容可识别——prompt injection 防御前置）。
 
 ### 6.2 REST 端点（api/）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | /api/documents | 上传（multipart；服务端校验目标库存在 + 必选维度齐全，D5/D15） |
+| POST | /api/documents | 上传（multipart；校验目标库存在 + 必选维度齐全 + **可选值在本人授权内**，D5/D15/P1-1）；覆盖更新带 `doc_id` |
+| DELETE | /api/documents/{id} | 删除文档（owner / org_admin，P2-6 补） |
+| PATCH | /api/documents/{id}/dimensions | 修改文档维度（owner / org_admin；刷冗余投影，P2-6 补） |
 | GET | /api/orgs | 当前用户可见的组织列表（系统管理员=全部；普通用户=其 membership） |
 | POST | /api/orgs | 创建组织（系统管理员） |
 | GET/PUT | /api/orgs/{id}/memberships | 组织成员列表 / 成员与角色管理（组织管理员） |
@@ -474,8 +526,8 @@ quality 在 index **之后**异步执行：不阻塞「可搜」时间点（usef
 | fastmcp | MCP server | OneRAG 模块结构参考 |
 | docling | 解析（docx/pptx/xlsx/html/pdf 原生） | 进程内库；MIT 代码 + 模型权重 license 风险标注（NFR-7） |
 | jieba | 中文预分词 | 中英混排效果 M1 实测（风险登记） |
-| FlagEmbedding（或 sentence-transformers） | bge-m3 嵌入 + bge-reranker-v2-m3 重排，进程内 | **钉版本**记录进 chunk.embed_model；CPU 分批推理 |
-| sqlite-vec | 向量虚表 | 无 ANN，暴力扫描边界 M1 实测 |
+| FlagEmbedding（或 sentence-transformers）+ onnxruntime | bge-m3 嵌入 + bge-reranker-v2-m3 重排，进程内 | **钉版本**记录进 chunk.embed_model；CPU 分批推理 + **int8 量化**（NFR-8） |
+| sqlite-vec | **距离函数**（`vec_distance_cosine` 等标量函数作用于 BLOB 列，P0-1；非 vec0 虚表 KNN） | 一期 ~10 万 chunk 实测（NFR-2） |
 | pydantic v2 | 实体与配置 | |
 | python-ulid | 主键 | 时间有序，利于排序与溯源可读 |
 | httpx | 内部网关客户端 | OpenAI 兼容 |
@@ -486,53 +538,55 @@ quality 在 index **之后**异步执行：不阻塞「可搜」时间点（usef
 ## 8. 里程碑任务分解
 
 **M0（第 1 周）——骨架端到端 + schema 全量落**
-1. 项目脚手架（uv、config、db 迁移框架，§4 全部 DDL 一次性落——含 orgs/datasets 启用）
-2. 摄取最小链：docling 解析 → 结构切分 → bge-m3 嵌入（同步占位，M2 再异步化）→ chunks/fts/vec 入库（上传入指定库）
-3. 检索最小链：向量单路 + ACL WHERE（组织隔离 + 维度编译器 v1）
+1. 项目脚手架（uv、config、db 迁移框架，§4 全部 DDL 一次性落——含整数主键/分列 FTS/触发器/审计触发器）
+2. 摄取最小链：docling 解析 → 结构切分（含 content_seg 分词）→ **index_fts 入库（BM25 即刻可搜）** → 嵌入分批补齐（P0-4 阶段拆分从 M0 起就是结构）
+3. 检索最小链：**BM25 单路 + 完整 ACL WHERE**（组织隔离 + 维度编译器 v1——括号化 builder 从第一天就是 AST）
 4. FastMCP `search` + REST `POST /api/search` + 静态页壳
-5. 验收：deepagents 经 MCP 一次带 chunk_id 的检索；mock 用户维度过滤生效
+5. 验收：deepagents 经 MCP 一次带 chunk_id 的检索（**委托 token 链路**）；mock 用户维度过滤生效
+6. **并行推进（阻塞项前置，issue #31 P1-7）**：待决-2（SSO 协议确认）与待决-3（agent 委托 token——Token Exchange 方案验证：`aud` 绑定/短 TTL/`act`）在 M0 期间敲定，不再压 M2
 
-**M1（第 2~3 周）——完整配方 + 维度权限全链 + 区分度环**
-1. jieba 预分词 + FTS5 双路 + RRF + rerank + 分数归一
-2. LLM 关键词增强（内部网关）接入检索前端
-3. 维度 ACL：上传页选维度（必选校验）、授权数据、编译器完整（owner 兜底/无授权短路）
-4. 区分度检测 + LLM 兜底 + 质量报告页 + 人工标注回写（FR-3 完整闭环）
-5. 真实文档批量上线（依赖待决-1；先用合成样例）
-6. 验收：越权三面全绿；20~50 条真实中英 query 人工标注；区分度误报抽查
+**M1（第 2~3 周）——完整配方 + 维度权限全链 + 区分度环 + 度量前移**
+1. jieba 分列 FTS（content_seg/keywords/tags + 触发器 + MATCH 转义）+ 双路（先过滤后距离）+ RRF + rerank（候选 32，ONNX int8）+ 分数归一
+2. LLM 关键词增强**条件触发**接入（短 query/中英混排；网关超时降级）
+3. 维度 ACL：上传页选维度（必选校验 + **可选值限定本人授权内**）、授权数据、编译器完整（括号化 builder/owner 兜底/无授权短路/**多值语义**）
+4. 区分度检测（绝对阈值 + 定期重算）+ LLM 兜底（独立 llm_keywords 列）+ 质量报告页 + 人工标注回写
+5. 真实文档批量上线（依赖待决-1；先用合成样例）+ **小型黄金集（几十条）+ Recall@k/MRR 前移** + P95 延迟基线
+6. 验收：**越权矩阵全绿**（§9 扩充版）；20~50 条真实中英 query 人工标注；区分度误报抽查
 
-**M2（第 4~6 周）——生产化**
-1. worker 子进程化（心跳/租约/重试/断点续跑）+ IPC 唤醒
-2. 管理面：组织管理（系统管理员）、知识库管理、维度配置页、用户授权页、任务页、审计查询
-3. agent 代人身份：token 约定落地（待决-2）、MCP 鉴权中间件、审计覆盖查询级
-4. 文档更新覆盖重索引（原子替换）+ 删除级联
-5. 分批摄取 + useful-early 降级实测（无 GPU 嵌入吞吐曲线）
-6. 验收：杀 worker 不丢任务；审计回放完整检索；更新原子性
+**M2（第 4~6 周）——生产化（减负版）**
+1. worker 子进程化（心跳/租约/重试/断点续跑）+ IPC 唤醒 + SQLite 写竞争治理（busy_timeout/短事务/审计异步）
+2. SSO/JIT 建档对接（协议已在 M0 敲定）+ 委托 token 全面落地（act 进审计）
+3. 管理面**先 API + 最小 UI**（组织/知识库/维度/授权含批量导入；完整页面后置）
+4. 文档版本化覆盖重索引（tombstone + fetch 替代提示）+ 删除级联
+5. 备份快照 + 恢复演练；哈希链审计（按需）
+6. 验收：杀 worker 不丢任务；审计回放（含 act）；tombstone fetch；恢复演练通过；跨组织隔离全绿
 
 **M3（第 7~8 周）——评测防线**
-1. 黄金集构建器（ragas 合成 + 人工修正流）
-2. 检索层 Recall@k/MRR（ID-based 集合运算）+ 响应层 faithfulness/answer_relevancy
+1. 完整黄金集（ragas 合成 + 人工修正流；M1 小型集扩容）
+2. 响应层 faithfulness/answer_relevancy + 检索层指标固化
 3. judge 双语 prompt + ~50 条人工双评校准
 4. deepeval pytest 门禁进 CI（预人为注入回归验证门禁有效性）
 5. 在线引用锚点抽样脚本
 
-依赖关系：M1.3 依赖 M0.3；M1.4 依赖 M1.1（检测需要双路就位才有意义）；M2.5 依赖 M2.1；M3 全部依赖待决-1（真实语料）。
+依赖关系：M1.3 依赖 M0.3；M1.4 依赖 M1.1；M0.6（SSO/token 确认）阻塞 M0.5 验收的完整形态；M2 依赖 M0.6 结论；M3 扩量依赖待决-1（真实语料）。
 
 ## 9. 测试策略
 
-- **单元**：ACL 编译器（AND/短路/owner 合并/投影一致性）、RRF 与归一、切分边界（表格整块/超长段落）、维度校验；
-- **集成**：摄取→检索端到端（SQLite 临时库）、更新原子替换、任务租约重认领；
-- **越权用例集（M1/M2 核心资产）**：矩阵化构造「用户授权组合 × 文档维度组合」+ **跨组织用例**（A 组织用户/agent 对 B 组织库与文档零可见），断言检索结果/MCP 返回/引用三个面均无越权——进 CI 常跑；
-- **评测**：M3 门禁（§8）；
-- **性能抽测**：百万 chunk 模拟数据下的检索延迟、sqlite-vec 扫描边界、rerank 并发（M1/M2 各一次，结论驱动升级缝是否触发）。
+- **单元**：ACL 编译器（**括号化结构**/多值语义/短路/owner 受外层约束/**可选维度不生成条件**/投影一致性——**AST 断言而非字符串比对**）、RRF 与归一、切分边界（表格整块/超长段落/**Excel 行块含表头**）、维度校验、FTS5 MATCH 转义（注入用例）、Tombstone fetch；
+- **集成**：摄取→检索端到端（SQLite 临时库，含 searchable_lexical 中间态检索）、版本化替换原子性、任务租约重认领、触发器同步（删改无幽灵命中）；
+- **越权用例集（M1/M2 核心资产，issue #31 §3.7 扩充）**：矩阵化构造——用户授权组合 × 文档维度组合（含**多值文档维度**）× **库过滤（dataset 限定下 owner 分支不得漏出他库文档——P0-2 回归）** × **可选维度空值** × **新增必选维度未回填/停用维度放宽** × **移出组织后重加（授权不复活）** × **跨组织** × **MCP 统计信息（doc_count 不泄露不可见文档）**——断言检索结果/MCP 返回/引用/统计四个面均无越权，进 CI 常跑；
+- **评测**：M1 小型黄金集（Recall@k/MRR）→ M3 完整门禁（§8）；
+- **性能抽测**：~10 万 chunk 模拟数据下的检索延迟 P95（含 ACL 过滤后距离扫描）、rerank 并发、无 GPU 嵌入吞吐曲线（M1/M2 各一次，结论驱动升级缝是否触发——NFR-2/8）。
 
 ## 10. 风险的工程对策（对应需求 §9 风险登记）
 
 | 风险 | 工程对策 | 触发点 |
 |---|---|---|
-| 无 GPU 嵌入吞吐 | 分批 64 + useful-early；`config.py` 预留 embedding_model 配置位（e5-small 384 维备选，注意维度不兼容需全量重嵌决策） | M2.5 实测吞吐曲线后决策 |
+| 无 GPU 嵌入吞吐 | 阶段拆分（index_fts 先行）+ 分批 64 + int8 量化；`config.py` 预留 embedding_model 配置位（e5-small 384 维备选，注意维度不兼容需全量重嵌决策） | M2 实测吞吐曲线后决策 |
 | jieba 中英混排 | 检索层 tokenizer 独立模块（可换 trigram/自定义词表）；M1 真实 query 标注集是判据 | M1 验收 |
-| sqlite-vec 边界 | repo 接口已隔离向量路；pgvector 适配器为升级缝首个目标 | 检索延迟 P95 不可接受时 |
-| dims_json json_extract 性能 | 物化列迁移预案（schema v2，§5.1） | 百万 chunk 实测 |
-| 区分度误报 | 阈值进 config 可调；ignored 状态沉淀负样本供校准 | M1 抽查 |
-| 权限漂移（自建授权表 vs 业务实际，D16） | 季度批量对账 + 审计回放；grant_sync 适配器留缝（权限中心出现时启用） | 季度对账流程；高敏文档从严选维度 |
+| sqlite-vec BLOB 扫描边界 | repo 接口已隔离向量路；pgvector 适配器为升级缝首个目标 | 一期 10 万 chunk P95 超标时（NFR-2/8） |
+| dims_json json_each 性能 | 维度物化列迁移预案（schema v2，§5.1） | 十万级实测 |
+| P95 延迟超标 | NFR-8 全套（候选 32/ONNX int8/条件增强/线程池）；逐项降级预案 | M1 基线 |
+| 区分度失真 | 绝对阈值 + 分位下限；定期全量重算；组织内近邻；ignored 沉淀负样本 | M1 抽查 + 周期重算 |
+| 权限漂移（自建授权表 vs 业务实际，D16） | 季度批量对账 + 审计回放；grant_sync 适配器；生产前语义匹配维度切只读同步 | 季度对账；高敏文档从严 |
 | 模型权重 license | embed/parser 模型清单进 `config.py` 单一登记处，商用核查逐卡打勾 | 商用前（NFR-7） |
