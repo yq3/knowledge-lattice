@@ -371,7 +371,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 0.86rem; backgrou
 <section class="page" id="page-admin">
   <div class="page-head">
     <h1>知识库与维度<span class="org-tag" id="orgTag3"></span></h1>
-    <p>知识库是组织内的业务分组与管理单元（批量管理、检索收窄），<b>不承担权限</b>；权限坐标系由维度定义，文档可见 ⇔ 每个维度的取值都在授权集合内。</p>
+    <p>知识库是组织内的业务分组与管理单元（批量管理、检索收窄），<b>不承担权限</b>；权限坐标系由维度定义，文档可见 ⇔ 每个维度与授权集合有交集（空值放行）。</p>
   </div>
 
   <h3 style="font-size:0.92rem;margin-bottom:10px">知识库</h3>
@@ -559,10 +559,9 @@ function statusBadge(st) {
   const map = { searchable_full: "b-ok", done: "b-ok", failed: "b-fail", searchable_lexical: "b-parsing", chunked: "b-parsing", parsing: "b-parsing", uploaded: "b-muted", pending: "b-muted", running: "b-parsing" };
   return `<span class="badge ${st} ${map[st] || ""}">${st}</span>`;
 }
-/* AND 语义可见性（D5+D19：维度间 AND、维度内 OR——文档多值取值与用户授权求非空交集；只校验必选维度） */
+/* 可见性（D5 v0.4：全部 active 维度统一——有值则求交集、空值放行；required/enabled 不影响过滤） */
 function canSee(m, dims) {
-  for (const [d, def] of Object.entries(org().dims)) {
-    if (!def.required) continue;
+  for (const d of Object.keys(org().dims)) {
     const docVals = Array.isArray(dims[d]) ? dims[d] : [dims[d]];
     if (!docVals.some(v => (m.grants[d] || []).includes(v))) return false;
   }

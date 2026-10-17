@@ -239,7 +239,7 @@ CREATE TABLE documents (
   pending_status  TEXT,               -- parsing|chunked|searchable_lexical|searchable_full|failed
   pending_error   TEXT,
   pending_dims_json TEXT,             -- pending 版本的新维度（P0-2.1）：pending 期间不生效，切换事务落入 document_dimensions
-  owner_user_id   TEXT NOT NULL REFERENCES users(id),  -- owner 兜底仅限无在用版本/处理中文档（D22③，P1-8 方案 a）
+  owner_user_id   TEXT NOT NULL REFERENCES users(id),  -- 文档所有者（管理面操作权限与来源展示；检索路径无 owner 分支——D22③/#34 必修 2）
   raw_object_key  TEXT NOT NULL,      -- 对象目录键（canonical 真相锚点）
   created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at      TIMESTAMP
@@ -406,7 +406,7 @@ CREATE TABLE audit_outbox (
 
 设计说明（v0.4）：
 
-- **组织与库的隔离纪律**：一切检索/列表 SQL 的第一条件是 `org_id = :org`（跨组织零可见，owner 判定同样限本组织且仅限无在用版本文档——D22③）；库过滤（`dataset_id IN (...)`）是组织内的可选收窄；维度授权与维度定义都在组织作用域内解析。
+- **组织与库的隔离纪律**：一切检索/列表 SQL 的第一条件是 `org_id = :org`（跨组织零可见；检索路径无 owner 分支——D22③/#34 必修 2，owner 经管理面看元数据）；库过滤（`dataset_id IN (...)`）是组织内的可选收窄；维度授权与维度定义都在组织作用域内解析。
 - **维度冗余的取舍**：`chunks.dims_json` 是 `document_dimensions` 的投影（多值数组），检索 SQL 按 JSON 解析编译成常量条件（§5.1）；文档维度变更时由服务层同步刷投影（UPDATE，不重嵌——D6）。**M0b 实验若选定"按文档计算"（visible_docs），dims_json 整体删除**（消除一致性维护点，§5.1）。
 - **向量存 BLOB 不用 vec0**（P0-1）：vec0 的 KNN 在虚拟表内部取 top-k 后才能 JOIN 过滤，等于 post-trim；BLOB + `vec_distance_cosine()` 在 ACL 过滤后的行集上算距离，"先过滤后扫描"（扫描量 = 用户可见量）。M0b 实验对比 `chunk_vectors` 分表（4KB/块拖慢回表与放大 WAL）。
 - **FTS5 五列**（v0.4）：`unicode61` 只做兜底分词；`title_seg`（3）/`content_seg`（1）/`keywords` 仅人工词（5）/`llm_keywords`（0.5~1）/`tags`（8）分列加权；查询侧同词典切分 + token 双引号包裹且内部 `"` 转义为 `""`。
@@ -649,7 +649,7 @@ COMMIT;
 | POST | /api/orgs/{org}/documents/{id}/reindex | 手动重索引（M2） |
 | POST | /api/search | 检索（检索测试页；参数同 MCP search；组织经 `X-Org-Id`——本端点为例外，兼容检索页） |
 | POST | /api/uploads | **上传凭证签发**（{filename,size,sha256,content_type} → {upload_id, upload_url, expires_at}；**绑定 sub+org+服务身份**，#33 P1-3） |
-| PUT | /api/uploads/{upload_id} | **接收文件字节**（v0.4 补——Bearer 鉴权 + **校验 sub、org、服务身份三者一致**（与签发绑定，T11）；按声明 size 截断/拒绝、写盘后校验 sha256、全局上限 200MB；**M1 集成期实现**，人工 multipart 不依赖） |
+| PUT | /api/uploads/{upload_id} | **接收文件字节**（v0.4 补——Bearer 鉴权 + **校验 sub、org、服务身份三者一致且未过期、未使用**（与签发绑定，T11）；按声明 size 截断/拒绝、写盘后校验 sha256、全局上限 200MB；**M1 集成期实现**，人工 multipart 不依赖） |
 | GET | /api/orgs/{org}/audit | 审计查询（org_admin 全量 / 系统管理员仅元数据——FR-6 分级） |
 | POST | /api/dev/token | 签发静态 token（**仅 dev/test 配置注册该路由，生产环境 404**——P1-7；只能给自己签或系统管理员签发） |
 
@@ -685,9 +685,9 @@ COMMIT;
 **M0a（第 1 周）——骨架 + schema 全量落**
 1. 脚手架（uv/config/迁移框架含外键处理约定，§4 全部 DDL 与触发器一次性落）；连接工厂（foreign_keys=ON + 显式 raise + 月库滚动建表）
 2. 摄取最小链：docling 解析 → 结构切分（五列分词）→ index_fts 入库（BM25 即刻可搜）→ 嵌入分批补齐
-3. 检索最小链：BM25 单路 + **完整 ACL 编译器（含状态过滤：过期/停用/owner 受限——D22①）**
+3. 检索最小链：BM25 单路 + **完整 ACL 编译器（含状态过滤与统一空值模板——D22①，#34 必修 1/3）**
 4. FastMCP `search` + REST multipart 上传 + 静态页壳
-5. 验收：deepagents 经 MCP 一次带 chunk_id 的检索（**开发 JWT 即可**）；插孤儿行 IntegrityError；T1~T5 在编译器单测先行
+5. 验收：deepagents 经 MCP 一次带 chunk_id 的检索（**开发 JWT 即可**）；插孤儿行 IntegrityError；T1~T5 + T20/T22 在编译器单测先行
 6. 并行：待决-2/3（SSO 协议、token 方案）
 
 **M0b（第 2 周前半）——实验**
@@ -700,11 +700,11 @@ COMMIT;
 **M1（第 2 周后半~第 3 周）——完整配方 + 版本在用制全链（前移）+ 权限全链 + 凭证集成**
 1. 五列 FTS + 双路（先过滤后距离）+ RRF（增强第三路）+ rerank 32（ONNX int8）+ 归一
 2. **版本在用制全链**：active/pending 状态机、切换事务（清 FTS 列）、tombstone、并发 409、失败删块、fetch 替代提示（**前移自 M2——M1 越权验收依赖**）
-3. 维度 ACL 全链：多值、上传/PATCH 值限授权内、可选维度有值则过滤、维度停用仍过滤（方案 a）
+3. 维度 ACL 全链：多值、上传/PATCH 值限授权内、统一空值模板、维度停用/改可选不影响过滤（D5 v0.4）
 4. **上传凭证制 + deepagents 集成**（§6.3 时序：运行时工具 + PUT 端点 + 绑定 sub+org+服务 + 清理任务）
 5. 区分度环（绝对阈值 + numpy 批量重算 + 报告页近邻过 ACL）
 6. 真实文档批量上线（待决-1，合成样例先行）+ 小型黄金集 + Recall@k/MRR + P95 基线
-7. 验收：**越权矩阵全绿（§9 含 T1~T19）**；真实 query 标注；区分度误报抽查
+7. 验收：**越权矩阵全绿（§9 含 T1~T23）**；真实 query 标注；区分度误报抽查
 
 **M2（第 4~6 周）——生产化**
 1. worker 子进程化（心跳/租约/重试）+ 写竞争治理 + embed 回写防护
@@ -725,9 +725,9 @@ COMMIT;
 
 ## 9. 测试策略（v0.4：含 issue #33 T1~T19 全量）
 
-- **单元**：ACL 编译器（括号化 AST 断言/多值/状态过滤【过期/停用/成员关系过期】/owner 受限/可选维度有值则过滤）；**连接工厂外键断言（插孤儿行抛 IntegrityError）**；FTS5 MATCH 转义（`"`→`""`/`*`/`NEAR`/`AND`/`-`）；RRF 与归一；切分边界（表格整块/Excel 行块含表头）；**切换 SQL 后 FTS 无 tombstone 内容**；凭证流（size 截断/sha256 校验/过期/绑定）；
+- **单元**：ACL 编译器（括号化 AST 断言/多值/状态过滤【过期/停用/成员关系过期】/统一空值模板（空值放行/空集单条件））；**连接工厂外键断言（插孤儿行抛 IntegrityError）**；FTS5 MATCH 转义（`"`→`""`/`*`/`NEAR`/`AND`/`-`）；RRF 与归一；切分边界（表格整块/Excel 行块含表头）；**切换 SQL 后 FTS 无 tombstone 内容**；凭证流（size 截断/sha256 校验/过期/绑定）；
 - **集成**：摄取→检索端到端（searchable_lexical 中间态）、版本切换原子性（并发 409/失败删块/回写防护）、任务租约重认领、触发器同步无幽灵命中、迁移 foreign_key_check；
-- **越权用例集（CI 常跑）**：原矩阵（用户授权 × 文档维度多值 × 库过滤 × 可选维度空值 × 新增必选未回填 × 移出重加 × 跨组织 × MCP 统计）+ v0.3 四组（版本中间态/删维度取值/PATCH 越权/CSV）+ **T1~T19（#33 §6，逐条对应修复项）**：T1 过期授权清理未跑仍不可见；T2 成员续期不复活旧授权；T3 停用取值收紧；T4 维度改可选/停用按 D5 方案 a 不放宽；T5 可选维度有值则过滤；T6 v2 改维度切换前后无双方可见（两种 ACL 写法都测）；T7 并发覆盖 409；T8 失败版本无 FTS 残留；T9 切换后 FTS 层面无旧版本命中；T10 待嵌入清单不含 tombstone；T11 凭证跨组织无效；T12 PUT 超量/哈希不符拒绝；T13 可信子系统越界/冒充拒绝并审计；T14 org claim 与头不一致 400；T15 他组织维度 id 403/404；T16 生产配置 token 端点 404；T17 授权撤销后 owner 不再见在用文档（**检索路径无 owner 分支——#34 必修 2**）；T18 报告页近邻不泄露无权内容；T19 删文档/删库按定义成功或明确报错（非裸外键异常）；**T20~T23（#34 §5）**：T20 新建维度零文档消失、回填只收紧、必选改可选/停用不放宽、仅退役放宽且必有审计（**M0a 编译器单测**）；T21 授权已撤销的 owner 发起覆盖上传，处理中窗口检索不到该文档任何版本（**M1 越权矩阵**）；T22 用户在某维度无授权 → 只见该维度为空的文档；授权集为空时编译产物不出现 `IN ()`（**M0a 编译器单测**）；T23 对已过期成员关系 UPDATE expires_at 被触发器拒绝；先删再加后旧授权不复活（M1）；
+- **越权用例集（CI 常跑）**：原矩阵（用户授权 × 文档维度多值 × 库过滤 × 可选维度空值 × 新增必选未回填 × 移出重加 × 跨组织 × MCP 统计）+ v0.3 四组（版本中间态/删维度取值/PATCH 越权/CSV）+ **T1~T19（#33 §6，逐条对应修复项）**：T1 过期授权清理未跑仍不可见；T2 成员续期不复活旧授权；T3 停用取值收紧；T4 维度改可选/停用不放宽（D5 v0.4——#34 方案 A）；T5 可选维度有值则过滤；T6 v2 改维度切换前后无双方可见（两种 ACL 写法都测）；T7 并发覆盖 409；T8 失败版本无 FTS 残留；T9 切换后 FTS 层面无旧版本命中；T10 待嵌入清单不含 tombstone；T11 凭证跨组织无效；T12 PUT 超量/哈希不符拒绝；T13 可信子系统越界/冒充拒绝并审计；T14 org claim 与头不一致 400；T15 他组织维度 id 403/404；T16 生产配置 token 端点 404；T17 授权撤销后 owner 不再见在用文档（**检索路径无 owner 分支——#34 必修 2**）；T18 报告页近邻不泄露无权内容；T19 删文档/删库按定义成功或明确报错（非裸外键异常）；**T20~T23（#34 §5）**：T20 新建维度零文档消失、回填只收紧、必选改可选/停用不放宽、仅退役放宽且必有审计（**M0a 编译器单测**）；T21 授权已撤销的 owner 发起覆盖上传，处理中窗口检索不到该文档任何版本（**M1 越权矩阵**）；T22 用户在某维度无授权 → 只见该维度为空的文档；授权集为空时编译产物不出现 `IN ()`（**M0a 编译器单测**）；T23 对已过期成员关系 UPDATE expires_at 被触发器拒绝；先删再加后旧授权不复活（M1 越权矩阵）；
 - **评测**：M1 小型黄金集 → M3 门禁；
 - **性能抽测**：~10 万块 P95（按块 vs 按文档、同表 vs 分表）、rerank 并发、嵌入吞吐（M0b/M1 各一轮，驱动 schema v1.1 与 NFR-8 标定）。
 
