@@ -844,7 +844,7 @@ function renderGrants() {
           <span class="cell pick ${(m0.grants[d] || []).includes(v) ? "on" : ""}" data-k="${d}" data-val="${v}"
                 >${o.dims[d].values[v] ? `<span class="lbl">${o.dims[d].values[v]}</span>` : ""}${v}</span>`).join("")}
       </div>`).join("")}
-    <p class="and-note">该用户在 <b>${o.name}</b> 内检索时仅能看到「每个维度的取值都在以上授权集合内」的文档；空维度 = 该维度下全库不可见。授权仅作用于本组织${isCrossOrg(m0.uid) ? "（此用户在其他组织的权限与此处无关）" : ""}；变更即时生效（查询时实时展开，无需重建索引）。生产环境：登录走企业 SSO（首登自动建档），授权经管理页或批量导入维护（D16）；支持临时授权 expires_at（过期即失效）；同步维度（grant_source=sync）管理页只读、批量导入不动。</p>`;
+    <p class="and-note">该用户在 <b>${o.name}</b> 内检索时，每个维度与授权集合有交集即可见（维度内 OR、维度间 AND）；文档未设置的维度不限制（空值放行）。授权仅作用于本组织${isCrossOrg(m0.uid) ? "（此用户在其他组织的权限与此处无关）" : ""}；变更即时生效（查询时实时展开，无需重建索引）。生产环境：登录走企业 SSO（首登自动建档），授权经管理页或批量导入维护（D16）；支持临时授权 expires_at（过期即失效）；同步维度（grant_source=sync）管理页只读、批量导入不动。</p>`;
   $$("#grantBox .cell.pick").forEach(c => c.addEventListener("click", () => {
     const d = c.dataset.k, v = c.dataset.val;
     m0.grants[d] = m0.grants[d] || [];

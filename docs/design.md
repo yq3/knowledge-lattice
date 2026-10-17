@@ -150,13 +150,14 @@ CREATE TABLE datasets (             -- 知识库：组织内的业务分组/管�
   UNIQUE(org_id, name)
 );
 
-CREATE TABLE dimensions (            -- 维度定义（配置页 CRUD 对象，D9）
+CREATE TABLE dimensions (            -- 维度定义（配置页 CRUD 对象，D9；v0.4 冻结复审：生命周期与过滤彻底解耦——#34 必修 1 方案 A）
   id            TEXT PRIMARY KEY,    -- ULID
   org_id        TEXT NOT NULL REFERENCES orgs(id),
   key           TEXT NOT NULL,       -- region / tax_type
   name          TEXT NOT NULL,       -- 作业区域 / 税种
-  required      INTEGER NOT NULL DEFAULT 1,  -- 必选：上传时强制选值（D5）；过滤条件只看 enabled（停用仍参与过滤=方案 a，§5.1）
-  enabled       INTEGER NOT NULL DEFAULT 1,  -- 停用=收紧（免上传选值），撤过滤走"退役维度"事件（§6.2）
+  status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','retired')),  -- 生命周期：编译器只对 active 生成条件；retired=唯一放宽路径（退役权限事件，§6.2）
+  required      INTEGER NOT NULL DEFAULT 1,  -- 仅控制上传校验（强制选值），不影响过滤
+  enabled       INTEGER NOT NULL DEFAULT 1,  -- 仅控制上传页是否展示/选值（停用=收紧的上传体验），不影响过滤
   grant_source  TEXT NOT NULL DEFAULT 'local',  -- 授权真值源：local | sync:<system>（D16——同步维度管理页只读）
   value_source  TEXT NOT NULL DEFAULT 'local',  -- 取值枚举是否来自企业主数据
   created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -253,6 +254,15 @@ BEGIN SELECT RAISE(ABORT, 'dimensions.org_id is immutable'); END;   -- #33 P2-9�
 CREATE TRIGGER trg_documents_ds_org_check BEFORE INSERT ON documents
 WHEN (SELECT org_id FROM datasets WHERE id = NEW.dataset_id) != NEW.org_id
 BEGIN SELECT RAISE(ABORT, 'dataset org mismatch'); END;
+-- #34 4.6（M0a 随 schema 落地）：搬库与脏维度双重防护——
+CREATE TRIGGER trg_documents_ds_immutable BEFORE UPDATE OF dataset_id ON documents
+WHEN (SELECT org_id FROM datasets WHERE id = NEW.dataset_id) != OLD.org_id
+BEGIN SELECT RAISE(ABORT, 'dataset move across org is forbidden'); END;
+CREATE TRIGGER trg_docdims_consistency BEFORE INSERT ON document_dimensions
+WHEN (SELECT dimension_id FROM dimension_values WHERE id = NEW.value_id) != NEW.dimension_id
+  OR (SELECT org_id FROM dimensions WHERE id = NEW.dimension_id)
+    != (SELECT org_id FROM documents WHERE id = NEW.doc_id)
+BEGIN SELECT RAISE(ABORT, 'document_dimensions consistency violation'); END;
 -- 重复检测：索引按 (dataset_id, content_hash) 粗筛；维度一致性由服务层比对 document_dimensions
 -- 后提示重复（不强制拦截——P0-5；通用文档多值挂载见 document_dimensions）
 CREATE INDEX idx_documents_hash ON documents(dataset_id, content_hash);
@@ -303,8 +313,7 @@ CREATE TABLE chunks (
   content_sha   TEXT,                -- 区分度检测缓存（内容指纹，重检跳过）
   created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX idx_chunks_doc ON chunks(doc_id, version, seq);   -- v0.4：含 version（P0-2.5——同文档多版本 seq 不唯一，fetch 窗口与按文档计算都走它）
-CREATE UNIQUE INDEX uq_chunks_docver ON chunks(doc_id, version, seq);
+CREATE UNIQUE INDEX uq_chunks_docver ON chunks(doc_id, version, seq);  -- v0.4：fetch 窗口与"按文档计算"共用（含 version——同文档多版本 seq 不唯一）；替代原 idx_chunks_doc（列相同，去重——#34 4.4）
 CREATE INDEX idx_chunks_vec_pending ON chunks(doc_id) WHERE embedding IS NULL AND tombstone = 0;  -- 谓词含 tombstone（P1-2——否则切换后旧块重回待嵌入清单）
 
 -- FTS5（P0-3 + P1-1/P1-3 重做）：
@@ -363,7 +372,7 @@ CREATE TABLE tasks (
 );
 CREATE INDEX idx_tasks_status ON tasks(status, created_at);
 
--- ============ 审计（FR-6，quivr 触发器防篡改模式） ============
+-- ============ 审计（FR-6；v0.4：audit_events 属**月库** audit_YYYYMM.db，由连接工厂在月库滚动时创建本表与触发器） ============
 CREATE TABLE audit_events (
   id          TEXT PRIMARY KEY,
   org_id      TEXT NOT NULL,
@@ -381,6 +390,15 @@ CREATE TRIGGER audit_no_update BEFORE UPDATE ON audit_events
 BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END;
 CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit_events
 BEGIN SELECT RAISE(ABORT, 'audit_events is append-only; retention via monthly file rotation'); END;
+
+-- outbox（主库，v0.4 #34 4.5）：权限事件与业务写同事务入队，后台搬运到月库——"业务改了就一定有审计"
+CREATE TABLE audit_outbox (
+  id           TEXT PRIMARY KEY,
+  event_type   TEXT NOT NULL,        -- grant|revoke|dimension_change|retire|membership|...
+  payload_json TEXT NOT NULL,
+  created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  shipped_at   TIMESTAMP             -- NULL=待搬运；后台任务搬至月库 audit_events 后回填
+);
 -- v0.3（issue #32 P1-7）+ v0.4（#33 P1-4）：审计按月分库 audit_YYYYMM.db——当月可追加、过月封存只读
 --   （只读打开 + 文件权限 + 封存记末哈希）、到期整文件删除；月库建表与上述触发器由连接工厂在滚动时创建；
 --   **权限事件走 outbox**：业务库同事务写 audit_outbox 表，后台搬运保证"业务改了就一定有审计"
@@ -399,29 +417,46 @@ BEGIN SELECT RAISE(ABORT, 'audit_events is append-only; retention via monthly fi
 
 输入：`user_id` + 组织上下文（REST=`X-Org-Id` 头 / MCP=token org claim 优先、运行时注入头兜底——D18 统一规则）；输出：可下推进召回 SQL 的 WHERE 片段（**结构化 builder 生成 AST 再渲染 SQL，禁止字符串拼接**）。逻辑（v0.4：**全部状态字段进入计算——P0-1**）：
 
-1. **成员关系校验**（第 0 步，含过期）：`(SELECT role FROM user_org_memberships WHERE user_id=:uid AND org_id=:org AND (expires_at IS NULL OR expires_at > :now))`——无有效行即拒绝（系统管理员豁免仅限管理端点，D22）；**校验时发现已过期即当场物理删除该行**（触发 cleanup 级联清授权 + 审计；"续期"必须先删再加，防旧授权复活——T2）；
+1. **成员关系校验**（第 0 步，含过期）：`(SELECT role FROM user_org_memberships WHERE user_id=:uid AND org_id=:org AND (expires_at IS NULL OR expires_at > :now))`——无有效行即拒绝（系统管理员豁免仅限管理端点，D22）。**读路径只过滤、不删除**（避免检索请求抢 WAL 写锁并连带写 outbox——#34 4.2）；过期行的物理删除交**定时任务**（触发 cleanup 级联清授权 + 审计）。**续期禁令由触发器从机制上保证**（T2/T23）：
+
+```sql
+CREATE TRIGGER trg_membership_no_extend
+BEFORE UPDATE OF expires_at ON user_org_memberships
+WHEN OLD.expires_at IS NOT NULL AND OLD.expires_at <= CURRENT_TIMESTAMP
+BEGIN SELECT RAISE(ABORT, 'expired membership: delete then re-add'); END;
+```
 2. **授权展开**（含过期与停用，同一条 SQL）：
 
 ```sql
 SELECT dim.key, v.value
 FROM user_dimension_grants g
-JOIN dimensions       dim ON dim.id = g.dimension_id AND dim.org_id = :org
+JOIN dimensions       dim ON dim.id = g.dimension_id AND dim.org_id = :org AND dim.status = 'active'  -- 只展开 active 维度（#34 必修 1）
 JOIN dimension_values v   ON v.id   = g.value_id     AND v.status = 'active'   -- 停用取值=收紧（T3）
 WHERE g.user_id = :uid
   AND (g.expires_at IS NULL OR g.expires_at > :now)                            -- 过期授权即失效（T1）
 ```
 
-3. 对每个**已启用**的维度编译「文档取值集 ∩ 用户授权集 ≠ ∅」条件（维度间 AND、维度内 OR，D19）；**维度停用（enabled=0）仍参与过滤**（D5 方案 a——停用只免上传选值，撤过滤走"退役维度"权限事件）；**可选维度：有值则过滤、空值不过滤**（编译为 `json_each(...) IS NULL OR EXISTS(...)`——空值跳过、有值校验，T5）；无授权值的维度 → 整体不可见；
-4. owner 兜底分支**仅对无在用版本或处理中文档生效**（`d.active_version = 0 OR d.pending_version IS NOT NULL`——D22③，T17）。
-
-编译产物（示意——ACL 整体括号 + 外层约束 + **版本限定**，P0-2/P0-1）：
+3. 对每个 **`status='active'`** 的维度编译统一模板（#34 必修 1 方案 A + 必修 3——`json_each` 是表值函数不能 `IS NULL`）：
 
 ```sql
--- 组织 org:tax 内，用户 region=[CN, OVERSEAS]、tax_type=[VAT]；两维度均启用；文档维度多值（D19）
+( NOT EXISTS (SELECT 1 FROM json_each(c.dims_json, '$.k'))          -- 维度空值 → 不过滤（放行）
+  OR EXISTS (SELECT 1 FROM json_each(c.dims_json, '$.k') je
+             WHERE je.value IN (:grants_k)) )                        -- 有值 → 需与授权集有交集
+```
+
+**全部 active 维度统一"有值则过滤、空值不过滤"**（必选/可选、启用/停用无差别——required/enabled 不影响过滤，只管上传）；**用户在维度 k 无授权（:grants_k 为空集）→ 编译器直接生成 `NOT EXISTS(...)` 单条件**（该用户只能看到 k 为空的文档，非"整体不可见"——#34 必修 3；空集**禁止**生成 `IN ()` 语法）；`retired` 维度不生成条件（唯一放宽路径，走退役权限事件）；**新增维度时零存量文档消失**（全空值放行），回填即逐篇收紧（上传页与管理页对空值文档提示"待补维度"）；必选改可选、停用均不放宽（T4/T20）。
+4. **无 owner 分支**（#34 必修 2 推荐方案）：检索路径只有维度 ACL 一种语义；owner 查看自己处理中/在用文档走 `list_documents` 与文档详情接口（管理面，只返回元数据与状态，不返回块内容）——彻底消除"覆盖上传处理中窗口重新看到在用全文"的 T17/T21 越权路径。
+
+编译产物（示意——统一模板 + 外层约束 + 版本限定，#34 必修 1/2/3）：
+
+```sql
+-- 组织 org:tax 内，用户 region=[CN, OVERSEAS]、tax_type=[VAT]；两维度均 active；文档维度多值（D19）
 SELECT c.* FROM chunks c JOIN documents d ON d.id = c.doc_id
-WHERE ( ( EXISTS(SELECT 1 FROM json_each(c.dims_json,'$.region')   je WHERE je.value IN ('CN','OVERSEAS'))
-      AND EXISTS(SELECT 1 FROM json_each(c.dims_json,'$.tax_type') je WHERE je.value IN ('VAT')) )
-      OR (d.owner_user_id = :uid AND (d.active_version = 0 OR d.pending_version IS NOT NULL)) )  -- owner 兜底（受限）
+WHERE ( ( NOT EXISTS(SELECT 1 FROM json_each(c.dims_json,'$.region'))            -- region 空值放行
+          OR EXISTS(SELECT 1 FROM json_each(c.dims_json,'$.region') je WHERE je.value IN ('CN','OVERSEAS')) )
+      AND ( NOT EXISTS(SELECT 1 FROM json_each(c.dims_json,'$.tax_type'))
+          OR EXISTS(SELECT 1 FROM json_each(c.dims_json,'$.tax_type') je WHERE je.value IN ('VAT')) ) )
+      -- 无 owner 分支（必修 2）；无授权维度编译为 NOT EXISTS(...) 单条件（必修 3）
   AND c.version = d.active_version AND c.tombstone = 0     -- 只召回在用版本（P0-A/P0-2）
   AND d.org_id = 'org:tax' AND d.dataset_id IN (...) AND d.id IN (:doc_filter)
 -- FTS 路同构：FROM chunks_fts f JOIN chunks c ON c.rid = f.rowid JOIN documents d ... WHERE f.chunks_fts MATCH :q
@@ -429,7 +464,7 @@ WHERE ( ( EXISTS(SELECT 1 FROM json_each(c.dims_json,'$.region')   je WHERE je.v
 ```
 
 性能注（v0.4）：
-- **按文档计算备选（M0b 实验）**：`visible_docs` CTE 用**同一个授权展开函数**（第 2 步 SQL）先求可见文档集合，再 `WHERE c.doc_id IN (visible_docs)` 走 `uq_chunks_docver`——两条路径语义不漂移（#33 P0-1⑦）；胜出则删 dims_json；
+- **按文档计算备选（M0b 实验）**：`visible_docs` CTE 用**同一个授权展开函数**（第 2 步 SQL）先求可见文档集合，再 `WHERE c.doc_id IN (visible_docs)` 走 `uq_chunks_docver`——**基于 `document_dimensions` 写出等价语义**（文档在维度 k 无任何行，或有一行 value ∈ 授权集——与统一模板逐字等价，T5/T6/T22 两种写法都测，#34 必修 3）；胜出则删 dims_json；
 - `json_each` 不接受时备选维度物化列 + 索引（schema v2 预留）；
 - **rerank 前兜底断言 + 返回前二次断言**（防御纵深）。
 
@@ -457,7 +492,7 @@ query ─→ LLM 关键词增强（**800ms 硬预算、与原始召回并行**�
 
 ### 5.3 摄取管线与 worker（core/ingest.py + worker/runner.py）
 
-任务状态机：`pending → leased → running → (done | failed)`；worker 心跳 5s、租约 60s，租约过期任务可被重认领；`attempts ≥ 3` 进 failed 留人工。断点粒度 = 阶段（各阶段幂等，重跑从上一完成阶段续）。SQLite 写竞争治理（NFR-9）：`busy_timeout` + worker 短事务分批提交 + 审计异步批量写。
+任务状态机：`pending → leased → running → (done | failed)`；worker 心跳 5s、租约 60s，租约过期任务可被重认领；`attempts ≥ 3` 进 failed 留人工。断点粒度 = 阶段（各阶段幂等，重跑从上一完成阶段续）。SQLite 写竞争治理（NFR-9）：`busy_timeout` + worker 短事务分批提交 + **查询级审计异步写、权限事件走 outbox**（月库与业务写天然隔离——#34 4.5）。
 
 阶段编排（**P0-4 拆分：index_fts 先于 embed，BM25 即刻可搜**；upload 时新维度写 `pending_dims_json`、写权限校验在 upload 即做——P0-2.1）：
 
@@ -482,7 +517,7 @@ UPDATE chunks
  WHERE doc_id = :doc AND version = :old_version;
 UPDATE documents
    SET active_version = pending_version,
-       active_status  = pending_status,               -- searchable_full
+       active_status  = pending_status,               -- 首次切换=searchable_lexical；覆盖切换=searchable_full（#34 4.1）
        pending_version = NULL, pending_status = NULL, pending_error = NULL
  WHERE id = :doc AND pending_version = :expected_pending;   -- 乐观校验，防并发（P0-2.3/T7）
 -- 同事务：pending_dims_json 解析写入 document_dimensions（P0-2.1——v2 维度切换前不生效，T6）
@@ -505,7 +540,7 @@ COMMIT;
 ### 5.5 鉴权、身份与组织上下文（domain/auth.py + mcp/server.py）
 
 - **登录：企业 SSO（D16）**——token 验签（OIDC 优先，协议待需求待决-2 确认）→ 解析全局用户；**首次登录 JIT 建档**（`users` 表自动落库：id/username/display_name），管理员不建账号只配授权。
-- **agent 代人检索（D18）**：**委托 token（Token Exchange）**——`aud=knowledge-lattice`、短 TTL、`sub`=用户、`act`=agent 标识进审计；拒绝 token 原样透传与请求体权限字段。**降级（v0.3）**：IdP 不支持时走**可信子系统**——agent 服务自身凭证（mTLS/服务 token）须在服务白名单，请求头 `X-On-Behalf-Of: <user_id>` 声明用户，知识库校验白名单后按声明用户计权、双身份（服务+用户）进审计；数据模型与 D18 一致（弱化 act/sub）。**组织上下文来自 token claim / 请求头**——MCP 工具参数中的 org 一律忽略（LLM 可被诱导填他组织，issue #32 P1-6）。静态 token 仅开发/测试（含 CI）。
+- **agent 代人检索（D18）**：**委托 token（Token Exchange）**——`aud=knowledge-lattice`、短 TTL、`sub`=用户、`act`=agent 标识进审计；拒绝 token 原样透传与请求体权限字段。**降级（v0.3）**：IdP 不支持时走**可信子系统**——agent 服务自身凭证（mTLS/服务 token）须在服务白名单，请求头 `X-On-Behalf-Of: <user_id>` 声明用户，知识库校验白名单后按声明用户计权、双身份（服务+用户）进审计；数据模型与 D18 一致（弱化 act/sub）。静态 token 仅开发/测试（含 CI）。
 - **M0b 实测项（issue #32 P1-6）**：`langchain-mcp-adapters` 按用户切换委托 token 的客户端形态（每用户会话一个 client vs 自定义 transport 每请求注入头）、连接开销与 token 过期刷新。
 - **组织上下文统一规则（v0.4，D18）**：REST 用 `X-Org-Id` 请求头；MCP 以委托 token 的 `org` claim 优先（按组织签发、单值）、无 claim 时读运行时在连接/传输层注入的 `X-Org-Id` 头；两者并存且不一致 → 400；**工具参数中的 org 一律忽略并记审计**；缺失即 400，无隐式默认。逐请求按 §5.1 第 0 步（含过期）校验成员关系。
 - **可信子系统降级三条约束（v0.4，#33 P1-5）**：①白名单条目带 `allowed_orgs` + 按服务限流；②**用户在场证据**——请求附用户 SSO id_token/短期断言，校验 `sub` 与 `X-On-Behalf-Of` 一致（防服务凭证冒充离线用户）；③`X-Org-Id` 由运行时按用户会话注入。**有期限：上生产前必须切 Token Exchange 或落实②**（D18）。
@@ -563,7 +598,7 @@ COMMIT;
 //   ① agent 运行时（非 LLM）POST /api/uploads {filename,size,sha256,content_type} → {upload_id, upload_url, expires_at}
 //      （upload_url 短时有效、单次使用）
 //   ② 运行时 PUT 文件字节到 upload_url
-//   ③ LLM 调 upload(upload_id, ...)——校验属当前 sub、未过期、未使用、哈希匹配后进摄取
+//   ③ LLM 调 upload(upload_id, ...)——校验 sub、org、服务身份三者一致，且未过期、未使用、哈希匹配后进摄取（T11）
 //   共享存储场景：白名单根目录 + realpath 规范化 + 前缀校验 + 只读 + 大小/扩展名限制；不支持任意 URL 拉取
 
 // fetch —— "按 chunk_id 取该块前后相邻的内容窗口（先搜后读）。旧版本块返回替代提示。"
@@ -600,7 +635,7 @@ COMMIT;
 | GET/POST | /api/orgs/{org}/datasets | 知识库列表 / 新建（组织管理员） |
 | PATCH | /api/orgs/{org}/datasets/{id} | 库修改；**删除走服务层流程**（先删文档再删库——P1-1） |
 | GET/POST | /api/orgs/{org}/dimensions | 维度列表 / 新建 |
-| PATCH | /api/orgs/{org}/dimensions/{id} | 维度修改（enabled/required——降级语义见 D5 方案 a；**退役维度单独端点**） |
+| PATCH | /api/orgs/{org}/dimensions/{id} | 维度修改（enabled/required 仅影响上传，**不影响过滤**——D5 v0.4；生命周期 status 由退役端点管理） |
 | POST | /api/orgs/{org}/dimensions/{id}/retire | 退役维度（撤过滤的权限事件：影响面预估 + 二次确认 + 审计） |
 | GET/POST | /api/orgs/{org}/dimensions/{id}/values | 取值 CRUD；**停用走 PATCH status=disabled**（`dry_run` 返回影响面预估——FR-4） |
 | POST / DELETE | /api/orgs/{org}/documents | 上传（multipart 或携带 upload_id；校验库 + 必选维度 + 取值在本人授权内；覆盖带 doc_id）/ |
@@ -614,7 +649,7 @@ COMMIT;
 | POST | /api/orgs/{org}/documents/{id}/reindex | 手动重索引（M2） |
 | POST | /api/search | 检索（检索测试页；参数同 MCP search；组织经 `X-Org-Id`——本端点为例外，兼容检索页） |
 | POST | /api/uploads | **上传凭证签发**（{filename,size,sha256,content_type} → {upload_id, upload_url, expires_at}；**绑定 sub+org+服务身份**，#33 P1-3） |
-| PUT | /api/uploads/{upload_id} | **接收文件字节**（v0.4 补——Bearer 鉴权 + sub 一致；按声明 size 截断/拒绝、写盘后校验 sha256、全局上限 200MB；**M1 集成期实现**，人工 multipart 不依赖） |
+| PUT | /api/uploads/{upload_id} | **接收文件字节**（v0.4 补——Bearer 鉴权 + **校验 sub、org、服务身份三者一致**（与签发绑定，T11）；按声明 size 截断/拒绝、写盘后校验 sha256、全局上限 200MB；**M1 集成期实现**，人工 multipart 不依赖） |
 | GET | /api/orgs/{org}/audit | 审计查询（org_admin 全量 / 系统管理员仅元数据——FR-6 分级） |
 | POST | /api/dev/token | 签发静态 token（**仅 dev/test 配置注册该路由，生产环境 404**——P1-7；只能给自己签或系统管理员签发） |
 
@@ -692,7 +727,7 @@ COMMIT;
 
 - **单元**：ACL 编译器（括号化 AST 断言/多值/状态过滤【过期/停用/成员关系过期】/owner 受限/可选维度有值则过滤）；**连接工厂外键断言（插孤儿行抛 IntegrityError）**；FTS5 MATCH 转义（`"`→`""`/`*`/`NEAR`/`AND`/`-`）；RRF 与归一；切分边界（表格整块/Excel 行块含表头）；**切换 SQL 后 FTS 无 tombstone 内容**；凭证流（size 截断/sha256 校验/过期/绑定）；
 - **集成**：摄取→检索端到端（searchable_lexical 中间态）、版本切换原子性（并发 409/失败删块/回写防护）、任务租约重认领、触发器同步无幽灵命中、迁移 foreign_key_check；
-- **越权用例集（CI 常跑）**：原矩阵（用户授权 × 文档维度多值 × 库过滤 × 可选维度空值 × 新增必选未回填 × 移出重加 × 跨组织 × MCP 统计）+ v0.3 四组（版本中间态/删维度取值/PATCH 越权/CSV）+ **T1~T19（#33 §6，逐条对应修复项）**：T1 过期授权清理未跑仍不可见；T2 成员续期不复活旧授权；T3 停用取值收紧；T4 维度改可选/停用按 D5 方案 a 不放宽；T5 可选维度有值则过滤；T6 v2 改维度切换前后无双方可见（两种 ACL 写法都测）；T7 并发覆盖 409；T8 失败版本无 FTS 残留；T9 切换后 FTS 层面无旧版本命中；T10 待嵌入清单不含 tombstone；T11 凭证跨组织无效；T12 PUT 超量/哈希不符拒绝；T13 可信子系统越界/冒充拒绝并审计；T14 org claim 与头不一致 400；T15 他组织维度 id 403/404；T16 生产配置 token 端点 404；T17 授权撤销后 owner 不再见在用文档；T18 报告页近邻不泄露无权内容；T19 删文档/删库按定义成功或明确报错（非裸外键异常）；
+- **越权用例集（CI 常跑）**：原矩阵（用户授权 × 文档维度多值 × 库过滤 × 可选维度空值 × 新增必选未回填 × 移出重加 × 跨组织 × MCP 统计）+ v0.3 四组（版本中间态/删维度取值/PATCH 越权/CSV）+ **T1~T19（#33 §6，逐条对应修复项）**：T1 过期授权清理未跑仍不可见；T2 成员续期不复活旧授权；T3 停用取值收紧；T4 维度改可选/停用按 D5 方案 a 不放宽；T5 可选维度有值则过滤；T6 v2 改维度切换前后无双方可见（两种 ACL 写法都测）；T7 并发覆盖 409；T8 失败版本无 FTS 残留；T9 切换后 FTS 层面无旧版本命中；T10 待嵌入清单不含 tombstone；T11 凭证跨组织无效；T12 PUT 超量/哈希不符拒绝；T13 可信子系统越界/冒充拒绝并审计；T14 org claim 与头不一致 400；T15 他组织维度 id 403/404；T16 生产配置 token 端点 404；T17 授权撤销后 owner 不再见在用文档（**检索路径无 owner 分支——#34 必修 2**）；T18 报告页近邻不泄露无权内容；T19 删文档/删库按定义成功或明确报错（非裸外键异常）；**T20~T23（#34 §5）**：T20 新建维度零文档消失、回填只收紧、必选改可选/停用不放宽、仅退役放宽且必有审计（**M0a 编译器单测**）；T21 授权已撤销的 owner 发起覆盖上传，处理中窗口检索不到该文档任何版本（**M1 越权矩阵**）；T22 用户在某维度无授权 → 只见该维度为空的文档；授权集为空时编译产物不出现 `IN ()`（**M0a 编译器单测**）；T23 对已过期成员关系 UPDATE expires_at 被触发器拒绝；先删再加后旧授权不复活（M1）；
 - **评测**：M1 小型黄金集 → M3 门禁；
 - **性能抽测**：~10 万块 P95（按块 vs 按文档、同表 vs 分表）、rerank 并发、嵌入吞吐（M0b/M1 各一轮，驱动 schema v1.1 与 NFR-8 标定）。
 
