@@ -1,24 +1,24 @@
 # knowledge-lattice 需求文档
 
-> 版本：v0.4（2026-10-17 收口修订：吸收 [issue #33](https://github.com/yq3/lab/issues/33) 全量评审——P0×2【权限状态进计算/版本在用制闭环】+ P1×12 + P2×50 + T1~T19 测试矩阵。**本轮为冻结前最后一轮文档修订**，此后问题走测试用例与 issue 跟踪）
-> 日期：2026-10-16 初稿 → v0.2（#31）→ v0.3（#32）→ v0.4（#33，冻结版）
-> 来源：需求澄清对话沉淀；技术依据 [enterprise-rag 调研](../../research/enterprise-rag/)；评审依据 issue #31/#32/#33
+> 版本：v0.5（2026-10-18 D23 修订：吸收 [issue #35](https://github.com/yq3/lab/issues/35) 决策变更——**业务语义层并入**：新增 D23 取代 D17 部署形态、FR-S1~S6、NFR-11、M2-S1~S3 里程碑、T-S1~T-S12 测试；**不影响 v0.4 冻结的必修 1~3 任何结论**。冻结纪律延续：仅在决策变化时修改文档，本次即 v0.4 冻结后首个决策变更）
+> 日期：2026-10-16 初稿 → v0.2（#31）→ v0.3（#32）→ v0.4（#33+#34，冻结版）→ v0.5（#35，D23 决策变更）
+> 来源：需求澄清对话沉淀；技术依据 [enterprise-rag 调研](../../research/enterprise-rag/)；评审依据 issue #31/#32/#33/#34/#35
 > 阅读顺序建议：本文 → [docs/design.md](./design.md)（方案设计）
 
 ---
 
 ## 1. 项目定位
 
-**一句话**：私有化部署的企业内部知识库系统（本体）+ RAG 检索能力（能力面），**消费者以 Agent（deepagents）为主、人工检索测试为辅**。
+**一句话**：私有化部署的**企业知识层（通用平台）**——领域无关，首个落地场景为税务（属应用而非产品边界）；提供**文档知识**（知识库本体 + RAG 检索能力面）与**业务语义**（术语识别、业务对象及其关联——D23），以单一服务、单一 MCP server 提供给 Agent，**消费者以 Agent（deepagents）为主、人工检索测试为辅**。
 
 四个定位要点：
 
 1. **本质是知识库，不是 RAG 引擎**。核心资产是文档、权限、维度元数据与摄取管线（canonical 真相）；向量索引只是可重建的投影，检索配方是可替换的能力层。这决定了存储与治理优先于检索花活。
 2. **agent 住客户端，知识库做工具服务器**（quivr V2 的反转姿态）：不在本系统内做 agent 循环、聊天界面、workflow 编排；把检索、溯源、鉴权做成值得 agent 信赖的 MCP 工具面。
 3. **轻量自建，不做平台**。调研结论：开源五平台（ragflow/dify/anything-llm/quivr/kotaemon）的文档级权限全部缺位、面向人的产品面本需求用不上；自建薄服务可全部覆盖「检索质量 + 治理 + 工具面」三件事。
-4. **双层知识供给中的文档知识层（2026-10-16 重定位）**。企业 agent 需要两类知识：**术语理解**（黑话/名词概念/模板名/报表项/表字段映射——结构化条目，精确匹配为主）由姊妹项目 [glossary-agent](../../glossary-agent/) 承担（AC 自动机词典 + 三层渐进披露 + Git YAML/PR 治理）；**文档知识**（政策/操作指南等非结构化内容的语义检索）由本系统承载。两层并行建设、MCP 并挂集成，分工与集成决策见 D17。
+4. **知识层归一：文档知识 + 业务语义同服务（2026-10-18 D23 重定位，取代 2026-10-16「双层分立」口径）**。企业 agent 需要两类知识：**文档知识**（政策/操作指南等非结构化内容的语义检索与维度权限）与**业务语义**（术语识别 + 业务对象关联——概念/系统名词/场景/模板/模板字段/报表项/表/列组成的**类型化对象图**）。v0.4 曾将术语层定为独立的 glossary-agent MCP server（D17）；D23 将其并入本系统 `core/semantic/` 模块——**同一服务、同一 MCP server、同一套部署**，避免知识管理分散在多个服务。[glossary-agent](../../glossary-agent/) 项目转为调研与设计沉淀，其 AC 自动机精确匹配、三层渐进披露、Git YAML/PR 治理、四类黑话分治等结论是 semantic 模块的设计输入。**非目标（D23）**：GraphRAG（不用 LLM 抽取实体与关系、不生成社区摘要——关系本来就写在业务系统配置里）、图数据库（10⁴~10⁵ 节点、1~2 跳查询，SQLite 递归 CTE 足够）、元数据系统全量镜像（表/列只存轻量节点作关系端点，详情实时透传）。
 
-性质与投入：lab 仓库 POC 先行，验证后拆仓演进；**全职投入**，MVP 预估 7~8 周（§8）。
+性质与投入：lab 仓库 POC 先行，验证后拆仓演进；**全职投入**，MVP 预估 7~8 周（§8）；业务语义层按 M2 并行轨道（M2-S1~S3）推进，**不改变 M0a/M0b/M1 的冻结范围与节奏**（D23）。
 
 ## 2. 背景与调研基础
 
@@ -32,7 +32,7 @@
 | 中文 BM25 引擎分野 + FTS5 无内置中文分词（dim03） | SQLite FTS5 + jieba 预分词方案，M1 用真实 query 验证中英混排效果 |
 | 控制面/数据面分离、摄取任务化、索引可重建是五平台共识（dim01） | 单进程 + worker 子进程 + 任务表的最小实现 |
 | OneRAG（126⭐，MIT）评估：形似神不似 | 不采用；借鉴两处——MCP server 模块结构、PDF 解析质量门（mojibake 检测三档处置） |
-| **glossary-agent 设计**（lab 仓库，2026-09：Anthropic 16 篇深读 + ChatBI 语义层模式）：术语层方案已完成、POC 未启动；Anthropic Contextual Retrieval 双侧互证（BM25 利短术语 / hybrid+rerank 利文档） | 本系统定位为双层知识供给的**文档层**，与术语层（glossary-agent）并行建设、deepagents 双 MCP 并挂集成（D17）；表名字段名类走术语侧活查询，不进本系统 |
+| **glossary-agent 调研**（lab 仓库，2026-09：Anthropic 16 篇深读 + ChatBI 语义层模式）：术语层设计沉淀；Anthropic Contextual Retrieval 双侧互证（BM25 利短术语 / hybrid+rerank 利文档） | **D23 吸收为 `core/semantic/` 的设计输入**（AC 自动机精确匹配、三层渐进披露、Git YAML/PR 治理、四类黑话分治）；独立部署形态取消，并入本系统单一 MCP server；表/列只存轻量节点，详情实时查元数据系统 |
 
 ## 3. 用户与场景
 
@@ -41,7 +41,8 @@
 | 上传者 | 企业员工，经上传页面（或 agent 代传）投喂文档：先选知识库，再选数据维度，查看处理状态与质量报告 |
 | 检索用户（人） | 经检索测试页做简单检索验证（上传后自查），可按知识库过滤；不是聊天问答界面。**同一用户可属多个组织**，在界面上切换组织（左上角），角色与维度授权随组织切换 |
 | **Agent（deepagents）** | 企业内部独立部署的 agent 服务（LangChain 系），LLM 走企业内部网关；经 MCP 调用本系统，**代人检索**——请求携带所代表用户的身份 |
-| 组织管理员 | 组织内管理知识库、维度定义、用户与维度授权 |
+| 组织管理员 | 组织内管理知识库、维度定义、用户与维度授权；M2-S 起兼管语义层同步记录与冲突报告（`semantic:admin`） |
+| 语义维护者（D23） | 业务/数据同学：经 Git PR 维护术语的别名、缩写、定义、口径、消歧说明与示例（FR-S2，每条必填 `owner`）；不手抄业务系统数据（骨架自动同步）。过渡期（M2 前）即开始积累 YAML |
 | 系统管理员 | 跨组织：创建组织、指定组织管理员 |
 
 量级：数百用户；语料百万 chunk 以下（超出则走存储升级缝，见 NFR-5）。
@@ -73,7 +74,7 @@ agent（MCP，带    │   + LLM 增强（800ms 并行，第三路 BM25）→ RR
 
 ## 5. 功能需求
 
-优先级标注：〔M0〕骨架周 /〔M1〕核心能力 /〔M2〕生产化 /〔M3〕质量防线（对应 §8 里程碑）。
+优先级标注：〔M0〕骨架周 /〔M1〕核心能力 /〔M2〕生产化 /〔M2-S1~S3〕业务语义并行轨道（D23）/〔M3〕质量防线（对应 §8 里程碑）。
 
 ### FR-1 文档摄取〔M0 骨架，M2 生产化〕
 
@@ -133,18 +134,19 @@ agent（MCP，带    │   + LLM 增强（800ms 并行，第三路 BM25）→ RR
 
 ### FR-5 接口面〔M0 MCP，M1 页面〕
 
-- **MCP server**（FastMCP）：四个工具，工具描述按「写给 LLM 看」的纪律撰写（kotaemon DocSearchTool 样板）：
+- **MCP server**（FastMCP，**单一 server 按 docs / semantic 两组注册——D23**）：docs 组四工具（M0~M1），工具描述按「写给 LLM 看」的纪律撰写（kotaemon DocSearchTool 样板）：
   - `search(query, top_k=8 ≤20, datasets?, doc_filter?)`：完整检索配方 + 维度过滤，可限定知识库，返回带溯源字段的命中块（**top_k 服务端硬上限 20**——防一次拖库）；
   - `fetch(chunk_id, window?)`：按 chunk_id 取上下文窗口（前后 N 个 chunk）——支持 agent「先搜后读」剧本；旧版本 tombstone chunk 返回替代提示（FR-1）；
   - `upload(upload_id, dataset, dimensions, doc_id?, title?)`：投摄取任务到指定知识库——**只收不透明 `upload_id`**（凭证由 `POST /api/uploads` 签发，**绑定 sub+org+服务身份**；FR-1 三步式；路径/URL 一律不接受——SSRF 与任意文件读取防线）；覆盖更新显式带 doc_id；返回 task_id/doc_id。**工具参数不含 org 与 filename**（org 来自 token claim；filename 以声明阶段为准）；
   - `list_documents(datasets?, active_status?)`：列出权限内文档（可按库）与状态（**四字段：`active_version/active_status/pending_version/pending_status`**——在用与处理中双态并列，「先看有什么再搜」剧本）。
+  - **semantic 组四工具（M2-S 起，D23；契约见 design §6.3）**：`annotate`（识别文本中的术语与业务对象）/ `search_entities`（按名称、别名、描述查实体）/ `get_entity`（实体详情 + 类型化关系展开）/ `describe_table`（透传元数据系统查表列详情）；`search` 同步新增 `entities` / `auto_entities` 参数、返回块附 `matched_entities`（FR-S3~S6）。
   - 工具描述动态注入当前组织的知识库与维度概况，**概况与 `list_documents` 的所有统计（doc_count/chunk_count 等）按调用者权限计算**——不可见文档的存在与数量不得泄露（issue #31 P1-8）；检索参数（权重/阈值类）服务端固定，不对 LLM 暴露噪音旋钮（ragflow 反面教训）。
-- **REST**：upload / task status / search / admin（组织、知识库、维度、授权、用户、任务管理）。
+- **REST**：upload / task status / search / admin（组织、知识库、维度、授权、用户、任务管理）；semantic（FR-S——D23，`/api/orgs/{org}/semantic/...`，design §6.2）。
 - **检索测试页**（薄壳静态页，FastAPI 托管）：输入 query 看命中块与溯源，可按知识库过滤——服务上传者自查，不是聊天产品；UI 永远是薄壳，检索 API 契约先行稳定（quivr 教训）。
 
 ### FR-6 治理〔M2〕
 
-- 审计：**按月分库**（`audit_YYYYMM.db`——当月可追加、过月封存只读、到期整文件删除；哈希链按月分段、每月首条引用上月末哈希，**月库的建表与 append-only 触发器由连接工厂在月库滚动时创建**，月库也必须走连接工厂），**覆盖查询级**（谁/何时/查了什么/返回哪些来源）；**一致性（v0.4，issue #33 P1-4）**：权限事件类审计走 **outbox**（业务库同事务写 `audit_outbox`，后台搬月库——"业务改了就一定有审计"）；查询级审计异步写，可接受丢失窗口 ≤ 5s；如需防篡改加哈希链（链头定期锚定外部）；**审计访问分级**：org_admin 本组织全量；**系统管理员仅元数据**（查询词与命中详情不含，确需看内容走审批 + 临时授权）；**保留期 12 个月**；导出/看板对查询词做关联脱敏。
+- 审计：**按月分库**（`audit_YYYYMM.db`——当月可追加、过月封存只读、到期整文件删除；哈希链按月分段、每月首条引用上月末哈希，**月库的建表与 append-only 触发器由连接工厂在月库滚动时创建**，月库也必须走连接工厂），**覆盖查询级**（谁/何时/查了什么/返回哪些来源）；**一致性（v0.4，issue #33 P1-4）**：权限事件类审计走 **outbox**（业务库同事务写 `audit_outbox`，后台搬月库——"业务改了就一定有审计"）；查询级审计异步写，可接受丢失窗口 ≤ 5s；如需防篡改加哈希链（链头定期锚定外部）；**审计访问分级**：org_admin 本组织全量；**系统管理员仅元数据**（查询词与命中详情不含，确需看内容走审批 + 临时授权）；**保留期 12 个月**；导出/看板对查询词做关联脱敏。**语义层事件（D23）**：同步（`semantic.sync`）、构建与 YAML 合并、`restricted` 实体访问属权限事件走 outbox；`annotate` / `get_entity` 普通查询走查询级异步审计，与 docs 查询审计共用月库。
 - 凭据：模型 key、内部网关凭据走环境变量/secret store，不明文存库（ragflow 反面教材）。
 - 出墙：自建零 telemetry，天然干净；依赖清单上线前过一遍出墙体检。
 
@@ -156,11 +158,22 @@ agent（MCP，带    │   + LLM 增强（800ms 并行，第三路 BM25）→ RR
 - judge：内部网关 LLM；judge prompt 双语设计，上线前 ~50 条人工双评校准 judge-人一致性（中文场景硬前提）。
 - M3：deepeval pytest 断言挂 CI 做变更防护；在线弱信号（引用锚点：引用不存在 ID = 幻觉证据）抽样打标。
 
+### FR-S 业务语义层〔M2-S1~S3，D23〕
+
+> 完整设计见 [design.md](./design.md) §4（`sem_*` DDL）/ §5.8~5.10 / §6.3；决策依据 D23（[issue #35](https://github.com/yq3/lab/issues/35)）。定位：术语层与业务对象关联统一建模为**类型化对象图**（属性图：实体 + 有类型的关系），与文档层**共享基础设施**（SQLite 连接工厂、鉴权与组织上下文、审计 outbox、worker 框架、MCP 外壳），**不共享领域模型，也不共享维度 ACL 编译器**。实体类型九种：`concept` / `system`（纯人工，YAML）、`scenario`（场景配置中心）、`template` / `template_field`（模板中心）、`report` / `report_item`（报表中心）、`table` / `column`（元数据系统，轻量节点）。
+
+- **FR-S1 骨架同步〔M2-S1〕**：同步适配器（`template_center` / `scenario_config` / `report_center` / `metadata`）**每日自动**拉取骨架（名称、编码、层级、关系）——业务系统里已有的数据**不手抄进 YAML**（会过期且与源系统打架）；输出始终是"当前快照"，幂等 upsert、**只写骨架列**；**删除比例保护**：快照相对库内该来源 active 实体的消失比例超阈值（默认 20%）→ run 置 `aborted_guard`、零写入、告警；**missing 宽限期**：源端消失先标 `missing`，默认 7 天后转 `retired`（关系一并 retired），防源端接口偶发空返回清空图；`metadata` 适配器**只拉被 `backed_by` / `maps_to` 引用到的表与列**（加 YAML 显式列出的），不全量镜像。每次 run 落 `sem_sync_runs` 记录 + 审计 outbox 事件 `semantic.sync`。
+- **FR-S2 YAML 覆盖层〔M2-S2〕**：人工内容（别名、缩写、定义、口径、消歧说明、示例、`l0` 标记、`sensitivity`）放 **Git YAML** 经 PR 评审（评审、可追溯、CI 校验、后续可加管理页代提 PR——真相源仍是 Git）；YAML 是**覆盖层**，按 `type:key` id 挂到同步来的骨架上，**同步永不覆盖人工字段**（由列级分工保证：同步只写 `name/attrs_json/parent_id/status/synced_at`，从不写 `curated_json` 与 `manual/abbr` 别名）；纯人工实体只允许 `concept` / `system`；覆盖层引用未同步或已 retired 的 id → 不写入、记冲突、CI 警告，实体恢复后自动生效；`extra_relations` 可人工补源系统缺失的关系（与同步重复时以同步为准并提示可删）。**CI 校验**：JSON Schema、别名冲突（同名别名须有消歧说明或标 `match_mode: context`）、短于 2 字或常用词拦截（除非 `context` / `fuzzy_only`）、引用可解析、**L0 总 token 预算（默认 1500）**、每条必填 `owner`。
+- **FR-S3 术语识别（`annotate`）〔M2-S2；模糊兜底 M2-S3〕**：三层识别——**第 1 层 AC 自动机**（确定性、必跑，服务端 P99 < 5ms）：文本规范化与 `alias_norm` 同规则（NFKC、全半角、小写）→ 最长匹配（重叠留长、等长按 `weight`）→ 歧义消解顺序「同句共现实体有 1 跳关系 → 会话焦点 `context_entities` → 调用方 `prefer_types` → 返回全部候选标 `ambiguous`」；`match_mode='context'` 的短别名仅在同句有其他确定命中且有关系时保留。**第 2 层 agentic**：第 1 层未命中但 agent 判断有业务对象时自主调 `search_entities`（不在 annotate 内执行）。**第 3 层模糊兜底**（`fuzzy=true` 才跑）：对 jieba 词性筛选的名词片段依次做拼音完全匹配、编辑距离 ≤1（仅长度 ≥4 别名）、向量近邻 top-3（阈值 0.75）——结果 `via='fuzzy'`、置信度低于第 1 层，**中间件不自动注入**，只作候选提示。**概念分级（继承 D17）**：L0 核心进 system prompt（构建期导出 `/l0`）、L1 命中时注入、L2 经工具按需查询。
+- **FR-S4 关系展开（`get_entity`）〔M2-S1〕**：递归 CTE 类型化展开——`expand` 指定关系类型（可带方向后缀 `>` / `<`），**深度 ≤ 2 服务端强制**、路径防环、**高扇出截断**（每节点默认 50、上限 200，结果标 `truncated=true`）、节点上限 500（默认 200）；`include` 控制返回 `curated` / `attrs` / `aliases`。关系类型**白名单**十种（`uses` / `has_field` / `backed_by` / `maps_to` / `has_item` / `child_of` / `derived_from` / `has_column` / `refers_to` / `related_to`，含端点类型约束）由代码常量 + 触发器双重校验，关系行端点不可原地修改；**新增关系类型属 schema 变更，走迁移脚本**。
+- **FR-S5 实体召回〔M2-S3〕**：`search` 新增 `entities`（实体 id 列表 ≤20）与 `auto_entities`（服务端先对 query 跑第 1 层识别）参数——种子实体经 `semantic.expand`（1 跳、默认只沿 `refers_to` / `has_field` / `maps_to` / `related_to` 低扇出关系，集合 ≤50）得实体集合，新增**实体召回路**（`sem_chunk_entities` 命中数加权：种子 1.0、扩展 0.5）与 FTS 路、向量路做 RRF 融合后进 reranker；返回块附 `matched_entities` 供 agent 解释召回原因。**ACL 不变式：实体召回路必须使用与 FTS 路、向量路同一个维度 ACL 编译产物**，语义层只提供实体 ID，不给文档可见性开任何后门（T-S8：三路并集 ⊆ 用户可见块集合）。依赖 **ingest 打标**：分块后用当前 ready 的 AC 自动机只做第 1 层打标（与块写入同事务），失败不阻断 ingest（记 warning 交 `semantic_retag` 补做）；版本切换与删块时 docs **同事务**调 `semantic.untag(doc_id, version)`，另有定时对账兜底。**默认开启条件**：docs 黄金集上开/关实体召回路的 recall@10 与 MRR **不回退**，否则保持可选参数。
+- **FR-S6 表列详情透传（`describe_table`）〔M2-S1〕**：表/列详情（列类型、样例值、分区、血缘）**真相在元数据系统、不落库**——工具用服务身份实时透传，**只对已登记为 `table` 实体的表开放**（防 agent 借此枚举整个数仓）；超时默认 3s + 短期缓存 5 分钟；元数据系统不可用时返回轻量节点信息并附 `degraded=true`。元数据系统本身有表级权限时改用委托 token（RFC 8693）透传用户身份，与 D18 一致。
+
 ## 6. 非功能需求
 
 | # | 需求 | 口径 |
 |---|---|---|
-| NFR-1 | 部署形态 | 企业内网 Linux 服务器，**无 GPU**；**零中间件**：目标形态 = 1 个 FastAPI 进程 + 1 个 worker 子进程 + 1 个 SQLite 文件，无任何外部常驻服务（TEI/MinerU 容器是升级路径不是依赖） |
+| NFR-1 | 部署形态 | 企业内网 Linux 服务器，**无 GPU**；**零中间件**：目标形态 = 1 个 FastAPI 进程 + 1 个 worker 子进程 + 1 个 SQLite 文件，无任何外部常驻服务（TEI/MinerU 容器是升级路径不是依赖）；**业务语义层并入后形态不变**（同进程、同库 `sem_*` 前缀表，不新增独立服务与图数据库——D23） |
 | NFR-2 | 容量 | **一期目标 ~10 万 chunk、数百用户**并实测延迟；**100 万 chunk 为触发存储升级缝（pgvector/milvus）的阈值而非 MVP 承诺**（1M×1024 维 float32 ≈ 4GB 全量扫描不可持续）；sqlite-vec 暴力扫描，配合 ACL 先过滤减扫描量，大权限用户接近全量需实测 |
 | NFR-3 | 嵌入吞吐 | 无 GPU 下初始批量建索引以天计的量级风险：摄取必须分批 + 阶段拆分（index_fts 先行，FR-1）使 BM25 即刻可搜；评估 int8/bit 量化（sqlite-vec 支持）配合 rerank 补精度 |
 | NFR-4 | 可二改性 | 代码量控制在团队能读完、能改的程度；存储访问收敛在 repository 接口后（hybrid_search / insert / delete_by_doc）；**禁止绕过 store/db.py 连接工厂直连 SQLite**（外键/PRAGMA/扩展加载的一致性——issue #32 P0-B） |
@@ -170,6 +183,7 @@ agent（MCP，带    │   + LLM 增强（800ms 并行，第三路 BM25）→ RR
 | NFR-8 | 性能 SLO | `search` P95 ≤ 2s（口径：N=5 并发、~10 万块）。**延迟预算表（v0.4，#33 P1-9）**：query 嵌入 ≤150ms + 双路召回 ≤300ms + rerank ≤1000ms + 其余 ≤200ms + LLM 增强 800ms 硬预算并行（超时丢弃；增强结果作 RRF 第三路 BM25，不重做向量召回）；**双降级开关**：rerank 输入截断 256 token；P95 超标时候选 32→16。rerank 候选 32；ONNX Runtime + int8；CPU 推理进线程/进程池 |
 | NFR-9 | 资源预算 | 机器规格：主进程与 worker 各加载一份模型（嵌入+reranker+docling），峰值预估 6~8 GB——**最低 16 GB RAM / 8 核**；SQLite 并发：WAL + `busy_timeout` + worker 短事务 + 审计异步批量（按月分库后天然隔离写竞争） |
 | NFR-10 | 备份恢复 | SQLite `VACUUM INTO` / online backup 定时快照 + `data/objects/` 一并备份；**RPO ≤ 24h、RTO ≤ 4h**（POC 目标）；恢复演练进 runbook |
+| NFR-11 | 语义层性能与隔离（D23） | `annotate` P99 < 20ms（服务端，不含网络；其中 AC 层 P99 < 5ms）；`get_entity` depth=2 P99 < 50ms；**同步删除比例保护**（默认 20% 阈值 → `aborted_guard` 零写入 + 告警）；**语义同步 / 构建 / 重标故障不影响 docs 检索可用性**（独立 worker 任务类型 + 限速分批 ≤1000 行/批 + 夜间错峰 + 中间件降级：annotate 超时 200ms 本轮跳过注入）；SQLite 写锁竞争治理详见 design §2 |
 
 ## 7. 已锁定的决策记录
 
@@ -191,14 +205,15 @@ agent（MCP，带    │   + LLM 增强（800ms 并行，第三路 BM25）→ RR
 | D14 | OneRAG | 不采用，列为参考实现（MCP 模块结构 + PDF 质量门两处借鉴） | 形似神不似：缺维度 ACL/中文/结构化解析，路线相反（广度适配 vs 单栈深度） |
 | D15 | 知识库模型 | 多知识库：dataset 挂组织、文档挂库；库是业务分组与管理单元，**不承担权限**（权限仍按文档维度）；检索支持按库过滤 | 用户确认需要多知识库；库级权限是维度过滤特例，权限职责归维度模型避免双重体系 |
 | D16 | 权限来源（v0.2 深化） | **身份走 SSO 透传验签；授权数据按维度声明真值源**（`grant_source`：语义匹配业务系统的维度只读同步、其余本地维护——POC 全 local 但字段与主数据编码先行）；**执行永远在本系统引擎内下推**；同步幂等全量替换、**CSV 替换只清 local**、失败保旧快照；上生产前切换同步维度并把成员关系对接 HR/SSO | issue #31 §4：真值源+本地投影（方案 D）优于实时查询与信任 agent 权限字段 |
-| D17 | 双层知识供给架构（2026-10-16） | agent 知识分两层：**术语层归 glossary-agent**（Git YAML+PR 治理、AC 自动机精确匹配、三层渐进披露），**文档层归本系统**（混合检索+维度 ACL）；表名字段名类（真值在源系统、高频变、量大）走术语侧 MCP 活查询数据字典、**不静态导入**任一侧；集成 = deepagents 并挂两个 MCP server（演进缝：本系统加载术语运行时投影统一暴露，Git 真值源不动）；L0 常驻核心术语表由术语库构建期导出进 agent system prompt | 用户确认两类需求并存（黑话词典 + 政策文档）；两轮调研互证（Anthropic Contextual Retrieval：BM25 利短术语、hybrid+rerank 利文档）；不合并系统以保 glossary 的 Git 治理闭环 |
+| D17 | 双层知识供给架构（2026-10-16；**v0.5：部署形态已被 D23 取代**） | agent 知识分两层：**术语层归 glossary-agent**（Git YAML+PR 治理、AC 自动机精确匹配、三层渐进披露），**文档层归本系统**（混合检索+维度 ACL）；表名字段名类（真值在源系统、高频变、量大）走术语侧 MCP 活查询数据字典、**不静态导入**任一侧；集成 = deepagents 并挂两个 MCP server（演进缝：本系统加载术语运行时投影统一暴露，Git 真值源不动）；L0 常驻核心术语表由术语库构建期导出进 agent system prompt。**（v0.5/D23：本决策中「glossary-agent 为独立 MCP server」「运行时投影为演进点」两条部署形态已被 D23 取代——术语层并入本系统 `core/semantic/`，单一 MCP server；四类黑话分治、三层识别、L0/L1/L2 分级、表列详情真相在元数据系统等内容保留并入 D23）** | 用户确认两类需求并存（黑话词典 + 政策文档）；两轮调研互证（Anthropic Contextual Retrieval：BM25 利短术语、hybrid+rerank 利文档）；不合并系统以保 glossary 的 Git 治理闭环（**D23 修订：Git 治理闭环保留——YAML 仍为人工内容真相源，变的只是部署形态**） |
 | D18 | agent 身份传递（v0.2，取代 D8；v0.4 补统一规则与降级约束） | **委托 token（OAuth 2.0 Token Exchange，RFC 8693）**：`aud=knowledge-lattice`、短 TTL、`sub`=用户、`act`=agent 标识进审计、**`org` claim 单值（按组织签发）**；禁止 token 原样透传与请求体权限字段；静态 token 仅开发测试。**组织上下文统一规则（v0.4）**：REST=`X-Org-Id` 头；MCP=token org claim 优先、运行时注入头兜底；两者不一致→400；工具参数 org 一律忽略并记审计。**降级（可信子系统）三条约束（v0.4，#33 P1-5）**：①白名单条目带 `allowed_orgs` 作用域 + 按服务限流；②**用户在场证据**——请求同时附用户 SSO id_token/短期断言，校验 `sub` 与 `X-On-Behalf-Of` 一致（防服务凭证冒充离线用户）；③`X-Org-Id` 由运行时按用户会话注入不经 LLM。**可信子系统为有期限方案：上生产前必须切 Token Exchange 或落实②** | issue #31 §5 + #32 P1-6 + #33 P1-5/P1-6 |
 | D19 | 文档维度多值（v0.2；v0.3 补停用语义） | 文档维度取值集合化（如 region ∈ {CN, OS}），与用户侧多值授权对称；**内容混杂不同维度数据的文档仍拆分上传（D4 保留）**；重复检测 = (dataset_id, content_hash) 粗筛 + 服务层比对维度，默认只提示不拦截。**停用取值语义 = 收紧**（视为"存在但无人被授予"，非"取值消失"放宽） | issue #31 P0-5 + #32 P0-C |
 | D20 | 评审修订包 #31（v0.2） | 五项 P0 修复：①向量 BLOB 列 + ACL 过滤后算距离；②ACL 编译器括号化 + AST builder；③FTS5 重做（整数主键/分列加权/同步触发器/MATCH 转义）；④摄取阶段拆分（index_fts 先于 embed）；⑤D19 多值。**版本切换时机（v0.3 补）**：首次上传 `searchable_lexical` 即切换在用；覆盖上传等新版本 `searchable_full` 再切换 | issue #31 §3；切换时机见 issue #32 P0-A |
 | D21 | 写路径安全包（v0.3，issue #32） | ①**版本在用制**（active/pending 版本分离，任意时刻检索只见在用版本，切换事务化）；②**SQLite 每连接 `PRAGMA foreign_keys=ON`**（连接工厂统一设置+断言，禁止绕过）；③**维度外键 RESTRICT + 取值字面量不可变触发器**（级联删除禁止绕过权限事件，停用走收紧流程）；④**上传凭证制**（`POST /api/uploads` 签发 upload_id，MCP 只收不透明 ID；共享存储白名单 + realpath；不接受任意 URL——SSRF/任意文件读取防线） | issue #32 P0-A/B/C/D：v0.2 的风险从检索侧转移到写路径（版本中间态/级联/外部输入） |
 | D22 | 收口包（v0.4，#33；**#34 冻结复审修订**） | ①**权限状态全部进 ACL 计算**（授权/成员关系过期、取值停用；**维度生命周期与过滤解耦——status(active/retired) 唯一开关，统一"有值过滤/空值放行"，见 D5**；`visible_docs` 备选与主路径同一展开函数且逐字等价）；②**版本在用制闭环**（pending_dims_json、active_status/active_error、并发 409、失败删块、回写防护、版本号不复用、切换清 FTS 列）；③**检索路径无 owner 分支**（owner 走管理面元数据——#34 必修 2）；④SLO 预算表 + 双降级开关；⑤REST 路径统一 `/api/orgs/{org}/...`；⑥审计 outbox（事务一致）；⑦M0 拆 M0a/M0b；⑧外键动作补齐；⑨区分度 numpy 批量重算、近邻限在用版本、报告页近邻过 ACL | issue #33 全量评审 + #34 冻结复审（必修×3 采纳方案 A/删 owner 分支/统一模板） |
+| D23 | 业务语义并入（v0.5，#35；**取代 D17 部署形态**） | **决策**：术语层（概念、系统名词、模板、报表项）与业务对象关联统一建模为**类型化对象图**，作为本系统 `core/semantic/` 模块实现；与 `core/docs/` **共用同一服务、同一 MCP server、同一主库**——共享基础设施（连接工厂/鉴权/审计 outbox/worker/MCP 外壳），**不共享领域模型与维度 ACL 编译器**（交叉点仅 ingest 标注与实体召回，走显式接口）。**真相源分层**：骨架（名称/编码/层级/关系）由同步适配器每日同步；人工内容（别名/定义/口径/消歧/示例）由 Git YAML 覆盖层维护，按 id 合并、同步不覆盖人工字段；表/列只存轻量节点，详情实时查元数据系统。**不做**：GraphRAG（不用 LLM 抽取实体关系、不生成社区摘要）、图数据库（10⁴~10⁵ 节点、1~2 跳查询，SQLite 递归 CTE 足够；同时出现节点 >10⁶、4 跳以上路径、全图算法时再评估 openCypher 嵌入式方案，数据模型按属性图设计迁移不改模型）。**理由**：服务归一（少部署/鉴权/监控/发版一套）；关系来自确定性配置非 LLM 抽取；文档块↔实体关联可提升检索效果。**代价**：服务职责变宽，靠模块边界规则约束；语义同步故障靠独立 worker 任务类型 + 删除比例保护 + 宽限期隔离（不影响 docs 可用性，NFR-11）。**里程碑**：M2 并行（M2-S1~S3）；此前 agent 侧以同 schema 的「Git YAML + 本地 AC 自动机」过渡，迁移零改动。**取代**：D17 中「独立 MCP server」「运行时投影为演进点」两条；D17 四类分治、三层识别、L0/L1/L2 内容保留并入 | [issue #35](https://github.com/yq3/lab/issues/35)（服务归一诉求 + 业务对象天然关联 + GraphRAG 必要性质疑；业界互证：Snowflake 语义层【骨架自动+人工补同义词】、DataHub 业务术语表【术语挂资产】、Palantir Ontology【对象图+类型化 API】三模式按企业级规模裁剪组合）；**定位口径（2026-10-18 用户澄清）**：定位为**通用企业知识层**——税务是首个落地场景而非产品边界，#35 §4.2「税务领域知识层」表述据此修正 |
 
-## 8. 里程碑与验收口径（全职，预估 7~8 周）
+## 8. 里程碑与验收口径（全职，MVP 预估 7~8 周；业务语义层为 M2 并行轨道 M2-S1~S3，D23）
 
 | 里程碑 | 内容 | 验收口径 |
 |---|---|---|
@@ -206,11 +221,14 @@ agent（MCP，带    │   + LLM 增强（800ms 并行，第三路 BM25）→ RR
 | **M0b**（第 2 周前半，实验） | 四实验：按块 json_each vs 按文档 visible_docs（1/5/10 万块 P95）；向量同表 vs chunk_vectors 分表；langchain-mcp-adapters 按用户 token；SLO 压测（按 NFR-8 预算表）——**结论回写 schema v1.1 后再进 M1** | 实验报告 + v1.1 迁移跑通（含 `foreign_key_check`） |
 | **M1**（第 2 周后半~第 3 周） | 完整检索配方（五列 FTS + 双路 + RRF + rerank 32 + 800ms 并行增强第三路）；**版本在用制全链（前移自 M2）**：active/pending、切换事务、tombstone、fetch 替代提示；**维度 ACL 全链**（多值、写权限、PATCH 校验）；**上传凭证制 + deepagents 集成**（agent 运行时时序——P1-11/P1-3，自 M0 移入）；区分度反馈环（含 numpy 批量重算）；真实文档批量上线；小型黄金集 + Recall@k/MRR；P95 基线 | **越权矩阵全绿**（原七因子 + v0.3 四组 + **T1~T23 全量**）；20~50 条真实中英 query 人工标注；并发覆盖 409、失败块无 FTS 残留（T7/T8/T9）；区分度误报抽查 |
 | **M2**（第 4~6 周） | worker 子进程化（心跳/租约/重试）+ 写竞争治理；SSO/JIT 对接；委托 token / 可信子系统落地（三约束 + 期限，D18）；管理面 API + 最小 UI（组织/知识库/维度含停用影响面预估与 dry_run/授权含批量导入与 expires_at/任务取消/手动重索引）；审计 outbox + 月库滚动；删除级联与 90 天物理清理；备份快照 + 恢复演练 | 杀 worker 不丢任务；outbox 一致性（权限事件必有审计）；恢复演练通过；跨组织隔离全绿；批量导入 500 行正确（sync 授权不动——T-CSV） |
+| **M2-S1**（M2 并行·语义——模板链路） | `sem_*` 表与触发器（白名单种子、组织一致性）；`template_center` + `metadata` 适配器（每日 + 手动触发）；同步流程含删除比例保护与 missing 宽限期；构建任务框架；semantic 组首批工具 `get_entity` / `search_entities` / `describe_table`（与 docs 组同 server 注册） | 同步幂等（同快照二跑 inserted/updated/missing 均 0——T-S3）；保护触发零写入 + 告警（T-S2）；白名单与组织一致性触发器（T-S5）；递归展开防环/截断（T-S6）；describe_table 白名单与降级（T-S11）；"这个模板落在哪张表、哪个字段"可答 |
+| **M2-S2**（M2 并行·语义——场景/报表项 + YAML） | `scenario_config` + `report_center` 适配器；Git YAML 覆盖层合并 + CI 校验（schema/别名冲突/短词/L0 预算/owner）；构建产物（AC 自动机/模糊索引/L0 片段/构建报告）+ 原子切换；`annotate`（AC 层 + 消歧）；识别评测集（150~200 条真实问法，负样本 ~20%） | 同步不覆盖人工字段（T-S1）；宽限期状态机（T-S4）；构建原子切换（T-S12）；**AC 层 precision ≥ 0.95 / recall ≥ 0.80、歧义消解 ≥ 0.85、负样本误报 ≤ 0.05**；指标降 >2pp 构建不切 ready |
+| **M2-S3**（M2 末或 M2.5·语义——概念/打标/召回） | `concept` / `system` 纯人工实体；ingest 打标 + `semantic_retag`（低优先级限速）；`search(entities / auto_entities)` 实体召回路（复用 ACL 编译产物）+ RRF 融合；模糊兜底（拼音/编辑距离/向量）；agent 中间件从本地 AC 切到服务端 annotate（开关灰度 + 评测集对比） | 越权矩阵 **T-S7~T-S10 全绿**（组织隔离 / 实体召回不放宽 ACL / restricted / untag）；AC+模糊 recall@3 ≥ 0.92；**检索增益评测（docs 黄金集开/关实体路 recall@10、MRR）不回退方可默认开启**，否则保持可选参数 |
 | **M3**（第 7~8 周） | 评测体系：黄金集（合成 + 人工修正）基线；检索层 Recall@k/MRR + 响应层 faithfulness；judge 双语校准（~50 条人工双评）；deepeval 门禁进 CI；在线引用锚点抽样 | 门禁能卡住一次人为注入的检索层回归；judge-人一致性达标（一致率/κ 过阈值）；黄金集覆盖中英三态 query |
 
 > M1 的「真实文档批量上线」依赖待决-1（真实样例语料）；未到位时以合成/公开样例先行，验收口径中依赖真实数据的部分顺延。
 >
-> **路线注记（2026-10-16，D17）**：本系统与 glossary-agent（术语层，其 POC 约 1~2 周）**两线并行**——术语层链路短可先行探路；本 M0~M3 按上文节奏照常推进，互不阻塞。
+> **路线注记（2026-10-18 修订，D23；取代 2026-10-16 的「两线并行」口径）**：术语层不再独立成线——业务语义按 **M2-S1~S3 并行轨道**并入本系统；**M0a / M0b / M1 不含语义层**（专注冻结范围，仅在 `common` 的 worker 任务类型与组织上下文上预留扩展点）。**过渡期（现在~M2）**：agent 侧以「与正式方案同 schema 的 Git YAML + 本地 AC 自动机（pyahocorasick）」先行，只覆盖 concept/system 与 L0——迁移时 YAML 零改动、中间件接口不变（输入文本、输出 mentions），本地 AC ↔ 服务端 annotate 经开关切换并支持灰度；过渡期 concept 的 `refers_to` 可指向尚未同步的实体，CI 只警告，M2-S1/S2 完成后自然生效。**顺序理由**：模板链路最先（源系统里关系最清晰、同步最易、价值最直接）→ 场景与报表项第二（依赖模板/字段节点作关系端点，报表项取数关系可能需 YAML 人工补）→ 文档打标最后（依赖词典质量稳定，否则重标风暴扩散到 docs 检索）。
 
 ## 9. 风险与待决事项
 
@@ -233,11 +251,18 @@ agent（MCP，带    │   + LLM 增强（800ms 并行，第三路 BM25）→ RR
 | P95 延迟超标（无 GPU 同步链路：增强+嵌入+rerank） | 检索体验不可用 | NFR-8 全套（rerank 候选 32 / ONNX int8 / **800ms 并行增强** / 推理进线程池 + 双降级开关）；M0b 压测与 M1 基线，超标则砍增强、降候选、评估量化 |
 | 老格式与编码（.doc/.xls/.ppt、GBK TXT） | 部分语料无法摄取 | M1 定策略：拒收提示转存（不引 LibreOffice 保零中间件）；TXT 编码探测转换进管线 |
 | 权限漂移（自建授权表与业务实际脱节，D16） | 调岗后用户仍可见旧维度文档 | 批量导出对账（季度）+ 审计回放兜底；高敏文档从严选维度；grant_sync 适配器留缝；生产前语义匹配维度切只读同步（D16） |
-| deepagents/内部网关接口变更 | MCP 接入面返工 | 检索 API 契约先稳（薄壳原则）；MCP 工具面四个、参数面窄 |
+| deepagents/内部网关接口变更 | MCP 接入面返工 | 检索 API 契约先稳（薄壳原则）；MCP 工具面窄（docs 组四个 + semantic 组四个，参数面窄） |
+| **业务语义层职责膨胀**（D23：什么都往对象图里放） | knowledge-lattice 变成大杂烩 | 模块边界规则（design §3：semantic 不 import docs 内部实现，交叉点仅标注与召回两处显式接口）；新增实体/关系类型走迁移与评审；非目标明确（GraphRAG / 图数据库 / 全量元数据镜像） |
+| **语义同步故障波及服务**（源系统抖动清空图 / 同步写锁拖慢检索） | 图被大面积清空；检索劣化 | 删除比例保护（20% 中止零写入）+ missing 宽限期（7 天）；同步/重标为独立 worker 任务类型，分批 ≤1000 行、夜间错峰限速、重标最低优先级；语义故障不影响 docs 可用性（NFR-11）；必要时 `sem_*` 拆到 ATTACH 的独立库文件（接口不变） |
+| **词典质量差**（短词/常用词误报，注入噪声误导 agent） | L1 误注入 | CI 拦截短词与常用词（除非 `context` / `fuzzy_only`）；歧义别名强制消歧说明；AC precision 门槛 ≥ 0.95；中间件只注入 confidence=1.0 的非歧义命中 |
+| **人工内容无人维护**（YAML 过期、别名覆盖率低） | 识别召回下滑 | 每条 YAML 必填 `owner`；构建报告列出无人维护与孤立条目；agent 日志高频未识别词定期回流成待补别名清单 |
+| **实体召回绕过维度 ACL**（语义层给文档可见性开后门） | 越权泄露 | 实体召回路强制复用 design §5.1 的 ACL 编译产物（同一编译器、同一产物）；T-S8 进越权矩阵必测 |
+| **过渡期与正式版分叉**（本地 AC 与服务端行为不一致） | 切换后识别结果漂移 | YAML schema 与规范化函数抽成小 package 两端共用；切换时用评测集做对比；开关灰度 |
 
 ## 10. 参考资料
 
-- **需求与设计评审纪要（修订依据链）**：[issue #31](https://github.com/yq3/lab/issues/31)（P0×5 检索侧 + 权限真值源）→ [issue #32](https://github.com/yq3/lab/issues/32)（P0×4 写路径 + P1×9）→ [issue #33](https://github.com/yq3/lab/issues/33)（全量收口：P0×2 状态语义与版本闭环 + P1×12 + T1~T19 + 冻结标准）
+- **需求与设计评审纪要（修订依据链）**：[issue #31](https://github.com/yq3/lab/issues/31)（P0×5 检索侧 + 权限真值源）→ [issue #32](https://github.com/yq3/lab/issues/32)（P0×4 写路径 + P1×9）→ [issue #33](https://github.com/yq3/lab/issues/33)（全量收口：P0×2 状态语义与版本闭环 + P1×12 + T1~T19 + 冻结标准）→ [issue #34](https://github.com/yq3/lab/issues/34)（冻结复审：必修×3——D5/D22 终版，v0.4 冻结）→ [issue #35](https://github.com/yq3/lab/issues/35)（**D23 决策变更：业务语义层并入**——四类黑话归属、类型化对象图 vs GraphRAG 论证、`sem_*` 数据模型、同步/YAML/构建、识别与召回流程、工具与 REST 契约、M2-S 里程碑、T-S 测试；v0.5）
+- 语义层业界参照（#35 §3）：Snowflake Cortex Analyst 语义模型（骨架自动生成 + 人工补同义词/描述）、dbt Semantic Layer（指标定义代码仓版本化）、DataHub GlossaryTerm（术语挂到数据资产）、Palantir Foundry Ontology（object type / link type + 类型化 API 供 agent）；GraphRAG 取舍依据：Microsoft LazyGraphRAG 成本论述、LinkedIn 客服知识图谱 + RAG 实证（显式关系有价值，LLM 抽取不取）
 - 调研主报告：`research/enterprise-rag/report.md`（TL;DR、参考架构、三路线、实施蓝图）
 - 设计基线：`research/enterprise-rag/blog/10-build-kb-for-agent.md`（本需求的前身设计稿；其「中文为主」假设已由本文 §4 修正为中英三态）
 - 各环节深挖：`research/enterprise-rag/dimensions/`（01 平台架构 / 02 解析 / 03 向量库 / 04 检索重排 / 07 治理 / 08 评测 / 10a 10b 厂商实践等 13 份）

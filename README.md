@@ -1,20 +1,20 @@
 # knowledge-lattice
 
-企业内部知识库系统：以知识库为本体，RAG 为能力面，给 Agent 供数为主、人工检索为辅。
+企业知识层（通用平台，领域无关——首个落地场景为税务）：提供两类能力——**文档知识**（制度、口径、手册的权限内检索）和**业务语义**（术语识别、业务对象及其关联）。以单一服务、单一 MCP server 的形式提供给 Agent，供数为主、人工检索为辅。
 
-> 名字释义：lattice（晶格）——知识单元（chunk）按结构有序排列成格；**格子是本体，检索是在格上寻位**。文档上架是晶体生长，索引是晶格结构，可重建、可演化。
+> 名字释义：lattice（晶格）——知识单元（chunk）按结构有序排列成格；**格子是本体，检索是在格上寻位**。文档上架是晶体生长，索引是晶格结构，可重建、可演化。并入业务语义层后，"lattice"同时描述**文档知识 + 业务对象关系图**这种有结构的知识网络，名字比以前更贴切（#35 §4.1）。
 >
-> **在双层知识供给中的位置**：本系统承载**文档知识层**（政策/指南等非结构化内容的语义检索与维度权限）；术语理解层（黑话/名词/表字段映射）由姊妹项目 [glossary-agent](../glossary-agent/) 承载，两线并行、MCP 并挂集成（[requirements.md D17](docs/requirements.md)）。
+> **知识层定位（2026-10-18 D23 修订，取代 2026-10-16「双层分立」口径）**：文档知识层与业务语义层（术语 + 业务对象的类型化对象图）**同服务归一**——术语层原定的独立 glossary-agent MCP server 部署形态取消，并入本系统 `core/semantic/` 模块（[requirements.md D17/D23](docs/requirements.md)）；[glossary-agent](../glossary-agent/) 转为调研与设计沉淀，其结论是 semantic 模块的设计输入。
 
 - 需求文档：[docs/requirements.md](docs/requirements.md)（先读这份）
-- 方案设计：[docs/design.md](docs/design.md)（架构 / 数据模型 DDL / ACL 编译 / MCP 契约 / 里程碑分解）
-- 交互原型：[prototype/index.html](prototype/index.html)（浏览器直接打开；mock 数据，信息结构为实现基准）
-- 调研基础：[../research/enterprise-rag/](../research/enterprise-rag/)（22 仓源码级调研 + 四厂商第一方实践）
+- 方案设计：[docs/design.md](docs/design.md)（架构 / 数据模型 DDL（含 `sem_*`）/ ACL 编译 / MCP 契约（docs + semantic 两组）/ 里程碑分解）
+- 交互原型：[prototype/index.html](prototype/index.html)（浏览器直接打开；mock 数据，信息结构为实现基准；语义管理入口随 M2-S3 补，可选）
+- 调研基础：[../research/enterprise-rag/](../research/enterprise-rag/)（22 仓源码级调研 + 四厂商第一方实践）；术语层调研沉淀见 [../glossary-agent/](../glossary-agent/)
 
 ## 一句话定位
 
-私有化部署的轻量知识库服务：单进程 + SQLite，零中间件、无 GPU 可跑；**多组织 → 多知识库 → 文档（维度 ACL）** 三层结构，通过 MCP 工具面给 deepagents 供数（代人检索、按数据维度过滤权限），并提供上传与检索测试页面。
+私有化部署的轻量知识层服务：单进程 + SQLite，零中间件、无 GPU 可跑；**文档知识**——**多组织 → 多知识库 → 文档（维度 ACL）** 三层结构；**业务语义**（D23，M2-S 起）——概念/系统名词/场景/模板/模板字段/报表项/表/列组成的类型化对象图（骨架每日从业务系统同步 + 人工内容 Git YAML 覆盖层，不做 GraphRAG、不引入图数据库）。两者通过同一个 MCP server（docs 组 + semantic 组工具）给 deepagents 供数（代人检索、按数据维度过滤权限、术语识别与对象关系展开），并提供上传与检索测试页面。
 
 ## 项目状态
 
-POC 阶段（lab 仓库先行，验证后拆仓演进）。当前：需求 v0.4 / 设计 v0.4 **（冻结版）**——历轮评审 [#31](https://github.com/yq3/lab/issues/31) → [#32](https://github.com/yq3/lab/issues/32) → [#33](https://github.com/yq3/lab/issues/33)（收口）全部吸收，决策 D1~D22。**设计冻结：此后仅在决策变化时修改文档，实现问题走测试用例与 issue**；下一步 M0a（骨架周）开工，待决-2（SSO 协议）与待决-3（委托 token / 可信子系统）随 M0a 并行敲定。
+POC 阶段（lab 仓库先行，验证后拆仓演进）。当前：需求 v0.5 / 设计 v0.5——v0.4 **冻结版**（历轮评审 [#31](https://github.com/yq3/lab/issues/31) → [#32](https://github.com/yq3/lab/issues/32) → [#33](https://github.com/yq3/lab/issues/33)（收口）→ [#34](https://github.com/yq3/lab/issues/34)（冻结复审）全部吸收，决策 D1~D22）+ **v0.4 冻结后首个决策变更：D23 业务语义层并入**（[#35](https://github.com/yq3/lab/issues/35)，2026-10-18——取代 D17 部署形态；新增 FR-S1~S6 / NFR-11 / M2-S1~S3 / T-S1~T-S12；不影响冻结的必修 1~3 任何结论）。**设计冻结纪律不变：此后仅在决策变化时修改文档，实现问题走测试用例与 issue**；下一步 M0a（骨架周）开工（**M0a/M0b/M1 不含语义层**），待决-2（SSO 协议）与待决-3（委托 token / 可信子系统）随 M0a 并行敲定；业务语义按 M2 并行轨道推进，M2 之前 agent 侧以「同 schema 的 Git YAML + 本地 AC 自动机」过渡。
