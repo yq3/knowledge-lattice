@@ -1602,7 +1602,7 @@ function entLandingHTML() {
       <span class="tt-n"><span class="tdot" style="background:var(--t-${t})"></span>${ENT_TYPES[t]}</span>
       <span class="tt-s">${ROOT_TYPES.includes(t) ? "根实体 · 浏览 / 搜索" : "叶子 · 父节点详情 / 搜索直达"}</span>
     </button>`).join("")}</div>
-  <div class="note" style="margin-top:16px">需要关注：${missing.length ? missing.map(e => `<button class="link" data-act="selEntTab" data-k="${esc(e.k)}">${esc(e.name)}</button>（missing · 宽限至 ${short(graceOf(e))}）`).join("、") : "无 missing 实体"}${sm.conflicts.length ? ` · <button class="link" data-act="sub" data-s="sem" data-v="sync">${sm.conflicts.length} 条冲突待处理</button>` : ""}${hidden ? ` · ${hidden} 个受限实体对当前视角隐藏（需 <code>semantic:restricted</code>）` : ""}</div>`;
+  <div class="note" style="margin-top:16px">需要关注：${missing.length ? missing.map(e => `<button class="link" data-act="selEntTab" data-k="${esc(e.k)}">${esc(e.name)}</button>（missing · 宽限至 ${short(graceOf(e))}）`).join("、") : "无 missing 实体"}${sm.conflicts.length ? ` · <button class="link" data-act="sub" data-s="sem" data-v="sync">${sm.conflicts.length} 条冲突记录</button>` : ""}${hidden ? ` · ${hidden} 个受限实体对当前视角隐藏（需 <code>semantic:restricted</code>）` : ""}</div>`;
 }
 function entTableHTML(ordered, facetSum) {
   const shown = ordered.slice(0, LIST_CAP), trunc = ordered.length > LIST_CAP;
@@ -1770,7 +1770,7 @@ function annResultHTML() {
     ${rejected.map(h => `<tr style="opacity:.6"><td><s>${esc(h.surface)}</s></td><td>${esc(entOf(h.ent).name)}</td><td>${ENT_TYPES[entType(h.ent)]}</td><td>拒绝</td><td class="tiny">需上下文的别名，2 跳内没有其他锚点 → 不采纳（防「TP」这类缩写误伤）</td></tr>`).join("")}</tbody></table>`;
 }
 function annotateHTML() {
-  return `<div style="max-width:880px">
+  return `<div>
     <div class="toolbar" style="margin-bottom:8px"><span class="tiny muted">MCP <code>annotate</code> ≡ <code>POST /semantic/annotate</code> · 基于 dict_rev ${S().dictRev} 的别名表</span><span style="flex:1"></span>
       <label class="switch"><input type="checkbox" data-in="fuzzy" ${state.fuzzy ? "checked" : ""}>开启第 3 层模糊</label></div>
     <textarea class="ann-in" data-in="annText" aria-label="待识别文本">${esc(state.annText)}</textarea>
