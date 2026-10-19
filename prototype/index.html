@@ -1267,9 +1267,9 @@ function uploadHTML() {
 }
 function newDsHTML() {
   const o = O(), m = lens();
-  if (!isAdmin(m) || !memberValid(m)) return `<div class="upload" style="max-width:760px"><div class="note seal" style="grid-column:1/-1;margin:0">当前视角 <b>${esc(uname(m.uid))}</b> 不是组织管理员：只有组织管理员能新建知识库。切回组织管理员视角，或点上方任意知识库返回列表。</div></div>`;
+  if (!isAdmin(m) || !memberValid(m)) return `<div class="upload"><div class="note seal" style="grid-column:1/-1;margin:0">当前视角 <b>${esc(uname(m.uid))}</b> 不是组织管理员：只有组织管理员能新建知识库。切回组织管理员视角，或点上方任意知识库返回列表。</div></div>`;
   const ok = state.newDs.name.trim().length > 0;
-  return `<div class="upload" style="max-width:760px">
+  return `<div class="upload">
     <div style="grid-column:1/-1"><b style="font-size:15px">新建知识库</b>
       <span class="tiny muted">—— 建完自动选中新库并进入空态；第一份文档处理到「可词法检索」即可命中检索</span></div>
     <div class="u-row"><label>名称<span class="req">*</span></label>
