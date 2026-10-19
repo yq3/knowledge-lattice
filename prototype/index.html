@@ -1475,14 +1475,14 @@ const fmtTs = d => d.toISOString().slice(0, 19).replace("T", " ");
 function viewSemantic() {
   const o = O(), sm = S(), m = lens(), sub = state.sub.sem;
   if (!sm) return `<header class="head"><h1>语义</h1><p class="lede">业务对象图：概念、系统、场景、模板、报表、表与列之间的类型化关系。</p></header>
-    <div class="empty"><h3>${esc(o.name)} 尚未接入语义层</h3><p>语义层按组织独立（M2-S）。未接入时检索只有词法 + 向量两路，MCP <code>annotate</code> / <code>get_entity</code> 返回空而不是报错。接入 = 配置骨架同步适配器 + 一份 YAML 覆盖层，首次构建出 <code>dict_rev</code> 后实体召回路自动生效。</p>
+    <div class="empty"><h3>${esc(o.name)} 尚未接入语义层</h3><p>语义层按组织独立（M2-S）。未接入时检索只有词法 + 向量两路，MCP <code>annotate</code> / <code>get_entity</code> 返回空而不是报错。接入 = 配置源端事实同步适配器 + 一份 YAML 覆盖层，首次构建出 <code>dict_rev</code> 后实体召回路自动生效。</p>
     <p style="margin-top:12px"><button class="btn ghost" data-act="org" data-id="01JORGTAX">看「税务事业部」的接入效果 →</button></p></div>`;
   const acc = semAccess(m);
   const tabs = [["entities", "实体与关系"], ["annotate", "术语识别"], ["sync", "同步与构建"]];
   const building = sm.builds.find(b => b.st === "building");
   return `
   <header class="head"><h1>语义</h1>
-    <p class="lede">骨架从源系统同步，人工经 YAML 覆盖层补定义 / 别名 / 关系。查询时识别术语 → 展开关系 → 作为第三路召回，<b>仍走同一份维度过滤</b>。</p>
+    <p class="lede">事实从源系统同步，人工经 YAML 覆盖层补定义 / 别名 / 关系。查询时识别术语 → 展开关系 → 作为第三路召回，<b>仍走同一份维度过滤</b>。</p>
     <div class="head-act"><span class="tag moss">在用 dict_rev ${sm.dictRev}</span>${building ? `<span class="tag amber">rev ${building.rev} 构建中</span>` : ""}</div>
   </header>
   <nav class="sub-tabs">${tabs.map(([k, l]) => `<button class="sub-tab ${sub === k ? "on" : ""}" data-act="sub" data-s="sem" data-v="${k}">${l}</button>`).join("")}</nav>
@@ -1526,7 +1526,7 @@ function entDetail(e) {
       <h2>${esc(e.name)}</h2>
       <div class="ent-key">${esc(e.k)}</div>
       <div class="chips" style="margin-top:8px">
-        <span class="tag ${e.src === "curated" ? "moss" : ""}">${e.src === "curated" ? "人工 · YAML" : "骨架同步"}</span>
+        <span class="tag ${e.src === "curated" ? "moss" : ""}">${e.src === "curated" ? "人工 · YAML" : "源端事实"}</span>
         ${e.l0 ? `<span class="tag">L0 · 进 system prompt</span>` : ""}
         ${e.sens === "restricted" ? `<span class="tag seal">restricted</span>` : ""}
         ${e.st === "missing" ? `<span class="tag seal">源端消失 · 宽限至 ${short(graceEnd)}</span>` : ""}
@@ -1536,10 +1536,10 @@ function entDetail(e) {
       <div class="seg">${[1, 2].map(d => `<button class="${state.depth === d ? "on" : ""}" data-act="depth" data-v="${d}">${d}</button>`).join("")}</div>
       <div class="tiny muted" style="margin-top:4px">上限 2 · 防环</div></div>
   </div>
-  ${e.st === "missing" ? `<div class="note amber" style="margin-top:12px">骨架同步自 ${short(e.missingSince)} 起未再见到此对象：先标 <b>missing</b> 不删，7 天宽限期内仍可被识别与展开；到期仍未出现才退役。误删的源数据回来，自动恢复 active。</div>` : ""}
+  ${e.st === "missing" ? `<div class="note amber" style="margin-top:12px">事实同步自 ${short(e.missingSince)} 起未再见到此对象：先标 <b>missing</b> 不删，7 天宽限期内仍可被识别与展开；到期仍未出现才退役。误删的源数据回来，自动恢复 active。</div>` : ""}
   <div class="ent-cols">
     <div>
-      ${e.def ? `<div class="defn-k" style="margin-top:0">定义</div><div class="defn">${esc(e.def)}</div>` : `<div class="tiny muted">骨架对象，尚无人工定义——可在 YAML 覆盖层补。</div>`}
+      ${e.def ? `<div class="defn-k" style="margin-top:0">定义</div><div class="defn">${esc(e.def)}</div>` : `<div class="tiny muted">仅有同步事实，尚无人工定义——可在 YAML 覆盖层补。</div>`}
       ${e.caliber ? `<div class="defn-k">口径</div><div class="defn" style="font-size:.94rem">${esc(e.caliber)}</div>` : ""}
       ${e.disamb ? `<div class="defn-k">消歧</div><div class="defn" style="font-size:.94rem">${esc(e.disamb)}</div>` : ""}
       <div class="defn-k">别名 · ${e.aliases.length}</div>
@@ -1624,7 +1624,7 @@ function syncHTML() {
   const missing = sm.entities.filter(e => e.st === "missing");
   return `
   ${!admin ? `<div class="note amber" style="margin-bottom:16px">构建 / 同步操作需要 <code>semantic:admin</code>；当前视角只读。</div>` : ""}
-  <div class="sec-title">骨架同步 <small>每个适配器独立；消失比例 &gt; 20% 整轮中止不落库（删除保护）</small></div>
+  <div class="sec-title">源端事实同步 <small>每个适配器独立；消失比例 &gt; 20% 整轮中止不落库（删除保护）</small></div>
   <table class="ledger"><thead><tr><th>时间</th><th>适配器</th><th>结果</th><th class="num">新增</th><th class="num">更新</th><th class="num">消失</th><th>说明</th></tr></thead>
     <tbody>${sm.syncRuns.map(r => `<tr><td class="mono tiny">${short(r.at)}</td><td class="mono">${esc(r.adapter)}</td><td>${stPill(r.st)}</td><td class="num">${r.ins}</td><td class="num">${r.upd}</td><td class="num">${r.miss}</td><td class="tiny">${esc(r.note) || `<span class="muted">—</span>`}</td></tr>`).join("")}</tbody></table>
   <div class="chips" style="margin-top:10px">${adapters.map(a => `<button class="btn ghost sm" data-act="sync" data-a="${esc(a)}" ${admin ? "" : "disabled"}>↻ ${esc(a)}</button>`).join("")}<span class="tiny muted" style="align-self:center"><code>POST /semantic/sync/{adapter}</code> · 写 outbox，由任务执行</span></div>

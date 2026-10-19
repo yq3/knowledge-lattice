@@ -1,8 +1,8 @@
 # knowledge-lattice 方案设计
 
-> 版本：v0.5.1（2026-10-19 原型基线更新：吸收 [issue #36](https://github.com/yq3/lab/issues/36)——`prototype/index.html` 替换为 v0.5，五视图（文档 / 检索测试 / 权限 / 语义层 / 任务与审计），§5.7 前端薄壳以其为**信息结构与 UI 风格双基准**；语义层视图原型已含（实现仍可选，M2-S3 节奏不变）；**非决策变更**——D1~D23 与 v0.4 冻结结论均不受影响，冻结纪律延续）
-> 日期：2026-10-16 初稿 → v0.2（#31）→ v0.3（#32）→ v0.4（#33+#34，冻结版）→ v0.5（#35，D23）→ v0.5.1（#36，原型基线更新）
-> 前置阅读：[requirements.md](./requirements.md)（本文所有 FR/NFR/D 编号均指向需求文档 v0.5）
+> 版本：v0.5.2（2026-10-19 术语修订：语义层内容层「骨架」统一改称「源端事实」，列级相应称「事实列」——旧词易被误读为抽象类别（实际是源系统已有对象与关系的具体同步记录），且与 M0a「骨架周」（工程脚手架）撞词；**非决策变更**，只改措辞不改任何结论。v0.5.1（2026-10-19 原型基线更新：吸收 [issue #36](https://github.com/yq3/lab/issues/36)——`prototype/index.html` 替换为 v0.5，五视图（文档 / 检索测试 / 权限 / 语义层 / 任务与审计），§5.7 前端薄壳以其为**信息结构与 UI 风格双基准**；语义层视图原型已含（实现仍可选，M2-S3 节奏不变）；**非决策变更**——D1~D23 与 v0.4 冻结结论均不受影响，冻结纪律延续）
+> 日期：2026-10-16 初稿 → v0.2（#31）→ v0.3（#32）→ v0.4（#33+#34，冻结版）→ v0.5（#35，D23）→ v0.5.1（#36，原型基线更新）→ v0.5.2（术语修订：骨架→源端事实）
+> 前置阅读：[requirements.md](./requirements.md)（本文所有 FR/NFR/D 编号均指向需求文档 v0.5.1）
 > 调研依据：[enterprise-rag 调研](../../research/enterprise-rag/)，参考架构基线 `blog/10-build-kb-for-agent.md`
 
 ---
@@ -19,12 +19,12 @@
 | FR-6/7 治理与评测 | audit_events 触发器；评测脚本集（黄金集 + 门禁） | §4 / §9 |
 | NFR-1 零中间件 | 全部组件进程内/文件级，无外部常驻服务 | §2 |
 | NFR-5 演进缝 | repository 接口 + 配置级切换点清单 | §7 |
-| **FR-S1~S6 业务语义（D23）** | `core/semantic/`：同步适配器（骨架）+ Git YAML 覆盖层（人工内容）+ AC 自动机识别 + 递归 CTE 关系展开 + 实体召回路（**复用 §5.1 ACL 编译产物**）+ describe_table 透传；与 docs 同进程同库、单一 MCP server 分组注册 | §3 / §4（`sem_*`）/ §5.8~5.10 / §6.3 |
+| **FR-S1~S6 业务语义（D23）** | `core/semantic/`：同步适配器（源端事实）+ Git YAML 覆盖层（人工内容）+ AC 自动机识别 + 递归 CTE 关系展开 + 实体召回路（**复用 §5.1 ACL 编译产物**）+ describe_table 透传；与 docs 同进程同库、单一 MCP server 分组注册 | §3 / §4（`sem_*`）/ §5.8~5.10 / §6.3 |
 | **NFR-11 语义层性能与隔离（D23）** | 独立 worker 任务类型（semantic_sync/build/retag）限速错峰；删除比例保护 + 宽限期；构建产物原子切换；中间件降级 | §2 / §5.8 / §6.3 |
 | **issue #31 评审修订（v0.2）** | P0 五项修复（检索侧）+ 权限真值源 + 性能运维 | §4 / §5.1~5.3 / §5.6 / §8~10 |
 | **issue #32 评审修订（v0.3）** | 写路径安全 P0×4 + P1×9 | §4 / §5.1~5.3 / §5.6 / §8~10 |
 | **issue #33 收口修订（v0.4，冻结）** | 权限状态进计算（P0-1）/ 版本在用制闭环（P0-2）/ 外键动作补齐 / 凭证流闭环 / 审计 outbox / 可信子系统约束 / REST 路径统一 / M0a-M0b 拆分 / T1~T19 | 全文（决策汇总见需求 D22） |
-| **issue #35 决策修订（v0.5，D23）** | 业务语义层并入（取代 D17 部署形态）：类型化对象图 + SQLite 递归 CTE，**不做 GraphRAG / 图数据库**；骨架同步 + YAML 覆盖层分层真相源；M2-S1~S3 并行轨道 | §2~§4 / §5.2~5.3 / §5.8~5.10 / §6 / §8~10（决策汇总见需求 D23） |
+| **issue #35 决策修订（v0.5，D23）** | 业务语义层并入（取代 D17 部署形态）：类型化对象图 + SQLite 递归 CTE，**不做 GraphRAG / 图数据库**；源端事实同步 + YAML 覆盖层分层真相源；M2-S1~S3 并行轨道 | §2~§4 / §5.2~5.3 / §5.8~5.10 / §6 / §8~10（决策汇总见需求 D23） |
 
 ## 2. 进程与部署架构
 
@@ -439,7 +439,7 @@ CREATE TABLE audit_outbox (
 
 -- ============ 业务语义 sem_*（D23，#35 §6.2；M2-S1 经 migrations/semantic/ 落库，M0a/M1 不含） ============
 -- 类型对齐主库约定：org_id 为 TEXT（orgs.id 是 ULID）、时间列用 TIMESTAMP；实体主键用 INTEGER（AC 自动机值与图遍历友好）
--- 实体：骨架列与人工列分列存放——同步只写骨架列（name/attrs_json/parent_id/status/synced_at），从不写 curated_json
+-- 实体：事实列与人工列分列存放——同步只写事实列（name/attrs_json/parent_id/status/synced_at），从不写 curated_json
 CREATE TABLE sem_entities (
   id            INTEGER PRIMARY KEY,
   org_id        TEXT    NOT NULL REFERENCES orgs(id) ON DELETE RESTRICT,
@@ -450,11 +450,11 @@ CREATE TABLE sem_entities (
   parent_id     INTEGER REFERENCES sem_entities(id) ON DELETE CASCADE,
                                                 -- 冗余的直接父节点（字段→模板、列→表、项→报表），便于展示；真相以关系为准
   attrs_json    TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(attrs_json)),
-                                                -- 骨架属性：编码、注释、源系统状态等，同步写入
+                                                -- 事实属性：编码、注释、源系统状态等，同步写入
   curated_json  TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(curated_json)),
                                                 -- 人工属性：definition / why / examples / disambiguation / caliber（YAML 合并写入）
   source        TEXT    NOT NULL CHECK (source IN ('sync','curated')),
-                                                -- sync：骨架来自源系统；curated：纯 YAML 实体（只允许 concept/system）
+                                                -- sync：事实来自源系统；curated：纯 YAML 实体（只允许 concept/system）
   source_system TEXT,                           -- template_center / report_center / metadata / scenario_config
   status        TEXT    NOT NULL DEFAULT 'active' CHECK (status IN ('active','missing','retired')),
                                                 -- missing：最近一次同步源端已不存在（宽限期内，默认 7 天）；retired：已下线
@@ -574,7 +574,7 @@ CREATE TABLE sem_sync_runs (
 - **维度冗余的取舍**：`chunks.dims_json` 是 `document_dimensions` 的投影（多值数组），检索 SQL 按 JSON 解析编译成常量条件（§5.1）；文档维度变更时由服务层同步刷投影（UPDATE，不重嵌——D6）。**M0b 实验若选定"按文档计算"（visible_docs），dims_json 整体删除**（消除一致性维护点，§5.1）。
 - **向量存 BLOB 不用 vec0**（P0-1）：vec0 的 KNN 在虚拟表内部取 top-k 后才能 JOIN 过滤，等于 post-trim；BLOB + `vec_distance_cosine()` 在 ACL 过滤后的行集上算距离，"先过滤后扫描"（扫描量 = 用户可见量）。M0b 实验对比 `chunk_vectors` 分表（4KB/块拖慢回表与放大 WAL）。
 - **FTS5 五列**（v0.4）：`unicode61` 只做兜底分词；`title_seg`（3）/`content_seg`（1）/`keywords` 仅人工词（5）/`llm_keywords`（0.5~1）/`tags`（8）分列加权；查询侧同词典切分 + token 双引号包裹且内部 `"` 转义为 `""`。
-- **语义表设计要点（D23，#35 §6.3）**：①**骨架列与人工列分开**——同步只写 `name` / `attrs_json` / `parent_id` / `status` / `synced_at`，**从不写** `curated_json`，也不动 `kind IN ('manual','abbr')` 的别名："同步不覆盖人工内容"由列级分工保证，不依赖代码自觉（T-S1）；②**`sem_chunk_entities` 不加外键到 `chunks`**——`chunks` 走版本在用制与墓碑机制，清理由 docs 在删块/版本切换时**同事务**调 `semantic.untag(doc_id, version)`，另有定时对账任务兜底（T-S10），避免语义表反向约束文档核心表；③**`missing` 宽限期**（默认 7 天后转 `retired`）与同步侧**删除比例保护**（§5.8）双保险，防源系统接口偶发空返回把图清空；④`sensitivity='restricted'` 实体只有持 `semantic:restricted` 权限的调用方可见（annotate 不返回 span、get_entity 404、展开不出现——T-S9）；⑤`parent_id` 只是展示用冗余，真相以 `has_field` / `has_column` / `has_item` 关系为准，同步时两者同事务写入；⑥组织隔离硬约束：全部 `sem_*` 表带 `org_id`、关系端点同组织由触发器校验（T-S5/T-S7）。
+- **语义表设计要点（D23，#35 §6.3）**：①**事实列与人工列分开**——同步只写 `name` / `attrs_json` / `parent_id` / `status` / `synced_at`，**从不写** `curated_json`，也不动 `kind IN ('manual','abbr')` 的别名："同步不覆盖人工内容"由列级分工保证，不依赖代码自觉（T-S1）；②**`sem_chunk_entities` 不加外键到 `chunks`**——`chunks` 走版本在用制与墓碑机制，清理由 docs 在删块/版本切换时**同事务**调 `semantic.untag(doc_id, version)`，另有定时对账任务兜底（T-S10），避免语义表反向约束文档核心表；③**`missing` 宽限期**（默认 7 天后转 `retired`）与同步侧**删除比例保护**（§5.8）双保险，防源系统接口偶发空返回把图清空；④`sensitivity='restricted'` 实体只有持 `semantic:restricted` 权限的调用方可见（annotate 不返回 span、get_entity 404、展开不出现——T-S9）；⑤`parent_id` 只是展示用冗余，真相以 `has_field` / `has_column` / `has_item` 关系为准，同步时两者同事务写入；⑥组织隔离硬约束：全部 `sem_*` 表带 `org_id`、关系端点同组织由触发器校验（T-S5/T-S7）。
 
 ## 5. 关键设计
 
@@ -738,7 +738,7 @@ COMMIT;
 
 **实体类型与关系类型白名单**（代码常量 + `sem_rel_types` 种子 + 触发器三处一致）：
 
-| type | 含义 | 骨架来源 | 典型 key |  | rel_type | src → dst | 基数 | 来源 |
+| type | 含义 | 事实来源 | 典型 key |  | rel_type | src → dst | 基数 | 来源 |
 |---|---|---|---|---|---|---|---|---|
 | `concept` | 业务概念 | YAML | `vat.input_credit` |  | `uses` | scenario → template | N:M | 场景配置 |
 | `system` | 系统/平台名词 | YAML | `sys.tax_hub` |  | `has_field` | template → template_field | 1:N | 模板中心 |
@@ -751,11 +751,11 @@ COMMIT;
 | `column` | 列（轻量节点） | 元数据系统 | `db.table.column` |  | `refers_to` | concept / system → 任意实体 | N:M | YAML |
 |  |  |  |  |  | `related_to` | concept → concept | N:M | YAML |
 
-**三种内容的分工**：
+**三种内容的分工**（「源端事实」＝源系统已有的具体对象与关系——名称、编码、层级、关系边；旧称「骨架」，2026-10-19 改称，[#35](https://github.com/yq3/lab/issues/35) 原文仍用旧称）：
 
 | 内容 | 示例 | 谁维护 | 存在哪 | agent 怎么用 |
 |---|---|---|---|---|
-| 骨架 | 模板编码与名称、字段列表、模板→表、字段→列、场景→模板、报表项树 | 同步适配器（自动，每日） | `sem_entities` / `sem_relations` 骨架列 | `get_entity` 展开关系 |
+| 源端事实 | 模板编码与名称、字段列表、模板→表、字段→列、场景→模板、报表项树 | 同步适配器（自动，每日） | `sem_entities` / `sem_relations` 事实列 | `get_entity` 展开关系 |
 | 人工内容 | 别名、缩写、定义、口径、消歧、示例、L0 标记 | 业务/数据同学，Git PR 评审 | Git YAML → `curated_json` / `sem_aliases(manual,abbr)` / curated 关系 | `annotate` 识别、`get_entity` 读说明 |
 | 详情 | 列类型、样例值、分区、血缘 | 元数据系统 | **不落库** | `describe_table` 实时透传 |
 
@@ -794,7 +794,7 @@ class RelationRecord:
 1. `sem_sync_runs` 插入 `running` 记录；
 2. `fetch()` 拿快照，构建 `(type, key)` 集合；
 3. **删除比例保护**：快照相对库内该来源（`source='sync' AND source_system=本适配器 AND status='active'`）的消失比例超阈值（默认 20%）→ run 置 `aborted_guard`、发告警、**不做任何写入**（T-S2）；
-4. 单个写事务内（必要时分批，每批 ≤1000 行）：①实体 `ON CONFLICT(org_id,type,key) DO UPDATE` **只更新骨架列** + `status='active'`、`synced_at=now`；②快照里没有但库里该来源 active 的实体 → `missing`；③`missing` 超宽限期（默认 7 天）→ `retired`，其关系一并 `retired`（T-S4）；④关系 upsert，端点解析不到的记冲突不写入；⑤重建 `kind IN ('name','code','sync')` 别名（先删后插，**只动这三种 kind**）；
+4. 单个写事务内（必要时分批，每批 ≤1000 行）：①实体 `ON CONFLICT(org_id,type,key) DO UPDATE` **只更新事实列** + `status='active'`、`synced_at=now`；②快照里没有但库里该来源 active 的实体 → `missing`；③`missing` 超宽限期（默认 7 天）→ `retired`，其关系一并 `retired`（T-S4）；④关系 upsert，端点解析不到的记冲突不写入；⑤重建 `kind IN ('name','code','sync')` 别名（先删后插，**只动这三种 kind**）；
 5. 更新 run 状态与 `stats_json`，投递 `semantic_build`；
 6. 写审计 outbox 事件 `semantic.sync`（run id + 统计）。
 
@@ -845,7 +845,7 @@ class RelationRecord:
 | 别名短于 2 字或是常用词 | CI 拦截，除非显式标 `context` 或 `fuzzy_only` |
 | `extra_relations` 与同步关系重复 | 以同步为准，人工条忽略并提示"可删除" |
 | `extra_relations` 端点类型不在白名单 | CI 拦截；入库时触发器兜底（T-S5） |
-| YAML 删除某覆盖项 | 清空对应实体 `curated_json` 与 manual 别名；骨架不受影响 |
+| YAML 删除某覆盖项 | 清空对应实体 `curated_json` 与 manual 别名；事实列不受影响 |
 | L0 总 token 超预算（默认 1500） | CI 拦截 |
 
 **构建产物（`semantic_build`，同步或 YAML 合并后触发）**：
@@ -1163,7 +1163,7 @@ SELECT e.id, e.type, e.key, e.name, MIN(w.depth) AS depth, GROUP_CONCAT(DISTINCT
 
 *M2-S1 模板链路（模板 → 模板字段 → 表 → 列）*
 1. `migrations/semantic/`：`sem_*` 全部 DDL + 触发器 + `sem_rel_types` 白名单种子（§4）
-2. `template_center` + `metadata` 适配器（SourceAdapter 协议）；同步流程（删除比例保护 / missing 宽限期 / 分批 upsert / 只写骨架列 / 别名三 kind 重建 / outbox 事件）
+2. `template_center` + `metadata` 适配器（SourceAdapter 协议）；同步流程（删除比例保护 / missing 宽限期 / 分批 upsert / 只写事实列 / 别名三 kind 重建 / outbox 事件）
 3. 构建任务框架（`semantic_build` 骨架：dict_rev 计算 + 原子切换；AC 自动机留到 S2 接入）
 4. semantic 组首批工具：`get_entity`（递归 CTE + 截断）/ `search_entities`（别名精确 > 前缀）/ `describe_table`（白名单 + 超时缓存 + 降级）；REST 对应端点与 `sync` / `builds` / `sync-runs` 管理端点
 5. 验收：T-S2 / T-S3 / T-S5 / T-S6 / T-S11；"这个模板落在哪张表、哪个字段"类问题可答
