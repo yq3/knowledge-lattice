@@ -475,20 +475,27 @@ details[open] > summary::before { transform: rotate(90deg); }
 .alias.context { border-style: dotted; border-color: var(--rule-2); } .alias.fuzzy_only { border-style: dashed; border-color: var(--rule-2); color: var(--ink-3); background: var(--paper); }
 .graph { width: 100%; height: 420px; display: block; border-radius: var(--r-lg); border: 1px solid var(--rule);
   background: radial-gradient(circle, #D0D5DD 1px, transparent 1.2px) 0 0 / 16px 16px, var(--paper-2); }
-.graph .edge { stroke: var(--rule-2); stroke-width: 1.4; fill: none; }
-.graph .edge.cur { stroke: var(--seal); stroke-dasharray: 4 3; }
-.graph .elabel { font-family: var(--mono); font-size: 9px; fill: var(--ink-3); }
+.graph .edge { stroke-width: 1.4; fill: none; }
+.graph .elabel { font-family: var(--mono); font-size: 9px; fill: var(--ink-3); paint-order: stroke; stroke: var(--paper); stroke-width: 3px; stroke-linejoin: round; }
 .graph .node { cursor: pointer; }
 .graph .node rect { rx: 7px; stroke: var(--paper); stroke-width: 2; filter: drop-shadow(0 1px 2px rgba(16,24,40,.12)); transition: stroke .15s; }
 .graph .node text { font-family: var(--sans); font-size: 11px; font-weight: 500; fill: var(--ink); pointer-events: none; }
 .graph .node.center text { font-weight: 600; font-size: 12.5px; }
 .graph .node:hover rect { stroke: var(--seal); }
 .graph .node.missing text { fill: var(--ink-3); font-style: italic; }
+.graph .node.more rect { stroke-dasharray: 5 3; }
+.graph .node.more text { fill: var(--ink-3); font-weight: 500; }
+.graph .node.more:hover rect { stroke-width: 2.5; }
 .rel-list { font-size: 13px; }
 .rel-list .rl { display: grid; grid-template-columns: 92px 1fr auto; gap: var(--s2); padding: 7px 0; border-bottom: 1px solid var(--rule); align-items: center; }
 .rel-list .rl code { color: var(--ink-3); font-size: 11px; }
 .rel-list .rl button { text-align: left; color: var(--ink-2); font-weight: 500; }
 .rel-list .rl button:hover { color: var(--seal); }
+.rel-list .rl.g { grid-template-columns: 1fr auto; padding-left: 4px; }
+.rel-list .rl-h { display: flex; align-items: baseline; gap: var(--s2); padding: 10px 0 2px; border-bottom: 1px solid var(--rule); }
+.rel-list .rl-h:first-child { padding-top: 0; }
+.rel-list .rl-h code { font-size: 11px; }
+.rel-more { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; padding: 8px 0 0; }
 .passthru { border: 1px solid var(--rule); border-radius: var(--r-lg); margin-top: var(--s5); overflow: hidden; }
 .passthru .pt-h { display: flex; align-items: center; gap: var(--s3); padding: 10px var(--s4); background: var(--paper-2); border-bottom: 1px solid var(--rule); font-size: 13px; }
 .passthru .ledger td, .passthru .ledger th { padding: 8px var(--s4); font-size: 12px; }
@@ -707,6 +714,16 @@ const ORGS = [
         def: "税务机关的线上办税入口。", aliases: [["电子局", "abbr", "exact"]] },
       { k: "scenario:SC_VAT_M", name: "增值税月度申报", src: "sync", st: "active",
         aliases: [["月度申报", "manual", "exact"], ["SC_VAT_M", "code", "exact"]] },
+      /* 高扇出样本：同一附表二模板被 10 个场景使用——演示关系图每类关系的分组截断（+N） */
+      { k: "scenario:SC_VAT_Q", name: "增值税季度申报", src: "sync", st: "active", aliases: [] },
+      { k: "scenario:SC_VAT_M_CN02", name: "增值税月度申报（境内主体 02）", src: "sync", st: "active", aliases: [] },
+      { k: "scenario:SC_VAT_M_SG01", name: "增值税月度申报（新加坡主体）", src: "sync", st: "active", aliases: [] },
+      { k: "scenario:SC_VAT_ADJ", name: "增值税更正申报", src: "sync", st: "active", aliases: [] },
+      { k: "scenario:SC_VAT_SUPP", name: "当期漏报补录申报", src: "sync", st: "active", aliases: [] },
+      { k: "scenario:SC_VAT_CANCEL", name: "作废重报", src: "sync", st: "active", aliases: [] },
+      { k: "scenario:SC_VAT_REFUND_R", name: "留抵退税申请报送", src: "sync", st: "active", aliases: [] },
+      { k: "scenario:SC_VAT_EXP_DEV", name: "出口免税申报", src: "sync", st: "active", aliases: [] },
+      { k: "scenario:SC_VAT_ANN_RET", name: "年度汇总清算", src: "sync", st: "active", aliases: [] },
       { k: "template:TPL_VAT_A2", name: "增值税申报表附表二", src: "sync", st: "active",
         def: "本期进项税额明细。", aliases: [["附表二", "manual", "exact"], ["进项明细表", "manual", "exact"], ["TPL_VAT_A2", "code", "exact"]] },
       { k: "template:TPL_VAT_A2_OLD", name: "附表二（2019 版）", src: "sync", st: "missing", missingSince: "2026-10-14 02:00:00",
@@ -720,13 +737,36 @@ const ORGS = [
       { k: "report_item:RPT_VAT_BURDEN.I07", name: "期末留抵税额", src: "sync", st: "active", aliases: [["期末留抵", "manual", "exact"]] },
       { k: "table:dwd_tax.vat_input_invoice", name: "进项发票明细", src: "sync", st: "active", aliases: [["vat_input_invoice", "code", "exact"]] },
       { k: "table:dwd_tax.vat_declare_main", name: "增值税申报主表", src: "sync", st: "active", aliases: [["vat_declare_main", "code", "exact"]] },
+      /* 高扇出样本：宽表 12 个登记列——演示 has_column 的分组截断 */
+      { k: "table:dwd_tax.tax_ent_master", name: "税务主体宽表", src: "sync", st: "active", aliases: [["tax_ent_master", "code", "exact"]] },
       { k: "column:dwd_tax.vat_input_invoice.tax_amount", name: "tax_amount", src: "sync", st: "active", aliases: [] },
       { k: "column:dwd_tax.vat_input_invoice.cert_status", name: "cert_status", src: "sync", st: "active", aliases: [] },
       { k: "column:dwd_tax.vat_declare_main.transfer_out_amt", name: "transfer_out_amt", src: "sync", st: "active", aliases: [] },
       { k: "column:dwd_tax.vat_declare_main.end_credit_amt", name: "end_credit_amt", src: "sync", st: "active", aliases: [] },
+      { k: "column:dwd_tax.tax_ent_master.taxpayer_no", name: "taxpayer_no", src: "sync", st: "active", aliases: [] },
+      { k: "column:dwd_tax.tax_ent_master.taxpayer_name", name: "taxpayer_name", src: "sync", st: "active", aliases: [] },
+      { k: "column:dwd_tax.tax_ent_master.legal_person", name: "legal_person", src: "sync", st: "active", aliases: [] },
+      { k: "column:dwd_tax.tax_ent_master.industry_code", name: "industry_code", src: "sync", st: "active", aliases: [] },
+      { k: "column:dwd_tax.tax_ent_master.vat_scale", name: "vat_scale", src: "sync", st: "active", aliases: [] },
+      { k: "column:dwd_tax.tax_ent_master.declare_channel", name: "declare_channel", src: "sync", st: "active", aliases: [] },
+      { k: "column:dwd_tax.tax_ent_master.input_tax_sum_ytd", name: "input_tax_sum_ytd", src: "sync", st: "active", aliases: [] },
+      { k: "column:dwd_tax.tax_ent_master.output_tax_sum_ytd", name: "output_tax_sum_ytd", src: "sync", st: "active", aliases: [] },
+      { k: "column:dwd_tax.tax_ent_master.credit_balance", name: "credit_balance", src: "sync", st: "active", aliases: [] },
+      { k: "column:dwd_tax.tax_ent_master.burden_rate", name: "burden_rate", src: "sync", st: "active", aliases: [] },
+      { k: "column:dwd_tax.tax_ent_master.etl_batch_id", name: "etl_batch_id", src: "sync", st: "active", aliases: [] },
+      { k: "column:dwd_tax.tax_ent_master.data_src_tm", name: "data_src_tm", src: "sync", st: "active", aliases: [] },
     ],
     relations: [
       ["scenario:SC_VAT_M", "uses", "template:TPL_VAT_A2", "sync"],
+      ["scenario:SC_VAT_Q", "uses", "template:TPL_VAT_A2", "sync"],
+      ["scenario:SC_VAT_M_CN02", "uses", "template:TPL_VAT_A2", "sync"],
+      ["scenario:SC_VAT_M_SG01", "uses", "template:TPL_VAT_A2", "sync"],
+      ["scenario:SC_VAT_ADJ", "uses", "template:TPL_VAT_A2", "sync"],
+      ["scenario:SC_VAT_SUPP", "uses", "template:TPL_VAT_A2", "sync"],
+      ["scenario:SC_VAT_CANCEL", "uses", "template:TPL_VAT_A2", "sync"],
+      ["scenario:SC_VAT_REFUND_R", "uses", "template:TPL_VAT_A2", "sync"],
+      ["scenario:SC_VAT_EXP_DEV", "uses", "template:TPL_VAT_A2", "sync"],
+      ["scenario:SC_VAT_ANN_RET", "uses", "template:TPL_VAT_A2", "sync"],
       ["scenario:SC_VAT_M", "uses", "template:TPL_VAT_A2_OLD", "sync", "missing"],
       ["template:TPL_VAT_A2", "has_field", "template_field:TPL_VAT_A2.F02_TAX", "sync"],
       ["template:TPL_VAT_A2", "has_field", "template_field:TPL_VAT_A2.F13", "sync"],
@@ -737,6 +777,18 @@ const ORGS = [
       ["table:dwd_tax.vat_input_invoice", "has_column", "column:dwd_tax.vat_input_invoice.cert_status", "sync"],
       ["table:dwd_tax.vat_declare_main", "has_column", "column:dwd_tax.vat_declare_main.transfer_out_amt", "sync"],
       ["table:dwd_tax.vat_declare_main", "has_column", "column:dwd_tax.vat_declare_main.end_credit_amt", "sync"],
+      ["table:dwd_tax.tax_ent_master", "has_column", "column:dwd_tax.tax_ent_master.taxpayer_no", "sync"],
+      ["table:dwd_tax.tax_ent_master", "has_column", "column:dwd_tax.tax_ent_master.taxpayer_name", "sync"],
+      ["table:dwd_tax.tax_ent_master", "has_column", "column:dwd_tax.tax_ent_master.legal_person", "sync"],
+      ["table:dwd_tax.tax_ent_master", "has_column", "column:dwd_tax.tax_ent_master.industry_code", "sync"],
+      ["table:dwd_tax.tax_ent_master", "has_column", "column:dwd_tax.tax_ent_master.vat_scale", "sync"],
+      ["table:dwd_tax.tax_ent_master", "has_column", "column:dwd_tax.tax_ent_master.declare_channel", "sync"],
+      ["table:dwd_tax.tax_ent_master", "has_column", "column:dwd_tax.tax_ent_master.input_tax_sum_ytd", "sync"],
+      ["table:dwd_tax.tax_ent_master", "has_column", "column:dwd_tax.tax_ent_master.output_tax_sum_ytd", "sync"],
+      ["table:dwd_tax.tax_ent_master", "has_column", "column:dwd_tax.tax_ent_master.credit_balance", "sync"],
+      ["table:dwd_tax.tax_ent_master", "has_column", "column:dwd_tax.tax_ent_master.burden_rate", "sync"],
+      ["table:dwd_tax.tax_ent_master", "has_column", "column:dwd_tax.tax_ent_master.etl_batch_id", "sync"],
+      ["table:dwd_tax.tax_ent_master", "has_column", "column:dwd_tax.tax_ent_master.data_src_tm", "sync"],
       ["report:RPT_VAT_BURDEN", "has_item", "report_item:RPT_VAT_BURDEN.I03", "sync"],
       ["report:RPT_VAT_BURDEN", "has_item", "report_item:RPT_VAT_BURDEN.I07", "sync"],
       ["report_item:RPT_VAT_BURDEN.I03", "derived_from", "template_field:TPL_VAT_A2.F02_TAX", "sync"],
@@ -753,6 +805,8 @@ const ORGS = [
         cols: [["invoice_no", "STRING", "发票号码", "044001900111"], ["tax_amount", "DECIMAL(18,2)", "税额", "1,326.55"], ["cert_status", "STRING", "认证状态", "CERTIFIED"], ["entity_code", "STRING", "法人主体", "CN01"], ["dt", "STRING", "分区日期", "20261017"]] },
       "dwd_tax.vat_declare_main": { owner: "税务数仓", partition: "period (月分区)", rows: "约 38 万", lineage: "tax_hub.declare_snapshot → dwd_tax.vat_declare_main",
         cols: [["period", "STRING", "所属期", "202609"], ["entity_code", "STRING", "法人主体", "CN02"], ["transfer_out_amt", "DECIMAL(18,2)", "进项转出额", "0.00"], ["end_credit_amt", "DECIMAL(18,2)", "期末留抵", "84,200.13"]] },
+      "dwd_tax.tax_ent_master": { owner: "税务数仓", partition: "dt (日分区)", rows: "约 2,300 万", lineage: "ods_md.taxpayer_snapshot → dwd_tax.tax_ent_master",
+        cols: [["taxpayer_no", "STRING", "纳税人识别号", "914403007528391XK"], ["taxpayer_name", "STRING", "纳税人名称", "示例制造（深圳）有限公司"], ["legal_person", "STRING", "法定代表人", "张三"], ["industry_code", "STRING", "行业代码", "C36"], ["vat_scale", "STRING", "增值税一般/小规模", "GENERAL"], ["declare_channel", "STRING", "申报渠道", "ETAX"], ["input_tax_sum_ytd", "DECIMAL(20,2)", "本年累计进项", "38,204,517.82"], ["output_tax_sum_ytd", "DECIMAL(20,2)", "本年累计销项", "41,502,330.10"], ["credit_balance", "DECIMAL(20,2)", "期末留抵余额", "3,297,812.28"], ["burden_rate", "DECIMAL(8,4)", "税负率", "0.0312"], ["etl_batch_id", "STRING", "批次号", "B20261018"], ["data_src_tm", "STRING", "源系统时间", "2026-10-18 01:22:07"], ["update_time", "TIMESTAMP", "更新时间（未登记为语义实体）", "2026-10-18 01:23:00"]] },
     },
     syncRuns: [
       { at: "2026-10-18 02:00:00", adapter: "template_center", st: "succeeded", ins: 3, upd: 12, miss: 0, note: "" },
@@ -976,8 +1030,26 @@ const hop = (a, b) => { const m = expand([a], 2); return m.has(b) ? m.get(b) : 9
 const ROOT_TYPES = ["concept", "system", "scenario", "template", "report", "table"];
 const CHILD_REL = ["has_field", "has_item", "has_column", "child_of"];
 const LIST_CAP = 12;   // 结果表渲染上限（演示口径）；服务端 search_entities top_k ≤ 50，前端再截显示
-const REL_CAP = 4;     // 详情页关系默认折叠条数；服务端 get_entity fanout_limit ≤ 200
+const GROUP_CAP = 3;   // 关系图 / 关系列表按（关系类型×方向）分组，每组最多展示节点数；服务端 get_entity fanout_limit ≤ 200
+const REL_COLORS = {   // 连线按关系类型着色（与实体类型色系呼应：uses→场景橙、has_field→字段靛、maps_to→紫…）
+  uses: "#DC6803", has_field: "#444CE7", maps_to: "#6927DA", backed_by: "#0E7090", has_item: "#0E9384",
+  child_of: "#15B79E", derived_from: "#079455", refers_to: "#DD2590", related_to: "#B438FF" };
 const fmtN = n => n.toLocaleString("en-US");
+const graphGroups = k => {
+  const gm = new Map();
+  for (const n of neighbors(k)) {
+    const gk = n.rel + n.dir;
+    if (!gm.has(gk)) gm.set(gk, { rel: n.rel, dir: n.dir, all: [] });
+    gm.get(gk).all.push(n);
+  }
+  const groups = [...gm.values()];
+  for (const g of groups) {
+    g.all.sort((a, b) => (b.src === "curated") - (a.src === "curated"));   // 人工关系优先展示，同步项保持原序
+    g.shown = g.all.slice(0, GROUP_CAP);
+    g.hidden = g.all.slice(GROUP_CAP);
+  }
+  return groups;
+};
 const parentOf = k => { const r = liveRels().find(x => x[2] === k && CHILD_REL.includes(x[1])); return r ? r[0] : null; };
 const localKey = k => { const id = k.split(":")[1], p = parentOf(k), pid = p && p.split(":")[1]; return pid && id.startsWith(pid + ".") ? id.slice(pid.length + 1) : id; };
 const graceOf = e => e.st === "missing" ? fmtTs(new Date(tsDate(e.missingSince).getTime() + 7 * 864e5)) : null;
@@ -1576,7 +1648,8 @@ function entDetail(e) {
   const tagged = o.chunks.filter(c => c.ents.includes(e.k));
   const taggedOk = tagged.filter(c => { const d = docById(c.doc); return d && d.active.v > 0 && canSee(m, d); });
   const nb = neighbors(e.k), par = parentOf(e.k);
-  const shownRels = state.relAll ? nb : nb.slice(0, REL_CAP);
+  const relGroups = graphGroups(e.k);
+  const relHidden = relGroups.reduce((a, g) => a + g.hidden.length, 0);
   const kindCn = { name: "标准名", manual: "人工", abbr: "简称", pinyin: "拼音/错字", code: "编码" };
   const modeCn = { exact: "精确", context: "需上下文", fuzzy_only: "仅模糊" };
   return `<div class="ent-detail">
@@ -1606,47 +1679,74 @@ function entDetail(e) {
       ${e.disamb ? `<div class="defn-k">消歧</div><div class="defn" style="font-size:.94rem">${esc(e.disamb)}</div>` : ""}
       <div class="defn-k">别名 · ${e.aliases.length}</div>
       <div>${e.aliases.length ? e.aliases.map(([s, k, md]) => `<span class="alias ${md}" title="${kindCn[k] || k} · ${modeCn[md] || md}">${esc(s)}<span class="ak">${esc(k)}·${esc(md)}</span></span>`).join("") : `<span class="tiny muted">无</span>`}</div>
-      <div class="defn-k">关系 · ${nb.length}${nb.length > REL_CAP && !state.relAll ? ` <span class="muted" style="font-weight:400">· 默认显示前 ${REL_CAP}</span>` : ""}</div>
-      <div class="rel-list">${nb.length ? shownRels.map(n => `<div class="rl"><code>${n.dir === ">" ? "" : "← "}${esc(n.rel)}${n.dir === ">" ? " →" : ""}</code>
-        <button data-act="selEnt" data-k="${esc(n.k)}"><span class="tdot" style="background:var(--t-${entType(n.k)})"></span> ${esc(entOf(n.k).name)}${n.st === "missing" ? ` <span class="tiny muted">(missing)</span>` : ""}</button>
-        <span class="tiny muted">${n.src === "curated" ? "人工" : "同步"}</span></div>`).join("") : `<div class="tiny muted">孤立节点：只能靠精确别名识别；需上下文的别名会因为 2 跳内无锚点而被拒。</div>`}
-        ${nb.length > REL_CAP ? `<div class="tiny" style="display:flex;gap:10px;align-items:baseline;padding-top:8px;flex-wrap:wrap"><button class="link" data-act="relMore">${state.relAll ? "收起" : `展开其余 ${nb.length - REL_CAP} 条`}</button><span class="muted">宽模板几十上百个字段——服务端 <code>get_entity</code> 按 fanout_limit（≤ 200）截断并置 <code>truncated</code></span></div>` : ""}</div>
+      <div class="defn-k">关系 · ${nb.length} <span class="muted" style="font-weight:400">· ${relGroups.length} 类${relHidden ? state.relAll ? " · 已展开全量" : ` · 每类显示前 ${GROUP_CAP}（与图同口径）` : ""}</span></div>
+      <div class="rel-list">${nb.length ? relGroups.map(g => `
+        <div class="rl-h"><code style="color:${REL_COLORS[g.rel] || "inherit"}">${g.dir === "<" ? "← " : ""}${esc(g.rel)}${g.dir === ">" ? " →" : ""}</code><span class="tiny muted">${g.all.length} 个${g.hidden.length && !state.relAll ? ` · 显示前 ${GROUP_CAP}` : ""}</span></div>
+        ${(state.relAll ? g.all : g.shown).map(n => `<div class="rl g"><button data-act="selEnt" data-k="${esc(n.k)}"><span class="tdot" style="background:var(--t-${entType(n.k)})"></span> ${esc(entOf(n.k).name)}${n.st === "missing" ? ` <span class="tiny muted">(missing)</span>` : ""}</button>
+          <span class="tiny muted">${n.src === "curated" ? "人工" : "同步"}</span></div>`).join("")}`).join("") : `<div class="tiny muted">孤立节点：只能靠精确别名识别；需上下文的别名会因为 2 跳内无锚点而被拒。</div>`}
+        ${relHidden ? `<div class="rel-more"><button class="link tiny" data-act="relMore">${state.relAll ? "收起" : `展开其余 ${relHidden} 条`}</button><span class="tiny muted">宽模板 / 宽表几十上百个端点——服务端 <code>get_entity</code> 按 fanout_limit（≤ 200）截断并置 <code>truncated</code></span></div>` : ""}</div>
       <div class="defn-k">被打标的块</div>
       <div class="tiny">${tagged.length} 块，当前视角可见 <b>${taggedOk.length}</b>${tagged.length > taggedOk.length ? ` <span class="muted">（其余被维度过滤，实体召回同样拿不到）</span>` : ""}</div>
     </div>
     <div>${graphSVG(e.k, state.depth)}
-      <div class="tiny muted" style="margin-top:6px">点节点切换焦点 · 虚线 = 端点处于 missing · 受限实体及其边不出现 · 展开受 depth ≤ 2 与扇出上限约束，服务端超限截断（<code>truncated</code>）</div></div>
+      <div class="tiny muted" style="margin-top:6px">点节点切换焦点 · 连线颜色 = 关系类型，每类最多展示 ${GROUP_CAP} 个（<b>+N</b> = 其余端点，点击在左侧展开）· 虚线 = missing 或截断 · 受限实体及其边不出现 · depth ≤ 2、服务端 fanout_limit ≤ 200 置 <code>truncated</code></div></div>
   </div>
   ${t === "table" ? passthruHTML(e) : ""}
   <div class="tiny muted" style="margin-top:16px"><code>GET /semantic/entities/${esc(e.k)}?expand=1&depth=${state.depth}</code> ≡ MCP <code>get_entity</code></div>
   </div>`;
 }
 function graphSVG(k, depth) {
-  const dist = expand([k], depth), W = 680, H = 420, cx = W / 2, cy = H / 2;
-  const r1 = [...dist].filter(([, d]) => d === 1).map(([x]) => x), r2 = [...dist].filter(([, d]) => d === 2).map(([x]) => x);
-  const pos = new Map([[k, { x: cx, y: cy, a: 0 }]]);
+  const W = 680, H = 420, cx = W / 2, cy = H / 2;
+  const groups = graphGroups(k);
+  // 一圈槽位：按组连续排布（组内节点 + 组尾「+N 更多」占位），扇出被每组上限天然封顶
+  const slots = groups.flatMap(g => [...g.shown.map(n => ({ kind: "n", n, g })), ...(g.hidden.length ? [{ kind: "+", g, id: "+:" + g.rel + g.dir }] : [])]);
+  const pos = new Map([[k, { x: cx, y: cy }]]);
   const tw = s => [...s].reduce((w, ch) => w + (/[\x00-\x7f]/.test(ch) ? 6.6 : 11.6), 18);
   const lbl = n => { const s = n.name; return [...s].length > 14 ? [...s].slice(0, 13).join("") + "…" : s; };
-  const [rx1, ry1] = depth === 1 ? [225, 140] : [150, 92];
-  r1.forEach((x, i) => { const a = -Math.PI / 2 + i / r1.length * 2 * Math.PI; pos.set(x, { x: cx + rx1 * Math.cos(a), y: cy + ry1 * Math.sin(a), a }); });
-  const parentA = x => { const p = neighbors(x).find(n => dist.get(n.k) === 1); return p ? pos.get(p.k).a : 0; };
-  r2.sort((a, b) => parentA(a) - parentA(b)).forEach((x, i) => {
-    const a = -Math.PI / 2 + (i + 0.5) / r2.length * 2 * Math.PI;
-    pos.set(x, { x: cx + 268 * Math.cos(a), y: cy + 178 * Math.sin(a), a });
-  });
-  const edges = liveRels().filter(r => pos.has(r[0]) && pos.has(r[2]) && visEnt(entOf(r[0])) && visEnt(entOf(r[2])));
+  const [rx1, ry1] = depth === 1 ? [230, 142] : [152, 94];
+  slots.forEach((s, i) => { const a = -Math.PI / 2 + (i + 0.5) / slots.length * 2 * Math.PI; pos.set(s.kind === "n" ? s.n.k : s.id, { x: cx + rx1 * Math.cos(a), y: cy + ry1 * Math.sin(a) }); });
+  // depth 2：只沿「已展示」的邻居展开（被截断的端点不参与），每个节点最多再带 GROUP_CAP 个，去重防环
+  const placed = new Set([k, ...groups.flatMap(g => g.shown.map(n => n.k))]);
+  const r2 = [];
+  if (depth === 2) for (const s of slots) {
+    if (s.kind !== "n") continue;
+    let c = 0;
+    for (const m of neighbors(s.n.k)) {
+      if (c >= GROUP_CAP) break;
+      if (placed.has(m.k)) continue;
+      placed.add(m.k); r2.push({ m, from: s.n.k }); c++;
+    }
+  }
+  r2.forEach((x, i) => { const a = -Math.PI / 2 + (i + 0.5) / r2.length * 2 * Math.PI; pos.set(x.m.k, { x: cx + 268 * Math.cos(a), y: cy + 178 * Math.sin(a) }); });
   const clampX = (x, w) => Math.max(w / 2 + 4, Math.min(W - w / 2 - 4, x));
-  const nodes = [...pos.keys()].map(x => { const e = entOf(x), w = Math.min(176, tw(lbl(e))), p = pos.get(x); return { x, e, w, px: clampX(p.x, w), py: p.y, d: dist.get(x) }; });
+  const nodes = [...pos.keys()].map(x => {
+    const isChip = x.startsWith("+:"), g = isChip ? groups.find(gr => gr.rel + gr.dir === x.slice(2)) : null;
+    const e = isChip ? entOf(k) : entOf(x);
+    const text = isChip ? `+${g.hidden.length} 更多` : lbl(e);
+    const w = Math.min(176, tw(text)), p = pos.get(x);
+    return { x, e, g, isChip, text, w, px: clampX(p.x, w), py: p.y };
+  });
   const np = new Map(nodes.map(n => [n.x, n]));
-  return `<svg class="graph" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(entOf(k).name)} 的关系图（深度 ${depth}）">
-    ${edges.map(r => { const a = np.get(r[0]), b = np.get(r[2]), cur = (r[4] || "active") === "missing";
-      const showL = depth === 1 || r[0] === k || r[2] === k;
-      return `<line class="edge ${cur ? "cur" : ""}" x1="${a.px.toFixed(1)}" y1="${a.py.toFixed(1)}" x2="${b.px.toFixed(1)}" y2="${b.py.toFixed(1)}"/>${showL ? `<text class="elabel" x="${((a.px + b.px) / 2).toFixed(1)}" y="${((a.py + b.py) / 2 - 3).toFixed(1)}" text-anchor="middle">${esc(r[1])}</text>` : ""}`; }).join("")}
-    ${nodes.map(n => { const t = entType(n.x), c = n.x === k;
-      return `<g class="node ${c ? "center" : ""} ${n.e.st === "missing" ? "missing" : ""}" data-act="selEnt" data-k="${esc(n.x)}" transform="translate(${n.px.toFixed(1)},${n.py.toFixed(1)})" ${n.d === 2 ? `opacity=".82"` : ""}>
+  const edges = [];
+  for (const g of groups) g.shown.forEach((n, i) => edges.push({ a: k, b: n.k, g, lab: i === 0, dash: n.st === "missing" }));
+  for (const g of groups) if (g.hidden.length) edges.push({ a: k, b: "+:" + g.rel + g.dir, g, dash: true });
+  for (const r of r2) edges.push({ a: r.from, b: r.m.k, g: { rel: r.m.rel }, dash: r.m.st === "missing" });
+  const hidN = groups.reduce((a, g) => a + g.hidden.length, 0);
+  return `<svg class="graph" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(entOf(k).name)} 的关系图（${groups.length} 类关系 · 每类最多 ${GROUP_CAP} 个 · 深度 ${depth}）">
+    ${edges.map(e2 => { const A = np.get(e2.a) || { px: cx, py: cy }, B = np.get(e2.b); if (!B) return "";
+      const col = REL_COLORS[e2.g.rel] || "#D0D5DD";
+      return `<line class="edge" style="stroke:${col}${e2.dash ? ";stroke-dasharray:4 3;opacity:.8" : ""}" x1="${A.px.toFixed(1)}" y1="${A.py.toFixed(1)}" x2="${B.px.toFixed(1)}" y2="${B.py.toFixed(1)}"/>${e2.lab ? `<text class="elabel" style="fill:${col}" x="${((A.px + B.px) / 2).toFixed(1)}" y="${((A.py + B.py) / 2 - 3).toFixed(1)}" text-anchor="middle">${esc(e2.g.dir === "<" ? "← " : "")}${esc(e2.g.rel)}${esc(e2.g.dir === ">" ? " →" : "")}</text>` : ""}`; }).join("")}
+    ${nodes.map(n => {
+      if (n.isChip) return `<g class="node more" data-act="entMore" data-n="${n.g.hidden.length}" transform="translate(${n.px.toFixed(1)},${n.py.toFixed(1)})">
+        <title>${esc(n.g.dir === "<" ? "← " : "")}${esc(n.g.rel)} 另有 ${n.g.hidden.length} 个端点——点击在左侧关系列表展开全量</title>
+        <rect x="${-n.w / 2}" y="-13" width="${n.w}" height="26" rx="7" style="fill:var(--paper-2);stroke:${REL_COLORS[n.g.rel]};stroke-dasharray:5 3"/>
+        <text text-anchor="middle" dy="4">+${n.g.hidden.length} 更多</text></g>`;
+      const t = entType(n.x), c = n.x === k;
+      return `<g class="node ${c ? "center" : ""} ${n.e.st === "missing" ? "missing" : ""}" data-act="selEnt" data-k="${esc(n.x)}" transform="translate(${n.px.toFixed(1)},${n.py.toFixed(1)})">
         <title>${esc(ENT_TYPES[t])} · ${esc(n.e.name)} · ${esc(n.x)}</title>
         <rect x="${-n.w / 2}" y="-13" width="${n.w}" height="26" rx="7" style="fill:${c ? `var(--t-${t})` : `color-mix(in oklch, var(--t-${t}) 16%, var(--paper))`}"/>
-        <text text-anchor="middle" dy="4" ${c ? `style="fill:var(--paper)"` : ""}>${esc(lbl(n.e))}</text></g>`; }).join("")}
+        <text text-anchor="middle" dy="4" ${c ? `style="fill:var(--paper)"` : ""}>${esc(n.text)}</text></g>`;
+    }).join("")}
   </svg>`;
 }
 function passthruHTML(e) {
@@ -1850,6 +1950,7 @@ const actions = {
   selEntTab(el) { state.sub.sem = "entities"; state.selEnt = el.dataset.k; state.relAll = false; },
   entFacet(el) { const t = el.dataset.t; state.entSel = !t || state.entSel === t ? null : t; state.selEnt = null; },   // 单选：类型是互斥主轴；再点一次或点「全部」取消
   entBack() { state.selEnt = null; state.relAll = false; },
+  entMore(el) { state.relAll = true; toast(`该类关系另有 ${el.dataset.n} 个端点——左侧「关系」列表已展开全量；服务端 <code>get_entity</code> 按 fanout_limit（≤ 200）截断并置 <code>truncated</code>`); },
   relMore() { state.relAll = !state.relAll; },
   depth(el) { state.depth = +el.dataset.v; },
   cell(el) {
