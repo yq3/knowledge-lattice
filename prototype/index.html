@@ -439,19 +439,30 @@ details[open] > summary::before { transform: rotate(90deg); }
 .vis-split { display: grid; grid-template-columns: auto minmax(280px, 1fr); gap: var(--s5); align-items: start; }
 
 /* ---------------- 语义页 ---------------- */
-.sem { display: grid; grid-template-columns: 264px minmax(0, 1fr); gap: var(--s5); align-items: start; }
-.ent-list { position: sticky; top: calc(var(--top) + var(--s5)); max-height: calc(100vh - var(--top) - 48px); overflow: auto;
-  background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg); box-shadow: var(--sh-xs); padding: var(--s3); }
-.ent-group { margin-bottom: var(--s3); }
-.ent-group h4 { font-size: 12px; color: var(--ink-3); font-weight: 600; margin: 4px 0 4px; padding: 0 8px; display: flex; align-items: center; gap: 6px; }
+/* 实体浏览按规模设计（§5.8：10⁴~10⁵ 节点）：无常驻实体列表——搜索优先 + 类型 facet（全图计数）+ 类型总览落地 + 结果表 top-N */
+.ent-toolbar { background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg); box-shadow: var(--sh-xs); padding: var(--s4); }
+.ent-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.facet { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; border-radius: 13px; border: 1px solid var(--rule);
+  background: var(--paper); font-size: 11.5px; color: var(--ink-3); white-space: nowrap; }
+.facet:hover { border-color: var(--rule-2); color: var(--ink-2); }
+.facet.on { border-color: var(--seal); background: var(--seal-w); color: var(--seal); font-weight: 500; box-shadow: inset 0 0 0 1px var(--seal); }
+.facet b { font-weight: 500; color: var(--ink-4); font-variant-numeric: tabular-nums; font-size: 10.5px; }
+.facet.on b { color: var(--seal); }
 .tdot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; flex: none; }
-.ent-item { width: 100%; display: flex; gap: 6px; align-items: center; text-align: left; height: 32px; padding: 0 8px; border-radius: 6px; font-size: 13px; color: var(--ink-2); }
-.ent-item:hover { background: var(--paper-2); }
-.ent-item.on { background: var(--seal-w); color: var(--seal); font-weight: 500; }
-.ent-item.on small { color: var(--seal); opacity: .7; }
-.ent-item small { font-family: var(--mono); font-size: 10.5px; color: var(--ink-4); margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110px; font-weight: 400; }
-.ent-item.missing { color: var(--ink-4); font-style: italic; }
-.sem > div:last-child { background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg); box-shadow: var(--sh-xs); padding: var(--s5); min-width: 0; }
+.type-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 10px; }
+.type-tile { text-align: left; border: 1px solid var(--rule); border-radius: var(--r-lg); padding: 12px 14px 11px; background: var(--paper);
+  box-shadow: var(--sh-xs); display: flex; flex-direction: column; gap: 2px; transition: border-color .15s, box-shadow .15s; }
+.type-tile:hover { border-color: var(--seal-b); box-shadow: var(--sh-sm); }
+.type-tile .tt-c { font-family: var(--mono); font-size: 19px; font-weight: 600; line-height: 1.35; }
+.type-tile .tt-n { font-size: 13px; font-weight: 500; color: var(--ink-2); display: flex; align-items: center; gap: 6px; }
+.type-tile .tt-s { font-size: 11px; color: var(--ink-4); }
+.ent-detail { background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg); box-shadow: var(--sh-xs); padding: var(--s5); min-width: 0; }
+.ent-back { margin-bottom: var(--s4); }
+.ledger tr.tr-missing td { color: var(--ink-4); font-style: italic; }
+.crumbs { font-size: 12px; margin-bottom: 4px; display: flex; gap: 5px; align-items: baseline; min-width: 0; }
+.crumbs .link { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.crumbs .sep { color: var(--ink-4); }
+.crumbs b { color: var(--ink-3); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ent-head { display: flex; align-items: flex-start; gap: var(--s4); }
 .ent-head h2 { font-size: 20px; font-weight: 600; line-height: 1.3; color: var(--ink); }
 .ent-type { font-size: 11.5px; font-weight: 600; color: var(--paper); padding: 0 8px; height: 20px; line-height: 20px; border-radius: 5px; display: inline-block; margin-bottom: 6px; }
@@ -531,8 +542,6 @@ details[open] > summary::before { transform: rotate(90deg); }
   .brand { width: auto; }
   .rail { position: static; height: auto; flex-direction: row; overflow-x: auto; padding: 8px 12px; border-right: 0; border-bottom: 1px solid var(--rule); }
   .nav { flex-direction: row; } .nav-group, .rail-foot { display: none; }
-  .sem { grid-template-columns: 1fr; }
-  .ent-list { position: static; max-height: 260px; }
   .upload { grid-template-columns: 1fr; }
   .head { grid-template-columns: 1fr; } .head .head-act { grid-column: 1; grid-row: auto; }
 }
@@ -669,6 +678,11 @@ const ORGS = [
   /* ---------------- 业务语义（D23，M2-S） ---------------- */
   semantic: {
     dictRev: 41,
+    /* 规模口径（design §5.8：10⁴~10⁵ 节点、边为节点 1~3 倍）：mock 只渲染 20 个实体，
+       左栏 facet 计数 / 截断提示按此口径展示，演示真实规模下的浏览交互 */
+    scale: { concept: 12, system: 8, scenario: 64, template: 486, template_field: 23417,
+      report: 129, report_item: 8704, table: 731, column: 14908 },
+    scaleEdges: 132640,
     entities: [
       { k: "concept:vat.input_credit", name: "进项税额抵扣", src: "curated", st: "active", l0: true,
         def: "一般纳税人购进货物、服务取得合规扣税凭证后，将其注明的增值税额从销项税额中抵减。",
@@ -833,7 +847,7 @@ const state = {
   sub: { access: "grants", sem: "entities" },
   ds: "all", selDoc: null, drawer: null, newDs: { name: "", desc: "" }, up: { ds: "", picked: {}, file: "" },
   q: "", qDs: "all", entRoute: true, lastSearch: null,
-  selEnt: "template:TPL_VAT_A2", depth: 1, entQ: "", degraded: false,
+  selEnt: null, depth: 1, entQ: "", entSel: null, relAll: false, degraded: false,
   annText: "附表二的进项转出怎么填？中台什么时候同步认证税额，留底能退吗？TP 要不要单独报",
   fuzzy: false, vis: null, retireAsk: null,
 };
@@ -958,6 +972,15 @@ function expand(keys, depth) {
   return dist;
 }
 const hop = (a, b) => { const m = expand([a], 2); return m.has(b) ? m.get(b) : 99; };
+/* 实体浏览的规模约束（§5.8 10⁴~10⁵ 节点）：无常驻实体列表——搜索 / 类型总览进入，命中以结果表 top-N 呈现；详情独立成页 */
+const ROOT_TYPES = ["concept", "system", "scenario", "template", "report", "table"];
+const CHILD_REL = ["has_field", "has_item", "has_column", "child_of"];
+const LIST_CAP = 12;   // 结果表渲染上限（演示口径）；服务端 search_entities top_k ≤ 50，前端再截显示
+const REL_CAP = 4;     // 详情页关系默认折叠条数；服务端 get_entity fanout_limit ≤ 200
+const fmtN = n => n.toLocaleString("en-US");
+const parentOf = k => { const r = liveRels().find(x => x[2] === k && CHILD_REL.includes(x[1])); return r ? r[0] : null; };
+const localKey = k => { const id = k.split(":")[1], p = parentOf(k), pid = p && p.split(":")[1]; return pid && id.startsWith(pid + ".") ? id.slice(pid.length + 1) : id; };
+const graceOf = e => e.st === "missing" ? fmtTs(new Date(tsDate(e.missingSince).getTime() + 7 * 864e5)) : null;
 function aliasRows() {
   const rows = [];
   for (const e of S().entities) {
@@ -1483,45 +1506,84 @@ function viewSemantic() {
   return `
   <header class="head"><h1>语义</h1>
     <p class="lede">事实从源系统同步，人工经 YAML 覆盖层补定义 / 别名 / 关系。查询时识别术语 → 展开关系 → 作为第三路召回，<b>仍走同一份维度过滤</b>。</p>
-    <div class="head-act"><span class="tag moss">在用 dict_rev ${sm.dictRev}</span>${building ? `<span class="tag amber">rev ${building.rev} 构建中</span>` : ""}</div>
+    <div class="head-act"><span class="tag">全图 ${fmtN(Object.values(sm.scale).reduce((a, b) => a + b, 0))} 实体 · ${fmtN(sm.scaleEdges)} 关系</span><span class="tag moss">在用 dict_rev ${sm.dictRev}</span>${building ? `<span class="tag amber">rev ${building.rev} 构建中</span>` : ""}</div>
   </header>
   <nav class="sub-tabs">${tabs.map(([k, l]) => `<button class="sub-tab ${sub === k ? "on" : ""}" data-act="sub" data-s="sem" data-v="${k}">${l}</button>`).join("")}</nav>
   ${acc === "expired" ? `<div class="empty"><h3>403 · 成员关系已过期</h3><p>语义接口与检索一样，第 0 步先校验成员关系。</p></div>`
     : acc === "noperm" ? `<div class="empty"><h3>403 · 缺少 semantic:read</h3><p>${esc(uname(m.uid))} 没有语义层读权限。</p></div>`
     : sub === "entities" ? entitiesHTML() : sub === "annotate" ? annotateHTML() : syncHTML()}`;
 }
-function entListHTML() {
-  const sm = S(), q = state.entQ.trim().toLowerCase();
-  const match = e => !q || e.name.toLowerCase().includes(q) || e.k.toLowerCase().includes(q) || e.aliases.some(a => a[0].toLowerCase().includes(q));
+function entToolbarHTML() {
+  const sm = S(), sel = state.entSel, total = Object.values(sm.scale).reduce((a, b) => a + b, 0);
+  return `<div class="ent-toolbar">
+    <input class="inp" data-in="entQ" value="${esc(state.entQ)}" placeholder="搜索实体：名称 / 键 / 别名——全图 ${fmtN(total)} 个经搜索直达，不平铺" style="width:100%;height:36px;font-size:14px" aria-label="搜索实体">
+    <div class="ent-chips" role="group" aria-label="按实体类型过滤（单选）">
+      <button class="facet ${sel ? "" : "on"}" data-act="entFacet" data-t="">全部<b>${fmtN(total)}</b></button>
+      ${Object.keys(ENT_TYPES).map(t => `<button class="facet ${sel === t ? "on" : ""}" data-act="entFacet" data-t="${t}"><span class="tdot" style="background:var(--t-${t})"></span>${ENT_TYPES[t]}<b>${fmtN(sm.scale[t])}</b></button>`).join("")}
+    </div>
+    <div class="tiny muted" style="margin-top:8px">计数与 top-N 按全图规模口径（§5.8：10⁴~10⁵ 节点，叶子占 97%）；mock 只渲染 ${sm.entities.length} 个可点实体。</div>
+  </div>`;
+}
+function entLandingHTML() {
+  const sm = S(), missing = sm.entities.filter(e => e.st === "missing" && visEnt(e));
   const hidden = sm.entities.filter(e => !visEnt(e)).length;
-  const groups = Object.keys(ENT_TYPES).map(t => [t, sm.entities.filter(e => entType(e.k) === t && visEnt(e) && match(e))]).filter(g => g[1].length);
-  return `${groups.map(([t, list]) => `<div class="ent-group"><h4><span class="tdot" style="background:var(--t-${t})"></span>${ENT_TYPES[t]} <span style="margin-left:auto">${list.length}</span></h4>
-    ${list.map(e => `<button class="ent-item ${e.k === state.selEnt ? "on" : ""} ${e.st === "missing" ? "missing" : ""}" data-act="selEnt" data-k="${esc(e.k)}"><span>${esc(e.name)}</span><small>${esc(e.k.split(":")[1])}</small></button>`).join("")}</div>`).join("") || `<div class="tiny muted">没有匹配「${esc(state.entQ)}」的实体（名称 / 键 / 别名）。</div>`}
-    ${hidden ? `<div class="note" style="margin-top:8px">另有 <b>${hidden}</b> 个受限实体对当前视角隐藏（需 <code>semantic:restricted</code>）——列表、识别、关系展开、实体召回都看不到它。</div>` : ""}`;
+  return `<div class="sec-title" style="margin-top:0">按类型进入 <small>根实体可浏览；叶子（模板字段 / 报表项 / 列）经父节点详情或搜索直达</small></div>
+  <div class="type-tiles">${Object.keys(ENT_TYPES).map(t => `
+    <button class="type-tile" data-act="entFacet" data-t="${t}">
+      <span class="tt-c" style="color:var(--t-${t})">${fmtN(sm.scale[t])}</span>
+      <span class="tt-n"><span class="tdot" style="background:var(--t-${t})"></span>${ENT_TYPES[t]}</span>
+      <span class="tt-s">${ROOT_TYPES.includes(t) ? "根实体 · 浏览 / 搜索" : "叶子 · 父节点详情 / 搜索直达"}</span>
+    </button>`).join("")}</div>
+  <div class="note" style="margin-top:16px">需要关注：${missing.length ? missing.map(e => `<button class="link" data-act="selEntTab" data-k="${esc(e.k)}">${esc(e.name)}</button>（missing · 宽限至 ${short(graceOf(e))}）`).join("、") : "无 missing 实体"}${sm.conflicts.length ? ` · <button class="link" data-act="sub" data-s="sem" data-v="sync">${sm.conflicts.length} 条冲突待处理</button>` : ""}${hidden ? ` · ${hidden} 个受限实体对当前视角隐藏（需 <code>semantic:restricted</code>）` : ""}</div>`;
+}
+function entTableHTML(ordered, facetSum) {
+  const shown = ordered.slice(0, LIST_CAP), trunc = ordered.length > LIST_CAP;
+  const meta = trunc
+    ? `命中 ${fmtN(ordered.length)}，显示前 ${LIST_CAP}——服务端 <code>search_entities</code> 上限 top_k 50；更精确的词或类型 facet 可收窄`
+    : `显示 mock 中全部 ${ordered.length} 个命中${facetSum ? ` · 全图该类型 ${fmtN(facetSum)} 个（mock 未渲染其余）` : ""}`;
+  return `<div class="tiny muted" style="margin:2px 0 8px">${meta}</div>
+  <table class="ledger"><thead><tr><th>名称</th><th>类型</th><th>键</th><th>别名</th><th class="num">关系</th><th>状态</th><th>来源</th></tr></thead>
+  <tbody>${shown.map(e => { const t = entType(e.k), miss = e.st === "missing", g = graceOf(e);
+    return `<tr class="clickable ${miss ? "tr-missing" : ""}" data-act="selEnt" data-k="${esc(e.k)}">
+      <td><span class="tdot" style="background:var(--t-${t})"></span> <b class="t-title">${esc(e.name)}</b></td>
+      <td class="tiny">${ENT_TYPES[t]}</td>
+      <td class="mono tiny">${esc(localKey(e.k))}</td>
+      <td class="tiny muted">${e.aliases.length ? `${esc(e.aliases[0][0])}${e.aliases.length > 1 ? ` 等 ${e.aliases.length}` : ""}` : "—"}</td>
+      <td class="num">${neighbors(e.k).length}</td>
+      <td class="tiny">${miss ? `宽限至 ${short(g)}` : "在用"}</td>
+      <td class="tiny">${e.src === "curated" ? "人工 · YAML" : "同步"}</td></tr>`; }).join("")}</tbody></table>`;
+}
+function semBodyHTML() {
+  const sm = S(), sel = state.selEnt ? entOf(state.selEnt) : null;
+  if (sel && visEnt(sel)) return entDetail(sel);
+  const q = state.entQ.trim().toLowerCase(), ft = state.entSel;
+  if (!q && !ft) return entLandingHTML();
+  const match = e => (!ft || entType(e.k) === ft) && (!q || e.name.toLowerCase().includes(q) || e.k.toLowerCase().includes(q) || e.aliases.some(a => a[0].toLowerCase().includes(q)));
+  const ordered = Object.keys(ENT_TYPES).flatMap(t => sm.entities.filter(e => entType(e.k) === t && visEnt(e) && match(e)).sort((a, b) => a.name.localeCompare(b.name, "zh")));
+  if (!ordered.length) {
+    const total = Object.values(sm.scale).reduce((a, b) => a + b, 0);
+    return `<div class="empty" style="padding:28px var(--s5)"><h3>没有匹配的实体</h3><p>按名称 / 键 / 别名匹配${q ? `「${esc(state.entQ)}」` : ""}${ft ? `（类型：${ENT_TYPES[ft]}）` : ""}。全图 ${fmtN(total)} 个实体——试更短的关键词，或清除类型过滤后从总览进入。</p>
+    <p style="margin-top:10px"><button class="btn ghost sm" data-act="entFacet" data-t="">清除类型过滤</button></p></div>`;
+  }
+  return entTableHTML(ordered, ft ? sm.scale[ft] : 0);
 }
 function entitiesHTML() {
-  const sm = S();
-  let e = entOf(state.selEnt);
-  if (!visEnt(e)) { e = sm.entities.find(x => visEnt(x)); state.selEnt = e?.k; }
-  return `<div class="sem">
-    <div class="ent-list">
-      <input class="inp" data-in="entQ" value="${esc(state.entQ)}" placeholder="名称 / 键 / 别名" style="width:100%;margin-bottom:12px" aria-label="筛选实体">
-      <div id="entList">${entListHTML()}</div>
-    </div>
-    <div>${e ? entDetail(e) : ""}</div>
-  </div>`;
+  return `${entToolbarHTML()}<div id="entRes" style="margin-top:16px">${semBodyHTML()}</div>`;
 }
 function entDetail(e) {
   const o = O(), sm = S(), m = lens(), t = entType(e.k);
   const graceEnd = e.st === "missing" ? fmtTs(new Date(tsDate(e.missingSince).getTime() + 7 * 864e5)) : null;
   const tagged = o.chunks.filter(c => c.ents.includes(e.k));
   const taggedOk = tagged.filter(c => { const d = docById(c.doc); return d && d.active.v > 0 && canSee(m, d); });
-  const nb = neighbors(e.k);
+  const nb = neighbors(e.k), par = parentOf(e.k);
+  const shownRels = state.relAll ? nb : nb.slice(0, REL_CAP);
   const kindCn = { name: "标准名", manual: "人工", abbr: "简称", pinyin: "拼音/错字", code: "编码" };
   const modeCn = { exact: "精确", context: "需上下文", fuzzy_only: "仅模糊" };
-  return `
+  return `<div class="ent-detail">
+  <button class="btn ghost sm ent-back" data-act="entBack">← 返回${state.entQ.trim() || state.entSel ? "结果列表" : "类型总览"}</button>
   <div class="ent-head">
-    <div style="flex:1">
+    <div style="flex:1;min-width:0">
+      ${par && visEnt(entOf(par)) ? `<div class="crumbs"><button class="link" data-act="selEnt" data-k="${esc(par)}">${esc(entOf(par).name)}</button><span class="sep">›</span><b>${esc(e.name)}</b></div>` : ""}
       <span class="ent-type" style="background:var(--t-${t})">${ENT_TYPES[t]}</span>
       <h2>${esc(e.name)}</h2>
       <div class="ent-key">${esc(e.k)}</div>
@@ -1544,18 +1606,20 @@ function entDetail(e) {
       ${e.disamb ? `<div class="defn-k">消歧</div><div class="defn" style="font-size:.94rem">${esc(e.disamb)}</div>` : ""}
       <div class="defn-k">别名 · ${e.aliases.length}</div>
       <div>${e.aliases.length ? e.aliases.map(([s, k, md]) => `<span class="alias ${md}" title="${kindCn[k] || k} · ${modeCn[md] || md}">${esc(s)}<span class="ak">${esc(k)}·${esc(md)}</span></span>`).join("") : `<span class="tiny muted">无</span>`}</div>
-      <div class="defn-k">关系 · ${nb.length}</div>
-      <div class="rel-list">${nb.length ? nb.map(n => `<div class="rl"><code>${n.dir === ">" ? "" : "← "}${esc(n.rel)}${n.dir === ">" ? " →" : ""}</code>
+      <div class="defn-k">关系 · ${nb.length}${nb.length > REL_CAP && !state.relAll ? ` <span class="muted" style="font-weight:400">· 默认显示前 ${REL_CAP}</span>` : ""}</div>
+      <div class="rel-list">${nb.length ? shownRels.map(n => `<div class="rl"><code>${n.dir === ">" ? "" : "← "}${esc(n.rel)}${n.dir === ">" ? " →" : ""}</code>
         <button data-act="selEnt" data-k="${esc(n.k)}"><span class="tdot" style="background:var(--t-${entType(n.k)})"></span> ${esc(entOf(n.k).name)}${n.st === "missing" ? ` <span class="tiny muted">(missing)</span>` : ""}</button>
-        <span class="tiny muted">${n.src === "curated" ? "人工" : "同步"}</span></div>`).join("") : `<div class="tiny muted">孤立节点：只能靠精确别名识别；需上下文的别名会因为 2 跳内无锚点而被拒。</div>`}</div>
+        <span class="tiny muted">${n.src === "curated" ? "人工" : "同步"}</span></div>`).join("") : `<div class="tiny muted">孤立节点：只能靠精确别名识别；需上下文的别名会因为 2 跳内无锚点而被拒。</div>`}
+        ${nb.length > REL_CAP ? `<div class="tiny" style="display:flex;gap:10px;align-items:baseline;padding-top:8px;flex-wrap:wrap"><button class="link" data-act="relMore">${state.relAll ? "收起" : `展开其余 ${nb.length - REL_CAP} 条`}</button><span class="muted">宽模板几十上百个字段——服务端 <code>get_entity</code> 按 fanout_limit（≤ 200）截断并置 <code>truncated</code></span></div>` : ""}</div>
       <div class="defn-k">被打标的块</div>
       <div class="tiny">${tagged.length} 块，当前视角可见 <b>${taggedOk.length}</b>${tagged.length > taggedOk.length ? ` <span class="muted">（其余被维度过滤，实体召回同样拿不到）</span>` : ""}</div>
     </div>
     <div>${graphSVG(e.k, state.depth)}
-      <div class="tiny muted" style="margin-top:6px">点节点切换焦点 · 虚线 = 端点处于 missing · 受限实体及其边不出现</div></div>
+      <div class="tiny muted" style="margin-top:6px">点节点切换焦点 · 虚线 = 端点处于 missing · 受限实体及其边不出现 · 展开受 depth ≤ 2 与扇出上限约束，服务端超限截断（<code>truncated</code>）</div></div>
   </div>
   ${t === "table" ? passthruHTML(e) : ""}
-  <div class="tiny muted" style="margin-top:16px"><code>GET /semantic/entities/${esc(e.k)}?expand=1&depth=${state.depth}</code> ≡ MCP <code>get_entity</code></div>`;
+  <div class="tiny muted" style="margin-top:16px"><code>GET /semantic/entities/${esc(e.k)}?expand=1&depth=${state.depth}</code> ≡ MCP <code>get_entity</code></div>
+  </div>`;
 }
 function graphSVG(k, depth) {
   const dist = expand([k], depth), W = 680, H = 420, cx = W / 2, cy = H / 2;
@@ -1691,10 +1755,11 @@ function render() {
   }
 }
 function resetOrgState() {
-  state.selDoc = null; state.lastSearch = null; state.vis = null; state.retireAsk = null; state.entQ = "";
+  state.selDoc = null; state.lastSearch = null; state.vis = null; state.retireAsk = null;
+  state.entQ = ""; state.entSel = null; state.relAll = false;
   state.up = { ds: "", picked: {}, file: "" }; state.ds = "all"; state.qDs = "all";
   state.drawer = null; state.newDs = { name: "", desc: "" };
-  state.selEnt = S() ? (S().entities.find(e => visEnt(e)) || {}).k : null;
+  state.selEnt = null;
 }
 function rerunSearch() { if (state.lastSearch && state.q.trim()) state.lastSearch = runSearch(state.q.trim()); }
 
@@ -1728,7 +1793,7 @@ function advance() {
 const actions = {
   menu(el) { const mn = $("#menu-" + el.dataset.m), open = mn.classList.contains("open"); document.querySelectorAll(".menu.open").forEach(x => x.classList.remove("open")); if (!open) mn.classList.add("open"); return false; },
   org(el) { state.orgId = el.dataset.id; resetOrgState(); },
-  lens(el) { state.lens[O().id] = el.dataset.id; state.retireAsk = null; if (state.selEnt && !visEnt(entOf(state.selEnt))) state.selEnt = (S()?.entities.find(e => visEnt(e)) || {}).k; rerunSearch(); },
+  lens(el) { state.lens[O().id] = el.dataset.id; state.retireAsk = null; if (state.selEnt && !visEnt(entOf(state.selEnt))) { state.selEnt = null; state.relAll = false; } rerunSearch(); },
   view(el) { state.view = el.dataset.v; },
   sub(el) { state.sub[el.dataset.s] = el.dataset.v; },
   stub(el) { toast(esc(el.dataset.msg)); return false; },
@@ -1780,9 +1845,12 @@ const actions = {
   },
   search() { const q = state.q.trim(); if (!q) return false; state.lastSearch = runSearch(q); },
   sugg(el) { state.q = el.dataset.q; state.lastSearch = runSearch(state.q); },
-  gotoEnt(el) { state.view = "semantic"; state.sub.sem = "entities"; state.selEnt = el.dataset.k; },
-  selEnt(el) { state.selEnt = el.dataset.k; },
-  selEntTab(el) { state.sub.sem = "entities"; state.selEnt = el.dataset.k; },
+  gotoEnt(el) { state.view = "semantic"; state.sub.sem = "entities"; state.selEnt = el.dataset.k; state.relAll = false; },
+  selEnt(el) { state.selEnt = el.dataset.k; state.relAll = false; },
+  selEntTab(el) { state.sub.sem = "entities"; state.selEnt = el.dataset.k; state.relAll = false; },
+  entFacet(el) { const t = el.dataset.t; state.entSel = !t || state.entSel === t ? null : t; state.selEnt = null; },   // 单选：类型是互斥主轴；再点一次或点「全部」取消
+  entBack() { state.selEnt = null; state.relAll = false; },
+  relMore() { state.relAll = !state.relAll; },
   depth(el) { state.depth = +el.dataset.v; },
   cell(el) {
     const o = O(), mb = o.members.find(x => x.uid === el.dataset.u), k = el.dataset.k, v = el.dataset.v, d = dimOf(k);
@@ -1846,7 +1914,7 @@ function onInput(ev) {
     case "dsDesc": state.newDs.desc = v; break;
     case "qDs": state.qDs = v; rerunSearch(); break;
     case "entRoute": state.entRoute = v; rerunSearch(); break;
-    case "entQ": state.entQ = v; $("#entList").innerHTML = entListHTML(); return;
+    case "entQ": state.entQ = v; state.selEnt = null; $("#entRes").innerHTML = semBodyHTML(); return;
     case "annText": state.annText = v; $("#annRes").innerHTML = annResultHTML(); return;
     case "fuzzy": state.fuzzy = v; break;
     case "degraded": state.degraded = v; break;

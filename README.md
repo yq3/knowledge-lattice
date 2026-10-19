@@ -8,7 +8,7 @@
 
 - 需求文档：[docs/requirements.md](docs/requirements.md)（先读这份）
 - 方案设计：[docs/design.md](docs/design.md)（架构 / 数据模型 DDL（含 `sem_*`）/ ACL 编译 / MCP 契约（docs + semantic 两组）/ 里程碑分解）
-- 交互原型：[prototype/index.html](prototype/index.html)（v0.5，issue [#36](https://github.com/yq3/lab/issues/36)；浏览器直接打开、mock 数据；**信息结构与 UI 风格均为前端实现基准**，含语义层视图）
+- 交互原型：[prototype/index.html](prototype/index.html)（v0.5，issue [#36](https://github.com/yq3/lab/issues/36)；浏览器直接打开、mock 数据；**信息结构与 UI 风格均为前端实现基准**，含语义层视图——实体浏览按 10⁴~10⁵ 节点规模设计：类型总览落地 + 搜索优先 + 全宽结果表 top-N + 详情独立成页，无常驻实体列表）
 - 调研基础：[../research/enterprise-rag/](../research/enterprise-rag/)（22 仓源码级调研 + 四厂商第一方实践）；术语层调研沉淀见 [../glossary-agent/](../glossary-agent/)
 
 ## 一句话定位
