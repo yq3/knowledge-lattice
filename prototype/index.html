@@ -297,6 +297,9 @@ main { grid-area: main; min-width: 0; padding: var(--s5) clamp(20px, 2.6vw, 40px
 .seg button { height: 28px; padding: 0 12px; font-size: 13px; font-weight: 500; color: var(--ink-3); border-radius: 6px; }
 .seg button:hover { color: var(--ink-2); }
 .seg button.on { background: var(--paper); color: var(--ink); box-shadow: var(--sh-sm); }
+.seg button.seg-add { color: var(--ink-4); padding: 0 12px; }
+.seg button.seg-add:hover { color: var(--seal); background: var(--paper); }
+.seg button.seg-add.on { background: var(--paper); color: var(--seal); box-shadow: var(--sh-sm); font-weight: 500; }
 
 .ver { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
 .ver .vl { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
@@ -537,7 +540,7 @@ details[open] > summary::before { transform: rotate(90deg); }
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
 </style>
-<script nonce="0d0b9c8f406b55807026a2ac1bf9a1db-argus"> function handleHwmScriptLoad() {try { changeBodyBackgroundColor("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3OTA1OTYyNzIsImlhdCI6MTc4OTk5MTQ3MiwiaXNzIjoic3NvLmJ5dGVkYW5jZS5jb20iLCJzdWIiOiJ3ZDFsdXN6Y21tdHRrM240NjY4dSIsInRlbmFudF9pZCI6ImhncTN0Y2NwM2kxc2pqbjU4emlrIn0.DLeIyEEM_3u6ceDRmhQzESdCtJgR5KibXIpiB_4JBWyO0U1yOowZWodVrULD4gnEc9qEdKupa3Fh6_U_i_0C_IF91ATkuCa-arDB7IOyZgBRwn7qmpJGX4HvTv2os7D3uKsoUY2P_O8lW-PnUPKY8VQ5Rf5ieAxLdUYuNF9kyReS4UD_18xJ4dlPCoz71Zt6X7o0RqF95hNmHyl5M3a7XsDGc8LHNwekgsMgmCmcPy44Ukkdin6FE6LHjRijM-Y6O8ZMnW5eDEiMNvx-DlvxFVrsrYyrBT0iMEPPtdK2pigOjRYVhqTsMUvKPfqE1PnOiJMHLhw9A0skau-hZ9IaXg", ""); } catch (error) {console.warn(error.message);}} </script> <script src="https://sf-static-sg.byteintl.net/traffic_base_wm/insertWM_v0.0.7.js" async nonce="0d0b9c8f406b55807026a2ac1bf9a1db-argus" onload="handleHwmScriptLoad()"></script></head>
+</head>
 <body>
 <div class="app">
   <header class="topbar">
@@ -828,7 +831,7 @@ const state = {
   lens: { "01JORGTAX": "u1", "01JORGFIN": "f1" },
   view: "docs",
   sub: { access: "grants", sem: "entities" },
-  ds: "all", selDoc: null, uploadOpen: false, up: { ds: "", picked: {}, file: "" },
+  ds: "all", selDoc: null, drawer: null, newDs: { name: "", desc: "" }, up: { ds: "", picked: {}, file: "" },
   q: "", qDs: "all", entRoute: true, lastSearch: null,
   selEnt: "template:TPL_VAT_A2", depth: 1, entQ: "", degraded: false,
   annText: "附表二的进项转出怎么填？中台什么时候同步认证税额，留底能退吗？TP 要不要单独报",
@@ -1162,22 +1165,24 @@ function viewDocs() {
     <p class="lede">知识库只是分组，<b>可见性只由维度决定</b>。一份文件的内容若分属不同维度取值，拆成多份上传。</p>
     <div class="head-act">
       <button class="btn ghost" data-act="advance">推进任务</button>
-      <button class="btn seal-btn" data-act="toggleUpload">${state.uploadOpen ? "收起" : "＋ 上传文档"}</button>
+      <button class="btn seal-btn" data-act="toggleUpload">${state.drawer === "upload" ? "收起" : "＋ 上传文档"}</button>
     </div>
   </header>
-  <div class="drawer ${state.uploadOpen ? "open" : ""}"><div class="dr-in">${uploadHTML()}</div></div>
+  <div class="drawer ${state.drawer === "upload" ? "open" : ""}"><div class="dr-in">${uploadHTML()}</div></div>
   <div class="toolbar">
     <div class="seg" role="tablist">
-      <button class="${state.ds === "all" ? "on" : ""}" data-act="ds" data-id="all">全部 ${o.docs.length}</button>
-      ${o.datasets.map(d => `<button class="${state.ds === d.id ? "on" : ""}" data-act="ds" data-id="${d.id}" title="${esc(d.desc)}">${esc(d.name)} ${o.docs.filter(x => x.ds === d.id).length}</button>`).join("")}
+      <button class="${state.ds === "all" && state.drawer !== "newds" ? "on" : ""}" data-act="ds" data-id="all">所有知识库 ${o.docs.length}</button>
+      ${o.datasets.map(d => `<button class="${state.ds === d.id && state.drawer !== "newds" ? "on" : ""}" data-act="ds" data-id="${d.id}" title="${esc(d.desc)}">${esc(d.name)} ${o.docs.filter(x => x.ds === d.id).length}</button>`).join("")}
+      ${isAdmin(m) && memberValid(m) ? `<button class="seg-add ${state.drawer === "newds" ? "on" : ""}" data-act="newDs" title="新建知识库 · 组织管理员">＋ 新建知识库</button>` : ""}
     </div>
     <span style="flex:1"></span>
     <span class="tiny muted">${esc(uname(m.uid))} 可见 <b style="color:var(--ink)">${visN}</b> / ${docs.length}</span>
     <span class="legend" style="margin:0"><span class="lg"><span class="lens-dot y"></span>可见</span><span class="lg"><span class="lens-dot n"></span>不可见</span><span class="lg"><span class="lens-dot x"></span>成员过期</span></span>
   </div>
+  ${state.drawer === "newds" ? newDsHTML() : `
   <div class="split">
     <div>
-      <table class="ledger">
+      ${docs.length ? `<table class="ledger">
         <thead><tr><th style="width:36%">文档</th><th>维度</th><th>版本</th><th class="num">分块</th><th>区分度</th><th title="当前视角">视角</th></tr></thead>
         <tbody>${docs.map(d => {
           const flags = o.qflags.filter(f => f.doc === d.id && f.st === "open").length;
@@ -1192,10 +1197,11 @@ function viewDocs() {
             <td>${flags ? `<span class="tag amber">${flags} 待处理</span>` : `<span class="tiny muted">—</span>`}</td>
             <td>${lensDot(m, d)}</td></tr>`;
         }).join("")}</tbody>
-      </table>
+      </table>` : emptyDsHTML()}
     </div>
     <aside class="pane">${state.selDoc && docById(state.selDoc) ? docPane(docById(state.selDoc)) : docTeach()}</aside>
-  </div>`;
+  </div>`}
+  `;
 }
 function docTeach() {
   return `<div class="teach"><b style="font-size:15px">选中一行看三件事</b>
@@ -1258,6 +1264,35 @@ function uploadHTML() {
       <span style="flex:1"></span>
       <span class="tiny muted">一个维度可多选（通用政策可同时挂多个区域）· agent 走凭证三步：<code>POST /api/uploads</code> → <code>PUT</code> 字节 → <code>POST documents</code></span>
     </div></div>`;
+}
+function newDsHTML() {
+  const o = O(), m = lens();
+  if (!isAdmin(m) || !memberValid(m)) return `<div class="upload" style="max-width:760px"><div class="note seal" style="grid-column:1/-1;margin:0">当前视角 <b>${esc(uname(m.uid))}</b> 不是组织管理员：只有组织管理员能新建知识库。切回组织管理员视角，或点上方任意知识库返回列表。</div></div>`;
+  const ok = state.newDs.name.trim().length > 0;
+  return `<div class="upload" style="max-width:760px">
+    <div style="grid-column:1/-1"><b style="font-size:15px">新建知识库</b>
+      <span class="tiny muted">—— 建完自动选中新库并进入空态；第一份文档处理到「可词法检索」即可命中检索</span></div>
+    <div class="u-row"><label>名称<span class="req">*</span></label>
+      <input class="inp" data-in="dsName" placeholder="例如：转让定价实务库" value="${esc(state.newDs.name)}"></div>
+    <div class="u-row"><label>描述<span class="tiny muted"> 可选</span></label>
+      <input class="inp" data-in="dsDesc" placeholder="一句话说明收录范围，hover 库名时显示" value="${esc(state.newDs.desc)}"></div>
+    <div class="u-foot">
+      <button class="btn seal-btn" data-act="createDs" ${ok ? "" : "disabled"}>创建</button>
+      <button class="btn ghost" data-act="newDs">取消</button>
+      <span class="tiny ${ok ? "" : "muted"}">${ok ? "创建后自动选中新库" : "先填名称"}</span>
+      <span style="flex:1"></span>
+      <span class="tiny muted">库不设权限，可见性由文档维度决定（D15）· <code>POST /api/orgs/${o.id}/datasets</code> · 组织管理员</span>
+    </div></div>`;
+}
+function emptyDsHTML() {
+  const scoped = state.ds !== "all";
+  return `<div class="empty" style="margin:0">
+    <h3>${scoped ? `「${esc(dsName(state.ds))}」还是空库` : "这个组织还没有文档"}</h3>
+    <p>${scoped
+      ? "新库不设任何权限——<b>可见性由上传时填的文档维度决定</b>，库只是分组与管理单元（D15）。第一份文档处理到「可词法检索」，检索即可命中。"
+      : "可见性与选哪个库无关，由上传时填的<b>文档维度</b>决定——先把第一份文档传上来。"}</p>
+    <div style="margin-top:16px"><button class="btn seal-btn" data-act="emptyUpload">＋ 上传第一份文档</button></div>
+  </div>`;
 }
 
 /* ==========================================================================
@@ -1658,6 +1693,7 @@ function render() {
 function resetOrgState() {
   state.selDoc = null; state.lastSearch = null; state.vis = null; state.retireAsk = null; state.entQ = "";
   state.up = { ds: "", picked: {}, file: "" }; state.ds = "all"; state.qDs = "all";
+  state.drawer = null; state.newDs = { name: "", desc: "" };
   state.selEnt = S() ? (S().entities.find(e => visEnt(e)) || {}).k : null;
 }
 function rerunSearch() { if (state.lastSearch && state.q.trim()) state.lastSearch = runSearch(state.q.trim()); }
@@ -1697,8 +1733,19 @@ const actions = {
   sub(el) { state.sub[el.dataset.s] = el.dataset.v; },
   stub(el) { toast(esc(el.dataset.msg)); return false; },
   advance() { advance(); },
-  toggleUpload() { state.uploadOpen = !state.uploadOpen; },
-  ds(el) { state.ds = el.dataset.id; },
+  toggleUpload() { state.drawer = state.drawer === "upload" ? null : "upload"; },
+  newDs() { state.drawer = state.drawer === "newds" ? null : "newds"; },
+  emptyUpload() { if (state.ds !== "all") state.up.ds = state.ds; state.drawer = "upload"; },
+  createDs() {
+    const o = O(), name = state.newDs.name.trim();
+    if (!name) return false;
+    const id = newId("ds_");
+    o.datasets.push({ id, name, desc: state.newDs.desc.trim() || "（无描述）" });
+    permEvent("dataset.create", `新建知识库「${name}」· 库不设权限（D15）`);
+    state.ds = id; state.up.ds = id; state.selDoc = null; state.drawer = null; state.newDs = { name: "", desc: "" };
+    toast(`已创建 <b>${esc(name)}</b> 并选中——空库，上传第一份文档`);
+  },
+  ds(el) { state.ds = el.dataset.id; if (state.drawer === "newds") state.drawer = null; },
   selDoc(el) { state.selDoc = state.selDoc === el.dataset.id ? null : el.dataset.id; },
   openDoc(el) { state.view = "docs"; state.ds = "all"; state.selDoc = el.dataset.id; },
   editDims(el) {
@@ -1728,7 +1775,7 @@ const actions = {
     o.docs.unshift({ id, ds: state.up.ds, title, owner: m.uid, dims, active: { v: 0, st: null }, pending: { v: 1, st: "uploaded" }, chunks: 0, at: NOW });
     o.tasks.unshift({ id: newId("01JT"), type: "ingest", doc: id, st: "pending", stage: "uploaded", hb: null, lease: null, att: 0 });
     permEvent("document.create", `${title} → ${dsName(state.up.ds)}`);
-    state.up = { ds: state.up.ds, picked: {}, file: "" }; state.uploadOpen = false; state.selDoc = id; state.ds = "all";
+    state.up = { ds: state.up.ds, picked: {}, file: "" }; state.drawer = null; state.selDoc = id; state.ds = "all";
     toast(`已上传 <b>${esc(title)}</b>，入队解析。点「推进任务」看它走完流水线`);
   },
   search() { const q = state.q.trim(); if (!q) return false; state.lastSearch = runSearch(q); },
@@ -1795,6 +1842,8 @@ function onInput(ev) {
     case "q": state.q = v; return;
     case "upFile": state.up.file = v; break;
     case "upDs": state.up.ds = v; break;
+    case "dsName": state.newDs.name = v; break;
+    case "dsDesc": state.newDs.desc = v; break;
     case "qDs": state.qDs = v; rerunSearch(); break;
     case "entRoute": state.entRoute = v; rerunSearch(); break;
     case "entQ": state.entQ = v; $("#entList").innerHTML = entListHTML(); return;
