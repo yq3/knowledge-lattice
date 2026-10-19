@@ -92,7 +92,7 @@ svg.ic { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none
 .brand { display: flex; align-items: center; gap: 10px; min-width: calc(var(--rail) - var(--s4)); flex: none; padding-right: var(--s3); }
 .seal { width: 28px; height: 28px; flex: none; display: grid; place-items: center; border-radius: 8px;
   background: linear-gradient(140deg, #2970FF 0%, #155EEF 55%, #004EEB 100%); box-shadow: var(--sh-xs), inset 0 0 0 1px rgba(255,255,255,.12); }
-.seal svg { width: 18px; height: 18px; }
+.seal svg { width: 26px; height: 26px; }
 .brand-name { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; color: var(--ink); white-space: nowrap; }
 .brand-sub { font-size: 10.5px; font-weight: 600; color: var(--seal); background: var(--seal-w); border: 1px solid var(--seal-b);
   padding: 0 6px; border-radius: 5px; line-height: 17px; letter-spacing: .02em; }
@@ -120,7 +120,6 @@ svg.ic { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none
 .picker-btn .pk-t { font-weight: 600; font-size: 13px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
 .picker-btn .pk-s { font-size: 11px; color: var(--ink-4); }
 .picker-btn .caret { color: var(--ink-4); display: inline-flex; }
-.ws-ic { width: 24px; height: 24px; border-radius: 6px; display: grid; place-items: center; font-size: 12px; font-weight: 700; color: #fff; flex: none; }
 .avatar { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 600; color: #fff; flex: none; }
 .menu {
   position: absolute; left: 0; top: calc(100% + 6px); z-index: 60; min-width: 280px;
@@ -165,9 +164,9 @@ main { grid-area: main; min-width: 0; padding: var(--s5) clamp(20px, 2.6vw, 40px
 /* ---------------- 页头 ---------------- */
 .head { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--s5); row-gap: 4px; align-items: center; margin-bottom: var(--s5); }
 .head h1 { grid-column: 1; font-weight: 600; font-size: 20px; line-height: 28px; letter-spacing: -0.01em; color: var(--ink); }
-.head .lede { grid-column: 1; color: var(--ink-3); max-width: 80ch; font-size: 13px; line-height: 20px; }
+.head .lede { grid-column: 1 / -1; color: var(--ink-3); font-size: 13px; line-height: 20px; }
 .head .lede b { color: var(--ink-2); font-weight: 600; }
-.head .head-act { grid-column: 2; grid-row: 1 / span 2; display: flex; gap: var(--s2); align-items: center; }
+.head .head-act { grid-column: 2; grid-row: 1; display: flex; gap: var(--s2); align-items: center; }
 .sub-tabs { display: flex; gap: var(--s5); margin: calc(-1 * var(--s2)) 0 var(--s5); border-bottom: 1px solid var(--rule); }
 .sub-tab { padding: 10px 2px; color: var(--ink-3); border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 500; font-size: 14px; }
 .sub-tab:hover { color: var(--ink-2); }
@@ -689,7 +688,6 @@ const ORGS = [
        左栏 facet 计数 / 截断提示按此口径展示，演示真实规模下的浏览交互 */
     scale: { concept: 12, system: 8, scenario: 64, template: 486, template_field: 23417,
       report: 129, report_item: 8704, table: 731, column: 14908 },
-    scaleEdges: 132640,
     entities: [
       { k: "concept:vat.input_credit", name: "进项税额抵扣", src: "curated", st: "active", l0: true,
         def: "一般纳税人购进货物、服务取得合规扣税凭证后，将其注明的增值税额从销项税额中抵减。",
@@ -1211,19 +1209,17 @@ const ICONS = {
 };
 const ic = k => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[k]}</svg>`;
 const CARET = `<svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>`;
-const WS_COLOR = ["#155EEF", "#7A5AF8", "#0E9384", "#DC6803"];
-const wsIcon = (x, i) => `<span class="ws-ic" style="background:${WS_COLOR[i % 4]}">${esc(x.id.slice(6, 7))}</span>`;
 const AV_COLOR = ["#2970FF", "#7A5AF8", "#EE46BC", "#0E9384", "#F79009", "#16B364", "#6172F3"];
 const avatar = (uid, size) => { const i = Object.keys(USERS).indexOf(uid); return `<span class="avatar" style="background:${AV_COLOR[(i < 0 ? 0 : i) % AV_COLOR.length]}${size ? `;width:${size}px;height:${size}px;font-size:${Math.round(size * .45)}px` : ""}">${esc(uname(uid).slice(0, 1))}</span>`; };
 function renderRail() {
-  const o = O(), m = lens(), oi = ORGS.indexOf(o);
+  const o = O(), m = lens();
   $("#orgPicker").innerHTML = `
     <button class="picker-btn" data-act="menu" data-m="org" aria-haspopup="true">
-      ${wsIcon(o, oi)}<span class="pk-main"><span class="pk-t">${esc(o.name)}</span></span><span class="caret">${CARET}</span>
+      <span class="pk-main"><span class="pk-t">${esc(o.name)}</span></span><span class="caret">${CARET}</span>
     </button>
     <div class="menu" id="menu-org">
       <div class="tiny muted" style="padding:6px 10px 4px;font-weight:500">工作空间（组织）</div>
-      ${ORGS.map((x, i) => `<button class="menu-item ${x.id === o.id ? "on" : ""}" data-act="org" data-id="${x.id}">${wsIcon(x, i)}<span>${esc(x.name)}<span class="mono tiny muted" style="display:block;font-weight:400">${x.id}</span></span><small>${x.members.length} 人 · ${x.docs.length} 文档</small></button>`).join("")}
+      ${ORGS.map((x, i) => `<button class="menu-item ${x.id === o.id ? "on" : ""}" data-act="org" data-id="${x.id}"><span>${esc(x.name)}<span class="mono tiny muted" style="display:block;font-weight:400">${x.id}</span></span><small>${x.members.length} 人 · ${x.docs.length} 文档</small></button>`).join("")}
       <div class="menu-note">系统管理员视角。切换组织 = 切换整套库、维度、授权与语义图；跨组织零可见。</div>
     </div>`;
   const roleCn = x => !memberValid(x) ? "已过期" : isAdmin(x) ? "组织管理员" : "成员";
@@ -1578,7 +1574,7 @@ function viewSemantic() {
   return `
   <header class="head"><h1>语义</h1>
     <p class="lede">事实从源系统同步，人工经 YAML 覆盖层补定义 / 别名 / 关系。查询时识别术语 → 展开关系 → 作为第三路召回，<b>仍走同一份维度过滤</b>。</p>
-    <div class="head-act"><span class="tag">全图 ${fmtN(Object.values(sm.scale).reduce((a, b) => a + b, 0))} 实体 · ${fmtN(sm.scaleEdges)} 关系</span><span class="tag moss">在用 dict_rev ${sm.dictRev}</span>${building ? `<span class="tag amber">rev ${building.rev} 构建中</span>` : ""}</div>
+    <div class="head-act"><span class="tag moss">在用 dict_rev ${sm.dictRev}</span>${building ? `<span class="tag amber">rev ${building.rev} 构建中</span>` : ""}</div>
   </header>
   <nav class="sub-tabs">${tabs.map(([k, l]) => `<button class="sub-tab ${sub === k ? "on" : ""}" data-act="sub" data-s="sem" data-v="${k}">${l}</button>`).join("")}</nav>
   ${acc === "expired" ? `<div class="empty"><h3>403 · 成员关系已过期</h3><p>语义接口与检索一样，第 0 步先校验成员关系。</p></div>`
