@@ -1,7 +1,7 @@
 # knowledge-lattice 方案设计
 
-> 版本：v0.5（2026-10-18 D23 修订：吸收 [issue #35](https://github.com/yq3/lab/issues/35)——**业务语义层并入**：`core/semantic/` 模块、`sem_*` 表 DDL、semantic 工具组与 agent 中间件、ingest 打标与实体召回路、M2-S1~S3、T-S1~T-S12；**不影响 v0.4 冻结的必修 1~3 任何结论**——冻结纪律延续：设计仅在决策变化时修改，本次为冻结后首个决策变更）
-> 日期：2026-10-16 初稿 → v0.2（#31）→ v0.3（#32）→ v0.4（#33+#34，冻结版）→ v0.5（#35，D23）
+> 版本：v0.5.1（2026-10-19 原型基线更新：吸收 [issue #36](https://github.com/yq3/lab/issues/36)——`prototype/index.html` 替换为 v0.5，五视图（文档 / 检索测试 / 权限 / 语义层 / 任务与审计），§5.7 前端薄壳以其为**信息结构与 UI 风格双基准**；语义层视图原型已含（实现仍可选，M2-S3 节奏不变）；**非决策变更**——D1~D23 与 v0.4 冻结结论均不受影响，冻结纪律延续）
+> 日期：2026-10-16 初稿 → v0.2（#31）→ v0.3（#32）→ v0.4（#33+#34，冻结版）→ v0.5（#35，D23）→ v0.5.1（#36，原型基线更新）
 > 前置阅读：[requirements.md](./requirements.md)（本文所有 FR/NFR/D 编号均指向需求文档 v0.5）
 > 调研依据：[enterprise-rag 调研](../../research/enterprise-rag/)，参考架构基线 `blog/10-build-kb-for-agent.md`
 
@@ -730,7 +730,7 @@ COMMIT;
 
 ### 5.7 前端薄壳（web/）
 
-三个页面（上传与任务 / 检索测试 / 管理），由 FastAPI 托管静态文件，无构建工具（原生 HTML/JS + 少量 fetch），**UI 永远是薄壳**——所有能力先有 API 契约（§6）再有页面；M2 管理面**先 API + 最小 UI**（完整页面后置，issue #31 P2）。交互原型见 `prototype/index.html`（mock 数据、浏览器直接打开），实现时以原型为信息结构基准逐页对接 REST。管理页"语义"入口（同步记录、冲突报告、实体浏览）为可选项，原型随 M2-S3 补（D23，非必需）。
+五个视图（文档 / 检索测试 / 权限 / 语义层 / 任务与审计——原型 v0.5），由 FastAPI 托管静态文件，无构建工具（原生 HTML/JS + 少量 fetch），**UI 永远是薄壳**——所有能力先有 API 契约（§6）再有页面；M2 管理面（权限 / 语义层视图）**先 API + 最小 UI**（完整页面后置，issue #31 P2）。交互原型见 `prototype/index.html`（v0.5，issue #36；mock 数据、浏览器直接打开），**信息结构与 UI 风格均为实现基准**，逐视图对接 REST。语义层视图（同步记录、冲突报告、实体浏览）原型已含，实现仍为可选项（D23，非必需，随 M2-S3）。
 
 ### 5.8 语义层：同步、YAML 覆盖层与构建（core/semantic/，D23——#35 §6.1/§7）
 
@@ -1182,7 +1182,7 @@ SELECT e.id, e.type, e.key, e.name, MIN(w.depth) AS depth, GROUP_CONCAT(DISTINCT
 3. `search(entities / auto_entities)` 实体召回路（`semantic.expand` + docs 侧编译 SQL **复用 §5.1 ACL 产物**）+ 三路 RRF 融合 + `matched_entities`
 4. 模糊兜底（拼音 / 编辑距离 / sqlite-vec 向量近邻，`sem_vec`）；`search_entities` 排序补齐拼音与向量
 5. agent 中间件从本地 AC 切到服务端 annotate（开关 + 灰度 + 评测集对比）
-6. （可选）管理页"语义"入口：同步记录、冲突报告、实体浏览
+6. （可选）语义层视图（原型 v0.5 已含）：同步记录、冲突报告、实体浏览
 7. 验收：越权矩阵 T-S7 / T-S8 / T-S9 / T-S10 全绿；AC+模糊 recall@3 ≥ 0.92；**检索增益评测**（docs 黄金集开/关实体路 recall@10、MRR）不回退方可默认开启
 
 **M3（第 7~8 周）——评测防线**

@@ -8,7 +8,7 @@
 
 - 需求文档：[docs/requirements.md](docs/requirements.md)（先读这份）
 - 方案设计：[docs/design.md](docs/design.md)（架构 / 数据模型 DDL（含 `sem_*`）/ ACL 编译 / MCP 契约（docs + semantic 两组）/ 里程碑分解）
-- 交互原型：[prototype/index.html](prototype/index.html)（浏览器直接打开；mock 数据，信息结构为实现基准；语义管理入口随 M2-S3 补，可选）
+- 交互原型：[prototype/index.html](prototype/index.html)（v0.5，issue [#36](https://github.com/yq3/lab/issues/36)；浏览器直接打开、mock 数据；**信息结构与 UI 风格均为前端实现基准**，含语义层视图）
 - 调研基础：[../research/enterprise-rag/](../research/enterprise-rag/)（22 仓源码级调研 + 四厂商第一方实践）；术语层调研沉淀见 [../glossary-agent/](../glossary-agent/)
 
 ## 一句话定位
@@ -17,4 +17,4 @@
 
 ## 项目状态
 
-POC 阶段（lab 仓库先行，验证后拆仓演进）。当前：需求 v0.5 / 设计 v0.5——v0.4 **冻结版**（历轮评审 [#31](https://github.com/yq3/lab/issues/31) → [#32](https://github.com/yq3/lab/issues/32) → [#33](https://github.com/yq3/lab/issues/33)（收口）→ [#34](https://github.com/yq3/lab/issues/34)（冻结复审）全部吸收，决策 D1~D22）+ **v0.4 冻结后首个决策变更：D23 业务语义层并入**（[#35](https://github.com/yq3/lab/issues/35)，2026-10-18——取代 D17 部署形态；新增 FR-S1~S6 / NFR-11 / M2-S1~S3 / T-S1~T-S12；不影响冻结的必修 1~3 任何结论）。**设计冻结纪律不变：此后仅在决策变化时修改文档，实现问题走测试用例与 issue**；下一步 M0a（骨架周）开工（**M0a/M0b/M1 不含语义层**），待决-2（SSO 协议）与待决-3（委托 token / 可信子系统）随 M0a 并行敲定；业务语义按 M2 并行轨道推进，M2 之前 agent 侧以「同 schema 的 Git YAML + 本地 AC 自动机」过渡。
+POC 阶段（lab 仓库先行，验证后拆仓演进）。当前：需求 v0.5 / 设计 v0.5.1——v0.4 **冻结版**（历轮评审 [#31](https://github.com/yq3/lab/issues/31) → [#32](https://github.com/yq3/lab/issues/32) → [#33](https://github.com/yq3/lab/issues/33)（收口）→ [#34](https://github.com/yq3/lab/issues/34)（冻结复审）全部吸收，决策 D1~D22）+ **v0.4 冻结后首个决策变更：D23 业务语义层并入**（[#35](https://github.com/yq3/lab/issues/35)，2026-10-18——取代 D17 部署形态；新增 FR-S1~S6 / NFR-11 / M2-S1~S3 / T-S1~T-S12；不影响冻结的必修 1~3 任何结论）+ v0.5.1 原型基线更新（[#36](https://github.com/yq3/lab/issues/36)，2026-10-19——prototype 替换为 v0.5，信息结构与 UI 风格为前端实现基准；非决策变更）。**设计冻结纪律不变：此后仅在决策变化时修改文档，实现问题走测试用例与 issue**；下一步 M0a（骨架周）开工（**M0a/M0b/M1 不含语义层**），待决-2（SSO 协议）与待决-3（委托 token / 可信子系统）随 M0a 并行敲定；业务语义按 M2 并行轨道推进，M2 之前 agent 侧以「同 schema 的 Git YAML + 本地 AC 自动机」过渡。

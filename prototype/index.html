@@ -1,884 +1,1819 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>knowledge-lattice · 交互原型</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Knowledge Lattice · 企业知识层控制台（原型 v0.5）</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-/* ============ 设计 token ============
-   主题：晶格（lattice）——维度权限以「晶胞 chip」呈现，格子即信息
-   bg 冷调纸白 / ink 深矿青黑 / accent 矿物深青 / 数据一律等宽
-   层级：组织 → 知识库（分组，不承担权限）→ 文档（维度 ACL）→ chunk */
+/* ==========================================================================
+   Knowledge Lattice 控制台原型 v0.5 —— 企业 SaaS 视觉：浅灰底 + 白色卡片 + 品牌蓝
+   信息结构对齐 design.md v0.5：§5.1 维度 ACL / §5.3 版本在用 / §5.4 区分度 / §5.8~5.10 语义层 / §6.2 REST
+   ========================================================================== */
 :root {
-  --bg: #F7F8F6;
-  --panel: #FFFFFF;
-  --ink: #1C2B2A;
-  --ink-2: #51605D;
-  --ink-3: #7C8A86;
-  --line: #D9DED8;
-  --line-strong: #B9C2BB;
-  --accent: #0E6B63;
-  --accent-bg: #E3EFED;
-  --amber: #A16207;
-  --amber2: #C98A1B;
-  --violet: #6D58B5;
-  --danger: #B42318;
-  --danger-bg: #F9E9E7;
-  --ok: #1B7A3D;
-  --ok-bg: #E6F2EA;
-  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
-  --sans: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  /* 表面与描边（变量名沿用，值为 SaaS 灰阶） */
+  --paper:   #FFFFFF;
+  --paper-2: #F9FAFB;
+  --paper-3: #F2F4F7;
+  --rule:    #EAECF0;
+  --rule-2:  #D0D5DD;
+  --bg:      #F2F4F7;
+  /* 文字 */
+  --ink:     #101828;
+  --ink-2:   #344054;
+  --ink-3:   #667085;
+  --ink-4:   #98A2B3;
+  /* 品牌主色（原 seal 变量 → 品牌蓝） */
+  --seal:    #155EEF;
+  --seal-2:  #004EEB;
+  --seal-w:  #EFF4FF;
+  --seal-b:  #C7D7FE;
+  /* 语义色 */
+  --danger:  #D92D20; --danger-2: #B42318; --danger-w: #FEF3F2; --danger-b: #FECDCA;
+  --moss:    #079455; --moss-w: #ECFDF3; --moss-b: #ABEFC6;
+  --amber:   #DC6803; --amber-w: #FFFAEB; --amber-b: #FEDF89;
+  --slate-w: #F2F4F7;
+  /* 维度色 */
+  --d0: #175CD3; --d0w: #EFF8FF;
+  --d1: #6927DA; --d1w: #F4F3FF;
+  --d2: #0E7090; --d2w: #ECFDFF;
+  --d3: #C4320A; --d3w: #FFF6ED;
+  /* 实体类型色 */
+  --t-concept: #DD2590;
+  --t-system: #475467;
+  --t-scenario: #DC6803;
+  --t-template: #444CE7;
+  --t-template_field: #6172F3;
+  --t-report: #0E9384;
+  --t-report_item: #15B79E;
+  --t-table: #079455;
+  --t-column: #17B26A;
+
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --serif: var(--sans);
+  --mono: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+
+  --sh-xs: 0 1px 2px rgba(16, 24, 40, .05);
+  --sh-sm: 0 1px 3px rgba(16, 24, 40, .08), 0 1px 2px rgba(16, 24, 40, .04);
+  --sh-lg: 0 12px 16px -4px rgba(16, 24, 40, .08), 0 4px 6px -2px rgba(16, 24, 40, .03);
+  --r: 8px; --r-lg: 12px;
+
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px; --s8: 72px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --rail: 232px;
+  --top: 56px;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html { font-size: 15px; }
+html { font-size: 14px; }
 body {
-  font-family: var(--sans); background: var(--bg); color: var(--ink);
-  display: flex; min-height: 100vh; line-height: 1.55;
+  font-family: var(--sans); color: var(--ink); background: var(--bg);
+  line-height: 1.5; -webkit-font-smoothing: antialiased; font-feature-settings: "tnum" 1, "cv11" 1;
 }
-button { font: inherit; cursor: pointer; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { transition: none !important; animation: none !important; }
-}
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; background: none; border: 0; }
+code, .mono { font-family: var(--mono); font-size: 0.86em; }
+code { background: var(--paper-3); padding: 1px 5px; border-radius: 4px; color: var(--ink-2); }
+:focus-visible { outline: 2px solid var(--seal-b); outline-offset: 1px; }
+::selection { background: var(--seal-w); }
+svg.ic { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
-/* ============ 布局骨架 ============ */
-.sidenav {
-  width: 224px; flex-shrink: 0; background: var(--panel);
-  border-right: 1px solid var(--line); padding: 20px 0 14px;
-  display: flex; flex-direction: column; gap: 4px;
-  position: sticky; top: 0; height: 100vh;
+/* ---------------- 骨架：顶栏 + 侧栏 + 内容区 ---------------- */
+.app {
+  display: grid; grid-template-columns: var(--rail) 1fr; grid-template-rows: var(--top) 1fr;
+  grid-template-areas: "top top" "rail main"; min-height: 100vh;
 }
-/* ============ 左上角组织切换器（dify 工作空间风格）============ */
-.brand-mark {
-  width: 20px; height: 20px; border: 1.5px solid var(--ink); position: relative; flex-shrink: 0;
-  background:
-    linear-gradient(var(--ink) 1.5px, transparent 1.5px) 0 0 / 100% 6.67px,
-    linear-gradient(90deg, var(--ink) 1.5px, transparent 1.5px) 0 0 / 6.67px 100%;
+.topbar {
+  grid-area: top; position: sticky; top: 0; z-index: 40; height: var(--top);
+  display: flex; align-items: center; gap: var(--s2); padding: 0 var(--s5) 0 var(--s4);
+  background: var(--paper); border-bottom: 1px solid var(--rule);
 }
-.brand-mark::after {
-  content: ""; position: absolute; left: 2px; top: 2px; width: 7px; height: 7px;
-  background: var(--accent);
+.brand { display: flex; align-items: center; gap: 10px; min-width: calc(var(--rail) - var(--s4)); flex: none; padding-right: var(--s3); }
+.seal { width: 28px; height: 28px; flex: none; display: grid; place-items: center; border-radius: 8px;
+  background: linear-gradient(140deg, #2970FF 0%, #155EEF 55%, #004EEB 100%); box-shadow: var(--sh-xs), inset 0 0 0 1px rgba(255,255,255,.12); }
+.seal svg { width: 18px; height: 18px; }
+.brand-name { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; color: var(--ink); white-space: nowrap; }
+.brand-sub { font-size: 10.5px; font-weight: 600; color: var(--seal); background: var(--seal-w); border: 1px solid var(--seal-b);
+  padding: 0 6px; border-radius: 5px; line-height: 17px; letter-spacing: .02em; }
+.tb-sep { color: var(--rule-2); font-size: 18px; font-weight: 300; margin: 0 2px 0 -6px; }
+.tb-spacer { flex: 1; }
+.tb-link { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border-radius: var(--r); color: var(--ink-3); font-size: 13px; font-weight: 500; }
+.tb-link:hover { background: var(--paper-3); color: var(--ink-2); }
+.tb-div { width: 1px; height: 20px; background: var(--rule); margin: 0 var(--s2); }
+.tb-lens { display: flex; align-items: center; gap: 6px; }
+.tb-lens .rail-label { margin: 0; padding: 0; font-size: 12px; letter-spacing: 0; color: var(--ink-4); white-space: nowrap; }
+
+.rail {
+  grid-area: rail; position: sticky; top: var(--top); height: calc(100vh - var(--top)); overflow: auto;
+  background: var(--paper); border-right: 1px solid var(--rule);
+  display: flex; flex-direction: column; padding: var(--s3) var(--s3) var(--s4);
 }
-.org-switcher { position: relative; padding: 0 12px 16px; }
-.org-btn {
-  display: flex; align-items: center; gap: 10px; width: 100%;
-  border: 1px solid var(--line); background: var(--bg);
-  padding: 8px 10px; font-size: 0.92rem; font-weight: 600; text-align: left;
+.rail-label { font-size: 12px; font-weight: 500; color: var(--ink-4); padding: 0 var(--s2); margin: var(--s4) 0 6px; }
+.picker { position: relative; }
+.picker-btn {
+  display: flex; align-items: center; gap: var(--s2); text-align: left; height: 36px;
+  padding: 0 var(--s2); border-radius: var(--r); transition: background .15s;
 }
-.org-btn:hover { border-color: var(--ink); }
-.org-btn .caret { margin-left: auto; color: var(--ink-3); font-size: 0.72rem; }
-.org-menu {
-  position: absolute; top: calc(100% - 8px); left: 12px; right: 12px; z-index: 40;
-  background: var(--panel); border: 1px solid var(--ink); padding: 6px;
-  box-shadow: 4px 4px 0 rgba(28, 43, 42, 0.08);
+.picker-btn:hover, .picker-btn[aria-expanded="true"] { background: var(--paper-3); }
+.picker-btn .pk-main { min-width: 0; display: flex; flex-direction: column; line-height: 1.2; }
+.picker-btn .pk-t { font-weight: 600; font-size: 13px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
+.picker-btn .pk-s { font-size: 11px; color: var(--ink-4); }
+.picker-btn .caret { color: var(--ink-4); display: inline-flex; }
+.ws-ic { width: 24px; height: 24px; border-radius: 6px; display: grid; place-items: center; font-size: 12px; font-weight: 700; color: #fff; flex: none; }
+.avatar { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 600; color: #fff; flex: none; }
+.menu {
+  position: absolute; left: 0; top: calc(100% + 6px); z-index: 60; min-width: 280px;
+  background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg); padding: var(--s1);
+  box-shadow: var(--sh-lg);
+  opacity: 0; transform: translateY(-4px); pointer-events: none; transition: opacity .16s var(--ease), transform .16s var(--ease);
 }
-.org-menu-title { font-size: 0.7rem; color: var(--ink-3); padding: 4px 10px; }
-.org-item {
-  display: flex; align-items: center; gap: 8px; width: 100%;
-  border: 0; background: none; padding: 8px 10px; text-align: left; font-size: 0.88rem;
-}
-.org-item:hover { background: var(--bg); }
-.org-item.on { background: var(--accent-bg); font-weight: 600; }
-.org-item .om-mark { width: 9px; height: 9px; border: 1px solid var(--ink-3); flex-shrink: 0; }
-.org-item.on .om-mark { background: var(--accent); border-color: var(--accent); }
-.org-item .om-sub { margin-left: auto; font-size: 0.68rem; color: var(--ink-3); font-weight: 400; }
-.org-menu-foot { font-size: 0.7rem; color: var(--ink-3); border-top: 1px dashed var(--line); margin-top: 4px; padding: 6px 10px; }
+#lensPicker .menu { left: auto; right: 0; }
+.menu.open { opacity: 1; transform: none; pointer-events: auto; }
+.menu-item { width: 100%; text-align: left; padding: 8px 10px; border-radius: 6px; display: flex; gap: var(--s2); align-items: center; font-size: 13px; color: var(--ink-2); }
+.menu-item:hover { background: var(--paper-2); }
+.menu-item.on { background: var(--seal-w); color: var(--seal); font-weight: 500; }
+.menu-item small { color: var(--ink-4); font-size: 12px; margin-left: auto; font-weight: 400; }
+.menu-note { font-size: 12px; color: var(--ink-3); padding: 8px 10px; border-top: 1px solid var(--rule); margin-top: var(--s1); line-height: 1.5; }
+
+.nav { display: flex; flex-direction: column; gap: 2px; }
+.nav-group { font-size: 12px; font-weight: 500; color: var(--ink-4); padding: 0 10px; margin: var(--s4) 0 4px; }
+.nav-group:first-child { margin-top: var(--s1); }
 .nav-item {
-  display: flex; align-items: center; gap: 10px; padding: 9px 20px;
-  border: 0; border-left: 3px solid transparent; background: none; width: 100%;
-  color: var(--ink-2); text-align: left; font-size: 0.92rem;
+  display: grid; grid-template-columns: 18px 1fr auto; align-items: center; gap: 10px; height: 36px;
+  padding: 0 10px; border-radius: var(--r); text-align: left; color: var(--ink-2); font-weight: 500; font-size: 14px;
+  transition: background .15s, color .15s;
 }
-.nav-item:hover { background: var(--bg); color: var(--ink); }
-.nav-item.active { border-left-color: var(--accent); color: var(--ink); font-weight: 600; background: var(--accent-bg); }
-.nav-item .n-ico { font-family: var(--mono); font-size: 0.75rem; color: var(--ink-3); width: 18px; }
-.nav-spacer { flex: 1; }
-.nav-foot { padding: 8px 20px 0; font-size: 0.72rem; color: var(--ink-3); }
-.nav-foot code { font-family: var(--mono); }
+.nav-item .ni-k { color: var(--ink-3); display: inline-flex; }
+.nav-item .ni-k svg { width: 18px; height: 18px; }
+.nav-item .ni-c { font-size: 12px; color: var(--ink-3); font-weight: 500; }
+.nav-item:hover { background: var(--paper-3); color: var(--ink); }
+.nav-item.on { background: var(--seal-w); color: var(--seal); }
+.nav-item.on .ni-k { color: var(--seal); }
+.nav-item.on .ni-c { color: var(--seal); }
+.nav-tag { font-size: 10px; font-weight: 600; padding: 0 5px; border-radius: 4px; background: var(--paper-3); color: var(--ink-3); margin-left: 6px; vertical-align: 1px; line-height: 16px; display: inline-block; }
+.rail-foot { margin-top: auto; padding: var(--s3); font-size: 12px; color: var(--ink-3); line-height: 1.6;
+  background: var(--paper-2); border: 1px solid var(--rule); border-radius: var(--r-lg); }
+.rail-foot .rf-h { display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px; }
+.rail-foot .rf-h i { width: 6px; height: 6px; border-radius: 50%; background: var(--moss); box-shadow: 0 0 0 3px var(--moss-w); }
+.rail-foot code { font-size: 11px; background: var(--paper); border: 1px solid var(--rule); }
 
-main { flex: 1; padding: 32px 40px 64px; max-width: 1180px; min-width: 0; }
-.page { display: none; }
-.page.active { display: block; }
-.page-head { margin-bottom: 22px; }
-.page-head h1 { font-size: 1.28rem; font-weight: 650; letter-spacing: -0.01em; }
-.page-head h1 .org-tag {
-  font-family: var(--mono); font-size: 0.72rem; font-weight: 500; color: var(--accent);
-  background: var(--accent-bg); padding: 2px 8px; vertical-align: 2px; margin-left: 8px;
-}
-.page-head p { color: var(--ink-2); font-size: 0.88rem; margin-top: 4px; max-width: 680px; }
+main { grid-area: main; min-width: 0; padding: var(--s5) clamp(20px, 2.6vw, 40px) var(--s8); }
+.view { animation: viewIn .3s var(--ease) both; }
+@keyframes viewIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
-/* ============ 晶胞 chip（signature）============ */
-.cell {
-  display: inline-flex; align-items: center; gap: 6px;
-  border: 1px solid var(--line-strong); background: var(--panel);
-  padding: 1px 8px 1px 3px; font-size: 0.78rem; line-height: 1.5;
-  font-family: var(--mono); vertical-align: middle;
-}
-.cell::before { content: ""; width: 9px; height: 9px; border: 1px solid var(--ink-3); background: var(--panel); flex-shrink: 0; }
-.cell.d-region::before { background: var(--accent); border-color: var(--accent); }
-.cell.d-tax_type::before { background: var(--amber2); border-color: var(--amber2); }
-.cell.d-biz_line::before { background: var(--violet); border-color: var(--violet); }
-.cell.dim { color: var(--ink-2); }
-.cell.pick { cursor: pointer; user-select: none; padding: 3px 10px 3px 4px; font-size: 0.84rem; }
-.cell.pick::before { background: var(--panel); border-color: var(--line-strong); }
-.cell.pick.on[data-k="region"]::before { background: var(--accent); border-color: var(--accent); }
-.cell.pick.on[data-k="tax_type"]::before { background: var(--amber2); border-color: var(--amber2); }
-.cell.pick.on[data-k="biz_line"]::before { background: var(--violet); border-color: var(--violet); }
-.cell.pick.on { border-color: var(--ink); font-weight: 600; background: var(--bg); }
-.cell .lbl { font-family: var(--sans); font-weight: 400; color: var(--ink-3); font-size: 0.72rem; }
-.ds-pill {
-  font-family: var(--mono); font-size: 0.74rem; color: var(--ink-2);
-  border: 1px solid var(--line-strong); border-left: 3px solid var(--ink); padding: 0 7px;
-  background: var(--panel); white-space: nowrap;
-}
+/* ---------------- 页头 ---------------- */
+.head { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--s5); row-gap: 4px; align-items: center; margin-bottom: var(--s5); }
+.head h1 { grid-column: 1; font-weight: 600; font-size: 20px; line-height: 28px; letter-spacing: -0.01em; color: var(--ink); }
+.head .lede { grid-column: 1; color: var(--ink-3); max-width: 80ch; font-size: 13px; line-height: 20px; }
+.head .lede b { color: var(--ink-2); font-weight: 600; }
+.head .head-act { grid-column: 2; grid-row: 1 / span 2; display: flex; gap: var(--s2); align-items: center; }
+.sub-tabs { display: flex; gap: var(--s5); margin: calc(-1 * var(--s2)) 0 var(--s5); border-bottom: 1px solid var(--rule); }
+.sub-tab { padding: 10px 2px; color: var(--ink-3); border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 500; font-size: 14px; }
+.sub-tab:hover { color: var(--ink-2); }
+.sub-tab.on { color: var(--seal); border-color: var(--seal); font-weight: 600; }
+.sec-title { font-weight: 600; font-size: 15px; color: var(--ink); margin: var(--s6) 0 var(--s3); display: flex; align-items: baseline; gap: var(--s3); }
+.sec-title:first-child { margin-top: 0; }
+.sec-title small { font-weight: 400; font-size: 12px; color: var(--ink-3); }
 
-/* ============ 通用组件 ============ */
-.panel { background: var(--panel); border: 1px solid var(--line); padding: 18px 20px; }
+/* ---------------- 通用元件 ---------------- */
 .btn {
-  border: 1px solid var(--ink); background: var(--ink); color: #fff;
-  padding: 7px 16px; font-size: 0.88rem;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 14px; border-radius: var(--r);
+  background: var(--seal); color: #fff; font-weight: 500; font-size: 13px; white-space: nowrap;
+  box-shadow: var(--sh-xs); transition: background .15s, box-shadow .15s;
 }
-.btn:hover { background: #2A3B39; }
-.btn:disabled { background: var(--line-strong); border-color: var(--line-strong); cursor: not-allowed; }
-.btn.ghost { background: none; color: var(--ink); border-color: var(--line-strong); }
-.btn.ghost:hover { border-color: var(--ink); background: var(--bg); }
-.btn.small { padding: 3px 10px; font-size: 0.8rem; }
-.sel { font: inherit; font-size: 0.86rem; padding: 5px 8px; border: 1px solid var(--line-strong); background: #fff; }
-.mono { font-family: var(--mono); font-size: 0.82em; }
+.btn:hover { background: var(--seal-2); }
+.btn:active { box-shadow: 0 0 0 3px var(--seal-w); }
+.btn.seal-btn { background: var(--seal); } .btn.seal-btn:hover { background: var(--seal-2); }
+.btn.danger-btn { background: var(--danger); } .btn.danger-btn:hover { background: var(--danger-2); }
+.btn.ghost { background: var(--paper); color: var(--ink-2); box-shadow: var(--sh-xs), inset 0 0 0 1px var(--rule-2); }
+.btn.ghost:hover { background: var(--paper-2); color: var(--ink); }
+.btn.sm { height: 28px; padding: 0 10px; font-size: 12px; border-radius: 6px; }
+.btn[disabled] { background: var(--paper-3); color: var(--ink-4); cursor: not-allowed; box-shadow: none; }
+.btn .kbd { background: rgba(255,255,255,.18); border-color: rgba(255,255,255,.35) !important; color: #fff !important; }
+.link { color: var(--seal); font-weight: 500; text-align: left; }
+.link:hover { color: var(--seal-2); text-decoration: underline; text-underline-offset: 3px; }
 .muted { color: var(--ink-3); }
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-@media (max-width: 980px) { .grid2 { grid-template-columns: 1fr; } }
-
-table.tbl { width: 100%; border-collapse: collapse; font-size: 0.86rem; background: var(--panel); }
-.tbl th {
-  text-align: left; font-weight: 600; font-size: 0.76rem; color: var(--ink-2);
-  border-bottom: 1.5px solid var(--line-strong); padding: 8px 10px; white-space: nowrap;
+.tiny { font-size: 12px; }
+.sel, .inp {
+  height: 32px; padding: 0 10px; border: 1px solid var(--rule-2); border-radius: var(--r); background: var(--paper); min-width: 0;
+  box-shadow: var(--sh-xs); font-size: 13px; transition: border-color .15s, box-shadow .15s;
 }
-.tbl td { border-bottom: 1px solid var(--line); padding: 9px 10px; vertical-align: top; }
-.tbl tr:hover td { background: #FBFCFA; }
+.inp:hover, .sel:hover { border-color: var(--ink-4); }
+.inp:focus, .sel:focus { outline: none; border-color: var(--seal); box-shadow: 0 0 0 3px var(--seal-w); }
 
-.badge { display: inline-flex; align-items: center; gap: 6px; font-size: 0.76rem; padding: 1px 8px; white-space: nowrap; }
-.badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; }
-.badge.uploaded::before, .badge.pending::before { background: var(--ink-3); }
-.badge.parsing::before, .badge.chunked::before, .badge.searchable_lexical::before, .badge.leased::before, .badge.running::before { background: var(--amber2); animation: pulse 1.2s infinite; }
-.badge.searchable_full::before, .badge.done::before { background: var(--ok); }
-.badge.failed::before { background: var(--danger); }
-.badge.b-parsing { color: var(--amber); background: var(--amber2, #F6EEDD); background: #F6EEDD; }
-.badge.b-ok { color: var(--ok); background: var(--ok-bg); }
-.badge.b-fail { color: var(--danger); background: var(--danger-bg); }
-.badge.b-muted { color: var(--ink-2); background: var(--bg); }
-@keyframes pulse { 50% { opacity: 0.35; } }
+.chip {
+  display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; border-radius: 6px; height: 22px;
+  font-size: 12px; font-weight: 500; white-space: nowrap; background: var(--slate-w); color: var(--ink-2);
+}
+.chip .ck { font-family: var(--mono); font-size: 10.5px; opacity: 0.7; font-weight: 400; }
+.chip.d0 { background: var(--d0w); color: var(--d0); } .chip.d1 { background: var(--d1w); color: var(--d1); }
+.chip.d2 { background: var(--d2w); color: var(--d2); } .chip.d3 { background: var(--d3w); color: var(--d3); }
+.chip.empty { background: transparent; color: var(--ink-4); border: 1px dashed var(--rule-2); font-weight: 400; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px 0 7px; border-radius: 11px;
+  font-size: 12px; font-weight: 500; white-space: nowrap; background: var(--paper-3); color: var(--ink-2); }
+.pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ink-4); flex: none; }
+.pill.ok { background: var(--moss-w); color: var(--moss); } .pill.ok::before { background: var(--moss); }
+.pill.run { background: var(--seal-w); color: var(--seal); } .pill.run::before { background: var(--seal); animation: pulse 1.4s ease-in-out infinite; }
+.pill.bad { background: var(--danger-w); color: var(--danger-2); } .pill.bad::before { background: var(--danger); }
+.pill.idle { background: var(--paper-3); color: var(--ink-3); } .pill.idle::before { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink-4); }
+@keyframes pulse { 50% { opacity: 0.3; } }
+.tag { display: inline-flex; align-items: center; font-size: 11.5px; font-weight: 500; height: 20px; padding: 0 6px; border-radius: 5px;
+  border: 1px solid var(--rule); background: var(--paper-2); color: var(--ink-3); white-space: nowrap; }
+.tag.seal { border-color: var(--danger-b); background: var(--danger-w); color: var(--danger-2); }
+.tag.moss { border-color: var(--moss-b); background: var(--moss-w); color: var(--moss); }
+.tag.amber { border-color: var(--amber-b); background: var(--amber-w); color: #B54708; }
+.kbd { font-family: var(--mono); font-size: 11px; padding: 0 5px; border: 1px solid var(--rule-2); border-radius: 4px; color: var(--ink-3); line-height: 16px; }
 
-/* ============ 上传页 ============ */
-.dim-picker { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
-.dim-group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.dim-group .dim-name { font-size: 0.8rem; color: var(--ink-2); }
-.dim-required { color: var(--danger); font-size: 0.75rem; }
-.dropzone {
-  border: 1.5px dashed var(--line-strong); background: var(--panel);
-  padding: 34px; text-align: center; color: var(--ink-2); margin: 14px 0;
+/* 数据表（卡片化） */
+.ledger { width: 100%; border-collapse: separate; border-spacing: 0; background: var(--paper);
+  border: 1px solid var(--rule); border-radius: var(--r-lg); box-shadow: var(--sh-xs); overflow: hidden; }
+.ledger th {
+  text-align: left; font-weight: 500; font-size: 12px; color: var(--ink-3); background: var(--paper-2);
+  padding: 10px var(--s4); border-bottom: 1px solid var(--rule); white-space: nowrap;
 }
-.dropzone strong { color: var(--ink); }
-.dropzone .hint { font-size: 0.78rem; color: var(--ink-3); margin-top: 4px; }
+.ledger td { padding: var(--s3) var(--s4); border-bottom: 1px solid var(--rule); vertical-align: top; font-size: 13px; }
+.ledger tbody tr:last-child td { border-bottom: 0; }
+.ledger tbody tr { transition: background .12s; }
+.ledger tbody tr.clickable { cursor: pointer; }
+.ledger tbody tr.clickable:hover { background: var(--paper-2); }
+.ledger tbody tr.on { background: var(--seal-w); }
+.ledger tbody tr.on td:first-child { box-shadow: inset 2px 0 0 var(--seal); }
+.ledger .num { text-align: right; font-variant-numeric: tabular-nums; }
+.ledger .t-title { font-weight: 500; color: var(--ink); }
+.ledger .t-sub { font-size: 12px; color: var(--ink-3); margin-top: 2px; }
+.pane .ledger, .passthru .ledger { border: 0; border-radius: 0; box-shadow: none; }
 
-/* ============ 检索页 ============ */
-.who-bar {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  background: var(--panel); border: 1px solid var(--line); padding: 10px 14px; margin-bottom: 16px;
+.note {
+  font-size: 13px; color: var(--ink-2); padding: 10px 14px; background: var(--paper);
+  border: 1px solid var(--rule); border-radius: var(--r); margin-top: var(--s4); line-height: 1.6;
 }
-.who-bar label { font-size: 0.82rem; color: var(--ink-2); }
-.who-grants { display: flex; gap: 5px; flex-wrap: wrap; }
-.search-box { display: flex; gap: 10px; margin-bottom: 18px; }
-.search-box input {
-  flex: 1; font: inherit; font-size: 1rem; padding: 11px 14px;
-  border: 1.5px solid var(--line-strong); background: #fff;
-}
-.search-box input:focus { border-color: var(--accent); outline: none; }
-.filter-note {
-  font-size: 0.8rem; color: var(--amber); background: #F6EEDD;
-  border-left: 3px solid var(--amber); padding: 7px 12px; margin-bottom: 14px;
-}
-.hit { background: var(--panel); border: 1px solid var(--line); padding: 14px 16px; margin-bottom: 12px; }
-.hit-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
-.hit-title { font-weight: 650; font-size: 0.94rem; }
-.hit-snippet { font-size: 0.88rem; color: var(--ink-2); border-left: 3px solid var(--line); padding-left: 12px; margin: 6px 0 10px; }
-.hit-snippet mark { background: var(--accent-bg); color: var(--accent); font-weight: 650; padding: 0 1px; }
-.hit-meta { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; font-family: var(--mono); font-size: 0.75rem; color: var(--ink-3); }
-.hit-meta b { color: var(--ink); font-weight: 600; }
-.hit-score { font-family: var(--mono); font-weight: 700; color: var(--accent); font-size: 0.9rem; }
+.note b { color: var(--ink); font-weight: 600; }
+.note.seal { background: var(--danger-w); border-color: var(--danger-b); color: var(--danger-2); }
+.note.seal b { color: var(--danger-2); }
+.note.moss { background: var(--moss-w); border-color: var(--moss-b); color: #067647; }
+.note.moss b { color: #067647; }
+.note.amber { background: var(--amber-w); border-color: var(--amber-b); color: #93370D; }
+.note.amber b { color: #93370D; }
 
-/* ============ 质量报告（模态）============ */
-.overlay {
-  position: fixed; inset: 0; background: rgba(28, 43, 42, 0.45);
-  display: none; align-items: flex-start; justify-content: center; padding: 6vh 20px; z-index: 50;
-}
-.overlay.open { display: flex; }
-.modal {
-  background: var(--panel); border: 1px solid var(--ink); max-width: 780px; width: 100%;
-  max-height: 82vh; overflow: auto;
-}
-.modal-head { display: flex; justify-content: space-between; align-items: center; padding: 14px 20px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); }
-.modal-head h2 { font-size: 1rem; }
-.modal-close { border: 0; background: none; font-size: 1.1rem; color: var(--ink-3); padding: 4px; }
-.modal-body { padding: 18px 20px; }
-.q-item { border: 1px solid var(--line); padding: 12px 14px; margin-bottom: 12px; background: #FDFDFC; }
-.q-top { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
-.q-reason { font-size: 0.75rem; color: var(--amber); background: #F6EEDD; padding: 1px 8px; white-space: nowrap; }
-.q-snippet { font-size: 0.84rem; color: var(--ink-2); margin: 8px 0; border-left: 3px solid var(--amber); padding-left: 10px; }
-.q-kw { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
-.q-kw .klabel { font-size: 0.74rem; color: var(--ink-3); }
-.kw-chip {
-  font-family: var(--mono); font-size: 0.75rem; border: 1px solid var(--line-strong);
-  padding: 1px 7px; background: #fff; display: inline-flex; gap: 5px; align-items: center;
-}
-.kw-chip.auto { border-color: var(--accent); color: var(--accent); }
-.kw-chip button { border: 0; background: none; color: var(--ink-3); padding: 0; font-size: 0.8rem; }
-.kw-add { display: inline-flex; gap: 4px; }
-.kw-add input { width: 110px; font: inherit; font-size: 0.78rem; padding: 1px 6px; border: 1px solid var(--line-strong); }
-.q-actions { display: flex; gap: 8px; margin-top: 10px; }
+.split { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: var(--s5); align-items: start; }
+.pane { position: sticky; top: calc(var(--top) + var(--s5)); background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg);
+  box-shadow: var(--sh-xs); padding: var(--s5); min-height: 240px; max-height: calc(100vh - var(--top) - 48px); overflow: auto; }
+.pane h2 { font-size: 16px; font-weight: 600; line-height: 1.4; color: var(--ink); }
+.pane .kv { display: grid; grid-template-columns: 76px 1fr; gap: 6px var(--s3); font-size: 13px; margin-top: var(--s3); }
+.pane .kv dt { color: var(--ink-3); }
+.pane-sec { margin-top: var(--s5); padding-top: var(--s4); border-top: 1px solid var(--rule); }
+.pane-sec > .ps-h { font-size: 12px; font-weight: 600; color: var(--ink-3); margin-bottom: var(--s2); display: flex; align-items: center; gap: var(--s2); }
+.teach { color: var(--ink-3); font-size: 13px; line-height: 1.75; }
+.teach ol { padding-left: 1.2em; margin-top: var(--s2); }
+.teach b { color: var(--ink); font-weight: 600; }
 
-/* ============ 库与维度管理 ============ */
-.ds-card { background: var(--panel); border: 1px solid var(--line); border-top: 3px solid var(--ink); padding: 14px 16px; }
-.ds-card .ds-name { font-weight: 650; font-size: 0.95rem; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.ds-card .ds-desc { font-size: 0.82rem; color: var(--ink-2); margin: 6px 0 10px; }
-.ds-card .ds-stats { display: flex; gap: 16px; font-family: var(--mono); font-size: 0.75rem; color: var(--ink-3); }
-.ds-card .ds-stats b { color: var(--ink); }
-.ds-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 20px; }
-.ds-new { border: 1.5px dashed var(--line-strong); background: none; display: flex; align-items: center; justify-content: center; color: var(--ink-3); font-size: 0.85rem; min-height: 100px; cursor: pointer; }
-.ds-new:hover { color: var(--ink); border-color: var(--ink); }
-.ds-add-row { display: flex; gap: 8px; margin-top: 10px; }
-.ds-add-row input { flex: 1; font: inherit; font-size: 0.86rem; padding: 6px 10px; border: 1px solid var(--line-strong); }
-.dim-card { background: var(--panel); border: 1px solid var(--line); padding: 16px 18px; }
-.dim-card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-.dim-card-head h3 { font-size: 0.95rem; display: flex; align-items: center; gap: 8px; }
-.dim-key { font-family: var(--mono); font-size: 0.75rem; color: var(--ink-3); }
-.val-row { display: flex; flex-wrap: wrap; gap: 8px; }
-.toggle { font-size: 0.78rem; color: var(--ink-2); display: inline-flex; gap: 4px; align-items: center; }
-.user-list { display: flex; flex-direction: column; gap: 2px; }
-.user-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 12px; border: 1px solid transparent; cursor: pointer; }
-.user-row:hover { background: var(--bg); }
-.user-row.sel { border-color: var(--accent); background: var(--accent-bg); }
-.grant-box h4 { font-size: 0.85rem; color: var(--ink-2); margin: 14px 0 8px; }
-.and-note { font-size: 0.78rem; color: var(--ink-3); border-top: 1px dashed var(--line-strong); padding-top: 10px; margin-top: 16px; }
+/* ---------------- 文档页 ---------------- */
+.drawer { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .35s var(--ease); }
+.drawer.open { grid-template-rows: 1fr; }
+.drawer > .dr-in { overflow: hidden; }
+.upload {
+  border: 1px solid var(--rule); border-radius: var(--r-lg); padding: var(--s5); margin-bottom: var(--s5);
+  display: grid; grid-template-columns: 1fr 1fr; gap: var(--s4) var(--s6); background: var(--paper); box-shadow: var(--sh-sm);
+}
+.upload .u-row { display: grid; grid-template-columns: 96px 1fr; gap: var(--s3); align-items: start; }
+.upload .u-row > label { color: var(--ink-2); padding-top: 5px; font-size: 13px; font-weight: 500; }
+.req { color: var(--danger); margin-left: 2px; }
+.opt { width: 100%; }
+.vchip {
+  height: 28px; padding: 0 10px; border-radius: 6px; font-size: 13px; border: 1px solid var(--rule-2); background: var(--paper); color: var(--ink-2);
+  transition: background .12s, border-color .12s, color .12s;
+}
+.vchip:hover:not([disabled]) { border-color: var(--seal-b); color: var(--seal); }
+.vchip.on { background: var(--seal-w); color: var(--seal); border-color: var(--seal); font-weight: 500; }
+.vchip[disabled] { color: var(--ink-4); background: var(--paper-2); border-style: dashed; cursor: not-allowed; text-decoration: line-through; text-decoration-color: var(--rule-2); }
+.u-foot { grid-column: 1 / -1; display: flex; align-items: center; gap: var(--s3); border-top: 1px solid var(--rule); padding-top: var(--s4); }
+.filebox { border: 1px dashed var(--rule-2); border-radius: var(--r); padding: var(--s3); display: flex; gap: var(--s3); align-items: center; background: var(--paper-2); }
+.filebox .inp { flex: 1; background: var(--paper); }
 
-/* ============ 审计 ============ */
-.audit-line { display: flex; gap: 12px; padding: 8px 2px; border-bottom: 1px solid var(--line); font-size: 0.84rem; }
-.audit-line .t { font-family: var(--mono); color: var(--ink-3); font-size: 0.75rem; white-space: nowrap; padding-top: 2px; }
-.audit-line .act { font-family: var(--mono); min-width: 120px; }
-.audit-line .out-refused { color: var(--danger); }
-.audit-line .out-accepted { color: var(--ok); }
+.toolbar { display: flex; align-items: center; gap: var(--s2); margin-bottom: var(--s3); flex-wrap: wrap; }
+.seg { display: inline-flex; background: var(--paper-3); border-radius: var(--r); padding: 2px; gap: 2px; }
+.seg button { height: 28px; padding: 0 12px; font-size: 13px; font-weight: 500; color: var(--ink-3); border-radius: 6px; }
+.seg button:hover { color: var(--ink-2); }
+.seg button.on { background: var(--paper); color: var(--ink); box-shadow: var(--sh-sm); }
 
-.proto-note {
-  margin-top: 40px; padding: 12px 16px; border: 1px dashed var(--line-strong);
-  font-size: 0.78rem; color: var(--ink-3); background: var(--panel);
+.ver { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.ver .vl { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.ver .vn { font-family: var(--mono); font-size: 11px; color: var(--ink-3); min-width: 20px; }
+.lens-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; vertical-align: middle; }
+.lens-dot.y { background: var(--moss); box-shadow: 0 0 0 3px var(--moss-w); }
+.lens-dot.n { box-shadow: inset 0 0 0 2px var(--danger); }
+.lens-dot.x { background: repeating-linear-gradient(45deg, var(--ink-4) 0 2px, transparent 2px 4px); }
+
+.stages { display: flex; gap: 3px; margin: var(--s2) 0 4px; }
+.stages i { flex: 1; height: 4px; background: var(--paper-3); border-radius: 2px; position: relative; overflow: hidden; }
+.stages i.done { background: var(--seal); }
+.stages i.cur { background: var(--seal-w); }
+.stages i.cur::after { content: ""; position: absolute; inset: 0; background: var(--seal); opacity: .55; transform-origin: left; animation: grow 1.6s var(--ease) infinite; }
+@keyframes grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.stage-labels { display: flex; gap: 3px; font-size: 11px; color: var(--ink-3); }
+.stage-labels span { flex: 1; }
+
+.flag { padding: var(--s3) 0; border-bottom: 1px solid var(--rule); }
+.flag:last-child { border-bottom: 0; }
+.flag q { display: block; font-size: 13px; color: var(--ink); background: var(--paper-2); border-radius: 6px; padding: 6px 10px; quotes: "“" "”"; margin: 4px 0 8px; }
+.flag .f-act { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; }
+.flag.resolved { opacity: 0.5; }
+
+.why { display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.why .w-row { display: grid; grid-template-columns: 18px 88px 1fr; gap: var(--s2); align-items: start; }
+.why .w-ic { font-weight: 700; text-align: center; width: 18px; height: 18px; line-height: 18px; border-radius: 50%; font-size: 11px; }
+.why .w-ic.y { color: var(--moss); background: var(--moss-w); } .why .w-ic.n { color: var(--danger); background: var(--danger-w); } .why .w-ic.s { color: var(--ink-4); background: var(--paper-3); }
+.why .w-k { color: var(--ink-2); font-weight: 500; }
+.why .w-v { color: var(--ink-3); }
+
+/* ---------------- 检索页 ---------------- */
+.qbar { display: flex; align-items: center; gap: var(--s2); background: var(--paper); border: 1px solid var(--rule-2); border-radius: var(--r-lg);
+  padding: 6px 6px 6px 14px; margin-bottom: var(--s3); box-shadow: var(--sh-sm); transition: border-color .15s, box-shadow .15s; }
+.qbar:focus-within { border-color: var(--seal); box-shadow: 0 0 0 4px var(--seal-w); }
+.qbar::before { content: ""; width: 18px; height: 18px; flex: none; background: var(--ink-4);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-3.5-3.5'/%3E%3C/svg%3E") center/contain no-repeat;
+          mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-3.5-3.5'/%3E%3C/svg%3E") center/contain no-repeat; }
+.qbar input { flex: 1; border: 0; background: transparent; font-size: 15px; height: 36px; outline: none; min-width: 0; }
+.qbar input::placeholder { color: var(--ink-4); }
+.qbar .btn { height: 36px; padding: 0 16px; }
+.qopts { display: flex; gap: var(--s4); align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--ink-2); margin-bottom: var(--s4); }
+.qopts label { display: inline-flex; align-items: center; gap: 6px; }
+.switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+.switch input { appearance: none; width: 32px; height: 18px; border-radius: 9px; background: var(--rule-2); position: relative; transition: background .2s; cursor: pointer; flex: none; }
+.switch input::after { content: ""; position: absolute; width: 14px; height: 14px; top: 2px; left: 2px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(16,24,40,.2); transition: transform .2s var(--ease); }
+.switch input:checked { background: var(--seal); }
+.switch input:checked::after { transform: translateX(14px); }
+.suggest { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.suggest button { font-size: 12px; height: 26px; padding: 0 10px; border-radius: 13px; background: var(--paper); border: 1px solid var(--rule); color: var(--ink-2); }
+.suggest button:hover { color: var(--seal); border-color: var(--seal-b); background: var(--seal-w); }
+
+.annot { font-size: 14px; line-height: 2.2; }
+.annot mark { background: none; border-bottom: 2px solid currentColor; padding: 0 1px; color: inherit; position: relative; }
+.annot mark .mt { position: absolute; left: 0; top: -1.15em; font-size: 10px; font-weight: 600; line-height: 1; white-space: nowrap; }
+.annot mark.L2 { border-bottom-style: dotted; }
+.annot mark.L3 { border-bottom-style: dashed; }
+
+.hits { display: flex; flex-direction: column; background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg); box-shadow: var(--sh-xs); padding: 0 var(--s4); }
+.hit { display: grid; grid-template-columns: 36px 1fr; gap: var(--s3); padding: var(--s4) 0; border-bottom: 1px solid var(--rule); animation: viewIn .3s var(--ease) both; }
+.hit:last-child { border-bottom: 0; }
+.hit .h-rank { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; font-weight: 600; font-size: 12px; background: var(--paper-3); color: var(--ink-3); }
+.hit:first-child .h-rank { background: var(--seal-w); color: var(--seal); }
+.hit .h-text { font-size: 14px; line-height: 1.7; color: var(--ink); }
+.hit .h-text em { font-style: normal; background: #FEF0C7; border-radius: 2px; padding: 0 1px; }
+.hit .h-meta { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s3); align-items: center; margin-top: var(--s2); font-size: 12px; color: var(--ink-3); }
+.hit .h-src { color: var(--ink-2); font-weight: 500; }
+.routes { display: inline-flex; gap: 3px; }
+.route { font-family: var(--mono); font-size: 10.5px; height: 18px; line-height: 18px; padding: 0 5px; border-radius: 4px; background: var(--paper-3); color: var(--ink-4); }
+.route.on { background: var(--seal-w); color: var(--seal); }
+.route.ent.on { background: #EEF4FF; color: var(--t-template); }
+.score-bar { width: 64px; height: 6px; background: var(--paper-3); border-radius: 3px; overflow: hidden; display: inline-block; vertical-align: middle; }
+.score-bar i { display: block; height: 100%; background: var(--seal); border-radius: 3px; }
+
+.funnel { display: flex; flex-direction: column; gap: var(--s3); }
+.fn-row { display: grid; grid-template-columns: 64px 1fr 56px; gap: var(--s2); align-items: center; font-size: 12px; color: var(--ink-2); }
+.fn-bar { height: 16px; background: var(--paper-3); border-radius: 4px; position: relative; overflow: hidden; }
+.fn-bar .fb-all { position: absolute; inset: 0 auto 0 0; background: var(--danger-w); background-image: repeating-linear-gradient(45deg, transparent 0 3px, rgba(217, 45, 32, .18) 3px 5px); transition: width .5s var(--ease); }
+.fn-bar .fb-ok { position: absolute; inset: 0 auto 0 0; background: var(--seal); border-radius: 4px; transition: width .5s var(--ease); }
+.fn-row .fn-n { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-2); font-weight: 500; }
+.sql { font-family: var(--mono); font-size: 12px; line-height: 1.65; white-space: pre; overflow-x: auto; background: var(--paper-2); border: 1px solid var(--rule); color: var(--ink-2); padding: var(--s3) var(--s4); border-radius: var(--r); margin-top: var(--s2); }
+.sql .c { color: var(--ink-4); }
+.sql .k { color: var(--seal); font-weight: 500; }
+details > summary { cursor: pointer; list-style: none; font-size: 13px; color: var(--ink-2); font-weight: 500; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before { content: "›"; display: inline-block; width: 12px; color: var(--ink-4); transition: transform .15s; }
+details[open] > summary::before { transform: rotate(90deg); }
+
+/* ---------------- 权限页：授权格 ---------------- */
+.lattice-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: var(--r-lg); background: var(--paper); box-shadow: var(--sh-xs); }
+.lattice { border-collapse: separate; border-spacing: 0; font-size: 13px; min-width: 100%; }
+.lattice th, .lattice td { padding: 0; }
+.lattice thead th { font-weight: 500; color: var(--ink-2); padding: 8px; text-align: center; border-bottom: 1px solid var(--rule); white-space: nowrap; background: var(--paper-2); }
+.lattice thead tr:first-child th { font-size: 12px; color: var(--ink-3); }
+.lattice thead th.dg { border-left: 1px solid var(--rule); }
+.lattice thead th.vh { font-size: 12px; }
+.lattice thead th.vh .ck { display: block; font-family: var(--mono); font-size: 10.5px; color: var(--ink-4); font-weight: 400; }
+.lattice tbody th { text-align: left; font-weight: 500; padding: 10px 16px; border-bottom: 1px solid var(--rule); white-space: nowrap; position: sticky; left: 0; background: var(--paper); z-index: 1; }
+.lattice tbody td { text-align: center; border-bottom: 1px solid var(--rule); padding: 8px 4px; }
+.lattice tbody tr:last-child th, .lattice tbody tr:last-child td { border-bottom: 0; }
+.lattice tbody tr:hover th, .lattice tbody tr:hover td { background: var(--paper-2); }
+.lattice tbody td.dg { border-left: 1px solid var(--rule); }
+.lattice tr.expired th, .lattice tr.expired td { opacity: 0.45; }
+.cellbtn {
+  width: 20px; height: 20px; border-radius: 5px; box-shadow: inset 0 0 0 1px var(--rule-2); background: var(--paper); position: relative; vertical-align: middle;
+  transition: background .15s var(--ease), transform .15s var(--ease), box-shadow .15s;
+}
+.cellbtn:hover:not([disabled]) { box-shadow: inset 0 0 0 1.5px var(--seal); background: var(--seal-w); }
+.cellbtn.on { background: var(--seal); box-shadow: none; }
+.cellbtn.on::after { content: ""; position: absolute; left: 6.5px; top: 3.5px; width: 5px; height: 9px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.cellbtn.sync { background: repeating-linear-gradient(135deg, var(--ink-4) 0 2px, var(--paper-3) 2px 5px); box-shadow: none; cursor: not-allowed; }
+.cellbtn.sync::after { display: none; }
+.cellbtn.sync-off { cursor: not-allowed; background: var(--paper-2); }
+.cellbtn.pop { animation: pop .3s var(--ease); }
+@keyframes pop { 40% { transform: scale(1.2); } }
+.cellbtn[disabled] { cursor: not-allowed; }
+.legend { display: flex; gap: var(--s4); flex-wrap: wrap; font-size: 12px; color: var(--ink-3); margin-top: var(--s3); align-items: center; }
+.legend .lg { display: inline-flex; gap: 6px; align-items: center; }
+.legend .cellbtn { width: 14px; height: 14px; pointer-events: none; border-radius: 4px; }
+.legend .cellbtn.on::after { left: 4.5px; top: 2px; width: 3.5px; height: 7px; border-width: 0 1.5px 1.5px 0; }
+
+.dims-ledger td .vals { display: flex; flex-wrap: wrap; gap: 4px; }
+.dims-ledger tr.retired td { color: var(--ink-4); background: var(--paper-2); }
+.dims-ledger tr.retired .chip { opacity: 0.55; }
+.v-off { text-decoration: line-through; opacity: 0.6; }
+.confirm { margin-top: var(--s2); padding: var(--s3); border: 1px solid var(--danger-b); border-radius: var(--r); background: var(--danger-w); color: #912018; font-size: 13px; animation: viewIn .25s var(--ease); }
+.confirm .cf-act { display: flex; gap: var(--s2); margin-top: var(--s2); }
+
+.vis-grid { border-collapse: separate; border-spacing: 0; font-size: 13px; background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg); box-shadow: var(--sh-xs); overflow: hidden; }
+.vis-grid th { font-weight: 500; color: var(--ink-2); padding: 8px 10px; white-space: nowrap; text-align: center; border-bottom: 1px solid var(--rule); background: var(--paper-2); font-size: 12px; }
+.vis-grid th.dn { text-align: left; font-weight: 500; color: var(--ink); max-width: 320px; overflow: hidden; text-overflow: ellipsis; background: var(--paper); font-size: 13px; padding-left: 16px; }
+.vis-grid td { text-align: center; padding: 4px 10px; border-bottom: 1px solid var(--rule); }
+.vis-grid tbody tr:last-child th, .vis-grid tbody tr:last-child td { border-bottom: 0; }
+.vis-grid td button { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; margin: auto; transition: background .12s; }
+.vis-grid td button:hover { background: var(--paper-3); }
+.vis-grid td button.sel { box-shadow: 0 0 0 2px var(--seal); background: var(--seal-w); }
+.vis-split { display: grid; grid-template-columns: auto minmax(280px, 1fr); gap: var(--s5); align-items: start; }
+
+/* ---------------- 语义页 ---------------- */
+.sem { display: grid; grid-template-columns: 264px minmax(0, 1fr); gap: var(--s5); align-items: start; }
+.ent-list { position: sticky; top: calc(var(--top) + var(--s5)); max-height: calc(100vh - var(--top) - 48px); overflow: auto;
+  background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg); box-shadow: var(--sh-xs); padding: var(--s3); }
+.ent-group { margin-bottom: var(--s3); }
+.ent-group h4 { font-size: 12px; color: var(--ink-3); font-weight: 600; margin: 4px 0 4px; padding: 0 8px; display: flex; align-items: center; gap: 6px; }
+.tdot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; flex: none; }
+.ent-item { width: 100%; display: flex; gap: 6px; align-items: center; text-align: left; height: 32px; padding: 0 8px; border-radius: 6px; font-size: 13px; color: var(--ink-2); }
+.ent-item:hover { background: var(--paper-2); }
+.ent-item.on { background: var(--seal-w); color: var(--seal); font-weight: 500; }
+.ent-item.on small { color: var(--seal); opacity: .7; }
+.ent-item small { font-family: var(--mono); font-size: 10.5px; color: var(--ink-4); margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110px; font-weight: 400; }
+.ent-item.missing { color: var(--ink-4); font-style: italic; }
+.sem > div:last-child { background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg); box-shadow: var(--sh-xs); padding: var(--s5); min-width: 0; }
+.ent-head { display: flex; align-items: flex-start; gap: var(--s4); }
+.ent-head h2 { font-size: 20px; font-weight: 600; line-height: 1.3; color: var(--ink); }
+.ent-type { font-size: 11.5px; font-weight: 600; color: var(--paper); padding: 0 8px; height: 20px; line-height: 20px; border-radius: 5px; display: inline-block; margin-bottom: 6px; }
+.ent-key { font-family: var(--mono); font-size: 12px; color: var(--ink-3); margin-top: 4px; }
+.ent-cols { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: var(--s5); margin-top: var(--s5); }
+.defn { font-size: 14px; line-height: 1.75; color: var(--ink-2); }
+.defn-k { font-size: 12px; font-weight: 600; color: var(--ink-3); margin: var(--s4) 0 6px; }
+.alias { display: inline-flex; gap: 6px; align-items: center; height: 24px; padding: 0 8px; border: 1px solid var(--rule); background: var(--paper-2); border-radius: 6px; font-size: 13px; margin: 0 4px 4px 0; }
+.alias .ak { font-size: 10.5px; color: var(--ink-4); font-family: var(--mono); }
+.alias.context { border-style: dotted; border-color: var(--rule-2); } .alias.fuzzy_only { border-style: dashed; border-color: var(--rule-2); color: var(--ink-3); background: var(--paper); }
+.graph { width: 100%; height: 420px; display: block; border-radius: var(--r-lg); border: 1px solid var(--rule);
+  background: radial-gradient(circle, #D0D5DD 1px, transparent 1.2px) 0 0 / 16px 16px, var(--paper-2); }
+.graph .edge { stroke: var(--rule-2); stroke-width: 1.4; fill: none; }
+.graph .edge.cur { stroke: var(--seal); stroke-dasharray: 4 3; }
+.graph .elabel { font-family: var(--mono); font-size: 9px; fill: var(--ink-3); }
+.graph .node { cursor: pointer; }
+.graph .node rect { rx: 7px; stroke: var(--paper); stroke-width: 2; filter: drop-shadow(0 1px 2px rgba(16,24,40,.12)); transition: stroke .15s; }
+.graph .node text { font-family: var(--sans); font-size: 11px; font-weight: 500; fill: var(--ink); pointer-events: none; }
+.graph .node.center text { font-weight: 600; font-size: 12.5px; }
+.graph .node:hover rect { stroke: var(--seal); }
+.graph .node.missing text { fill: var(--ink-3); font-style: italic; }
+.rel-list { font-size: 13px; }
+.rel-list .rl { display: grid; grid-template-columns: 92px 1fr auto; gap: var(--s2); padding: 7px 0; border-bottom: 1px solid var(--rule); align-items: center; }
+.rel-list .rl code { color: var(--ink-3); font-size: 11px; }
+.rel-list .rl button { text-align: left; color: var(--ink-2); font-weight: 500; }
+.rel-list .rl button:hover { color: var(--seal); }
+.passthru { border: 1px solid var(--rule); border-radius: var(--r-lg); margin-top: var(--s5); overflow: hidden; }
+.passthru .pt-h { display: flex; align-items: center; gap: var(--s3); padding: 10px var(--s4); background: var(--paper-2); border-bottom: 1px solid var(--rule); font-size: 13px; }
+.passthru .ledger td, .passthru .ledger th { padding: 8px var(--s4); font-size: 12px; }
+.ann-in { width: 100%; min-height: 96px; resize: vertical; font-size: 14px; line-height: 1.7; padding: var(--s3) var(--s4); border: 1px solid var(--rule-2); border-radius: var(--r-lg) var(--r-lg) 0 0; background: var(--paper); box-shadow: var(--sh-xs); }
+.ann-in:focus { outline: none; border-color: var(--seal); box-shadow: 0 0 0 3px var(--seal-w); }
+.ann-out { padding: var(--s5) var(--s4) var(--s3); border: 1px solid var(--rule); border-top: 0; background: var(--paper); border-radius: 0 0 var(--r-lg) var(--r-lg); margin-top: -4px; }
+.layer-key { display: flex; gap: var(--s4); font-size: 12px; color: var(--ink-3); margin-top: var(--s3); flex-wrap: wrap; }
+.layer-key span { display: inline-flex; gap: 6px; align-items: center; }
+.layer-key i { width: 18px; border-bottom: 2px solid var(--ink-3); display: inline-block; }
+.layer-key i.L2 { border-bottom-style: dotted; } .layer-key i.L3 { border-bottom-style: dashed; }
+
+/* ---------------- 运行页 ---------------- */
+.lanes { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s5); }
+.lanes > section { background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg); box-shadow: var(--sh-xs); padding: var(--s4) var(--s5) var(--s2); }
+.lane-h { display: flex; align-items: baseline; gap: var(--s3); padding-bottom: var(--s3); border-bottom: 1px solid var(--rule); margin-bottom: var(--s1); }
+.lane-h h3 { font-size: 15px; font-weight: 600; }
+.lane-h .tiny { margin-left: auto; }
+.ev { display: grid; grid-template-columns: 62px 1fr; gap: var(--s3); padding: 10px 0; border-bottom: 1px solid var(--rule); font-size: 13px; }
+.ev:last-child { border-bottom: 0; }
+.ev.fresh { animation: fresh 1.6s var(--ease); }
+@keyframes fresh { from { background: var(--seal-w); } to { background: transparent; } }
+.ev .ev-t { font-family: var(--mono); font-size: 11px; color: var(--ink-4); padding-top: 2px; }
+.ev .ev-a { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.ev .ev-d { color: var(--ink); margin-top: 2px; }
+.ev .ev-m { display: flex; gap: var(--s2); margin-top: 6px; align-items: center; }
+
+/* toast */
+.toasts { position: fixed; right: 24px; top: calc(var(--top) + 16px); display: flex; flex-direction: column; gap: 8px; z-index: 80; align-items: flex-end; }
+.toast { display: flex; gap: 10px; align-items: flex-start; background: var(--paper); color: var(--ink-2); padding: 12px 16px 12px 14px; border-radius: var(--r-lg); border: 1px solid var(--rule);
+  font-size: 13px; box-shadow: var(--sh-lg); animation: toastIn .3s var(--ease) both; max-width: 460px; line-height: 1.55; }
+.toast::before { content: "i"; flex: none; width: 18px; height: 18px; border-radius: 50%; background: var(--seal); color: #fff; font-size: 11px; font-weight: 700; display: grid; place-items: center; font-family: Georgia, serif; font-style: italic; margin-top: 1px; }
+.toast code { color: var(--seal); background: var(--seal-w); }
+.toast.out { animation: toastOut .25s var(--ease) both; }
+@keyframes toastIn { from { opacity: 0; transform: translateX(12px); } }
+@keyframes toastOut { to { opacity: 0; transform: translateX(8px); } }
+
+.empty { padding: var(--s7) var(--s6); background: var(--paper); border: 1px dashed var(--rule-2); border-radius: var(--r-lg); }
+.empty h3 { font-size: 16px; font-weight: 600; margin-bottom: var(--s2); color: var(--ink); }
+.empty p { color: var(--ink-3); line-height: 1.75; font-size: 13px; max-width: 640px; }
+.empty b { color: var(--ink-2); }
+
+@media (max-width: 1180px) {
+  .split { grid-template-columns: 1fr; }
+  .pane { position: static; max-height: none; }
+  .ent-cols, .lanes, .vis-split { grid-template-columns: 1fr; }
+  .tb-link span { display: none; }
 }
 @media (max-width: 860px) {
-  body { flex-direction: column; }
-  .sidenav { width: 100%; height: auto; position: static; flex-direction: row; align-items: center; padding: 8px; overflow-x: auto; }
-  .brand { padding: 0 10px; }
-  .nav-item { border-left: 0; border-bottom: 3px solid transparent; white-space: nowrap; padding: 8px 12px; }
-  .nav-item.active { border-bottom-color: var(--accent); }
-  .nav-spacer, .nav-foot { display: none; }
-  .org-switcher { min-width: 150px; }
-  main { padding: 20px 16px 48px; }
-  .ds-grid { grid-template-columns: 1fr; }
+  .app { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr; grid-template-areas: "top" "rail" "main"; }
+  .topbar { flex-wrap: wrap; height: auto; padding: 8px 12px; }
+  .brand { width: auto; }
+  .rail { position: static; height: auto; flex-direction: row; overflow-x: auto; padding: 8px 12px; border-right: 0; border-bottom: 1px solid var(--rule); }
+  .nav { flex-direction: row; } .nav-group, .rail-foot { display: none; }
+  .sem { grid-template-columns: 1fr; }
+  .ent-list { position: static; max-height: 260px; }
+  .upload { grid-template-columns: 1fr; }
+  .head { grid-template-columns: 1fr; } .head .head-act { grid-column: 1; grid-row: auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
 </style>
-</head>
+<script nonce="0d0b9c8f406b55807026a2ac1bf9a1db-argus"> function handleHwmScriptLoad() {try { changeBodyBackgroundColor("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3OTA1OTYyNzIsImlhdCI6MTc4OTk5MTQ3MiwiaXNzIjoic3NvLmJ5dGVkYW5jZS5jb20iLCJzdWIiOiJ3ZDFsdXN6Y21tdHRrM240NjY4dSIsInRlbmFudF9pZCI6ImhncTN0Y2NwM2kxc2pqbjU4emlrIn0.DLeIyEEM_3u6ceDRmhQzESdCtJgR5KibXIpiB_4JBWyO0U1yOowZWodVrULD4gnEc9qEdKupa3Fh6_U_i_0C_IF91ATkuCa-arDB7IOyZgBRwn7qmpJGX4HvTv2os7D3uKsoUY2P_O8lW-PnUPKY8VQ5Rf5ieAxLdUYuNF9kyReS4UD_18xJ4dlPCoz71Zt6X7o0RqF95hNmHyl5M3a7XsDGc8LHNwekgsMgmCmcPy44Ukkdin6FE6LHjRijM-Y6O8ZMnW5eDEiMNvx-DlvxFVrsrYyrBT0iMEPPtdK2pigOjRYVhqTsMUvKPfqE1PnOiJMHLhw9A0skau-hZ9IaXg", ""); } catch (error) {console.warn(error.message);}} </script> <script src="https://sf-static-sg.byteintl.net/traffic_base_wm/insertWM_v0.0.7.js" async nonce="0d0b9c8f406b55807026a2ac1bf9a1db-argus" onload="handleHwmScriptLoad()"></script></head>
 <body>
-
-<nav class="sidenav">
-  <div class="org-switcher">
-    <button class="org-btn" id="orgBtn" aria-haspopup="true" aria-expanded="false">
-      <span class="brand-mark" aria-hidden="true"></span>
-      <span id="orgName"></span>
-      <span class="caret">▼</span>
-    </button>
-    <div class="org-menu" id="orgMenu" hidden>
-      <div class="org-menu-title">切换组织 · 系统管理员视角</div>
-      <div id="orgItems"></div>
-      <div class="org-menu-foot">同一用户可在多个组织拥有不同角色与数据维度权限；切换后整套上下文（库/维度/授权）随之切换。</div>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="seal" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 6h12M6 12h12M6 18h12M6 6v12M12 6v12M18 6v12" stroke="#fff" stroke-opacity=".45" stroke-width="1.6" stroke-linecap="round"/><circle cx="6" cy="6" r="2.2" fill="#fff"/><circle cx="18" cy="12" r="2.2" fill="#fff"/><circle cx="12" cy="18" r="2.2" fill="#fff"/><path d="M6 6 18 12 12 18" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <span class="brand-name">Knowledge Lattice</span><span class="brand-sub">Enterprise</span>
     </div>
-  </div>
-  <button class="nav-item active" data-page="upload"><span class="n-ico">[1]</span>上传与文档</button>
-  <button class="nav-item" data-page="search"><span class="n-ico">[2]</span>检索测试</button>
-  <button class="nav-item" data-page="admin"><span class="n-ico">[3]</span>知识库与维度</button>
-  <button class="nav-item" data-page="ops"><span class="n-ico">[4]</span>任务与审计</button>
-  <div class="nav-spacer"></div>
-  <div class="nav-foot">knowledge-lattice 原型 v0.3 · mock 数据<br>实现基准：<code>docs/design.md §6</code></div>
-</nav>
-
-<main>
-
-<!-- ==================== 1 上传与文档 ==================== -->
-<section class="page active" id="page-upload">
-  <div class="page-head">
-    <h1>上传与文档<span class="org-tag" id="orgTag1"></span></h1>
-    <p>上传时先选目标知识库，再选数据维度——权限按维度过滤（库不承担权限）。同一文件内数据分属不同维度时，请拆成多个文档分别上传。</p>
-  </div>
-
-  <div class="panel" style="margin-bottom:16px">
-    <div class="dim-group" style="margin-bottom:10px">
-      <span class="dim-name">目标知识库 <span class="dim-required">*</span></span>
-      <select class="sel" id="dsSelect"></select>
+    <span class="tb-sep" aria-hidden="true">/</span>
+    <div class="picker" id="orgPicker"></div>
+    <div class="tb-spacer"></div>
+    <button class="tb-link" data-act="stub" data-msg="OpenAPI 参考：/api/docs · 与 design.md §6.2 REST 对齐"><svg class="ic" viewBox="0 0 24 24"><path d="M4 19.5V5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2Zm0 0A2 2 0 0 0 6 22h12"/></svg><span>API 参考</span></button>
+    <button class="tb-link" data-act="stub" data-msg="MCP 接入：agent 通过 search / annotate / expand / describe_table 调用，身份由网关透传"><svg class="ic" viewBox="0 0 24 24"><path d="M9 7H6a3 3 0 0 0 0 6h3m6-6h3a3 3 0 0 1 0 6h-3M8 10h8"/></svg><span>MCP 接入</span></button>
+    <span class="tb-div" aria-hidden="true"></span>
+    <div class="tb-lens">
+      <span class="rail-label" title="检索、可见性、上传可选取值都按此身份计算">以此身份查看</span>
+      <div class="picker" id="lensPicker"></div>
     </div>
-    <div class="dim-picker" id="uploadDims"></div>
-    <div class="dropzone">
-      <strong>拖拽文件到此处，或点击选择</strong>
-      <div class="hint">支持 docx / xlsx / pptx / pdf / txt · 生产环境 agent 上传走凭证制（POST /api/uploads 三步）· 通用文档同一维度可挂多个值（D19，原型演示单值）· 必选项未选齐时无法上传</div>
+  </header>
+
+  <aside class="rail" aria-label="导航">
+    <nav class="nav" id="nav"></nav>
+    <div class="rail-foot">
+      <div class="rf-h"><i></i>原型 v0.5 · Mock 数据</div>
+      信息结构对齐 <code>design.md v0.5</code><br>
+      §5.1 ACL · §5.3 版本在用<br>§5.8–5.10 语义 · §6.2 REST
     </div>
-    <div style="display:flex;gap:10px;align-items:center">
-      <button class="btn" id="btnUpload" disabled>上传文档</button>
-      <span class="muted" style="font-size:0.8rem" id="uploadHint"></span>
-      <span style="flex:1"></span>
-      <button class="btn ghost small" id="btnAdvance">▶ 演示：推进任务</button>
-    </div>
-  </div>
-
-  <table class="tbl" id="docTable">
-    <thead><tr><th style="width:30%">文档</th><th>知识库</th><th>维度</th><th>状态</th><th>chunks</th><th>低区分</th><th>上传人</th></tr></thead>
-    <tbody></tbody>
-  </table>
-  <div class="proto-note">「演示：推进任务」模拟 worker 处理进度（解析 → 分块 → 嵌入 → 索引 → 质量检测）。真实系统由异步任务驱动，见 design.md §5.3。</div>
-</section>
-
-<!-- ==================== 2 检索测试 ==================== -->
-<section class="page" id="page-search">
-  <div class="page-head">
-    <h1>检索测试<span class="org-tag" id="orgTag2"></span></h1>
-    <p>上传后的自查入口：默认检索当前组织内权限可见的全部文档，可按知识库收窄。切换身份可验证维度过滤。</p>
-  </div>
-
-  <div class="who-bar">
-    <label for="whoSelect">当前身份</label>
-    <select class="sel" id="whoSelect"></select>
-    <label for="dsFilter" style="margin-left:8px">知识库</label>
-    <select class="sel" id="dsFilter"></select>
-    <span style="flex:1"></span>
-    <span style="font-size:0.8rem;color:var(--ink-2)">权限（AND 语义）：</span>
-    <span class="who-grants" id="whoGrants"></span>
-  </div>
-
-  <div class="search-box">
-    <input id="qInput" placeholder="试试：中国区 VAT 留抵退税 条件，或 transfer pricing documentation" aria-label="检索词">
-    <button class="btn" id="btnSearch">检索</button>
-  </div>
-
-  <div class="filter-note" id="filterNote" style="display:none"></div>
-  <div id="hits"></div>
-</section>
-
-<!-- ==================== 3 知识库与维度 ==================== -->
-<section class="page" id="page-admin">
-  <div class="page-head">
-    <h1>知识库与维度<span class="org-tag" id="orgTag3"></span></h1>
-    <p>知识库是组织内的业务分组与管理单元（批量管理、检索收窄），<b>不承担权限</b>；权限坐标系由维度定义，文档可见 ⇔ 每个维度与授权集合有交集（空值放行）。</p>
-  </div>
-
-  <h3 style="font-size:0.92rem;margin-bottom:10px">知识库</h3>
-  <div class="ds-grid" id="dsGrid"></div>
-
-  <h3 style="font-size:0.92rem;margin:20px 0 10px">维度定义（组织作用域）</h3>
-  <div class="grid2" id="dimCards"></div>
-
-  <h3 style="font-size:0.92rem;margin:22px 0 10px">用户与维度授权</h3>
-  <div class="grid2">
-    <div class="panel">
-      <h3 style="font-size:0.95rem;margin-bottom:10px">用户</h3>
-      <div class="user-list" id="userList"></div>
-    </div>
-    <div class="panel grant-box" id="grantBox">
-      <h3 style="font-size:0.95rem">授权设置</h3>
-      <p class="muted" style="font-size:0.8rem">从左侧选择用户</p>
-    </div>
-  </div>
-</section>
-
-<!-- ==================== 4 任务与审计 ==================== -->
-<section class="page" id="page-ops">
-  <div class="page-head">
-    <h1>任务与审计<span class="org-tag" id="orgTag4"></span></h1>
-    <p>摄取任务带心跳与租约（worker 崩溃后任务可被重新认领）；审计 append-only，覆盖查询级（谁、何时、查了什么、返回哪些来源）。</p>
-  </div>
-
-  <table class="tbl" style="margin-bottom:28px" id="taskTable">
-    <thead><tr><th>task</th><th>知识库</th><th>文档</th><th>类型</th><th>状态</th><th>心跳</th><th>attempts</th></tr></thead>
-    <tbody></tbody>
-  </table>
-
-  <h3 style="font-size:0.95rem;margin-bottom:8px">审计流</h3>
-  <div id="auditFlow"></div>
-</section>
-
-</main>
-
-<!-- ============ 质量报告模态 ============ -->
-<div class="overlay" id="qOverlay" role="dialog" aria-modal="true" aria-labelledby="qTitle">
-  <div class="modal">
-    <div class="modal-head">
-      <h2 id="qTitle">质量报告</h2>
-      <button class="modal-close" id="qClose" aria-label="关闭">✕</button>
-    </div>
-    <div class="modal-body" id="qBody"></div>
-  </div>
+  </aside>
+  <main id="main"></main>
 </div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
 
 <script>
-/* ================= mock 数据（全局用户 + 多组织成员：同一用户在各组织角色/授权独立） ================= */
-const USERS = [
-  { id: "u1", name: "张会计" }, { id: "u2", name: "李顾问" }, { id: "u3", name: "王实习" },
-  { id: "f1", name: "陈出纳" }, { id: "f2", name: "赵审核" },
-];
+"use strict";
+/* ==========================================================================
+   mock 数据：全局用户 + 组织（成员/角色/授权按组织独立，D7）
+   约定：所有时间为 UTC 'YYYY-MM-DD HH:MM:SS' 文本（与 CURRENT_TIMESTAMP 同格式，文本比较即时间比较）
+   ========================================================================== */
+const NOW = "2026-10-18 12:30:00";
+const USERS = {
+  u1: "张会计", u2: "李顾问", u3: "王实习", u4: "周主管", u5: "孙外聘",
+  f1: "陈出纳", f2: "赵审核",
+};
+
 const ORGS = [
-  {
-    id: "org:tax", name: "税务事业部",
-    dims: {
-      region:   { label: "作业区域", required: true,  values: { CN: "中国区", OS: "海外区" } },
-      tax_type: { label: "税种",     required: true,  values: { VAT: "增值税", CIT: "企业所得税", GST: "GST", PIT: "个人所得税" } },
+{
+  id: "01JORGTAX", name: "税务事业部", agent: "tax-copilot",
+  dims: [
+    { key: "region",   label: "作业区域", required: true,  status: "active",  source: "local",
+      values: [["CN", "中国区"], ["OS", "海外区"]] },
+    { key: "tax_type", label: "税种",     required: true,  status: "active",  source: "local",
+      values: [["VAT", "增值税"], ["CIT", "企业所得税"], ["GST", "GST"], ["PIT", "个人所得税"]] },
+    { key: "entity",   label: "法人主体", required: false, status: "active",  source: "sync:主数据",
+      values: [["CN01", "境内主体 01"], ["CN02", "境内主体 02"], ["SG01", "新加坡主体"]] },
+    { key: "channel",  label: "渠道",     required: false, status: "retired", source: "local",
+      values: [["ONLINE", "线上"], ["OFFLINE", "线下"]] },
+  ],
+  datasets: [
+    { id: "ds_vat",  name: "流转税实务", desc: "增值税申报、发票、留抵" },
+    { id: "ds_cit",  name: "所得税",     desc: "企业所得税、个税汇算" },
+    { id: "ds_intl", name: "国际税收",   desc: "转让定价、海外合规" },
+  ],
+  members: [
+    { uid: "u4", role: "org_admin", expires: null, perms: ["semantic:admin", "semantic:restricted"],
+      grants: { region: ["CN", "OS"], tax_type: ["VAT", "CIT", "GST", "PIT"], entity: ["CN01", "CN02", "SG01"] } },
+    { uid: "u1", role: "member", expires: null, perms: ["semantic:read"],
+      grants: { region: ["CN"], tax_type: ["VAT", "CIT"], entity: ["CN01"] } },
+    { uid: "u2", role: "member", expires: null, perms: ["semantic:read"],
+      grants: { region: ["CN", "OS"], tax_type: ["VAT", "GST"], entity: [] } },   // entity 无授权 → 编译为 NOT EXISTS 单条件
+    { uid: "u3", role: "member", expires: "2026-12-31 00:00:00", perms: ["semantic:read"],
+      grants: { region: ["CN"], tax_type: ["CIT"], entity: ["CN01"] }, grantExp: { tax_type: "2026-10-01 00:00:00" } }, // 税种授权已过期
+    { uid: "u5", role: "member", expires: "2026-10-10 00:00:00", perms: ["semantic:read"],
+      grants: { region: ["CN"], tax_type: ["VAT"], entity: [] } },               // 成员关系已过期
+  ],
+  docs: [
+    { id: "01J8A1", ds: "ds_vat", title: "2026年Q3 中国区增值税申报操作指南.docx", owner: "u1",
+      dims: { region: ["CN"], tax_type: ["VAT"], entity: [] },
+      active: { v: 1, st: "searchable_full" }, pending: { v: 2, st: "chunked" }, chunks: 143, at: "2026-10-12 09:20:00" },
+    { id: "01J8A2", ds: "ds_vat", title: "进项发票认证与抵扣口径说明.docx", owner: "u1",
+      dims: { region: ["CN"], tax_type: ["VAT"], entity: ["CN01"] },
+      active: { v: 3, st: "searchable_full" }, pending: null, chunks: 41, at: "2026-10-09 15:02:00" },
+    { id: "01J8A3", ds: "ds_vat", title: "增值税申报表附表二 填报说明.pdf", owner: "u4",
+      dims: { region: ["CN"], tax_type: ["VAT"], entity: [] },
+      active: { v: 1, st: "searchable_full" }, pending: null, chunks: 28, at: "2026-10-08 10:44:00" },
+    { id: "01J8A4", ds: "ds_vat", title: "留抵退税政策要点摘要.txt", owner: "u1",
+      dims: { region: ["CN", "OS"], tax_type: ["VAT"], entity: [] },                    // D19 多值
+      active: { v: 1, st: "searchable_full" }, pending: null, chunks: 7, at: "2026-10-03 08:12:00" },
+    { id: "01J8A5", ds: "ds_cit", title: "企业所得税汇算清缴常见问题（2026版）.pdf", owner: "u1",
+      dims: { region: ["CN"], tax_type: ["CIT"], entity: ["CN02"] },
+      active: { v: 1, st: "searchable_lexical" }, pending: null, chunks: 58, at: "2026-10-17 18:31:00" },
+    { id: "01J8A6", ds: "ds_cit", title: "外籍员工个税年度汇算须知.pdf", owner: "u4",
+      dims: { region: ["CN"], tax_type: ["PIT"], entity: [] },
+      active: { v: 2, st: "searchable_full" }, pending: null, chunks: 19, at: "2026-09-28 11:00:00" },
+    { id: "01J8A7", ds: "ds_intl", title: "Overseas Transfer Pricing Manual v2.pdf", owner: "u2",
+      dims: { region: ["OS"], tax_type: ["CIT"], entity: ["SG01"] },
+      active: { v: 2, st: "searchable_full" }, pending: null, chunks: 96, at: "2026-10-01 07:55:00" },
+    { id: "01J8A8", ds: "ds_intl", title: "APAC GST Compliance Checklist.xlsx", owner: "u2",
+      dims: { region: ["OS"], tax_type: ["GST"], entity: [] },
+      active: { v: 0, st: null }, pending: { v: 1, st: "parsing" }, chunks: 0, at: "2026-10-18 12:21:00" },
+  ],
+  chunks: [
+    { doc: "01J8A1", p: 12, text: "一般纳税人按月申报增值税，申报期为次月 1 日至 15 日；逾期申报将产生滞纳金并影响纳税信用等级。", ents: ["scenario:SC_VAT_M"] },
+    { doc: "01J8A1", p: 41, text: "留抵税额退还的申请路径：通过电子税务局「一般退（免）税管理」模块提交退税申请，并上传留抵退税申请表。", ents: ["concept:vat.refund_credit", "system:sys.etax"] },
+    { doc: "01J8A1", p: 57, text: "附表二第 2 栏「认证相符的增值税专用发票」税额应与发票勾选确认平台的认证税额一致，差异需逐笔说明。", ents: ["template:TPL_VAT_A2", "template_field:TPL_VAT_A2.F02_TAX"] },
+    { doc: "01J8A2", p: 3, text: "进项税额抵扣以认证相符的专用发票为准；用于简易计税、免税项目或集体福利的进项税额不得抵扣，已抵扣的应作进项税额转出。", ents: ["concept:vat.input_credit", "template_field:TPL_VAT_A2.F13"] },
+    { doc: "01J8A2", p: 9, text: "税务中台每日从发票平台同步勾选结果，认证状态写入进项发票明细，申报前由系统自动比对附表二取数。", ents: ["system:sys.tax_hub", "table:dwd_tax.vat_input_invoice"] },
+    { doc: "01J8A3", p: 1, text: "附表二（本期进项税额明细）用于归集本期申报抵扣的进项税额与进项税额转出额，是主表第 12 栏的取数来源。", ents: ["template:TPL_VAT_A2", "concept:vat.input_credit"] },
+    { doc: "01J8A3", p: 6, text: "第 13 栏「本期进项税额转出额」填报非正常损失、免税项目等对应的进项税额转出合计数。", ents: ["template_field:TPL_VAT_A2.F13"] },
+    { doc: "01J8A4", p: 2, text: "符合条件的制造业等行业企业，可按月申请全额退还增量留抵税额；申请时纳税信用等级应为 A 级或 B 级。", ents: ["concept:vat.refund_credit"] },
+    { doc: "01J8A4", p: 4, text: "留抵退税申请材料包括：退（抵）税申请表、近期财务报表；退税到账后应相应调减期末留抵税额。", ents: ["concept:vat.refund_credit", "report_item:RPT_VAT_BURDEN.I07"] },
+    { doc: "01J8A5", p: 8, text: "汇算清缴期限为年度终了后 5 个月内；研发费用加计扣除在汇算清缴时一并申报享受。", ents: [] },
+    { doc: "01J8A5", p: 15, text: "跨年度取得发票的成本费用，汇算清缴结束前取得的可税前扣除，之后取得的应追溯调整。", ents: [] },
+    { doc: "01J8A6", p: 2, text: "外籍个人可选择享受住房、语言训练、子女教育补贴免税优惠，或享受专项附加扣除，一经选择一个年度内不得变更。", ents: [] },
+    { doc: "01J8A7", p: 8, text: "For related-party service fees, transfer pricing documentation should include the benchmarking study and the functional analysis.", ents: ["concept:tp"] },
+    { doc: "01J8A7", p: 22, text: "The local file must be prepared before the filing deadline; TP adjustments are reflected in the annual CIT return.", ents: ["concept:tp"] },
+  ],
+  qflags: [
+    { id: "q1", doc: "01J8A1", reason: "vector_crowding", detail: "近邻相似度均值 0.86（阈值初值 0.82，待语料校准）",
+      text: "具体操作步骤见本节后续说明，相关要求以主管税务机关解释为准。", sug: ["申报期限", "主管税务机关"], st: "open" },
+    { id: "q2", doc: "01J8A1", reason: "low_idf", detail: "token 平均 IDF 低于阈值",
+      text: "上述规定自发布之日起施行，此前规定与本规定不一致的，以本规定为准。", sug: ["生效日期", "新旧衔接"], st: "open" },
+    { id: "q3", doc: "01J8A4", reason: "both", detail: "近邻 0.84 / IDF P18",
+      text: "本摘要仅供参考，具体以正式文件为准。", sug: ["留抵退税"], st: "open" },
+    { id: "q4", doc: "01J8A7", reason: "vector_crowding", detail: "near-neighbor mean sim 0.85",
+      text: "See the relevant sections of this manual for further details and examples.", sug: ["arm's length"], st: "open" },
+  ],
+  /* ---------------- 业务语义（D23，M2-S） ---------------- */
+  semantic: {
+    dictRev: 41,
+    entities: [
+      { k: "concept:vat.input_credit", name: "进项税额抵扣", src: "curated", st: "active", l0: true,
+        def: "一般纳税人购进货物、服务取得合规扣税凭证后，将其注明的增值税额从销项税额中抵减。",
+        caliber: "以认证/勾选相符的专用发票税额为准；转出额单列于附表二第 13 栏。",
+        disamb: "区别于「进项税额转出」——后者是已抵扣后的冲回。",
+        aliases: [["进项抵扣", "manual", "exact"], ["抵扣进项", "manual", "exact"], ["进项", "abbr", "context"]] },
+      { k: "concept:vat.refund_credit", name: "留抵退税", src: "curated", st: "active", l0: true,
+        def: "对期末留抵税额（进项大于销项形成的余额）按规定予以退还。",
+        caliber: "增量留抵 = 当期期末留抵税额 − 2019 年 3 月底留抵税额。",
+        aliases: [["增量留抵", "manual", "exact"], ["留抵", "abbr", "exact"], ["留底", "pinyin", "fuzzy_only"]] },
+      { k: "concept:tp", name: "转让定价", src: "curated", st: "active", l0: false,
+        def: "关联方之间交易的定价须符合独立交易原则；需准备同期资料（主体/本地/特殊事项文档）。",
+        disamb: "「TP」在报表语境可能指 Tax Payable，需上下文判定。",
+        aliases: [["TP", "abbr", "context"], ["关联交易定价", "manual", "exact"], ["transfer pricing", "manual", "exact"]] },
+      { k: "concept:risk.audit_score", name: "稽查风险评分", src: "curated", st: "active", sens: "restricted",
+        def: "内部模型对主体被稽查概率的打分，仅限税务风控岗。",
+        aliases: [["风险评分", "manual", "exact"]] },
+      { k: "system:sys.tax_hub", name: "税务中台", src: "curated", st: "active", l0: true,
+        def: "统一的税务数据与申报作业平台，负责发票同步、取数与申报表生成。",
+        aliases: [["中台", "abbr", "context"], ["TaxHub", "manual", "exact"]] },
+      { k: "system:sys.etax", name: "电子税务局", src: "curated", st: "active",
+        def: "税务机关的线上办税入口。", aliases: [["电子局", "abbr", "exact"]] },
+      { k: "scenario:SC_VAT_M", name: "增值税月度申报", src: "sync", st: "active",
+        aliases: [["月度申报", "manual", "exact"], ["SC_VAT_M", "code", "exact"]] },
+      { k: "template:TPL_VAT_A2", name: "增值税申报表附表二", src: "sync", st: "active",
+        def: "本期进项税额明细。", aliases: [["附表二", "manual", "exact"], ["进项明细表", "manual", "exact"], ["TPL_VAT_A2", "code", "exact"]] },
+      { k: "template:TPL_VAT_A2_OLD", name: "附表二（2019 版）", src: "sync", st: "missing", missingSince: "2026-10-14 02:00:00",
+        aliases: [["TPL_VAT_A2_OLD", "code", "exact"]] },
+      { k: "template_field:TPL_VAT_A2.F02_TAX", name: "认证相符专票-税额", src: "sync", st: "active",
+        aliases: [["认证税额", "manual", "exact"], ["F02_TAX", "code", "exact"]] },
+      { k: "template_field:TPL_VAT_A2.F13", name: "本期进项税额转出额", src: "sync", st: "active",
+        aliases: [["进项税额转出", "manual", "exact"], ["进项转出", "manual", "exact"]] },
+      { k: "report:RPT_VAT_BURDEN", name: "增值税税负分析表", src: "sync", st: "active", aliases: [["税负分析表", "manual", "exact"]] },
+      { k: "report_item:RPT_VAT_BURDEN.I03", name: "进项税额合计", src: "sync", st: "active", aliases: [] },
+      { k: "report_item:RPT_VAT_BURDEN.I07", name: "期末留抵税额", src: "sync", st: "active", aliases: [["期末留抵", "manual", "exact"]] },
+      { k: "table:dwd_tax.vat_input_invoice", name: "进项发票明细", src: "sync", st: "active", aliases: [["vat_input_invoice", "code", "exact"]] },
+      { k: "table:dwd_tax.vat_declare_main", name: "增值税申报主表", src: "sync", st: "active", aliases: [["vat_declare_main", "code", "exact"]] },
+      { k: "column:dwd_tax.vat_input_invoice.tax_amount", name: "tax_amount", src: "sync", st: "active", aliases: [] },
+      { k: "column:dwd_tax.vat_input_invoice.cert_status", name: "cert_status", src: "sync", st: "active", aliases: [] },
+      { k: "column:dwd_tax.vat_declare_main.transfer_out_amt", name: "transfer_out_amt", src: "sync", st: "active", aliases: [] },
+      { k: "column:dwd_tax.vat_declare_main.end_credit_amt", name: "end_credit_amt", src: "sync", st: "active", aliases: [] },
+    ],
+    relations: [
+      ["scenario:SC_VAT_M", "uses", "template:TPL_VAT_A2", "sync"],
+      ["scenario:SC_VAT_M", "uses", "template:TPL_VAT_A2_OLD", "sync", "missing"],
+      ["template:TPL_VAT_A2", "has_field", "template_field:TPL_VAT_A2.F02_TAX", "sync"],
+      ["template:TPL_VAT_A2", "has_field", "template_field:TPL_VAT_A2.F13", "sync"],
+      ["template:TPL_VAT_A2", "backed_by", "table:dwd_tax.vat_input_invoice", "sync"],
+      ["template_field:TPL_VAT_A2.F02_TAX", "maps_to", "column:dwd_tax.vat_input_invoice.tax_amount", "sync"],
+      ["template_field:TPL_VAT_A2.F13", "maps_to", "column:dwd_tax.vat_declare_main.transfer_out_amt", "sync"],
+      ["table:dwd_tax.vat_input_invoice", "has_column", "column:dwd_tax.vat_input_invoice.tax_amount", "sync"],
+      ["table:dwd_tax.vat_input_invoice", "has_column", "column:dwd_tax.vat_input_invoice.cert_status", "sync"],
+      ["table:dwd_tax.vat_declare_main", "has_column", "column:dwd_tax.vat_declare_main.transfer_out_amt", "sync"],
+      ["table:dwd_tax.vat_declare_main", "has_column", "column:dwd_tax.vat_declare_main.end_credit_amt", "sync"],
+      ["report:RPT_VAT_BURDEN", "has_item", "report_item:RPT_VAT_BURDEN.I03", "sync"],
+      ["report:RPT_VAT_BURDEN", "has_item", "report_item:RPT_VAT_BURDEN.I07", "sync"],
+      ["report_item:RPT_VAT_BURDEN.I03", "derived_from", "template_field:TPL_VAT_A2.F02_TAX", "sync"],
+      ["report_item:RPT_VAT_BURDEN.I07", "derived_from", "column:dwd_tax.vat_declare_main.end_credit_amt", "curated"],
+      ["concept:vat.input_credit", "refers_to", "template:TPL_VAT_A2", "curated"],
+      ["concept:vat.input_credit", "refers_to", "report_item:RPT_VAT_BURDEN.I03", "curated"],
+      ["concept:vat.refund_credit", "refers_to", "report_item:RPT_VAT_BURDEN.I07", "curated"],
+      ["concept:vat.refund_credit", "related_to", "concept:vat.input_credit", "curated"],
+      ["system:sys.tax_hub", "refers_to", "scenario:SC_VAT_M", "curated"],
+      ["concept:risk.audit_score", "refers_to", "table:dwd_tax.vat_declare_main", "curated"],
+    ],
+    tables: {
+      "dwd_tax.vat_input_invoice": { owner: "税务数仓", partition: "dt (日分区)", rows: "约 1.2 亿", lineage: "ods_invoice.platform_check → dwd_tax.vat_input_invoice",
+        cols: [["invoice_no", "STRING", "发票号码", "044001900111"], ["tax_amount", "DECIMAL(18,2)", "税额", "1,326.55"], ["cert_status", "STRING", "认证状态", "CERTIFIED"], ["entity_code", "STRING", "法人主体", "CN01"], ["dt", "STRING", "分区日期", "20261017"]] },
+      "dwd_tax.vat_declare_main": { owner: "税务数仓", partition: "period (月分区)", rows: "约 38 万", lineage: "tax_hub.declare_snapshot → dwd_tax.vat_declare_main",
+        cols: [["period", "STRING", "所属期", "202609"], ["entity_code", "STRING", "法人主体", "CN02"], ["transfer_out_amt", "DECIMAL(18,2)", "进项转出额", "0.00"], ["end_credit_amt", "DECIMAL(18,2)", "期末留抵", "84,200.13"]] },
     },
-    datasets: [
-      { id: "ds:vat",  name: "VAT 实务库",  desc: "申报指南、政策摘要、操作口径" },
-      { id: "ds:intl", name: "国际税收库",  desc: "转让定价、海外合规、跨境规则" },
+    syncRuns: [
+      { at: "2026-10-18 02:00:00", adapter: "template_center", st: "succeeded", ins: 3, upd: 12, miss: 0, note: "" },
+      { at: "2026-10-18 02:05:00", adapter: "metadata", st: "succeeded", ins: 0, upd: 4, miss: 0, note: "" },
+      { at: "2026-10-18 02:10:00", adapter: "report_center", st: "aborted_guard", ins: 0, upd: 0, miss: 41, note: "消失比例 34% > 阈值 20%，本轮未落库，已告警" },
+      { at: "2026-10-18 02:15:00", adapter: "scenario_config", st: "failed", ins: 0, upd: 0, miss: 0, note: "源接口超时（3 次重试），保留旧快照" },
+      { at: "2026-10-14 02:00:00", adapter: "template_center", st: "succeeded", ins: 0, upd: 2, miss: 1, note: "TPL_VAT_A2_OLD 进入 missing，7 天宽限期" },
     ],
-    members: [
-      { uid: "u1", role: "member",    grants: { region: ["CN"], tax_type: ["VAT", "CIT"] } },
-      { uid: "u2", role: "member",    grants: { region: ["CN", "OS"], tax_type: ["VAT", "GST"] } },  // 跨组织：在财务中心是 org_admin
-      { uid: "u3", role: "member",    grants: { region: ["CN"], tax_type: ["CIT"] } },
+    builds: [
+      { rev: 42, st: "building", at: "2026-10-18 12:28:00", by: "yaml webhook · PR #118", aliases: 0 },
+      { rev: 41, st: "ready", at: "2026-10-18 02:20:00", by: "nightly", aliases: 46 },
+      { rev: 40, st: "ready", at: "2026-10-17 02:20:00", by: "nightly", aliases: 44 },
+      { rev: 39, st: "failed", at: "2026-10-16 15:02:00", by: "yaml webhook · PR #115", aliases: 0, note: "schema 校验失败：extra_relations 端点类型不在白名单" },
     ],
-    docs: [
-      { id: "01J8A1", ds: "ds:vat", title: "2026年Q3 中国区增值税申报操作指南.docx", dims: { region: "CN", tax_type: "VAT" },
-        status: "searchable_full", chunks: 143, flags: 3, owner: "张会计",
-        pending: { version: 2, status: "searchable_lexical" } },  // 版本在用制：在用 v1 · 处理中 v2
-      { id: "01J8A2", ds: "ds:intl", title: "Overseas Transfer Pricing Manual v2.pdf", dims: { region: "OS", tax_type: "VAT" },
-        status: "searchable_full", chunks: 96, flags: 1, owner: "李顾问" },
-      { id: "01J8A3", ds: "ds:vat", title: "企业所得税汇算清缴常见问题（2026版）.pdf", dims: { region: "CN", tax_type: "CIT" },
-        status: "searchable_lexical", chunks: 58, flags: 0, owner: "张会计" },
-      { id: "01J8A4", ds: "ds:intl", title: "APAC GST Compliance Checklist.xlsx", dims: { region: "OS", tax_type: "GST" },
-        status: "chunked", chunks: 12, flags: 0, owner: "李顾问" },
-      { id: "01J8A5", ds: "ds:vat", title: "留抵退税政策要点摘要.txt", dims: { region: ["CN", "OS"], tax_type: "VAT" },  // D19 多值：通用政策双区域可见
-        status: "searchable_full", chunks: 7, flags: 2, owner: "张会计" },
-    ],
-    qflags: {
-      "01J8A1": [
-        { id: "q1", reason: "vector_crowding", detail: "近邻相似度均值 0.86（绝对阈值初值 0.82，待语料校准）",
-          snippet: "具体操作步骤见本节后续说明，相关要求以主管税务机关解释为准。", auto: ["申报期限", "主管税务机关"] },
-        { id: "q2", reason: "low_idf", detail: "token 平均 IDF 低于绝对阈值（初值待校准）",
-          snippet: "上述规定自发布之日起施行，此前规定与本规定不一致的，以本规定为准。", auto: ["生效日期", "新旧衔接"] },
-        { id: "q3", reason: "both", detail: "近邻 0.84 / IDF P18",
-          snippet: "注意事项：填表时请核对数据准确性，确保信息完整。", auto: [] },
-      ],
-      "01J8A2": [
-        { id: "q4", reason: "vector_crowding", detail: "near-neighbor mean sim 0.85",
-          snippet: "See the relevant sections of this manual for further details and examples.", auto: ["arm's length", "documentation"] },
-      ],
-      "01J8A5": [
-        { id: "q5", reason: "low_idf", detail: "token 平均 IDF 低于绝对阈值（初值待校准）",
-          snippet: "本摘要仅供参考，具体以正式文件为准。", auto: ["留抵退税"] },
-        { id: "q6", reason: "vector_crowding", detail: "近邻相似度均值 0.83",
-          snippet: "申请材料包括：申请表、营业执照复印件等。", auto: ["申请材料", "全额退还"] },
-      ],
-    },
-    hits: [
-      { doc: "01J8A5", page: 2, score: 0.91, text: "符合条件的制造业等行业企业，可按月申请全额退还增值税留抵税额。申请时需同时满足纳税信用等级为 A 级或 B 级等条件……" },
-      { doc: "01J8A1", page: 41, score: 0.87, text: "留抵税额退还的申请路径：通过电子税务局「一般退（免）税管理」模块提交……" },
-      { doc: "01J8A1", page: 12, score: 0.78, text: "一般纳税人销售自产货物并同时提供安装服务的，应分别核算货物与安装服务的销售额，适用不同税率或征收率……" },
-      { doc: "01J8A2", page: 8, score: 0.72, text: "For related-party service fees, documentation should include the benchmarking study and the functional analysis……" },
-    ],
-    tasks: [
-      { id: "01JT1", ds: "VAT 实务库", doc: "企业所得税汇算清缴常见问题（2026版）.pdf", type: "ingest", status: "running", hb: "3s 前", att: 0 },
-      { id: "01JT2", ds: "国际税收库", doc: "APAC GST Compliance Checklist.xlsx", type: "ingest", status: "pending", hb: "—", att: 0 },
-      { id: "01JT3", ds: "VAT 实务库", doc: "2026年Q3 中国区增值税申报操作指南.docx", type: "ingest", status: "done", hb: "—", att: 0 },
-      { id: "01JT4", ds: "国际税收库", doc: "Overseas Transfer Pricing Manual v2.pdf", type: "reindex", status: "done", hb: "—", att: 1 },
-    ],
-    audits: [
-      { t: "14:32:08", actor: "agent:tax-copilot:user:u1", act: "search", out: "accepted", detail: "「留抵退税 条件」→ 返回 5 块（01J8A5#2 …）" },
-      { t: "14:29:51", actor: "user:u1", act: "upload", out: "accepted", detail: "2026年Q3 中国区增值税申报操作指南.docx → VAT 实务库" },
-      { t: "14:27:33", actor: "agent:tax-copilot:user:u3", act: "search", out: "refused", detail: "「VAT 留抵」→ 越权过滤 2 份文档" },
-      { t: "14:20:02", actor: "user:admin", act: "grant", out: "accepted", detail: "李顾问 tax_type += GST" },
-      { t: "14:02:47", actor: "user:admin", act: "dataset_create", out: "accepted", detail: "新建知识库「国际税收库」" },
+    conflicts: [
+      { lvl: "warn", msg: "别名「附表二」同时可匹配 TPL_VAT_A2 与已 missing 的 TPL_VAT_A2_OLD；宽限期结束（10-21）后自动消解。" },
+      { lvl: "info", msg: "extra_relations「I07 derived_from end_credit_amt」若报表中心后续同步出同一关系，将提示删除人工条目。" },
     ],
   },
-  {
-    id: "org:fin", name: "财务共享中心",
-    dims: {
-      region:   { label: "作业区域", required: true, values: { CN: "中国区", OS: "海外区" } },
-      biz_line: { label: "业务线",   required: true, values: { GL: "总账", AP: "应付", TE: "差旅" } },
-    },
-    datasets: [
-      { id: "ds:exp", name: "费用制度库", desc: "报销办法、费用标准、操作指引" },
-    ],
-    members: [
-      { uid: "f1", role: "member",    grants: { region: ["CN"], biz_line: ["AP", "TE"] } },
-      { uid: "f2", role: "org_admin", grants: { region: ["CN", "OS"], biz_line: ["GL", "AP"] } },
-      { uid: "u2", role: "org_admin", grants: { region: ["CN"], biz_line: ["TE"] } },  // 李顾问：财务中心管理员，仅差旅线
-    ],
-    docs: [
-      { id: "01J8B1", ds: "ds:exp", title: "差旅费报销管理办法（2026修订）.docx", dims: { region: "CN", biz_line: "TE" },
-        status: "searchable_full", chunks: 64, flags: 1, owner: "赵审核" },
-      { id: "01J8B2", ds: "ds:exp", title: "海外子公司总账月结流程.pdf", dims: { region: "OS", biz_line: "GL" },
-        status: "searchable_full", chunks: 38, flags: 0, owner: "赵审核" },
-      { id: "01J8B3", ds: "ds:exp", title: "应付账款对账操作手册.xlsx", dims: { region: "CN", biz_line: "AP" },
-        status: "parsing", chunks: 0, flags: 0, owner: "陈出纳" },
-    ],
-    qflags: {
-      "01J8B1": [
-        { id: "fq1", reason: "low_idf", detail: "token 平均 IDF 低于绝对阈值（初值待校准）",
-          snippet: "其他未尽事宜参照公司相关财务制度执行。", auto: ["差旅报销"] },
-      ],
-    },
-    hits: [
-      { doc: "01J8B1", page: 3, score: 0.89, text: "员工出差住宿费实行限额标准内据实报销：一类城市每晚不超过 600 元，二类城市不超过 450 元……" },
-      { doc: "01J8B1", page: 12, score: 0.81, text: "报销时限：费用发生后 30 日内提交报销申请，逾期需说明原因并经部门负责人审批……" },
-      { doc: "01J8B3", page: 1, score: 0.74, text: "月末对账三步：核对供应商余额、清理暂挂科目、导出账龄分析表……" },
-    ],
-    tasks: [
-      { id: "01JU1", ds: "费用制度库", doc: "应付账款对账操作手册.xlsx", type: "ingest", status: "running", hb: "8s 前", att: 0 },
-    ],
-    audits: [
-      { t: "11:15:42", actor: "agent:fin-assistant:user:f1", act: "search", out: "accepted", detail: "「差旅 住宿 限额」→ 返回 2 块（01J8B1#3 …）" },
-      { t: "11:08:19", actor: "user:f2", act: "upload", out: "accepted", detail: "差旅费报销管理办法（2026修订）.docx → 费用制度库" },
-      { t: "10:55:03", actor: "agent:fin-assistant:user:f1", act: "search", out: "refused", detail: "「月结流程」→ 越权过滤 1 份文档（海外区/总账）" },
-    ],
-  },
+  tasks: [
+    { id: "01JT11", type: "ingest", doc: "01J8A1", st: "running", stage: "chunked", hb: 3, lease: 52, att: 0 },
+    { id: "01JT12", type: "ingest", doc: "01J8A8", st: "running", stage: "parsing", hb: 2, lease: 57, att: 0 },
+    { id: "01JT13", type: "embed",  doc: "01J8A5", st: "leased", stage: "searchable_lexical", hb: 1, lease: 59, att: 1 },
+    { id: "01JT09", type: "semantic_sync", target: "report_center", st: "failed", stage: "aborted_guard", hb: null, lease: null, att: 1 },
+    { id: "01JT10", type: "semantic_build", target: "dict_rev 42", st: "running", stage: "building", hb: 4, lease: 50, att: 0 },
+    { id: "01JT07", type: "semantic_retag", target: "dict_rev 41 · 312 块", st: "pending", stage: "—", hb: null, lease: null, att: 0, note: "最低优先级，夜间错峰" },
+    { id: "01JT05", type: "ingest", doc: "01J8A2", st: "done", stage: "searchable_full", hb: null, lease: null, att: 0 },
+  ],
+  queryAudit: [
+    { t: "12:24:08", actor: "agent:tax-copilot · user:u1", act: "search", detail: "「留抵退税 申请条件」→ 5 块（01J8A4#2 …）", out: "ok" },
+    { t: "12:19:51", actor: "agent:tax-copilot · user:u1", act: "annotate", detail: "命中 3 实体 · dict_rev 41", out: "ok" },
+    { t: "12:11:33", actor: "agent:tax-copilot · user:u5", act: "search", detail: "成员关系已过期 → 403", out: "deny" },
+  ],
+  permAudit: [
+    { t: "11:58:20", actor: "user:u4", act: "grant.replace", detail: "李顾问 · tax_type := {VAT, GST}", out: "ok" },
+    { t: "10:02:47", actor: "user:u4", act: "dimension.retire", detail: "退役维度 channel · 预估 3 份文档新增可见", out: "ok" },
+    { t: "09:40:12", actor: "svc:grant_sync", act: "grant.sync", detail: "entity · 主数据快照 #2210 · 5 人无变化", out: "ok" },
+  ],
+},
+{
+  id: "01JORGFIN", name: "财务共享中心", agent: "fin-assistant",
+  dims: [
+    { key: "region",   label: "作业区域", required: true, status: "active", source: "local", values: [["CN", "中国区"], ["OS", "海外区"]] },
+    { key: "biz_line", label: "业务线",   required: true, status: "active", source: "local", values: [["GL", "总账"], ["AP", "应付"], ["TE", "差旅"]] },
+  ],
+  datasets: [ { id: "ds_exp", name: "费用制度", desc: "报销办法、费用标准" } ],
+  members: [
+    { uid: "f2", role: "org_admin", expires: null, perms: [], grants: { region: ["CN", "OS"], biz_line: ["GL", "AP", "TE"] } },
+    { uid: "f1", role: "member", expires: null, perms: [], grants: { region: ["CN"], biz_line: ["AP", "TE"] } },
+    { uid: "u2", role: "member", expires: null, perms: [], grants: { region: ["CN"], biz_line: ["TE"] } },   // 跨组织：同一人，角色/授权独立
+  ],
+  docs: [
+    { id: "01J8B1", ds: "ds_exp", title: "差旅费报销管理办法（2026修订）.docx", owner: "f2", dims: { region: ["CN"], biz_line: ["TE"] },
+      active: { v: 1, st: "searchable_full" }, pending: null, chunks: 64, at: "2026-10-11 09:00:00" },
+    { id: "01J8B2", ds: "ds_exp", title: "海外子公司总账月结流程.pdf", owner: "f2", dims: { region: ["OS"], biz_line: ["GL"] },
+      active: { v: 1, st: "searchable_full" }, pending: null, chunks: 38, at: "2026-10-02 16:40:00" },
+    { id: "01J8B3", ds: "ds_exp", title: "应付账款对账操作手册.xlsx", owner: "f1", dims: { region: ["CN"], biz_line: ["AP"] },
+      active: { v: 1, st: "searchable_full" }, pending: null, chunks: 22, at: "2026-10-15 13:12:00" },
+  ],
+  chunks: [
+    { doc: "01J8B1", p: 3, text: "员工出差住宿费实行限额标准内据实报销：一类城市每晚不超过 600 元，二类城市不超过 450 元。", ents: [] },
+    { doc: "01J8B1", p: 12, text: "报销时限：费用发生后 30 日内提交报销申请，逾期需说明原因并经部门负责人审批。", ents: [] },
+    { doc: "01J8B2", p: 5, text: "海外子公司月结流程：关账前完成往来对账、汇率重估与暂估冲回，总账于第 3 个工作日锁账。", ents: [] },
+    { doc: "01J8B3", p: 1, text: "月末对账三步：核对供应商余额、清理暂挂科目、导出账龄分析表。", ents: [] },
+  ],
+  qflags: [],
+  semantic: null,
+  tasks: [ { id: "01JU01", type: "ingest", doc: "01J8B3", st: "done", stage: "searchable_full", hb: null, lease: null, att: 0 } ],
+  queryAudit: [ { t: "11:15:42", actor: "agent:fin-assistant · user:f1", act: "search", detail: "「差旅 住宿 限额」→ 2 块", out: "ok" } ],
+  permAudit: [ { t: "09:10:00", actor: "user:f2", act: "member.add", detail: "李顾问 加入（member）", out: "ok" } ],
+},
 ];
 
-/* ================= 全局状态与工具 ================= */
-const state = { orgId: ORGS[0].id, whoId: null, selUser: null, dsFilter: "all", picked: {} };
-const org = () => ORGS.find(o => o.id === state.orgId);
-const userName = (uid) => USERS.find(u => u.id === uid)?.name || uid;
-const member = () => org().members.find(m => m.uid === state.whoId) || org().members[0];
-const isCrossOrg = (uid) => ORGS.filter(o => o.members.some(m => m.uid === uid)).length > 1;
-const $ = (s) => document.querySelector(s);
-const $$ = (s) => [...document.querySelectorAll(s)];
-const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-function cellHTML(dim, val, { label = true } = {}) {
-  const lbl = label && org().dims[dim]?.values[val] ? `<span class="lbl">${org().dims[dim].values[val]}</span>` : "";
-  return `<span class="cell d-${dim}">${lbl}${val}</span>`;
+const ENT_TYPES = {
+  concept: "业务概念", system: "系统名词", scenario: "作业场景", template: "模板", template_field: "模板字段",
+  report: "报表", report_item: "报表项", table: "业务表", column: "列",
+};
+const STAGES = ["uploaded", "parsing", "chunked", "searchable_lexical", "searchable_full"];
+const STAGE_CN = { uploaded: "已上传", parsing: "解析", chunked: "分块", searchable_lexical: "可词法检索", searchable_full: "完全可检索", failed: "失败", degraded: "降级" };
+const FLAG_CN = { vector_crowding: "向量拥挤", low_idf: "低信息量", both: "双重" };
+</script>
+
+<script>
+"use strict";
+/* ==========================================================================
+   状态与基础工具
+   ========================================================================== */
+const state = {
+  orgId: ORGS[0].id,
+  lens: { "01JORGTAX": "u1", "01JORGFIN": "f1" },
+  view: "docs",
+  sub: { access: "grants", sem: "entities" },
+  ds: "all", selDoc: null, uploadOpen: false, up: { ds: "", picked: {}, file: "" },
+  q: "", qDs: "all", entRoute: true, lastSearch: null,
+  selEnt: "template:TPL_VAT_A2", depth: 1, entQ: "", degraded: false,
+  annText: "附表二的进项转出怎么填？中台什么时候同步认证税额，留底能退吗？TP 要不要单独报",
+  fuzzy: false, vis: null, retireAsk: null,
+};
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const O = () => ORGS.find(o => o.id === state.orgId);
+const uname = uid => USERS[uid] || uid;
+const lens = () => O().members.find(m => m.uid === state.lens[O().id]) || O().members[0];
+const isAdmin = m => m.role === "org_admin";
+const memberValid = m => !m.expires || m.expires > NOW;            // 文本比较 = 时间比较（统一 UTC 格式）
+const grantValid = (m, k) => !(m.grantExp && m.grantExp[k] && m.grantExp[k] <= NOW);
+const effGrants = (m, k) => grantValid(m, k) ? (m.grants[k] || []) : [];
+const activeDims = () => O().dims.filter(d => d.status === "active");
+const dimOf = k => O().dims.find(d => d.key === k);
+const dimIdx = k => O().dims.findIndex(d => d.key === k) % 4;
+const valLabel = (k, v) => ((dimOf(k)?.values || []).find(x => x[0] === v) || [v, v])[1];
+const dsName = id => O().datasets.find(d => d.id === id)?.name || id;
+const docById = id => O().docs.find(d => d.id === id);
+const short = ts => ts ? ts.slice(5, 16) : "—";
+const hasPerm = (m, p) => (m.perms || []).includes(p);
+let clock = 12 * 3600 + 30 * 60;
+const tick = () => { clock += 7 + Math.floor(Math.random() * 30); const h = String(Math.floor(clock / 3600)).padStart(2, "0"), mi = String(Math.floor(clock / 60) % 60).padStart(2, "0"), s = String(clock % 60).padStart(2, "0"); return `${h}:${mi}:${s}`; };
+let seq = 0;
+const newId = p => p + (Date.now() % 100000).toString(36).toUpperCase() + (++seq);
+
+function toast(html) {
+  const el = document.createElement("div");
+  el.className = "toast"; el.innerHTML = html;
+  $("#toasts").appendChild(el);
+  setTimeout(() => { el.classList.add("out"); setTimeout(() => el.remove(), 320); }, 3800);
 }
-function dsName(dsId) { return org().datasets.find(d => d.id === dsId)?.name || dsId; }
-function statusBadge(st) {
-  const map = { searchable_full: "b-ok", done: "b-ok", failed: "b-fail", searchable_lexical: "b-parsing", chunked: "b-parsing", parsing: "b-parsing", uploaded: "b-muted", pending: "b-muted", running: "b-parsing" };
-  return `<span class="badge ${st} ${map[st] || ""}">${st}</span>`;
-}
-/* 可见性（D5 v0.4：全部 active 维度统一——有值则求交集、空值放行；required/enabled 不影响过滤） */
-function canSee(m, dims) {
-  for (const d of Object.keys(org().dims)) {
-    const docVals = Array.isArray(dims[d]) ? dims[d] : [dims[d]];
-    if (!docVals.some(v => (m.grants[d] || []).includes(v))) return false;
+function permEvent(act, detail) { O().permAudit.unshift({ t: tick(), actor: "user:" + lens().uid, act, detail, out: "ok", fresh: true }); }
+function queryEvent(act, detail, out = "ok") { O().queryAudit.unshift({ t: tick(), actor: `agent:${O().agent} · user:${lens().uid}`, act, detail, out, fresh: true }); }
+
+/* ==========================================================================
+   §5.1 维度 ACL —— 全部 active 维度：有值则求交集、空值放行；空授权集只放行空值；无 owner 分支
+   ========================================================================== */
+function canSee(m, doc) {
+  if (!memberValid(m)) return false;                        // 第 0 步：成员关系（含过期）
+  for (const d of activeDims()) {
+    const vals = doc.dims[d.key] || [];
+    if (vals.length === 0) continue;                        // 空值放行
+    const g = effGrants(m, d.key);
+    if (!vals.some(v => g.includes(v))) return false;       // 空授权集 ≡ NOT EXISTS：只有空值能过
   }
   return true;
 }
-function renderOrgTags() {
-  const t = org().name;
-  for (let i = 1; i <= 4; i++) $("#orgTag" + i).textContent = t;
-}
-
-/* ================= 导航与组织切换 ================= */
-$$(".nav-item").forEach(b => b.addEventListener("click", () => {
-  $$(".nav-item").forEach(x => x.classList.remove("active"));
-  b.classList.add("active");
-  $$(".page").forEach(p => p.classList.remove("active"));
-  $("#page-" + b.dataset.page).classList.add("active");
-}));
-/* 左上角组织切换器 */
-const orgBtn = $("#orgBtn"), orgMenu = $("#orgMenu");
-orgBtn.addEventListener("click", () => {
-  orgMenu.hidden = !orgMenu.hidden;
-  orgBtn.setAttribute("aria-expanded", String(!orgMenu.hidden));
-});
-document.addEventListener("click", e => {
-  if (!orgMenu.hidden && !e.target.closest(".org-switcher")) orgMenu.hidden = true;
-});
-function renderOrgSwitcher() {
-  $("#orgName").textContent = org().name;
-  $("#orgItems").innerHTML = ORGS.map(o => `
-    <button class="org-item ${o.id === state.orgId ? "on" : ""}" data-org="${o.id}">
-      <span class="om-mark"></span>${o.name}
-      <span class="om-sub">${o.members.length} 名成员 · ${o.datasets.length} 个知识库</span>
-    </button>`).join("");
-  $$("#orgItems .org-item").forEach(b => b.addEventListener("click", () => {
-    orgMenu.hidden = true;
-    if (b.dataset.org !== state.orgId) switchOrg(b.dataset.org);
-  }));
-}
-function switchOrg(orgId) {
-  state.orgId = orgId;
-  /* 跨组织用户：若当前身份是新组织成员则保持身份（演示同一人多组织不同权限），否则回退首位成员 */
-  if (!org().members.some(m => m.uid === state.whoId)) state.whoId = null;
-  state.selUser = null; state.dsFilter = "all"; state.picked = {}; state.dsPick = null;
-  renderAll();
-  $("#qInput").value = org().id === "org:fin" ? "差旅 报销 限额" : "留抵退税";
-  doSearch();
-}
-
-/* ================= 上传页 ================= */
-function renderUpload() {
-  const o = org();
-  $("#dsSelect").innerHTML = `<option value="">选择知识库…</option>` +
-    o.datasets.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join("");
-  if (state.dsPick && o.datasets.some(d => d.id === state.dsPick)) $("#dsSelect").value = state.dsPick;
-  $("#uploadDims").innerHTML = Object.entries(o.dims).map(([dk, def]) => `
-    <div class="dim-group"><span class="dim-name">${def.label} ${def.required ? '<span class="dim-required" title="必选维度">*</span>' : ""}</span>
-      ${Object.keys(def.values).map(v => `
-        <span class="cell pick ${state.picked[dk] === v ? "on" : ""}" data-k="${dk}" data-val="${v}"
-          >${def.values[v] ? `<span class="lbl">${def.values[v]}</span>` : ""}${v}</span>`).join("")}
-    </div>`).join("");
-  $$("#uploadDims .cell.pick").forEach(c => c.addEventListener("click", () => {
-    const d = c.dataset.k, v = c.dataset.val;
-    state.picked[d] = state.picked[d] === v ? null : v;
-    renderUpload();
-  }));
-  updateUploadBtn();
-}
-$("#dsSelect").addEventListener("change", e => { state.dsPick = e.target.value || null; updateUploadBtn(); });
-function updateUploadBtn() {
-  const o = org();
-  const need = Object.keys(o.dims).filter(d => o.dims[d].required);
-  const dimsOk = need.every(d => state.picked[d]);
-  const ok = dimsOk && state.dsPick;
-  $("#btnUpload").disabled = !ok;
-  const miss = [];
-  if (!state.dsPick) miss.push("知识库");
-  need.forEach(d => { if (!state.picked[d]) miss.push(o.dims[d].label); });
-  $("#uploadHint").textContent = miss.length ? `待选择：${miss.join("、")}` :
-    `知识库「${dsName(state.dsPick)}」· 维度已选齐：` + Object.entries(state.picked).filter(([,v])=>v).map(([k,v]) => `${k}=${v}`).join(" · ");
-}
-$("#btnUpload").addEventListener("click", () => {
-  org().docs.unshift({
-    id: "01J8N" + (org().docs.length + 1), ds: state.dsPick, title: "新上传文档-demo.docx",
-    dims: { ...state.picked }, status: "uploaded", chunks: 0, flags: 0, owner: "当前用户",
-  });
-  renderDocs(); $("#uploadHint").textContent = "已加入队列（原型演示，文件为虚拟）";
-});
-const FLOW = ["uploaded", "parsing", "chunked", "searchable_lexical", "searchable_full"];
-$("#btnAdvance").addEventListener("click", () => {
-  const d = org().docs.find(x => FLOW.indexOf(x.status) >= 0 && x.status !== "searchable_full");
-  if (!d) { alert("当前组织全部文档已索引"); return; }
-  d.status = FLOW[FLOW.indexOf(d.status) + 1];
-  if (d.status === "chunked") d.chunks = Math.max(d.chunks, 3);
-  if (d.status === "searchable_lexical") d.chunks = Math.max(d.chunks, 11);
-  if (d.status === "searchable_full") { d.chunks = Math.max(d.chunks, 17); d.flags = 2;
-    org().qflags[d.id] = [{ id: "qn" + d.id, reason: "vector_crowding", detail: "近邻相似度均值 0.84",
-      snippet: "（演示数据）此段内容与库内多个无关 chunk 相似。", auto: ["演示关键词"] }]; }
-  renderDocs();
-});
-function renderDocs() {
-  $("#docTable tbody").innerHTML = org().docs.map(d => `
-    <tr>
-      <td><div>${esc(d.title)}</div><div class="muted mono" style="font-size:0.72rem">${d.id} · ${d.owner}</div></td>
-      <td><span class="ds-pill">${esc(dsName(d.ds))}</span></td>
-      <td>${Object.entries(d.dims).map(([k, v]) => cellHTML(k, v)).join(" ")}</td>
-      <td>${statusBadge(d.status)}${d.pending ? `<div class="muted mono" style="font-size:0.68rem">↑在用 · 处理中 v${d.pending.version}（${d.pending.status}）</div>` : ""}</td>
-      <td class="mono">${d.chunks || "—"}</td>
-      <td>${d.flags ? `<button class="btn ghost small" data-qf="${d.id}" style="color:var(--amber);border-color:var(--amber)">${d.flags} 待处理</button>` : '<span class="muted">—</span>'}</td>
-      <td>${d.owner}</td>
-    </tr>`).join("");
-  $$("[data-qf]").forEach(b => b.addEventListener("click", () => openQuality(b.dataset.qf)));
-}
-
-/* ================= 质量报告 ================= */
-const flagState = {};
-function openQuality(docId) {
-  const doc = org().docs.find(d => d.id === docId);
-  const flags = org().qflags[docId] || [];
-  $("#qTitle").textContent = `质量报告 · ${doc.title}`;
-  $("#qBody").innerHTML = `
-    <p style="font-size:0.85rem;color:var(--ink-2);margin-bottom:14px">
-      以下 ${flags.length} 个块区分度较低（向量拥挤 / 词面过于通用），系统已生成建议关键词；
-      可补充标注或忽略——补充的标签会加权进入检索。</p>
-    ${flags.map(f => {
-      const st = flagState[f.id] || { ignored: false, manual: [], removedAuto: [] };
-      const autos = f.auto.filter(k => !st.removedAuto.includes(k));
-      return `
-      <div class="q-item" style="${st.ignored ? "opacity:0.5" : ""}">
-        <div class="q-top">
-          <span class="q-reason">${f.reason === "vector_crowding" ? "向量拥挤" : f.reason === "low_idf" ? "词面通用" : "双信号"}</span>
-          <span class="mono muted" style="font-size:0.72rem">${esc(f.detail)}</span>
-        </div>
-        <div class="q-snippet">${esc(f.snippet)}</div>
-        <div class="q-kw">
-          <span class="klabel">关键词</span>
-          ${autos.map(k => `<span class="kw-chip auto" data-kw="${esc(k)}" data-fid="${f.id}">${esc(k)}<button aria-label="移除">✕</button></span>`).join("")}
-          ${st.manual.map(k => `<span class="kw-chip" data-kw="${esc(k)}" data-fid="${f.id}" data-manual="1">${esc(k)}<button aria-label="移除">✕</button></span>`).join("")}
-          <span class="kw-add"><input placeholder="补充关键词 ↵" data-add="${f.id}"></span>
-        </div>
-        <div class="q-actions">
-          <button class="btn small" data-resolve="${f.id}">标记已处理</button>
-          <button class="btn ghost small" data-ignore="${f.id}">${st.ignored ? "取消忽略" : "忽略（表格/目录类天然低区分）"}</button>
-        </div>
-      </div>`;
-    }).join("")}`;
-  $$("#qBody [data-kw] button").forEach(b => b.addEventListener("click", () => {
-    const chip = b.parentElement, fid = chip.dataset.fid, kw = chip.dataset.kw;
-    const st = flagState[fid] = flagState[fid] || { ignored: false, manual: [], removedAuto: [] };
-    if (chip.dataset.manual) st.manual = st.manual.filter(k => k !== kw);
-    else st.removedAuto.push(kw);
-    openQuality(docId);
-  }));
-  $$("#qBody [data-add]").forEach(inp => inp.addEventListener("keydown", e => {
-    if (e.key === "Enter" && inp.value.trim()) {
-      const st = flagState[inp.dataset.add] = flagState[inp.dataset.add] || { ignored: false, manual: [], removedAuto: [] };
-      st.manual.push(inp.value.trim()); openQuality(docId);
-    }
-  }));
-  $$("#qBody [data-ignore]").forEach(b => b.addEventListener("click", () => {
-    const st = flagState[b.dataset.ignore] = flagState[b.dataset.ignore] || { ignored: false, manual: [], removedAuto: [] };
-    st.ignored = !st.ignored; openQuality(docId);
-  }));
-  $$("#qBody [data-resolve]").forEach(b => b.addEventListener("click", () => {
-    const doc2 = org().docs.find(d => d.id === docId); doc2.flags = Math.max(0, doc2.flags - 1);
-    renderDocs(); $("#qOverlay").classList.remove("open");
-  }));
-  $("#qOverlay").classList.add("open");
-}
-$("#qClose").addEventListener("click", () => $("#qOverlay").classList.remove("open"));
-$("#qOverlay").addEventListener("click", e => { if (e.target === e.currentTarget) $("#qOverlay").classList.remove("open"); });
-
-/* ================= 检索页 ================= */
-function renderSearchBar() {
-  const o = org();
-  $("#whoSelect").innerHTML = o.members.map(m =>
-    `<option value="${m.uid}" ${m.uid === member().uid ? "selected" : ""}>${userName(m.uid)}${m.role === "org_admin" ? "（管理员）" : ""}</option>`).join("");
-  $("#dsFilter").innerHTML = `<option value="all">全部知识库</option>` +
-    o.datasets.map(d => `<option value="${d.id}" ${state.dsFilter === d.id ? "selected" : ""}>${esc(d.name)}</option>`).join("");
-  const m = member();
-  $("#whoGrants").innerHTML = Object.entries(m.grants).map(([d, vs]) =>
-    `<span style="font-size:0.78rem;color:var(--ink-3)">${o.dims[d].label}：</span>` +
-    vs.map(v => cellHTML(d, v, { label: false })).join("")).join("<span style='width:8px'></span>");
-}
-$("#whoSelect").addEventListener("change", e => { state.whoId = e.target.value; renderSearchBar(); doSearch(); });
-$("#dsFilter").addEventListener("change", e => { state.dsFilter = e.target.value; doSearch(); });
-function doSearch() {
-  const o = org();
-  const q = ($("#qInput").value || "").trim().toLowerCase();
-  if (!q) { $("#hits").innerHTML = ""; $("#filterNote").style.display = "none"; return; }
-  const terms = q.split(/\s+/);
-  let visible = 0, blocked = 0, html = "";
-  for (const h of o.hits) {
-    const doc = o.docs.find(d => d.id === h.doc);
-    if (!canSee(member(), doc.dims)) { blocked++; continue; }
-    if (state.dsFilter !== "all" && doc.ds !== state.dsFilter) continue;
-    visible++;
-    const marked = terms.reduce((acc, t) => acc.replace(new RegExp(`(${t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi"), "<mark>$1</mark>"), esc(h.text));
-    html += `
-      <div class="hit">
-        <div class="hit-top">
-          <span class="hit-score">${h.score.toFixed(2)}</span>
-          <span class="hit-title">${esc(doc.title)}</span>
-          <span class="ds-pill">${esc(dsName(doc.ds))}</span>
-          ${Object.entries(doc.dims).map(([k, v]) => cellHTML(k, v)).join(" ")}
-        </div>
-        <div class="hit-snippet">${marked}</div>
-        <div class="hit-meta">
-          <span>chunk <b>${h.doc}#${h.page}</b></span><span>page <b>${h.page}</b></span>
-          <span>rerank_score <b>${h.score}</b></span><span>via <b>fts+vec → rrf → rerank</b></span>
-        </div>
-      </div>`;
+function explain(m, doc) {
+  const rows = [];
+  if (!memberValid(m)) {
+    rows.push({ ic: "n", k: "成员关系", v: `已于 ${short(m.expires)} 过期 → 第 0 步拒绝，后续不再计算` });
+    return rows;
   }
-  $("#hits").innerHTML = html || `<div class="panel muted" style="text-align:center;padding:30px">没有可展示的结果——换一个检索词、切换知识库，或切换到权限更多的身份。</div>`;
-  const fn = $("#filterNote");
-  if (blocked > 0) {
-    fn.style.display = "block";
-    fn.textContent = `维度权限过滤：${blocked} 条命中因当前身份（${userName(member().uid)}@${org().name}）缺少对应维度授权而未展示（AND 语义，仅计数不显示内容）。`;
-  } else { fn.style.display = "none"; fn.textContent = ""; }
+  rows.push({ ic: "y", k: "成员关系", v: m.expires ? `有效（至 ${short(m.expires)}）` : "有效（长期）" });
+  for (const d of O().dims) {
+    const vals = doc.dims[d.key] || [];
+    if (d.status !== "active") { rows.push({ ic: "s", k: d.label, v: "已退役 · 不参与过滤" }); continue; }
+    if (!vals.length) { rows.push({ ic: "s", k: d.label, v: "文档未标此维度 → 空值放行" }); continue; }
+    const g = effGrants(m, d.key);
+    const hit = vals.filter(v => g.includes(v));
+    const expNote = !grantValid(m, d.key) ? `（该维度授权已于 ${short(m.grantExp[d.key])} 过期）` : "";
+    if (hit.length) rows.push({ ic: "y", k: d.label, v: `文档 {${vals.map(v => valLabel(d.key, v)).join("、")}} ∩ 授权 → ${hit.map(v => valLabel(d.key, v)).join("、")}` });
+    else rows.push({ ic: "n", k: d.label, v: g.length ? `文档 {${vals.map(v => valLabel(d.key, v)).join("、")}} 与授权 {${g.map(v => valLabel(d.key, v)).join("、")}} 无交集` : `无授权${expNote} → 只放行空值，此文档有值` });
+  }
+  return rows;
 }
-$("#btnSearch").addEventListener("click", doSearch);
-$("#qInput").addEventListener("keydown", e => { if (e.key === "Enter") doSearch(); });
+function whyHTML(m, doc) {
+  const rows = explain(m, doc), ok = canSee(m, doc);
+  return `<div class="why">${rows.map(r => `<div class="w-row"><span class="w-ic ${r.ic}">${r.ic === "y" ? "✓" : r.ic === "n" ? "✕" : "–"}</span><span class="w-k">${esc(r.k)}</span><span class="w-v">${esc(r.v)}</span></div>`).join("")}</div>
+  <div class="note ${ok ? "moss" : "seal"}" style="margin-top:10px"><b>${ok ? "可见" : "不可见"}</b> · ${ok ? "每个参与过滤的维度都放行。" : "任一维度不放行即不可见（AND 语义）；检索、实体召回、近邻展示都按同一结论过滤。"}</div>`;
+}
+function compileSQL(m) {
+  const o = O(), L = [];
+  const c = s => `<span class="c">${esc(s)}</span>`, k = s => `<span class="k">${s}</span>`;
+  L.push(c(`-- 视角：${uname(m.uid)} @ ${o.name}（${isAdmin(m) ? "org_admin" : "member"}）—— 角色不影响检索过滤`));
+  if (!memberValid(m)) {
+    L.push(c(`-- 第 0 步：成员关系 expires_at ${m.expires} ≤ :now → 403，不进入检索`));
+    return L.join("\n");
+  }
+  L.push(c(`-- 第 0 步：成员关系有效 ✓`));
+  L.push(`${k("WHERE")} c.org_id = :org                 ${c("-- 组织隔离永远第一条件")}`);
+  L.push(`  ${k("AND")} c.version = d.active_version    ${c("-- 只命中在用版本")}`);
+  for (const d of o.dims) {
+    if (d.status !== "active") { L.push(c(`  -- ${d.key}：已退役，不生成条件`)); continue; }
+    const g = effGrants(m, d.key);
+    if (!g.length) {
+      L.push(`  ${k("AND NOT EXISTS")}(${k("SELECT")} 1 ${k("FROM")} json_each(c.dims_json,'$.${d.key}'))  ${c("-- 无授权：仅空值放行（不生成 IN ()）")}`);
+    } else {
+      L.push(`  ${k("AND")} ( ${k("NOT EXISTS")}(${k("SELECT")} 1 ${k("FROM")} json_each(c.dims_json,'$.${d.key}'))`);
+      L.push(`        ${k("OR EXISTS")}(${k("SELECT")} 1 ${k("FROM")} json_each(c.dims_json,'$.${d.key}') je`);
+      L.push(`                  ${k("WHERE")} je.value ${k("IN")} (${g.map(v => `'${v}'`).join(",")})) )`);
+    }
+  }
+  L.push(c(`-- 无 owner 分支：上传者看自己的文档走管理面，不走检索`));
+  return L.join("\n");
+}
 
-/* ================= 知识库与维度管理 ================= */
-function renderAdmin() {
-  const o = org();
-  /* 库卡片 */
-  $("#dsGrid").innerHTML = o.datasets.map(ds => {
-    const docs = o.docs.filter(d => d.ds === ds.id);
-    const chunks = docs.reduce((s, d) => s + (d.chunks || 0), 0);
-    return `
-    <div class="ds-card">
-      <div class="ds-name">${esc(ds.name)} <span class="dim-key">${ds.id}</span></div>
-      <div class="ds-desc">${esc(ds.desc || "")}</div>
-      <div class="ds-stats"><span>文档 <b>${docs.length}</b></span><span>chunks <b>${chunks}</b></span><span>不承担权限</span></div>
-    </div>`;
-  }).join("") + `
-    <button class="ds-new" id="dsNew">＋ 新建知识库</button>`;
-  $("#dsNew").addEventListener("click", () => {
-    const name = prompt("新知识库名称：");
-    if (!name) return;
-    o.datasets.push({ id: "ds:n" + (o.datasets.length + 1), name, desc: "（描述待补充）" });
-    renderAdmin(); renderUpload(); renderSearchBar();
+/* ==========================================================================
+   语义层工具：可见性、距离、展开、识别（§5.9 三层）
+   ========================================================================== */
+const S = () => O().semantic;
+const entOf = k => S()?.entities.find(e => e.k === k);
+const entType = k => k.split(":")[0];
+const visEnt = (e, m = lens()) => e && e.st !== "retired" && (e.sens !== "restricted" || hasPerm(m, "semantic:restricted"));
+const liveRels = () => S().relations.filter(r => (r[4] || "active") !== "retired");
+function neighbors(k) {
+  const out = [];
+  for (const r of liveRels()) {
+    if (r[0] === k && visEnt(entOf(r[2]))) out.push({ k: r[2], rel: r[1], dir: ">", src: r[3], st: r[4] || "active" });
+    if (r[2] === k && visEnt(entOf(r[0]))) out.push({ k: r[0], rel: r[1], dir: "<", src: r[3], st: r[4] || "active" });
+  }
+  return out;
+}
+function expand(keys, depth) {
+  const dist = new Map(); let frontier = [...keys].filter(k => visEnt(entOf(k)));
+  frontier.forEach(k => dist.set(k, 0));
+  for (let d = 1; d <= depth; d++) {
+    const next = [];
+    for (const k of frontier) for (const n of neighbors(k)) if (!dist.has(n.k)) { dist.set(n.k, d); next.push(n.k); }   // 防环：已访问不再访问
+    frontier = next;
+  }
+  return dist;
+}
+const hop = (a, b) => { const m = expand([a], 2); return m.has(b) ? m.get(b) : 99; };
+function aliasRows() {
+  const rows = [];
+  for (const e of S().entities) {
+    if (!visEnt(e)) continue;
+    rows.push({ ent: e.k, s: e.name, kind: "name", mode: "exact" });
+    for (const [s, kind, mode] of e.aliases) rows.push({ ent: e.k, s, kind, mode });
+  }
+  return rows;
+}
+function annotate(text, { fuzzy }) {
+  const lower = text.toLowerCase(), cands = [];
+  for (const a of aliasRows()) {
+    if (a.mode === "fuzzy_only" && !fuzzy) continue;
+    const needle = a.s.toLowerCase();
+    if (needle.length < 2) continue;
+    let i = 0;
+    while ((i = lower.indexOf(needle, i)) !== -1) {
+      if (/^[a-z0-9_. ]+$/.test(needle)) {           // 英文/编码：整词边界
+        const b = lower[i - 1], f = lower[i + needle.length];
+        if ((b && /[a-z0-9_]/.test(b)) || (f && /[a-z0-9_]/.test(f))) { i++; continue; }
+      }
+      cands.push({ s: i, e: i + needle.length, surface: text.slice(i, i + needle.length), ent: a.ent, kind: a.kind, mode: a.mode,
+        layer: a.mode === "exact" ? 1 : a.mode === "context" ? 2 : 3 });
+      i += needle.length;
+    }
+  }
+  cands.sort((x, y) => (y.e - y.s) - (x.e - x.s) || x.layer - y.layer);   // 最长匹配优先
+  const acc = [];
+  for (const c of cands) if (!acc.some(t => c.s < t.e && t.s < c.e)) acc.push(c);
+  const anchors = acc.filter(c => c.layer !== 2).map(c => c.ent);
+  const hits = [], rejected = [];
+  for (const c of acc) {
+    if (c.layer === 2) {
+      const anchor = anchors.find(k => k !== c.ent && hop(k, c.ent) <= 2);
+      if (!anchor) { rejected.push(c); continue; }
+      c.anchor = anchor;
+    }
+    hits.push(c);
+  }
+  hits.sort((a, b) => a.s - b.s);
+  return { hits, rejected };
+}
+function markHTML(text, hits) {
+  let out = "", p = 0;
+  for (const h of hits) {
+    out += esc(text.slice(p, h.s));
+    const e = entOf(h.ent), t = entType(h.ent);
+    out += `<mark class="L${h.layer}" style="color:var(--t-${t})" title="${esc(ENT_TYPES[t])} · ${esc(e.name)} · 第 ${h.layer} 层"><span class="mt">${esc(e.name)}</span>${esc(h.surface)}</mark>`;
+    p = h.e;
+  }
+  return out + esc(text.slice(p));
+}
+
+/* ==========================================================================
+   检索（mock）：FTS / 向量 / 实体 三路 → 同一 ACL → RRF
+   ========================================================================== */
+function grams(s) {
+  s = s.toLowerCase(); const out = new Set();
+  (s.match(/[a-z0-9']{2,}/g) || []).forEach(w => out.add("w:" + w));
+  s.replace(/[^一-鿿]+/g, " ").split(" ").forEach(seg => { for (let i = 0; i < seg.length - 1; i++) out.add(seg.slice(i, i + 2)); });
+  return out;
+}
+function overlap(qg, text) { if (!qg.size) return 0; const tg = grams(text); let n = 0; qg.forEach(g => { if (tg.has(g)) n++; }); return n / qg.size; }
+function highlight(text, qg) {
+  const mark = new Array(text.length).fill(false), low = text.toLowerCase();
+  for (let i = 0; i < text.length - 1; i++) if (qg.has(low.slice(i, i + 2))) { mark[i] = mark[i + 1] = true; }
+  qg.forEach(g => { if (g.startsWith("w:")) { const w = g.slice(2); let i = 0; while ((i = low.indexOf(w, i)) !== -1) { for (let j = i; j < i + w.length; j++) mark[j] = true; i += w.length; } } });
+  let out = "", on = false;
+  for (let i = 0; i < text.length; i++) {
+    if (mark[i] && !on) { out += "<em>"; on = true; }
+    if (!mark[i] && on) { out += "</em>"; on = false; }
+    out += esc(text[i]);
+  }
+  return out + (on ? "</em>" : "");
+}
+function runSearch(q) {
+  const o = O(), m = lens();
+  if (!memberValid(m)) { queryEvent("search", `「${q}」→ 成员关系已过期 → 403`, "deny"); return { q, denied: true }; }
+  const qg = grams(q);
+  const pool = o.chunks.map((c, i) => ({ ...c, i, d: docById(c.doc) }))
+    .filter(c => c.d && c.d.active.v > 0 && (state.qDs === "all" || c.d.ds === state.qDs));
+  const ann = o.semantic ? annotate(q, { fuzzy: true }) : null;
+  const qEnts = new Set(ann ? ann.hits.map(h => h.ent) : []);
+  const fts = pool.map(c => ({ c, s: overlap(qg, c.text) })).filter(x => x.s >= 0.2).sort((a, b) => b.s - a.s);
+  const vec = pool.filter(c => c.d.active.st === "searchable_full")
+    .map(c => ({ c, s: overlap(qg, c.text) * 0.8 + (c.ents.some(e => qEnts.has(e)) ? 0.3 : 0) }))
+    .filter(x => x.s >= 0.12).sort((a, b) => b.s - a.s);
+  let ent = [], expanded = new Map();
+  const entOn = !!(o.semantic && state.entRoute && qEnts.size);
+  if (entOn) {
+    expanded = expand(qEnts, 1);
+    ent = pool.filter(c => c.ents.some(e => expanded.has(e)))
+      .map(c => ({ c, s: Math.max(...c.ents.filter(e => expanded.has(e)).map(e => expanded.get(e) === 0 ? 1 : 0.6)) }))
+      .sort((a, b) => b.s - a.s);
+  }
+  const routes = { fts, vec, ent }, stat = {}, blockedDocs = new Set(), rrf = new Map(), via = new Map();
+  for (const [name, list] of Object.entries(routes)) {
+    const ok = list.filter(x => canSee(m, x.c.d));            // 三路同一个 ACL 编译产物（T-S8）
+    list.filter(x => !canSee(m, x.c.d)).forEach(x => blockedDocs.add(x.c.doc));
+    stat[name] = { n: list.length, ok: ok.length };
+    ok.slice(0, 32).forEach((x, r) => {
+      rrf.set(x.c.i, (rrf.get(x.c.i) || 0) + 1 / (60 + r + 1));
+      if (!via.has(x.c.i)) via.set(x.c.i, new Set());
+      via.get(x.c.i).add(name);
+    });
+  }
+  const ranked = [...rrf.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const max = ranked.length ? ranked[0][1] : 1;
+  const hits = ranked.map(([i, s]) => {
+    const c = pool.find(x => x.i === i);
+    const matched = c.ents.filter(e => expanded.has(e) || qEnts.has(e)).filter(e => visEnt(entOf(e)));
+    return { c, score: 0.38 + 0.57 * (s / max), via: via.get(i), matched };
   });
-  /* 维度卡 */
-  $("#dimCards").innerHTML = Object.entries(o.dims).map(([dk, def]) => `
-    <div class="dim-card">
-      <div class="dim-card-head">
-        <h3><span class="cell dim d-${dk}">${dk}</span>${def.label}</h3>
-        <span class="toggle"><input type="checkbox" ${def.required ? "checked" : ""} disabled> 必选</span>
-      </div>
-      <div class="val-row">
-        ${Object.entries(def.values).map(([v, lbl]) => `<span class="cell d-${dk}">${lbl ? `<span class="lbl">${lbl}</span>` : ""}${v}</span>`).join("")}
-        <button class="btn ghost small">＋ 添加取值</button>
-        <button class="btn ghost small" title="FR-4：停用是权限事件——先 dry_run 影响面预估（受影响文档数/用户数），二次确认后收紧并审计">⏸ 停用取值（dry_run 预估）</button>
-      </div>
-    </div>`).join("");
-  /* 成员列表（角色徽标 + 跨组织标记） */
-  $("#userList").innerHTML = o.members.map(m => `
-    <div class="user-row ${state.selUser === m.uid ? "sel" : ""}" data-uu="${m.uid}" tabindex="0" role="button">
-      <span><b style="font-size:0.9rem">${userName(m.uid)}</b>
-        ${m.role === "org_admin" ? ` <span class="badge b-muted">org_admin</span>` : ""}
-        ${isCrossOrg(m.uid) ? ` <span class="badge b-muted" title="该用户同时是其他组织成员">跨组织</span>` : ""}
-      </span>
-      <span>${Object.entries(m.grants).map(([d, vs]) => vs.map(v => cellHTML(d, v, { label: false })).join(" ")).join(" ")}</span>
-    </div>`).join("");
-  $$(".user-row").forEach(r => r.addEventListener("click", () => { state.selUser = r.dataset.uu; renderAdmin(); }));
-  renderGrants();
-}
-function renderGrants() {
-  const m0 = org().members.find(x => x.uid === state.selUser);
-  if (!m0) return;
-  const o = org();
-  $("#grantBox").innerHTML = `
-    <h3 style="font-size:0.95rem">授权设置 · ${userName(m0.uid)}<span class="muted" style="font-size:0.78rem;font-weight:400">（${m0.role === "org_admin" ? "组织管理员" : "成员"}@${o.name}${isCrossOrg(m0.uid) ? "，跨组织用户" : ""}）</span></h3>
-    ${Object.keys(o.dims).map(d => `
-      <h4>${o.dims[d].label}（可多值）</h4>
-      <div class="dim-picker">
-        ${Object.keys(o.dims[d].values).map(v => `
-          <span class="cell pick ${(m0.grants[d] || []).includes(v) ? "on" : ""}" data-k="${d}" data-val="${v}"
-                >${o.dims[d].values[v] ? `<span class="lbl">${o.dims[d].values[v]}</span>` : ""}${v}</span>`).join("")}
-      </div>`).join("")}
-    <p class="and-note">该用户在 <b>${o.name}</b> 内检索时，每个维度与授权集合有交集即可见（维度内 OR、维度间 AND）；文档未设置的维度不限制（空值放行）。授权仅作用于本组织${isCrossOrg(m0.uid) ? "（此用户在其他组织的权限与此处无关）" : ""}；变更即时生效（查询时实时展开，无需重建索引）。生产环境：登录走企业 SSO（首登自动建档），授权经管理页或批量导入维护（D16）；支持临时授权 expires_at（过期即失效）；同步维度（grant_source=sync）管理页只读、批量导入不动。</p>`;
-  $$("#grantBox .cell.pick").forEach(c => c.addEventListener("click", () => {
-    const d = c.dataset.k, v = c.dataset.val;
-    m0.grants[d] = m0.grants[d] || [];
-    const arr = m0.grants[d];
-    arr.includes(v) ? arr.splice(arr.indexOf(v), 1) : arr.push(v);
-    renderAdmin(); renderSearchBar();
-    if ($("#page-search").classList.contains("active")) doSearch();
-  }));
+  queryEvent("search", `「${q}」→ ${hits.length} 块${hits[0] ? `（${hits[0].c.doc}#${hits[0].c.p} …）` : ""}${blockedDocs.size ? ` · 过滤 ${blockedDocs.size} 份` : ""}`);
+  return { q, qg, ann, expanded, entOn, stat, hits, blocked: blockedDocs.size, lexicalOnly: pool.filter(c => c.d.active.st === "searchable_lexical").map(c => c.doc) };
 }
 
-/* ================= 任务与审计 ================= */
-function renderOps() {
-  const o = org();
-  $("#taskTable tbody").innerHTML = o.tasks.map(t => `
-    <tr><td class="mono">${t.id}</td><td><span class="ds-pill">${esc(t.ds)}</span></td><td>${esc(t.doc)}</td>
-    <td class="mono">${t.type}</td><td>${statusBadge(t.status)}</td>
-    <td class="muted mono" style="font-size:0.78rem">${t.hb}</td><td class="mono">${t.att}</td></tr>`).join("");
-  $("#auditFlow").innerHTML = o.audits.map(a => `
-    <div class="audit-line">
-      <span class="t">${a.t}</span>
-      <span class="act">${a.act}</span>
-      <span class="mono muted" style="font-size:0.78rem">${esc(a.actor)}</span>
-      <span style="flex:1">${esc(a.detail)}</span>
-      <span class="${a.out === "refused" ? "out-refused" : "out-accepted"} mono" style="font-size:0.78rem">${a.out}</span>
-    </div>`).join("");
+/* ==========================================================================
+   公共片段
+   ========================================================================== */
+function dimChips(doc, { showEmpty = false } = {}) {
+  const parts = [];
+  for (const d of O().dims) {
+    if (d.status !== "active") continue;
+    const vals = doc.dims[d.key] || [];
+    if (!vals.length) { if (showEmpty) parts.push(`<span class="chip empty" title="${esc(d.label)}未标 → 空值放行">${esc(d.label)} · 空</span>`); continue; }
+    vals.forEach(v => parts.push(`<span class="chip d${dimIdx(d.key)}" title="${esc(d.label)} · ${esc(d.key)}=${esc(v)}">${esc(valLabel(d.key, v))}</span>`));
+  }
+  return `<span class="chips">${parts.join("")}</span>`;
+}
+function stPill(st) {
+  const cls = { searchable_full: "ok", done: "ok", succeeded: "ok", ready: "ok", searchable_lexical: "run", chunked: "run", parsing: "run", running: "run", leased: "run", building: "run",
+    uploaded: "idle", pending: "idle", failed: "bad", aborted_guard: "bad", degraded: "bad", missing: "bad" }[st] || "idle";
+  const cn = { ...STAGE_CN, done: "完成", succeeded: "成功", ready: "就绪", running: "运行中", leased: "已认领", building: "构建中", pending: "排队", aborted_guard: "删除保护中止", missing: "源端消失" }[st] || st;
+  return `<span class="pill ${cls}">${esc(cn)}</span>`;
+}
+function stagesHTML(st) {
+  const idx = STAGES.indexOf(st);
+  return `<div class="stages">${STAGES.map((s, i) => `<i class="${i < idx ? "done" : i === idx ? "done" : ""} ${i === idx + 1 ? "cur" : ""}"></i>`).join("")}</div>
+  <div class="stage-labels">${STAGES.map(s => `<span>${STAGE_CN[s]}</span>`).join("")}</div>`;
+}
+function lensDot(m, doc) {
+  if (!memberValid(m)) return `<span class="lens-dot x" title="成员关系已过期"></span>`;
+  return canSee(m, doc) ? `<span class="lens-dot y" title="可见"></span>` : `<span class="lens-dot n" title="不可见"></span>`;
 }
 
-/* ================= 渲染编排 ================= */
-function renderAll() {
-  renderOrgSwitcher();
-  renderOrgTags(); renderUpload(); renderDocs(); renderSearchBar(); renderAdmin(); renderOps();
+/* ==========================================================================
+   侧栏
+   ========================================================================== */
+const ICONS = {
+  docs: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/>',
+  access: '<path d="M12 3 5 6v5c0 4.4 3 8.3 7 9.5 4-1.2 7-5.1 7-9.5V6z"/><path d="m9.2 12 2 2 3.8-3.8"/>',
+  semantic: '<circle cx="6" cy="6" r="2.4"/><circle cx="18" cy="8" r="2.4"/><circle cx="9" cy="18" r="2.4"/><path d="M8.2 7 15.7 7.6M7 8.2l1.4 7.5M16.6 10 10.8 16.3"/>',
+  ops: '<path d="M3 12h4l3-7 4 14 3-7h4"/>',
+};
+const ic = k => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[k]}</svg>`;
+const CARET = `<svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>`;
+const WS_COLOR = ["#155EEF", "#7A5AF8", "#0E9384", "#DC6803"];
+const wsIcon = (x, i) => `<span class="ws-ic" style="background:${WS_COLOR[i % 4]}">${esc(x.id.slice(6, 7))}</span>`;
+const AV_COLOR = ["#2970FF", "#7A5AF8", "#EE46BC", "#0E9384", "#F79009", "#16B364", "#6172F3"];
+const avatar = (uid, size) => { const i = Object.keys(USERS).indexOf(uid); return `<span class="avatar" style="background:${AV_COLOR[(i < 0 ? 0 : i) % AV_COLOR.length]}${size ? `;width:${size}px;height:${size}px;font-size:${Math.round(size * .45)}px` : ""}">${esc(uname(uid).slice(0, 1))}</span>`; };
+function renderRail() {
+  const o = O(), m = lens(), oi = ORGS.indexOf(o);
+  $("#orgPicker").innerHTML = `
+    <button class="picker-btn" data-act="menu" data-m="org" aria-haspopup="true">
+      ${wsIcon(o, oi)}<span class="pk-main"><span class="pk-t">${esc(o.name)}</span></span><span class="caret">${CARET}</span>
+    </button>
+    <div class="menu" id="menu-org">
+      <div class="tiny muted" style="padding:6px 10px 4px;font-weight:500">工作空间（组织）</div>
+      ${ORGS.map((x, i) => `<button class="menu-item ${x.id === o.id ? "on" : ""}" data-act="org" data-id="${x.id}">${wsIcon(x, i)}<span>${esc(x.name)}<span class="mono tiny muted" style="display:block;font-weight:400">${x.id}</span></span><small>${x.members.length} 人 · ${x.docs.length} 文档</small></button>`).join("")}
+      <div class="menu-note">系统管理员视角。切换组织 = 切换整套库、维度、授权与语义图；跨组织零可见。</div>
+    </div>`;
+  const roleCn = x => !memberValid(x) ? "已过期" : isAdmin(x) ? "组织管理员" : "成员";
+  $("#lensPicker").innerHTML = `
+    <button class="picker-btn" data-act="menu" data-m="lens" aria-haspopup="true">
+      ${avatar(m.uid)}<span class="pk-main"><span class="pk-t">${esc(uname(m.uid))}</span><span class="pk-s">${roleCn(m)}${m.expires && memberValid(m) ? ` · 至 ${short(m.expires)}` : ""}</span></span><span class="caret">${CARET}</span>
+    </button>
+    <div class="menu" id="menu-lens">
+      <div class="tiny muted" style="padding:6px 10px 4px;font-weight:500">切换查看身份</div>
+      ${o.members.map(x => `<button class="menu-item ${x.uid === m.uid ? "on" : ""}" data-act="lens" data-id="${x.uid}">${avatar(x.uid, 24)}${esc(uname(x.uid))}<small>${roleCn(x)}</small></button>`).join("")}
+      <div class="menu-note">以谁的身份看：检索结果、可见标记、上传可选取值都随之变化。</div>
+    </div>`;
+  const visN = o.docs.filter(d => canSee(m, d)).length;
+  const runN = o.tasks.filter(t => ["running", "leased", "pending"].includes(t.st)).length;
+  const groups = [
+    ["知识", [["docs", "文档", `${visN}/${o.docs.length}`], ["search", "检索测试", ""]]],
+    ["治理", [["access", "权限", `${activeDims().length} 维`], ["semantic", "语义层", o.semantic ? `rev ${o.semantic.dictRev}` : "未接入", "M2-S"]]],
+    ["运维", [["ops", "任务与审计", runN ? `${runN} 进行` : ""]]],
+  ];
+  $("#nav").innerHTML = groups.map(([g, items]) => `<div class="nav-group">${g}</div>` + items.map(([k, name, c, tag]) =>
+    `<button class="nav-item ${state.view === k ? "on" : ""}" data-act="view" data-v="${k}"><span class="ni-k">${ic(k)}</span><span>${name}${tag ? `<span class="nav-tag">${tag}</span>` : ""}</span><span class="ni-c">${c}</span></button>`).join("")).join("");
 }
-renderAll();
-$("#qInput").value = "留抵退税";
-doSearch();
+
+/* ==========================================================================
+   视图：文档
+   ========================================================================== */
+function viewDocs() {
+  const o = O(), m = lens();
+  const docs = o.docs.filter(d => state.ds === "all" || d.ds === state.ds);
+  const visN = docs.filter(d => canSee(m, d)).length;
+  return `
+  <header class="head">
+    <h1>文档</h1>
+    <p class="lede">知识库只是分组，<b>可见性只由维度决定</b>。一份文件的内容若分属不同维度取值，拆成多份上传。</p>
+    <div class="head-act">
+      <button class="btn ghost" data-act="advance">推进任务</button>
+      <button class="btn seal-btn" data-act="toggleUpload">${state.uploadOpen ? "收起" : "＋ 上传文档"}</button>
+    </div>
+  </header>
+  <div class="drawer ${state.uploadOpen ? "open" : ""}"><div class="dr-in">${uploadHTML()}</div></div>
+  <div class="toolbar">
+    <div class="seg" role="tablist">
+      <button class="${state.ds === "all" ? "on" : ""}" data-act="ds" data-id="all">全部 ${o.docs.length}</button>
+      ${o.datasets.map(d => `<button class="${state.ds === d.id ? "on" : ""}" data-act="ds" data-id="${d.id}" title="${esc(d.desc)}">${esc(d.name)} ${o.docs.filter(x => x.ds === d.id).length}</button>`).join("")}
+    </div>
+    <span style="flex:1"></span>
+    <span class="tiny muted">${esc(uname(m.uid))} 可见 <b style="color:var(--ink)">${visN}</b> / ${docs.length}</span>
+    <span class="legend" style="margin:0"><span class="lg"><span class="lens-dot y"></span>可见</span><span class="lg"><span class="lens-dot n"></span>不可见</span><span class="lg"><span class="lens-dot x"></span>成员过期</span></span>
+  </div>
+  <div class="split">
+    <div>
+      <table class="ledger">
+        <thead><tr><th style="width:36%">文档</th><th>维度</th><th>版本</th><th class="num">分块</th><th>区分度</th><th title="当前视角">视角</th></tr></thead>
+        <tbody>${docs.map(d => {
+          const flags = o.qflags.filter(f => f.doc === d.id && f.st === "open").length;
+          return `<tr class="clickable ${state.selDoc === d.id ? "on" : ""}" data-act="selDoc" data-id="${d.id}">
+            <td><div class="t-title">${esc(d.title)}</div><div class="t-sub">${esc(dsName(d.ds))} · ${esc(uname(d.owner))} · ${short(d.at)}</div></td>
+            <td>${dimChips(d)}</td>
+            <td><div class="ver">
+              ${d.active.v > 0 ? `<span class="vl"><span class="vn">v${d.active.v}</span>${stPill(d.active.st)}</span>` : `<span class="vl muted"><span class="vn">—</span>尚无在用版本</span>`}
+              ${d.pending ? `<span class="vl"><span class="vn">v${d.pending.v}</span>${stPill(d.pending.st)}<span class="tiny muted">处理中</span></span>` : ""}
+            </div></td>
+            <td class="num">${d.chunks || "—"}</td>
+            <td>${flags ? `<span class="tag amber">${flags} 待处理</span>` : `<span class="tiny muted">—</span>`}</td>
+            <td>${lensDot(m, d)}</td></tr>`;
+        }).join("")}</tbody>
+      </table>
+    </div>
+    <aside class="pane">${state.selDoc && docById(state.selDoc) ? docPane(docById(state.selDoc)) : docTeach()}</aside>
+  </div>`;
+}
+function docTeach() {
+  return `<div class="teach"><b style="font-size:15px">选中一行看三件事</b>
+    <ol><li><b>版本在用</b>：检索只命中在用版本；新版本处理完才原子切换。</li>
+    <li><b>为什么可见</b>：按当前视角逐个维度解释过滤结论。</li>
+    <li><b>区分度</b>：低信息量 / 向量拥挤的块，补标签或忽略。</li></ol>
+    <p style="margin-top:12px">左下角切换<b>视角</b>，右侧圆点立即重算。</p></div>`;
+}
+function docPane(d) {
+  const o = O(), m = lens();
+  const flags = o.qflags.filter(f => f.doc === d.id);
+  const canManage = isAdmin(m) || d.owner === m.uid;
+  return `
+    <h2>${esc(d.title)}</h2>
+    <dl class="kv"><dt>知识库</dt><dd>${esc(dsName(d.ds))}</dd><dt>上传人</dt><dd>${esc(uname(d.owner))}</dd><dt>文档 ID</dt><dd class="mono">${d.id}</dd><dt>分块</dt><dd>${d.chunks || "—"}</dd></dl>
+    <div class="pane-sec"><div class="ps-h">版本</div>
+      ${d.active.v > 0 ? `<div class="ver"><span class="vl"><span class="vn">v${d.active.v}</span>在用 · ${stPill(d.active.st)}</span></div>` : `<div class="tiny muted">尚无在用版本：首次上传到「可词法检索」即切换在用。</div>`}
+      ${d.pending ? `<div style="margin-top:10px"><span class="vl tiny"><span class="vn">v${d.pending.v}</span> 处理中</span>${stagesHTML(d.pending.st)}
+        <div class="tiny muted" style="margin-top:6px">${d.active.v > 0 ? "覆盖上传：到「完全可检索」才原子切换，期间检索仍命中 v" + d.active.v + "。" : "首次上传：到「可词法检索」即切换在用（先可搜），嵌入随后补齐。"}</div></div>` : ""}
+      ${d.active.st === "searchable_lexical" && !d.pending ? `<div class="tiny muted" style="margin-top:6px">嵌入进行中：此时只参与词法召回，不参与向量路。</div>` : ""}
+    </div>
+    <div class="pane-sec"><div class="ps-h">可见性 · ${esc(uname(m.uid))}</div>${whyHTML(m, d)}</div>
+    <div class="pane-sec"><div class="ps-h">维度</div>${dimChips(d, { showEmpty: true })}
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+        <button class="btn ghost sm" data-act="editDims" data-id="${d.id}" ${d.pending ? "disabled" : ""}>修改维度</button>
+        ${d.pending ? `<span class="tiny muted">处理中版本存在 → PATCH 返回 409</span>` : `<span class="tiny muted">新旧取值都须在你的授权内</span>`}
+      </div></div>
+    <div class="pane-sec"><div class="ps-h">区分度 · ${flags.filter(f => f.st === "open").length} 待处理</div>
+      ${flags.length ? flags.map(f => `<div class="flag ${f.st !== "open" ? "resolved" : ""}">
+        <div class="f-act"><span class="tag ${f.reason === "both" ? "seal" : "amber"}">${FLAG_CN[f.reason]}</span><span class="tiny muted">${esc(f.detail)}</span></div>
+        <q>${esc(f.text)}</q>
+        ${f.st === "open" ? `<div class="f-act">${f.sug.map(s => `<button class="vchip" data-act="flagTag" data-id="${f.id}" data-tag="${esc(s)}">＋ ${esc(s)}</button>`).join("")}<button class="btn ghost sm" data-act="flagIgnore" data-id="${f.id}">忽略</button></div>`
+          : `<div class="tiny muted">${f.st === "resolved" ? "已补标签：" + esc(f.tags.join("、")) : "已忽略"}</div>`}
+      </div>`).join("") : `<div class="tiny muted">无低区分块。</div>`}
+    </div>
+    ${canManage ? `<div class="pane-sec"><button class="btn ghost sm" data-act="delDoc" data-id="${d.id}" style="color:var(--danger)">删除文档</button> <span class="tiny muted">取消其任务；语义打标同事务清除</span></div>` : ""}`;
+}
+function uploadHTML() {
+  const o = O(), m = lens();
+  if (!state.up.ds) state.up.ds = o.datasets[0].id;
+  if (!memberValid(m)) return `<div class="upload"><div class="note seal" style="grid-column:1/-1;margin:0">当前视角成员关系已过期，不能上传。</div></div>`;
+  const dims = activeDims();
+  const missing = dims.filter(d => d.required && !(state.up.picked[d.key] || []).length);
+  const ok = !missing.length && state.up.file.trim();
+  const hint = !state.up.file.trim() ? "先填文件名" : missing.length ? `还差必选维度：${missing.map(d => d.label).join("、")}` : "可以上传";
+  return `<div class="upload">
+    <div class="u-row"><label>知识库<span class="req">*</span></label>
+      <select class="sel" data-in="upDs">${o.datasets.map(d => `<option value="${d.id}" ${state.up.ds === d.id ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</select></div>
+    <div class="u-row"><label>文件<span class="req">*</span></label>
+      <div class="filebox"><input class="inp" data-in="upFile" placeholder="例如：2026 年 Q4 增值税申报口径更新.docx" value="${esc(state.up.file)}"><span class="tiny muted">docx / xlsx / pptx / pdf / txt</span></div></div>
+    ${dims.map(d => {
+      const g = effGrants(m, d.key), picked = state.up.picked[d.key] || [];
+      return `<div class="u-row"><label>${esc(d.label)}${d.required ? `<span class="req">*</span>` : `<span class="tiny muted"> 可选</span>`}</label>
+        <div class="chips">${d.values.map(([v, l]) => `<button class="vchip ${picked.includes(v) ? "on" : ""}" data-act="pick" data-k="${d.key}" data-v="${v}" ${g.includes(v) ? "" : `disabled title="不在你的授权内"`}>${esc(l)}</button>`).join("")}
+        ${!d.required ? `<span class="tiny muted" style="align-self:center">不选 = 空值，对所有人放行</span>` : ""}</div></div>`;
+    }).join("")}
+    <div class="u-foot">
+      <button class="btn seal-btn" data-act="upload" ${ok ? "" : "disabled"}>上传</button>
+      <span class="tiny ${ok ? "" : "muted"}" id="upHint">${esc(hint)}</span>
+      <span style="flex:1"></span>
+      <span class="tiny muted">一个维度可多选（通用政策可同时挂多个区域）· agent 走凭证三步：<code>POST /api/uploads</code> → <code>PUT</code> 字节 → <code>POST documents</code></span>
+    </div></div>`;
+}
+
+/* ==========================================================================
+   视图：检索
+   ========================================================================== */
+function viewSearch() {
+  const o = O(), m = lens(), r = state.lastSearch;
+  const sugg = o.semantic ? ["留抵退税 申请条件", "附表二 进项转出 怎么填", "transfer pricing documentation", "汇算清缴 期限"] : ["差旅 住宿 限额", "月结流程", "对账"];
+  return `
+  <header class="head"><h1>检索</h1><p class="lede">以当前视角发起，与 agent 调 MCP <code>search</code> 同一条管线：多路召回 → 同一份维度过滤 → 融合重排 → 溯源。</p></header>
+  <div class="qbar"><input id="qInput" data-in="q" value="${esc(state.q)}" placeholder="问一个业务问题…" aria-label="检索词" autocomplete="off"><button class="btn" data-act="search">检索 <span class="kbd" style="color:inherit;border-color:currentColor">↵</span></button></div>
+  <div class="qopts">
+    <label>知识库 <select class="sel" data-in="qDs"><option value="all">全部可见</option>${o.datasets.map(d => `<option value="${d.id}" ${state.qDs === d.id ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</select></label>
+    ${o.semantic ? `<label class="switch"><input type="checkbox" data-in="entRoute" ${state.entRoute ? "checked" : ""}>实体召回路 <span class="tag">M2-S3</span></label>` : `<span class="tiny muted">本组织未接入语义层：只有词法 + 向量两路</span>`}
+    <span style="flex:1"></span>
+    <span class="suggest">${sugg.map(s => `<button data-act="sugg" data-q="${esc(s)}">${esc(s)}</button>`).join("")}</span>
+  </div>
+  <div class="split">
+    <div>${!r ? searchTeach() : r.denied ? `<div class="empty"><h3>403 · 成员关系已过期</h3><p>${esc(uname(m.uid))} 在 ${esc(o.name)} 的成员关系已于 ${short(m.expires)} 到期。检索第 0 步先校验成员关系，不进入召回；读路径只过滤不删除，过期行由定时任务清理。</p></div>` : hitsHTML(r)}</div>
+    <aside class="pane">${searchPane(r)}</aside>
+  </div>`;
+}
+function searchTeach() {
+  return `<div class="empty"><h3>换个视角，同一个问题会得到不同答案</h3>
+    <p>试试先用<b>张会计</b>搜「留抵退税 申请条件」，再切到<b>王实习</b>——他的税种授权已过期，等于该维度无授权，所有标了税种的文档都被过滤；再切到<b>孙外聘</b>，成员关系过期，第 0 步直接 403。右侧会显示每一路召回被过滤了多少，以及当前视角编译出的过滤条件。</p></div>`;
+}
+function hitsHTML(r) {
+  const annLine = r.ann && r.ann.hits.length ? `<div style="margin-bottom:14px"><div class="tiny muted" style="margin-bottom:2px">识别到的业务对象${r.entOn ? ` · 实体召回路展开 ${r.expanded.size} 个节点（depth 1）` : state.entRoute ? "" : " · 实体召回路已关闭"}</div><div class="annot">${markHTML(r.q, r.ann.hits)}</div></div>` : "";
+  if (!r.hits.length) return annLine + `<div class="empty"><h3>没有可见结果</h3><p>${r.blocked ? `有 ${r.blocked} 份文档命中了，但当前视角无权查看——这里只给计数，不暴露标题。` : "换个说法，或去掉知识库收窄。"}</p></div>`;
+  return annLine + `<div class="hits">${r.hits.map((h, i) => `
+    <article class="hit" style="animation-delay:${i * 40}ms">
+      <div class="h-rank">${i + 1}</div>
+      <div>
+        <div class="h-text">${highlight(h.c.text, r.qg)}</div>
+        <div class="h-meta">
+          <span class="h-src">${esc(h.c.d.title)}</span><span>第 ${h.c.p} 页 · v${h.c.d.active.v}</span>
+          ${dimChips(h.c.d)}
+          <span class="routes">${["fts", "vec", "ent"].map(k => `<span class="route ${k === "ent" ? "ent" : ""} ${h.via.has(k) ? "on" : ""}">${{ fts: "词法", vec: "向量", ent: "实体" }[k]}</span>`).join("")}</span>
+          <span><span class="score-bar"><i style="width:${(h.score * 100).toFixed(0)}%"></i></span> ${h.score.toFixed(2)}</span>
+        </div>
+        ${h.matched.length ? `<div class="chips" style="margin-top:6px">${h.matched.map(k => `<button class="chip" data-act="gotoEnt" data-k="${esc(k)}" style="color:var(--t-${entType(k)})">${esc(entOf(k).name)}</button>`).join("")}</div>` : ""}
+      </div>
+    </article>`).join("")}</div>`;
+}
+function searchPane(r) {
+  const m = lens();
+  let funnel = "";
+  if (r && !r.denied) {
+    const rows = [["fts", "词法"], ["vec", "向量"], ...(O().semantic ? [["ent", "实体"]] : [])];
+    const max = Math.max(1, ...rows.map(([k]) => r.stat[k].n));
+    funnel = `<div class="pane-sec" style="margin-top:0"><div class="ps-h">召回 → 维度过滤</div><div class="funnel">
+      ${rows.map(([k, l]) => `<div class="fn-row"><span>${l}${k === "ent" && !r.entOn ? ` <span class="tiny muted">关</span>` : ""}</span>
+        <div class="fn-bar"><span class="fb-all" style="width:${r.stat[k].n / max * 100}%"></span><span class="fb-ok" style="width:${r.stat[k].ok / max * 100}%"></span></div>
+        <span class="fn-n">${r.stat[k].ok}/${r.stat[k].n}</span></div>`).join("")}
+      </div>
+      <div class="legend"><span class="lg"><span style="width:14px;height:8px;background:var(--seal);border-radius:3px;display:inline-block"></span>通过</span><span class="lg"><span style="width:14px;height:8px;background:var(--danger-w);display:inline-block;border-radius:3px;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(217,45,32,.25) 3px 5px)"></span>被过滤</span></div>
+      <div class="note">三路共用<b>同一份</b>过滤条件，实体召回不是后门。被过滤 <b>${r.blocked}</b> 份文档——只给计数，不暴露标题。${r.lexicalOnly.length ? `<br>${[...new Set(r.lexicalOnly)].join("、")} 仍在嵌入，只参与词法路。` : ""}</div></div>`;
+  }
+  return `${funnel}
+    <div class="pane-sec" ${funnel ? "" : `style="margin-top:0"`}><div class="ps-h">过滤条件 · ${esc(uname(m.uid))}</div>
+      <div class="sql">${compileSQL(m)}</div>
+      <div class="tiny muted" style="margin-top:6px">授权查询时实时展开：在「权限」改一个格子，这里立即变。</div></div>`;
+}
+</script>
+
+<script>
+"use strict";
+/* ==========================================================================
+   视图：权限（授权格 / 维度 / 可见性矩阵）
+   ========================================================================== */
+const isSyncDim = d => (d.source || "").startsWith("sync:");
+function viewAccess() {
+  const o = O(), m = lens(), sub = state.sub.access;
+  const tabs = [["grants", "授权格"], ["dims", "维度"], ["vis", "可见性矩阵"]];
+  return `
+  <header class="head"><h1>权限</h1>
+    <p class="lede">授权 = 成员 × 维度取值。检索时实时展开为过滤条件，<b>角色不影响过滤</b>；组织管理员只是能改这张表。</p>
+    <div class="head-act"><button class="btn ghost" data-act="stub" data-msg="GET /api/orgs/${o.id}/grants/export → CSV（无 org 列）">导出</button><button class="btn ghost" data-act="stub" data-msg="POST …/grants/import?dry_run=1 → 差异预览后再幂等全量替换">导入</button></div>
+  </header>
+  <nav class="sub-tabs">${tabs.map(([k, l]) => `<button class="sub-tab ${sub === k ? "on" : ""}" data-act="sub" data-s="access" data-v="${k}">${l}</button>`).join("")}</nav>
+  ${!isAdmin(m) && sub !== "vis" ? `<div class="note amber" style="margin-bottom:16px">当前视角 <b>${esc(uname(m.uid))}</b> 不是组织管理员：只读。右上角切到组织管理员即可编辑。</div>` : ""}
+  ${sub === "grants" ? grantsHTML() : sub === "dims" ? dimsHTML() : visHTML()}`;
+}
+function grantsHTML() {
+  const o = O(), dims = activeDims(), canEdit = isAdmin(lens()) && memberValid(lens());
+  return `
+  <div class="lattice-wrap"><table class="lattice">
+    <thead>
+      <tr><th></th>${dims.map(d => `<th class="dg" colspan="${d.values.length}">${esc(d.label)}${d.required ? `<span class="req">*</span>` : ""} ${isSyncDim(d) ? `<span class="tag">${esc(d.source)} · 只读</span>` : ""}</th>`).join("")}</tr>
+      <tr><th style="text-align:left;padding-left:14px">成员</th>${dims.map(d => d.values.map(([v, l], i) => `<th class="vh ${i === 0 ? "dg" : ""}">${esc(l)}<span class="ck">${esc(v)}</span></th>`).join("")).join("")}</tr>
+    </thead>
+    <tbody>${o.members.map(mb => {
+      const exp = !memberValid(mb);
+      return `<tr class="${exp ? "expired" : ""}"><th><b style="font-weight:600">${esc(uname(mb.uid))}</b> <span class="tiny muted">${isAdmin(mb) ? "org_admin" : "member"}${mb.expires ? ` · ${exp ? "已于" : "至"} ${short(mb.expires)}${exp ? " 过期" : ""}` : ""}</span></th>
+        ${dims.map(d => {
+          const gExp = !grantValid(mb, d.key), g = mb.grants[d.key] || [];
+          return d.values.map(([v, l], i) => {
+            const on = g.includes(v), sync = isSyncDim(d);
+            const cls = sync ? (on ? "sync" : "sync-off") : (on ? "on" : "");
+            const title = `${uname(mb.uid)} · ${d.label}=${l}${sync ? " · 由同步写入，本地不可改" : ""}${gExp && on ? ` · 授权已于 ${short(mb.grantExp[d.key])} 过期（不生效）` : ""}`;
+            return `<td class="${i === 0 ? "dg" : ""}"><button class="cellbtn ${cls}" ${gExp && on ? `style="opacity:.35;outline:1px dashed var(--danger);outline-offset:1px"` : ""} data-act="cell" data-u="${mb.uid}" data-k="${d.key}" data-v="${esc(v)}" title="${esc(title)}" aria-label="${esc(title)}" aria-pressed="${on}" ${!canEdit || sync ? "disabled" : ""}></button></td>`;
+          }).join("");
+        }).join("")}</tr>`;
+    }).join("")}</tbody>
+  </table></div>
+  <div class="legend">
+    <span class="lg"><span class="cellbtn on"></span>已授权</span><span class="lg"><span class="cellbtn"></span>未授权</span>
+    <span class="lg"><span class="cellbtn sync"></span>同步授权（只读）</span>
+    <span class="lg"><span class="cellbtn on" style="opacity:.35;outline:1px dashed var(--danger);outline-offset:1px"></span>授权已过期</span>
+    <span class="lg" style="opacity:.5">▬ 灰行 = 成员关系过期</span>
+  </div>
+  <div class="note" style="margin-top:16px;max-width:78ch">
+    每点一格 = 一次 <code>PUT /members/{id}/grants</code> <b>全量替换</b>（只替换 local，sync 不动），并在同一事务写权限事件 outbox。
+    某维度一个格都没有 → 编译为 <code>NOT EXISTS</code> 单条件：只放行该维度为空的文档，不会生成 <code>IN ()</code>。
+    ${o.dims.some(d => d.status !== "active") ? `<br>已退役维度（${o.dims.filter(d => d.status !== "active").map(d => esc(d.label)).join("、")}）不出现在这里——它们已不参与过滤。` : ""}
+  </div>`;
+}
+function retireImpact(key) {
+  const o = O(), d = dimOf(key), docs = new Set(); let pairs = 0;
+  const before = new Map();
+  o.members.forEach(mb => o.docs.forEach(doc => before.set(mb.uid + doc.id, canSee(mb, doc))));
+  const old = d.status; d.status = "retired";
+  o.members.forEach(mb => o.docs.forEach(doc => { if (!before.get(mb.uid + doc.id) && canSee(mb, doc)) { docs.add(doc.id); pairs++; } }));
+  d.status = old;
+  return { docs: docs.size, pairs };
+}
+function dimsHTML() {
+  const o = O(), canEdit = isAdmin(lens()) && memberValid(lens());
+  return `
+  <table class="ledger dims-ledger">
+    <thead><tr><th>维度</th><th>来源</th><th>必选</th><th>状态</th><th>取值</th><th class="num">文档</th><th></th></tr></thead>
+    <tbody>${o.dims.map(d => {
+      const used = o.docs.filter(x => (x.dims[d.key] || []).length).length;
+      const row = `<tr class="${d.status === "retired" ? "retired" : ""}">
+        <td><div class="t-title">${esc(d.label)}</div><div class="t-sub mono">${esc(d.key)}</div></td>
+        <td>${isSyncDim(d) ? `<span class="tag">${esc(d.source)}</span>` : `<span class="tiny muted">本地</span>`}</td>
+        <td>${d.required ? "是" : `<span class="muted">否</span>`}<div class="tiny muted">仅影响上传</div></td>
+        <td>${d.status === "active" ? `<span class="pill ok">生效</span>` : `<span class="pill idle">已退役</span><div class="tiny muted">不参与过滤</div>`}</td>
+        <td><div class="vals">${d.values.map(([v, l]) => `<span class="chip d${dimIdx(d.key)}" title="${esc(v)}">${esc(l)}</span>`).join("")}</div></td>
+        <td class="num">${used}</td>
+        <td>${d.status === "active" && canEdit ? `<button class="btn ghost sm" data-act="retire" data-k="${d.key}">退役…</button>` : ""}</td></tr>`;
+      if (state.retireAsk !== d.key) return row;
+      const imp = retireImpact(d.key);
+      return row + `<tr><td colspan="7" style="border-bottom:0"><div class="confirm">
+        <b>退役「${esc(d.label)}」= 撤掉一道过滤</b>：预计 <b>${imp.docs}</b> 份文档新增可见（共 ${imp.pairs} 个「成员 × 文档」组合）。
+        这是权限事件：影响面预估 → 二次确认 → 审计（outbox 同事务）。退役不可逆，已标取值保留但不再参与检索。
+        <div class="cf-act"><button class="btn danger-btn sm" data-act="retireOk" data-k="${d.key}">确认退役</button><button class="btn ghost sm" data-act="retireCancel">取消</button>
+        <span class="tiny muted" style="align-self:center"><code>POST /dimensions/${esc(d.key)}/retire</code></span></div></div></td></tr>`;
+    }).join("")}</tbody>
+  </table>
+  <div class="legend" style="margin-top:12px">
+    <span class="lg"><b>必选 / 启用</b>只约束上传表单，不影响过滤</span>
+    <span class="lg"><b>过滤规则</b>：所有生效维度，文档有值 → 与授权求交；空值 → 放行</span>
+    <span class="lg"><b>停用取值</b>走 <code>PATCH status=disabled</code>，<code>dry_run</code> 先给影响面</span>
+  </div>
+  ${canEdit ? `<div style="margin-top:16px"><button class="btn ghost sm" data-act="stub" data-msg="POST /api/orgs/${o.id}/dimensions · 新维度对存量文档 = 空值 → 放行，不会让任何人突然看不到">＋ 新建维度</button></div>` : ""}`;
+}
+function visHTML() {
+  const o = O(), sel = state.vis;
+  const mSel = sel && o.members.find(x => x.uid === sel.u), dSel = sel && docById(sel.d);
+  return `<div class="vis-split">
+    <div style="overflow-x:auto"><table class="vis-grid">
+      <thead><tr><th></th>${o.members.map(mb => `<th title="${isAdmin(mb) ? "org_admin" : "member"}">${esc(uname(mb.uid))}${!memberValid(mb) ? `<div class="tiny muted">过期</div>` : ""}</th>`).join("")}</tr></thead>
+      <tbody>${o.docs.map(d => `<tr><th class="dn" title="${esc(d.title)}">${esc(d.title)}<div class="tiny muted">${dimChips(d)}</div></th>
+        ${o.members.map(mb => `<td><button class="${sel && sel.u === mb.uid && sel.d === d.id ? "sel" : ""}" data-act="visCell" data-u="${mb.uid}" data-d="${d.id}" aria-label="${esc(uname(mb.uid))} 看 ${esc(d.title)}">${lensDot(mb, d)}</button></td>`).join("")}</tr>`).join("")}</tbody>
+    </table>
+    <div class="legend"><span class="lg"><span class="lens-dot y"></span>可见</span><span class="lg"><span class="lens-dot n"></span>不可见</span><span class="lg"><span class="lens-dot x"></span>成员过期</span><span class="lg">上传者不因 owner 身份获得可见（无 owner 分支）</span></div></div>
+    <aside class="pane">${mSel && dSel ? `<h2>${esc(uname(mSel.uid))} × ${esc(dSel.title)}</h2>${whyHTML(mSel, dSel)}
+      <div class="pane-sec"><div class="ps-h">该成员的过滤条件</div><div class="sql">${compileSQL(mSel)}</div></div>`
+      : `<div class="teach"><b style="font-size:15px">点任意一格</b><p style="margin-top:8px">看这个人为什么能 / 不能看这份文档，以及他的过滤条件。去「授权格」改一格、或在「维度」退役一个维度，这张表立即重算。</p></div>`}</aside>
+  </div>`;
+}
+
+/* ==========================================================================
+   视图：语义（实体 / 识别 / 同步与构建）
+   ========================================================================== */
+const semAccess = m => !memberValid(m) ? "expired" : (hasPerm(m, "semantic:read") || hasPerm(m, "semantic:admin")) ? "ok" : "noperm";
+const tsDate = ts => new Date(ts.replace(" ", "T") + "Z");
+const fmtTs = d => d.toISOString().slice(0, 19).replace("T", " ");
+function viewSemantic() {
+  const o = O(), sm = S(), m = lens(), sub = state.sub.sem;
+  if (!sm) return `<header class="head"><h1>语义</h1><p class="lede">业务对象图：概念、系统、场景、模板、报表、表与列之间的类型化关系。</p></header>
+    <div class="empty"><h3>${esc(o.name)} 尚未接入语义层</h3><p>语义层按组织独立（M2-S）。未接入时检索只有词法 + 向量两路，MCP <code>annotate</code> / <code>get_entity</code> 返回空而不是报错。接入 = 配置骨架同步适配器 + 一份 YAML 覆盖层，首次构建出 <code>dict_rev</code> 后实体召回路自动生效。</p>
+    <p style="margin-top:12px"><button class="btn ghost" data-act="org" data-id="01JORGTAX">看「税务事业部」的接入效果 →</button></p></div>`;
+  const acc = semAccess(m);
+  const tabs = [["entities", "实体与关系"], ["annotate", "术语识别"], ["sync", "同步与构建"]];
+  const building = sm.builds.find(b => b.st === "building");
+  return `
+  <header class="head"><h1>语义</h1>
+    <p class="lede">骨架从源系统同步，人工经 YAML 覆盖层补定义 / 别名 / 关系。查询时识别术语 → 展开关系 → 作为第三路召回，<b>仍走同一份维度过滤</b>。</p>
+    <div class="head-act"><span class="tag moss">在用 dict_rev ${sm.dictRev}</span>${building ? `<span class="tag amber">rev ${building.rev} 构建中</span>` : ""}</div>
+  </header>
+  <nav class="sub-tabs">${tabs.map(([k, l]) => `<button class="sub-tab ${sub === k ? "on" : ""}" data-act="sub" data-s="sem" data-v="${k}">${l}</button>`).join("")}</nav>
+  ${acc === "expired" ? `<div class="empty"><h3>403 · 成员关系已过期</h3><p>语义接口与检索一样，第 0 步先校验成员关系。</p></div>`
+    : acc === "noperm" ? `<div class="empty"><h3>403 · 缺少 semantic:read</h3><p>${esc(uname(m.uid))} 没有语义层读权限。</p></div>`
+    : sub === "entities" ? entitiesHTML() : sub === "annotate" ? annotateHTML() : syncHTML()}`;
+}
+function entListHTML() {
+  const sm = S(), q = state.entQ.trim().toLowerCase();
+  const match = e => !q || e.name.toLowerCase().includes(q) || e.k.toLowerCase().includes(q) || e.aliases.some(a => a[0].toLowerCase().includes(q));
+  const hidden = sm.entities.filter(e => !visEnt(e)).length;
+  const groups = Object.keys(ENT_TYPES).map(t => [t, sm.entities.filter(e => entType(e.k) === t && visEnt(e) && match(e))]).filter(g => g[1].length);
+  return `${groups.map(([t, list]) => `<div class="ent-group"><h4><span class="tdot" style="background:var(--t-${t})"></span>${ENT_TYPES[t]} <span style="margin-left:auto">${list.length}</span></h4>
+    ${list.map(e => `<button class="ent-item ${e.k === state.selEnt ? "on" : ""} ${e.st === "missing" ? "missing" : ""}" data-act="selEnt" data-k="${esc(e.k)}"><span>${esc(e.name)}</span><small>${esc(e.k.split(":")[1])}</small></button>`).join("")}</div>`).join("") || `<div class="tiny muted">没有匹配「${esc(state.entQ)}」的实体（名称 / 键 / 别名）。</div>`}
+    ${hidden ? `<div class="note" style="margin-top:8px">另有 <b>${hidden}</b> 个受限实体对当前视角隐藏（需 <code>semantic:restricted</code>）——列表、识别、关系展开、实体召回都看不到它。</div>` : ""}`;
+}
+function entitiesHTML() {
+  const sm = S();
+  let e = entOf(state.selEnt);
+  if (!visEnt(e)) { e = sm.entities.find(x => visEnt(x)); state.selEnt = e?.k; }
+  return `<div class="sem">
+    <div class="ent-list">
+      <input class="inp" data-in="entQ" value="${esc(state.entQ)}" placeholder="名称 / 键 / 别名" style="width:100%;margin-bottom:12px" aria-label="筛选实体">
+      <div id="entList">${entListHTML()}</div>
+    </div>
+    <div>${e ? entDetail(e) : ""}</div>
+  </div>`;
+}
+function entDetail(e) {
+  const o = O(), sm = S(), m = lens(), t = entType(e.k);
+  const graceEnd = e.st === "missing" ? fmtTs(new Date(tsDate(e.missingSince).getTime() + 7 * 864e5)) : null;
+  const tagged = o.chunks.filter(c => c.ents.includes(e.k));
+  const taggedOk = tagged.filter(c => { const d = docById(c.doc); return d && d.active.v > 0 && canSee(m, d); });
+  const nb = neighbors(e.k);
+  const kindCn = { name: "标准名", manual: "人工", abbr: "简称", pinyin: "拼音/错字", code: "编码" };
+  const modeCn = { exact: "精确", context: "需上下文", fuzzy_only: "仅模糊" };
+  return `
+  <div class="ent-head">
+    <div style="flex:1">
+      <span class="ent-type" style="background:var(--t-${t})">${ENT_TYPES[t]}</span>
+      <h2>${esc(e.name)}</h2>
+      <div class="ent-key">${esc(e.k)}</div>
+      <div class="chips" style="margin-top:8px">
+        <span class="tag ${e.src === "curated" ? "moss" : ""}">${e.src === "curated" ? "人工 · YAML" : "骨架同步"}</span>
+        ${e.l0 ? `<span class="tag">L0 · 进 system prompt</span>` : ""}
+        ${e.sens === "restricted" ? `<span class="tag seal">restricted</span>` : ""}
+        ${e.st === "missing" ? `<span class="tag seal">源端消失 · 宽限至 ${short(graceEnd)}</span>` : ""}
+      </div>
+    </div>
+    <div style="text-align:right"><div class="tiny muted" style="margin-bottom:4px">展开深度</div>
+      <div class="seg">${[1, 2].map(d => `<button class="${state.depth === d ? "on" : ""}" data-act="depth" data-v="${d}">${d}</button>`).join("")}</div>
+      <div class="tiny muted" style="margin-top:4px">上限 2 · 防环</div></div>
+  </div>
+  ${e.st === "missing" ? `<div class="note amber" style="margin-top:12px">骨架同步自 ${short(e.missingSince)} 起未再见到此对象：先标 <b>missing</b> 不删，7 天宽限期内仍可被识别与展开；到期仍未出现才退役。误删的源数据回来，自动恢复 active。</div>` : ""}
+  <div class="ent-cols">
+    <div>
+      ${e.def ? `<div class="defn-k" style="margin-top:0">定义</div><div class="defn">${esc(e.def)}</div>` : `<div class="tiny muted">骨架对象，尚无人工定义——可在 YAML 覆盖层补。</div>`}
+      ${e.caliber ? `<div class="defn-k">口径</div><div class="defn" style="font-size:.94rem">${esc(e.caliber)}</div>` : ""}
+      ${e.disamb ? `<div class="defn-k">消歧</div><div class="defn" style="font-size:.94rem">${esc(e.disamb)}</div>` : ""}
+      <div class="defn-k">别名 · ${e.aliases.length}</div>
+      <div>${e.aliases.length ? e.aliases.map(([s, k, md]) => `<span class="alias ${md}" title="${kindCn[k] || k} · ${modeCn[md] || md}">${esc(s)}<span class="ak">${esc(k)}·${esc(md)}</span></span>`).join("") : `<span class="tiny muted">无</span>`}</div>
+      <div class="defn-k">关系 · ${nb.length}</div>
+      <div class="rel-list">${nb.length ? nb.map(n => `<div class="rl"><code>${n.dir === ">" ? "" : "← "}${esc(n.rel)}${n.dir === ">" ? " →" : ""}</code>
+        <button data-act="selEnt" data-k="${esc(n.k)}"><span class="tdot" style="background:var(--t-${entType(n.k)})"></span> ${esc(entOf(n.k).name)}${n.st === "missing" ? ` <span class="tiny muted">(missing)</span>` : ""}</button>
+        <span class="tiny muted">${n.src === "curated" ? "人工" : "同步"}</span></div>`).join("") : `<div class="tiny muted">孤立节点：只能靠精确别名识别；需上下文的别名会因为 2 跳内无锚点而被拒。</div>`}</div>
+      <div class="defn-k">被打标的块</div>
+      <div class="tiny">${tagged.length} 块，当前视角可见 <b>${taggedOk.length}</b>${tagged.length > taggedOk.length ? ` <span class="muted">（其余被维度过滤，实体召回同样拿不到）</span>` : ""}</div>
+    </div>
+    <div>${graphSVG(e.k, state.depth)}
+      <div class="tiny muted" style="margin-top:6px">点节点切换焦点 · 虚线 = 端点处于 missing · 受限实体及其边不出现</div></div>
+  </div>
+  ${t === "table" ? passthruHTML(e) : ""}
+  <div class="tiny muted" style="margin-top:16px"><code>GET /semantic/entities/${esc(e.k)}?expand=1&depth=${state.depth}</code> ≡ MCP <code>get_entity</code></div>`;
+}
+function graphSVG(k, depth) {
+  const dist = expand([k], depth), W = 680, H = 420, cx = W / 2, cy = H / 2;
+  const r1 = [...dist].filter(([, d]) => d === 1).map(([x]) => x), r2 = [...dist].filter(([, d]) => d === 2).map(([x]) => x);
+  const pos = new Map([[k, { x: cx, y: cy, a: 0 }]]);
+  const tw = s => [...s].reduce((w, ch) => w + (/[\x00-\x7f]/.test(ch) ? 6.6 : 11.6), 18);
+  const lbl = n => { const s = n.name; return [...s].length > 14 ? [...s].slice(0, 13).join("") + "…" : s; };
+  const [rx1, ry1] = depth === 1 ? [225, 140] : [150, 92];
+  r1.forEach((x, i) => { const a = -Math.PI / 2 + i / r1.length * 2 * Math.PI; pos.set(x, { x: cx + rx1 * Math.cos(a), y: cy + ry1 * Math.sin(a), a }); });
+  const parentA = x => { const p = neighbors(x).find(n => dist.get(n.k) === 1); return p ? pos.get(p.k).a : 0; };
+  r2.sort((a, b) => parentA(a) - parentA(b)).forEach((x, i) => {
+    const a = -Math.PI / 2 + (i + 0.5) / r2.length * 2 * Math.PI;
+    pos.set(x, { x: cx + 268 * Math.cos(a), y: cy + 178 * Math.sin(a), a });
+  });
+  const edges = liveRels().filter(r => pos.has(r[0]) && pos.has(r[2]) && visEnt(entOf(r[0])) && visEnt(entOf(r[2])));
+  const clampX = (x, w) => Math.max(w / 2 + 4, Math.min(W - w / 2 - 4, x));
+  const nodes = [...pos.keys()].map(x => { const e = entOf(x), w = Math.min(176, tw(lbl(e))), p = pos.get(x); return { x, e, w, px: clampX(p.x, w), py: p.y, d: dist.get(x) }; });
+  const np = new Map(nodes.map(n => [n.x, n]));
+  return `<svg class="graph" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(entOf(k).name)} 的关系图（深度 ${depth}）">
+    ${edges.map(r => { const a = np.get(r[0]), b = np.get(r[2]), cur = (r[4] || "active") === "missing";
+      const showL = depth === 1 || r[0] === k || r[2] === k;
+      return `<line class="edge ${cur ? "cur" : ""}" x1="${a.px.toFixed(1)}" y1="${a.py.toFixed(1)}" x2="${b.px.toFixed(1)}" y2="${b.py.toFixed(1)}"/>${showL ? `<text class="elabel" x="${((a.px + b.px) / 2).toFixed(1)}" y="${((a.py + b.py) / 2 - 3).toFixed(1)}" text-anchor="middle">${esc(r[1])}</text>` : ""}`; }).join("")}
+    ${nodes.map(n => { const t = entType(n.x), c = n.x === k;
+      return `<g class="node ${c ? "center" : ""} ${n.e.st === "missing" ? "missing" : ""}" data-act="selEnt" data-k="${esc(n.x)}" transform="translate(${n.px.toFixed(1)},${n.py.toFixed(1)})" ${n.d === 2 ? `opacity=".82"` : ""}>
+        <title>${esc(ENT_TYPES[t])} · ${esc(n.e.name)} · ${esc(n.x)}</title>
+        <rect x="${-n.w / 2}" y="-13" width="${n.w}" height="26" rx="7" style="fill:${c ? `var(--t-${t})` : `color-mix(in oklch, var(--t-${t}) 16%, var(--paper))`}"/>
+        <text text-anchor="middle" dy="4" ${c ? `style="fill:var(--paper)"` : ""}>${esc(lbl(n.e))}</text></g>`; }).join("")}
+  </svg>`;
+}
+function passthruHTML(e) {
+  const key = e.k.slice(6), tb = S().tables[key];
+  const cols = liveRels().filter(r => r[0] === e.k && r[1] === "has_column").map(r => entOf(r[2]));
+  return `<div class="passthru">
+    <div class="pt-h"><b>describe_table</b><span class="tiny muted">透传元数据系统 · 只对已登记的 table 实体开放</span><span style="flex:1"></span>
+      <label class="switch tiny"><input type="checkbox" data-in="degraded" ${state.degraded ? "checked" : ""}>模拟元数据系统不可达</label></div>
+    ${state.degraded || !tb ? `<div style="padding:12px"><div class="note amber" style="margin:0">降级：返回 <code>degraded: true</code>，只给语义层已登记的列实体（${cols.map(c => esc(c.name)).join("、") || "无"}），无类型 / 样例 / 血缘。不抛错，agent 可继续回答。</div></div>`
+      : `<dl class="kv" style="padding:10px 12px 0"><dt>负责人</dt><dd>${esc(tb.owner)}</dd><dt>分区</dt><dd>${esc(tb.partition)}</dd><dt>规模</dt><dd>${esc(tb.rows)}</dd><dt>血缘</dt><dd class="mono tiny">${esc(tb.lineage)}</dd></dl>
+      <table class="ledger"><thead><tr><th>列</th><th>类型</th><th>注释</th><th>样例</th><th>语义实体</th></tr></thead>
+      <tbody>${tb.cols.map(([c, ty, cm, sm]) => { const ce = cols.find(x => x.name === c);
+        return `<tr><td class="mono">${esc(c)}</td><td class="mono tiny">${esc(ty)}</td><td>${esc(cm)}</td><td class="mono tiny">${esc(sm)}</td><td>${ce ? `<button class="link" data-act="selEnt" data-k="${esc(ce.k)}">已登记</button>` : `<span class="tiny muted">—</span>`}</td></tr>`; }).join("")}</tbody></table>`}
+  </div>`;
+}
+function annResultHTML() {
+  const { hits, rejected } = annotate(state.annText, { fuzzy: state.fuzzy });
+  const layerCn = { 1: "精确", 2: "上下文", 3: "模糊" };
+  return `<div class="ann-out"><div class="annot" style="font-size:15px;line-height:2.4">${markHTML(state.annText, hits) || `<span class="muted">输入一段问题…</span>`}</div></div>
+  <div class="layer-key"><span><i></i>第 1 层 · 精确（AC 自动机）</span><span><i class="L2"></i>第 2 层 · 需上下文（2 跳内有锚点才采纳）</span><span><i class="L3"></i>第 3 层 · 模糊（拼音 / 错字，默认关）</span></div>
+  <table class="ledger" style="margin-top:16px"><thead><tr><th>原文</th><th>实体</th><th>类型</th><th>层</th><th>依据</th></tr></thead>
+    <tbody>${hits.map(h => { const e = entOf(h.ent), t = entType(h.ent);
+      return `<tr><td><b>${esc(h.surface)}</b></td><td><button class="link" data-act="gotoEnt" data-k="${esc(h.ent)}">${esc(e.name)}</button></td><td><span class="tdot" style="background:var(--t-${t})"></span> ${ENT_TYPES[t]}</td><td>${layerCn[h.layer]}</td>
+        <td class="tiny muted">${h.layer === 2 ? `锚点「${esc(entOf(h.anchor).name)}」在 ${hop(h.anchor, h.ent)} 跳内` : `${esc(h.kind)} · ${esc(h.mode)}`}</td></tr>`; }).join("") || `<tr><td colspan="5" class="tiny muted">未识别到业务对象</td></tr>`}
+    ${rejected.map(h => `<tr style="opacity:.6"><td><s>${esc(h.surface)}</s></td><td>${esc(entOf(h.ent).name)}</td><td>${ENT_TYPES[entType(h.ent)]}</td><td>拒绝</td><td class="tiny">需上下文的别名，2 跳内没有其他锚点 → 不采纳（防「TP」这类缩写误伤）</td></tr>`).join("")}</tbody></table>`;
+}
+function annotateHTML() {
+  return `<div style="max-width:880px">
+    <div class="toolbar" style="margin-bottom:8px"><span class="tiny muted">MCP <code>annotate</code> ≡ <code>POST /semantic/annotate</code> · 基于 dict_rev ${S().dictRev} 的别名表</span><span style="flex:1"></span>
+      <label class="switch"><input type="checkbox" data-in="fuzzy" ${state.fuzzy ? "checked" : ""}>开启第 3 层模糊</label></div>
+    <textarea class="ann-in" data-in="annText" aria-label="待识别文本">${esc(state.annText)}</textarea>
+    <div id="annRes">${annResultHTML()}</div>
+    <div class="note" style="margin-top:16px">最长匹配优先、不重叠；英文 / 编码按整词边界。受限实体的别名对无权视角不进入匹配表——识别结果本身不泄露受限概念的存在。</div>
+  </div>`;
+}
+function syncHTML() {
+  const sm = S(), m = lens(), admin = hasPerm(m, "semantic:admin");
+  const adapters = [...new Set(sm.syncRuns.map(r => r.adapter))];
+  const missing = sm.entities.filter(e => e.st === "missing");
+  return `
+  ${!admin ? `<div class="note amber" style="margin-bottom:16px">构建 / 同步操作需要 <code>semantic:admin</code>；当前视角只读。</div>` : ""}
+  <div class="sec-title">骨架同步 <small>每个适配器独立；消失比例 &gt; 20% 整轮中止不落库（删除保护）</small></div>
+  <table class="ledger"><thead><tr><th>时间</th><th>适配器</th><th>结果</th><th class="num">新增</th><th class="num">更新</th><th class="num">消失</th><th>说明</th></tr></thead>
+    <tbody>${sm.syncRuns.map(r => `<tr><td class="mono tiny">${short(r.at)}</td><td class="mono">${esc(r.adapter)}</td><td>${stPill(r.st)}</td><td class="num">${r.ins}</td><td class="num">${r.upd}</td><td class="num">${r.miss}</td><td class="tiny">${esc(r.note) || `<span class="muted">—</span>`}</td></tr>`).join("")}</tbody></table>
+  <div class="chips" style="margin-top:10px">${adapters.map(a => `<button class="btn ghost sm" data-act="sync" data-a="${esc(a)}" ${admin ? "" : "disabled"}>↻ ${esc(a)}</button>`).join("")}<span class="tiny muted" style="align-self:center"><code>POST /semantic/sync/{adapter}</code> · 写 outbox，由任务执行</span></div>
+
+  <div class="sec-title">词典构建 <small>新 rev 构建完成才原子切换；切换后低优先级重打标</small></div>
+  <table class="ledger"><thead><tr><th>dict_rev</th><th>状态</th><th>时间</th><th>触发</th><th class="num">别名</th><th>说明</th></tr></thead>
+    <tbody>${sm.builds.map(b => `<tr class="${b.rev === sm.dictRev ? "on" : ""}"><td class="mono"><b>${b.rev}</b>${b.rev === sm.dictRev ? ` <span class="tag moss">在用</span>` : ""}</td><td>${stPill(b.st)}</td><td class="mono tiny">${short(b.at)}</td><td class="tiny">${esc(b.by)}</td><td class="num">${b.aliases || "—"}</td><td class="tiny">${esc(b.note || "")}</td></tr>`).join("")}</tbody></table>
+  ${sm.builds.some(b => b.st === "building") ? `<div style="margin-top:10px"><button class="btn sm" data-act="build" ${admin ? "" : "disabled"}>模拟构建完成 → 切换</button> <span class="tiny muted">构建期间 annotate / 检索继续用 rev ${sm.dictRev}</span></div>` : ""}
+
+  <div class="sec-title">冲突与宽限</div>
+  ${sm.conflicts.map(c => `<div class="note ${c.lvl === "warn" ? "amber" : ""}" style="margin-bottom:8px">${esc(c.msg)}</div>`).join("")}
+  ${missing.map(e => `<div class="note" style="margin-bottom:8px"><button class="link" data-act="selEntTab" data-k="${esc(e.k)}">${esc(e.name)}</button> · missing 自 ${short(e.missingSince)}，宽限至 ${short(fmtTs(new Date(tsDate(e.missingSince).getTime() + 7 * 864e5)))}</div>`).join("")}
+
+  <div class="sec-title">L0 片段 <small>agent 构建期拉取进 system prompt · <code>GET /semantic/l0</code></small></div>
+  <div class="chips">${sm.entities.filter(e => e.l0 && visEnt(e)).map(e => `<button class="chip" data-act="gotoEnt" data-k="${esc(e.k)}" style="color:var(--t-${entType(e.k)})">${esc(e.name)}</button>`).join("")}<span class="tiny muted" style="align-self:center">返回附带 dict_rev ${sm.dictRev}，agent 可据此判断是否需要刷新</span></div>`;
+}
+
+/* ==========================================================================
+   视图：运行（任务台账 + 两条审计泳道）
+   ========================================================================== */
+function viewOps() {
+  const o = O();
+  const typeCn = { ingest: "入库", embed: "嵌入", semantic_sync: "语义同步", semantic_build: "词典构建", semantic_retag: "重打标" };
+  const html = `
+  <header class="head"><h1>运行</h1>
+    <p class="lede">一张任务表承载入库、嵌入与语义任务：租约 60s、心跳 15s，过期由 reaper 回收重新入队，attempts 上限 3。</p>
+    <div class="head-act"><button class="btn ghost" data-act="advance">推进任务</button></div></header>
+  <table class="ledger"><thead><tr><th>任务</th><th>类型</th><th>对象</th><th>状态</th><th>阶段</th><th class="num">心跳</th><th class="num">租约剩余</th><th class="num">尝试</th><th>备注</th></tr></thead>
+    <tbody>${o.tasks.map(t => { const d = t.doc && docById(t.doc);
+      return `<tr><td class="mono tiny">${t.id}</td><td>${typeCn[t.type] || t.type}</td>
+        <td>${t.doc ? (d ? `<button class="link" data-act="openDoc" data-id="${d.id}">${esc(d.title)}</button>` : `<span class="muted">（文档已删除）</span>`) : `<span class="mono tiny">${esc(t.target)}</span>`}</td>
+        <td>${t.st === "cancelled" ? `<span class="pill idle">已取消</span>` : stPill(t.st)}</td><td class="tiny">${esc(STAGE_CN[t.stage] || t.stage)}</td>
+        <td class="num tiny">${t.hb != null ? t.hb + "s 前" : "—"}</td><td class="num tiny">${t.lease != null ? t.lease + "s" : "—"}</td><td class="num">${t.att}</td><td class="tiny muted">${esc(t.note || "")}</td></tr>`; }).join("")}</tbody></table>
+  <div class="lanes" style="margin-top:32px">
+    <section><div class="lane-h"><h3>查询审计</h3><span class="tiny muted">异步批量写 · 允许极少量丢失 · 不阻塞检索</span></div>
+      ${o.queryAudit.map(evHTML).join("")}</section>
+    <section><div class="lane-h"><h3>管理与权限事件</h3><span class="tiny muted">outbox · 与变更同一事务 · 不可丢</span></div>
+      ${o.permAudit.map(evHTML).join("")}</section>
+  </div>
+  <div class="tiny muted" style="margin-top:12px"><code>GET /api/orgs/${o.id}/audit</code> · 组织管理员看全量，系统管理员只看元数据</div>`;
+  return html;
+}
+function evHTML(e) {
+  return `<div class="ev ${e.fresh ? "fresh" : ""}"><span class="ev-t">${esc(e.t)}</span><div><div class="ev-a">${esc(e.actor)} · ${esc(e.act)}</div><div class="ev-d">${esc(e.detail)}</div>
+    <div class="ev-m">${e.out === "ok" ? `<span class="pill ok">ok</span>` : `<span class="pill bad">${esc(e.out)}</span>`}</div></div></div>`;
+}
+
+/* ==========================================================================
+   渲染与事件
+   ========================================================================== */
+let lastKey = "";
+function render() {
+  const a = document.activeElement, key = a && a.dataset && a.dataset.in;
+  const sel = key && "selectionStart" in a ? [a.selectionStart, a.selectionEnd] : null;
+  renderRail();
+  const vk = state.view + "/" + (state.view === "access" ? state.sub.access : state.view === "semantic" ? state.sub.sem : "") + "/" + state.orgId;
+  const body = { docs: viewDocs, search: viewSearch, access: viewAccess, semantic: viewSemantic, ops: viewOps }[state.view]();
+  $("#main").innerHTML = `<section class="${vk !== lastKey ? "view" : ""}">${body}</section>`;
+  lastKey = vk;
+  O().queryAudit.forEach(e => e.fresh = false); O().permAudit.forEach(e => e.fresh = false);
+  if (key) {
+    const el = document.querySelector(`[data-in="${key}"]`);
+    if (el && el.type !== "checkbox" && el.tagName !== "SELECT") { el.focus(); if (sel) try { el.setSelectionRange(sel[0], sel[1]); } catch (_) {} }
+  }
+}
+function resetOrgState() {
+  state.selDoc = null; state.lastSearch = null; state.vis = null; state.retireAsk = null; state.entQ = "";
+  state.up = { ds: "", picked: {}, file: "" }; state.ds = "all"; state.qDs = "all";
+  state.selEnt = S() ? (S().entities.find(e => visEnt(e)) || {}).k : null;
+}
+function rerunSearch() { if (state.lastSearch && state.q.trim()) state.lastSearch = runSearch(state.q.trim()); }
+
+function advance() {
+  const o = O(), log = [];
+  const taskOf = id => o.tasks.find(t => t.doc === id && ["running", "leased", "pending"].includes(t.st));
+  for (const d of o.docs) {
+    const t = taskOf(d.id);
+    if (d.pending) {
+      const i = STAGES.indexOf(d.pending.st), next = STAGES[i + 1];
+      d.pending.st = next;
+      if (next === "chunked" && !d.chunks) d.chunks = 12 + Math.floor(Math.random() * 60);
+      if (t) { t.st = "running"; t.stage = next; t.hb = 1; t.lease = 59; }
+      const first = d.active.v === 0;
+      if ((first && next === "searchable_lexical") || (!first && next === "searchable_full")) {
+        d.active = { v: d.pending.v, st: next }; d.pending = null;
+        log.push(`<b>${esc(d.title)}</b> v${d.active.v} 原子切换为在用${first ? "（首次上传：先可词法检索）" : "（覆盖：完全可检索后切换）"}`);
+        if (next === "searchable_full" && t) { t.st = "done"; t.hb = t.lease = null; }
+      } else log.push(`${esc(d.title)} v${d.pending.v} → ${STAGE_CN[next]}`);
+    } else if (d.active.st === "searchable_lexical") {
+      d.active.st = "searchable_full";
+      if (t) { t.st = "done"; t.stage = "searchable_full"; t.hb = t.lease = null; }
+      log.push(`${esc(d.title)} 嵌入完成 → 加入向量路`);
+    }
+  }
+  o.tasks.filter(t => ["running", "leased"].includes(t.st) && t.hb != null && !t.doc).forEach(t => { t.hb = 2; t.lease = 58; });
+  toast(log.length ? log.slice(0, 3).join("<br>") + (log.length > 3 ? `<br>… 另 ${log.length - 3} 项` : "") : "没有处理中的文档");
+  rerunSearch();
+}
+
+const actions = {
+  menu(el) { const mn = $("#menu-" + el.dataset.m), open = mn.classList.contains("open"); document.querySelectorAll(".menu.open").forEach(x => x.classList.remove("open")); if (!open) mn.classList.add("open"); return false; },
+  org(el) { state.orgId = el.dataset.id; resetOrgState(); },
+  lens(el) { state.lens[O().id] = el.dataset.id; state.retireAsk = null; if (state.selEnt && !visEnt(entOf(state.selEnt))) state.selEnt = (S()?.entities.find(e => visEnt(e)) || {}).k; rerunSearch(); },
+  view(el) { state.view = el.dataset.v; },
+  sub(el) { state.sub[el.dataset.s] = el.dataset.v; },
+  stub(el) { toast(esc(el.dataset.msg)); return false; },
+  advance() { advance(); },
+  toggleUpload() { state.uploadOpen = !state.uploadOpen; },
+  ds(el) { state.ds = el.dataset.id; },
+  selDoc(el) { state.selDoc = state.selDoc === el.dataset.id ? null : el.dataset.id; },
+  openDoc(el) { state.view = "docs"; state.ds = "all"; state.selDoc = el.dataset.id; },
+  editDims(el) {
+    const d = docById(el.dataset.id);
+    if (d.pending) toast(`<code>PATCH …/documents/${d.id}/dimensions</code> → <b>409</b>：v${d.pending.v} 仍在处理，等它切换在用后再改`);
+    else toast(`<code>PATCH …/dimensions</code>：新旧取值都须在你的授权内；改完块级 dims_json 同事务更新，下一次检索即生效`);
+    return false;
+  },
+  flagTag(el) { const f = O().qflags.find(x => x.id === el.dataset.id); f.st = "resolved"; f.tags = [el.dataset.tag]; toast(`<code>PATCH /api/quality-flags/${f.id}</code> tags=[${esc(el.dataset.tag)}]`); },
+  flagIgnore(el) { const f = O().qflags.find(x => x.id === el.dataset.id); f.st = "ignored"; },
+  delDoc(el) {
+    const o = O(), id = el.dataset.id, d = docById(id);
+    o.docs = o.docs.filter(x => x.id !== id); o.chunks = o.chunks.filter(c => c.doc !== id); o.qflags = o.qflags.filter(f => f.doc !== id);
+    o.tasks.filter(t => t.doc === id && ["running", "leased", "pending"].includes(t.st)).forEach(t => { t.st = "cancelled"; t.hb = t.lease = null; });
+    permEvent("document.delete", `${d.title} · 块与语义打标同事务删除`);
+    state.selDoc = null; state.lastSearch = null;
+    toast(`已删除 <b>${esc(d.title)}</b>`);
+  },
+  pick(el) {
+    const k = el.dataset.k, v = el.dataset.v, p = state.up.picked[k] || [];
+    state.up.picked[k] = p.includes(v) ? p.filter(x => x !== v) : [...p, v];
+  },
+  upload() {
+    const o = O(), m = lens(), id = newId("01J9");
+    const dims = {}; activeDims().forEach(d => dims[d.key] = [...(state.up.picked[d.key] || [])]);
+    const title = state.up.file.trim();
+    o.docs.unshift({ id, ds: state.up.ds, title, owner: m.uid, dims, active: { v: 0, st: null }, pending: { v: 1, st: "uploaded" }, chunks: 0, at: NOW });
+    o.tasks.unshift({ id: newId("01JT"), type: "ingest", doc: id, st: "pending", stage: "uploaded", hb: null, lease: null, att: 0 });
+    permEvent("document.create", `${title} → ${dsName(state.up.ds)}`);
+    state.up = { ds: state.up.ds, picked: {}, file: "" }; state.uploadOpen = false; state.selDoc = id; state.ds = "all";
+    toast(`已上传 <b>${esc(title)}</b>，入队解析。点「推进任务」看它走完流水线`);
+  },
+  search() { const q = state.q.trim(); if (!q) return false; state.lastSearch = runSearch(q); },
+  sugg(el) { state.q = el.dataset.q; state.lastSearch = runSearch(state.q); },
+  gotoEnt(el) { state.view = "semantic"; state.sub.sem = "entities"; state.selEnt = el.dataset.k; },
+  selEnt(el) { state.selEnt = el.dataset.k; },
+  selEntTab(el) { state.sub.sem = "entities"; state.selEnt = el.dataset.k; },
+  depth(el) { state.depth = +el.dataset.v; },
+  cell(el) {
+    const o = O(), mb = o.members.find(x => x.uid === el.dataset.u), k = el.dataset.k, v = el.dataset.v, d = dimOf(k);
+    if (isSyncDim(d)) { toast(`${esc(d.label)}由 ${esc(d.source)} 同步写入，本地只读`); return false; }
+    const g = mb.grants[k] || [];
+    mb.grants[k] = g.includes(v) ? g.filter(x => x !== v) : [...g, v];
+    if (mb.grantExp && mb.grantExp[k]) delete mb.grantExp[k];
+    const set = mb.grants[k];
+    permEvent("grant.replace", `${uname(mb.uid)} · ${k} := {${set.join(", ")}}`);
+    toast(`<code>PUT …/members/${mb.uid}/grants</code> ${esc(uname(mb.uid))} · ${esc(d.label)} := {${set.map(x => esc(valLabel(k, x))).join("、")}}${set.length ? "" : " → 编译为 NOT EXISTS"}`);
+    state.lastSearch = null;
+    render();
+    const nb = document.querySelector(`[data-act="cell"][data-u="${mb.uid}"][data-k="${k}"][data-v="${window.CSS && CSS.escape ? CSS.escape(v) : v}"]`);
+    if (nb) nb.classList.add("pop");
+    return false;
+  },
+  retire(el) { state.retireAsk = el.dataset.k; },
+  retireCancel() { state.retireAsk = null; },
+  retireOk(el) {
+    const d = dimOf(el.dataset.k), imp = retireImpact(d.key);
+    d.status = "retired"; state.retireAsk = null; state.lastSearch = null;
+    permEvent("dimension.retire", `退役维度 ${d.key} · ${imp.docs} 份文档新增可见`);
+    toast(`已退役「${esc(d.label)}」：不再生成过滤条件 · 权限事件已写 outbox`);
+  },
+  visCell(el) { const s = state.vis; state.vis = s && s.u === el.dataset.u && s.d === el.dataset.d ? null : { u: el.dataset.u, d: el.dataset.d }; },
+  sync(el) {
+    const sm = S(), a = el.dataset.a, at = NOW.slice(0, 11) + tick();
+    const guard = a === "report_center";
+    sm.syncRuns.unshift(guard ? { at, adapter: a, st: "aborted_guard", ins: 0, upd: 0, miss: 41, note: "源端仍缺 34% > 20%，再次中止；需源系统修复或人工确认后带 force 重跑" }
+      : { at, adapter: a, st: "succeeded", ins: 0, upd: 1 + Math.floor(Math.random() * 5), miss: 0, note: "手动触发" });
+    O().tasks.unshift({ id: newId("01JT"), type: "semantic_sync", target: a, st: guard ? "failed" : "done", stage: guard ? "aborted_guard" : "searchable_full", hb: null, lease: null, att: 1 });
+    permEvent("semantic.sync", `${a} · ${guard ? "aborted_guard" : "succeeded"}`);
+    toast(guard ? `<b>${esc(a)}</b> 删除保护触发：本轮未落库，已告警` : `<b>${esc(a)}</b> 同步完成`);
+  },
+  build() {
+    const sm = S(), b = sm.builds.find(x => x.st === "building");
+    b.st = "ready"; b.aliases = aliasRows().length; sm.dictRev = b.rev;
+    const t = O().tasks.find(x => x.type === "semantic_build" && x.st === "running"); if (t) { t.st = "done"; t.stage = "ready"; t.hb = t.lease = null; t.target = "dict_rev " + b.rev; }
+    O().tasks.unshift({ id: newId("01JT"), type: "semantic_retag", target: `dict_rev ${b.rev} · ${O().chunks.length} 块`, st: "pending", stage: "—", hb: null, lease: null, att: 0, note: "最低优先级，夜间错峰" });
+    toast(`dict_rev <b>${b.rev}</b> 就绪并原子切换；重打标任务已入队（期间旧标注继续可用）`);
+  },
+};
+
+document.addEventListener("click", ev => {
+  const el = ev.target.closest("[data-act]");
+  if (!el) { if (!ev.target.closest(".menu")) document.querySelectorAll(".menu.open").forEach(x => x.classList.remove("open")); return; }
+  if (el.disabled) return;
+  const fn = actions[el.dataset.act];
+  if (!fn) return;
+  if (fn(el) !== false) render();
+});
+function onInput(ev) {
+  const el = ev.target, k = el.dataset && el.dataset.in;
+  if (!k || ev.isComposing) return;
+  const v = el.type === "checkbox" ? el.checked : el.value;
+  switch (k) {
+    case "q": state.q = v; return;
+    case "upFile": state.up.file = v; break;
+    case "upDs": state.up.ds = v; break;
+    case "qDs": state.qDs = v; rerunSearch(); break;
+    case "entRoute": state.entRoute = v; rerunSearch(); break;
+    case "entQ": state.entQ = v; $("#entList").innerHTML = entListHTML(); return;
+    case "annText": state.annText = v; $("#annRes").innerHTML = annResultHTML(); return;
+    case "fuzzy": state.fuzzy = v; break;
+    case "degraded": state.degraded = v; break;
+    default: return;
+  }
+  render();
+}
+document.addEventListener("input", ev => { if (ev.target.type !== "checkbox" && ev.target.tagName !== "SELECT") onInput(ev); });
+document.addEventListener("change", ev => { if (ev.target.type === "checkbox" || ev.target.tagName === "SELECT") onInput(ev); });
+document.addEventListener("compositionend", onInput);
+document.addEventListener("keydown", ev => {
+  if (ev.key === "Enter" && ev.target.id === "qInput" && !ev.isComposing) { state.q = ev.target.value; actions.search() !== false && render(); }
+  if (ev.key === "Escape") document.querySelectorAll(".menu.open").forEach(x => x.classList.remove("open"));
+});
+
+render();
 </script>
 </body>
 </html>
