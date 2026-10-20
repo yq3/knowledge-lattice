@@ -1,0 +1,984 @@
+# knowledge-lattice 测试用例
+
+> 版本：v1.0（2026-10-20 初版，M0a 开工前）
+> 依据：[design.md](./design.md) v0.6——**§9 测试策略是冻结用例清单，本文是其展开层：T1~T23 / T-S1~T-S12 编号沿用、不另起**；§8 里程碑验收、§4 DDL 与触发器、§5 关键设计、§6 接口契约为断言细节来源。[requirements.md](./requirements.md) v0.6（FR/NFR/D 验收口径）；[known-gaps.md](./known-gaps.md)（G-1~G-5——涉及其中的用例已标注）。沿 lab 仓库 pulse-pet 先例（docs/v1/TEST-CASES.md + 评审回写）。
+> 用途：M0a~M3 与 M2-S1~S3 各里程碑验收依据，里程碑收尾按 §六对照表逐条勾验。
+> 口径：**单测类**用例「预期」即 pytest 断言（CI 跑）；**矩阵/接口类**经 MCP/REST 真实调用断言（M1 起矩阵进 CI 常跑）；**契约/观察项**为记录级（验收不判失败）；**性能类**给阈值与测量口径。时间依赖（过期/宽限期/租约）一律**造数**——直接写过去时间戳，不推进系统时钟。
+> 演进纪律：本文为活文档（同 known-gaps，不受设计冻结纪律约束），随实现回写口径；**与 requirements/design 正文冲突时以正文为准并开 issue**。编写中发现的规格含糊点登记于附录 A（展开即压测——pulse-pet 用例评审先例）。
+
+## 编号约定
+
+| 前缀 | 模块 | 对应里程碑 |
+|---|---|---|
+| TC-SCAF | 脚手架 / 连接工厂 / 迁移 / DDL 触发器 | M0a |
+| TC-ACL | ACL 编译器单测（结构层——语义场景见 T 编号） | M0a |
+| TC-FTS | FTS5 转义 / 五列加权 / 同步触发器 | M0a / M1 |
+| TC-ING | 解析 / 切分 / 编码 / 质量门 / 嵌入 | M0a / M1 |
+| TC-RET | 检索配方（RRF / 归一 / rerank / 降级 / 增强） | M1 |
+| TC-VER | 版本在用制（D20 时机 / 切换事务 / fetch / 回写防护） | M1（90 天清理 M2） |
+| TC-CRED | 上传凭证流（三步式 / file_ref 防线） | M1 |
+| TC-QUAL | 区分度反馈环 | M1 |
+| TC-AUTH | 鉴权 / 组织上下文 / 身份降级 | M0a / M1 / M2 |
+| TC-E2E | 摄取→检索端到端集成 | M0a / M0b / M1 |
+| TC-TASK | 任务与 worker 机制 | M2 |
+| TC-OPS | 生产化（审计 / 备份 / 清理 / 管理面 / CSV） | M2 |
+| T1~T23 / T-CSV / TC-AZ | **越权矩阵**（§9 冻结编号 + 验收引用的补充行） | M0a / M1 / M2 |
+| T-S1~T-S12 | **语义层功能与不变式**（§9 冻结编号） | M2-S1~S3 |
+| TC-SYNC | 语义同步流程（适配器 / 保护 / 审计） | M2-S1 / S2 |
+| TC-YAML | Git YAML 覆盖层与 CI 校验 | M2-S2 |
+| TC-BUILD | 构建产物与原子切换 | M2-S2 |
+| TC-SEM | 语义工具契约（annotate / search_entities / get_entity / describe_table / L0） | M2-S1~S3 |
+| TC-TAG | 打标 / 重标 / untag / 实体召回路 | M2-S3 |
+| TC-PERF | 性能抽测（M0b 四实验 / SLO / 语义 P99） | M0b / M1 / M2-S |
+| TC-EVAL | 评测与门禁（黄金集 / judge / deepeval） | M1 / M3 |
+| TC-SEV | 语义识别评测集与检索增益 | M2-S2 / S3 |
+
+里程碑标签写法：`【单测｜M0a】`＝类型｜首次全绿里程碑；矩阵类用例在更早里程碑以单测形态先行（如 T1~T5 于 M0a 编译器单测先行、M1 矩阵复跑——design §8 M0a.5）。
+
+---
+
+## 一、单元用例（docs 侧）
+
+### TC-SCAF 脚手架与连接工厂
+
+#### TC-SCAF-01 foreign_keys 每连接生效 + 孤儿行拒绝【单测｜M0a】
+
+- **前置**：全新 `lattice.db`，经 `store/db.py` 连接工厂取连接，schema v1 已落。
+- **步骤**：① 查询 `PRAGMA foreign_keys`；② 向 `user_dimension_grants` 插入引用不存在 user 的孤儿行；③ 向 `document_dimensions` 插入引用不存在 doc 的孤儿行。
+- **预期**：① 返回 1；②③ 抛 `sqlite3.IntegrityError`（FOREIGN KEY 约束）——M0a 验收原句「插孤儿行断言 IntegrityError」。工厂对 pragma 失败显式 `raise RuntimeError`（非 assert——`python -O` 剥离，design §3）。
+
+#### TC-SCAF-02 连接 PRAGMA 全集【单测｜M0a】
+
+- **前置**：连接工厂取连接。
+- **步骤**：依次查询 `journal_mode` / `busy_timeout` / `synchronous` / `foreign_keys`。
+- **预期**：`wal` / `5000` / `NORMAL`（1）/ `1`——与 design §3 连接工厂逐项一致；sqlite-vec 扩展加载成功（`SELECT vec_distance_cosine(...)` 可调用）。
+
+#### TC-SCAF-03 迁移框架：改表流程与 foreign_key_check【单测｜M0a，M0b v1.1 迁移复跑】
+
+- **前置**：迁移框架就绪；构造一份「建新表→拷数据→删旧表」的测试迁移。
+- **步骤**：① 正常跑迁移后执行 `PRAGMA foreign_key_check`；② 注入一行违反外键的数据后再跑同迁移。
+- **预期**：① 迁移期间临时关闭外键、结束恢复，`foreign_key_check` 返回空；② 检出违例即回滚，库内状态与迁移前一致（#33 P1-1）；③ `user_version` 只前进、重复运行迁移幂等（无重放副作用）。
+
+#### TC-SCAF-04 DDL 防护触发器全集【单测｜M0a】
+
+- **前置**：schema v1 落库完成。
+- **步骤**：① 断言 design §4 文档侧全部触发器存在（`trg_dimval_immutable`、`trg_membership_delete_cleanup`、`trg_membership_no_extend`、`trg_documents_org_immutable`、`trg_datasets_org_immutable`、`trg_dimensions_org_immutable`、`trg_documents_ds_org_check`、`trg_documents_ds_immutable`、`trg_docdims_consistency`、`chunks_ai/ad/au`、audit append-only ×2；`sem_*` 触发器除外——M2-S1 才落库）；② 逐个行为断言：UPDATE `dimension_values.value` → ABORT；UPDATE `documents/datasets/dimensions.org_id` → ABORT；插入 dataset 与 documents org 不符 → ABORT；跨组织搬库（UPDATE dataset_id 至他组织库）→ ABORT；插入 value 与 dimension 不匹配或维度 org ≠ 文档 org 的 `document_dimensions` 行 → ABORT。
+- **预期**：全部触发器存在且各自 ABORT；`uq_chunks_docver(doc_id, version, seq)` 唯一索引：同文档同版本 seq 重复被拒、不同版本同 seq 合法（含 version——#34 4.4）。
+
+#### TC-SCAF-05 成员关系删除级联清授权【单测｜M0a】
+
+- **前置**：u1 属 org:tax（region=[CN]）与 org:gl（gl 维度授权若干）。
+- **步骤**：DELETE u1 在 org:tax 的 membership 行。
+- **预期**：org:tax 维度下 u1 的授权全部删除（含 `source='sync:…'`——预期行为，#33 P0-1⑥）；org:gl 的授权不受影响（触发器按 `dimensions.org_id` 收敛，design §4）。
+
+### TC-ACL ACL 编译器（结构层）
+
+#### TC-ACL-01 AST builder 括号化与渲染等价【单测｜M0a】
+
+- **前置**：编译器输入 u_full（region=[CN,OS]、tax_type=[VAT]）。
+- **步骤**：编译产出 WHERE 片段；与 design §5.1 示意 SQL 逐段对比。
+- **预期**：多维度条件以显式括号 AND 连接（无优先级歧义）；产物由 AST 渲染（结构断言：节点树含 And/Or/NotExists/InValue 节点），**无字符串拼接**；渲染 SQL 可被 sqlite 直接 prepare 且执行结果与手写等价 SQL 相同。
+
+#### TC-ACL-02 统一空值模板（有值交集 / 无值放行）【单测｜M0a】
+
+- **前置**：region 为 active；文档 d_cn（region=[CN]）与 d_empty（region 无值）。
+- **步骤**：对 u_cn（region=[CN]）与 u_gl_only_region_os（region=[OS]）分别编译并执行召回。
+- **预期**：模板形如 `(NOT EXISTS(json_each(c.dims_json,'$.region')) OR EXISTS(… IN (:grants)))`；u_cn 可见 d_cn 与 d_empty；u_os 可见 d_empty 而**不见 d_cn**——维度间 AND、维度内 OR（D5）。
+
+#### TC-ACL-03 空授权集 → NOT EXISTS 单条件【单测｜M0a】
+
+- **前置**：用户在某 active 维度（tax_type）无任何有效授权。
+- **步骤**：编译产物文本断言 + 行为断言（对 d_cit(tax_type=[CIT]) 与 d_empty 检索）。
+- **预期**：产物仅含 `NOT EXISTS(…'$.tax_type')` 单条件，**不出现 `IN ()`**（#34 必修 3 / T22）；该用户只见 tax_type 为空的文档，非整体不可见。
+
+#### TC-ACL-04 生命周期与过滤解耦【单测｜M0a】
+
+- **步骤**：① 将 region 的 `required` 1→0、`enabled` 1→0 分别 UPDATE 后重新编译；② 将某维度 `status` 置 `retired` 后重新编译；③ 新建维度 channel（无任何文档回填）后重新编译。
+- **预期**：① 产物与改动前**逐字相同**（required/enabled 不影响过滤——T4/T20）；② retired 维度不生成任何条件（唯一放宽路径）；③ channel 编译出空值放行条件，存量文档零消失（T20①——回填后才逐篇收紧）。
+
+#### TC-ACL-05 第 0 步成员关系校验【单测｜M0a】
+
+- **步骤**：对无 membership、membership `expires_at`=昨天、membership 有效三种用户触发检索。
+- **预期**：前两者在编译入口即拒绝（无有效成员关系——403 语义），不产出 WHERE；第三者正常。系统管理员豁免仅限管理端点（检索路径同样拒绝——D22）。
+
+#### TC-ACL-06 外层常量约束与 FTS 路同构【单测｜M0a】
+
+- **步骤**：断言产物外层恒含 `c.version = d.active_version AND c.tombstone = 0 AND d.org_id = :org`；FTS 路产物为 `chunks_fts MATCH` + 同一 ACL 片段 + 版本条件在 JOIN 上。
+- **预期**：两路共用同一授权展开与同一模板（#34 必修 1）；组织限定是一切检索 SQL 第一条件（design §4 设计说明）。
+
+#### TC-ACL-07 visible_docs 备选逐字等价【单测｜M0a→M0b 后按结论保留】
+
+- **步骤**：对同一用户/文档矩阵，分别用「按块 json_each 模板」与「按文档 visible_docs CTE（基于 document_dimensions）」执行召回，断言可见集相等。
+- **预期**：两种写法结果集完全一致（T5/T6/T22 两写法都测——#34 必修 3）；M0b 实验选定后保留其一为常规断言、另一删除（design §5.1 性能注）。
+
+### TC-FTS FTS5
+
+#### TC-FTS-01 MATCH 转义【单测｜M0a】
+
+- **步骤**：构造 query 含 `"`、`*`、`NEAR`、`AND`、`-`、空格、`（` 全角字符；经 jieba 切分后拼查询串执行 MATCH。
+- **预期**：每个 token 以双引号包裹、内部 `"` 转义为 `""`，token 间以 `OR` 拼接；无 malformed 异常、操作符不被激活（`AND`/`NEAR`/`*` 作字面量可命中含该字面量的块——design §4 查询侧口径）。
+
+#### TC-FTS-02 五列加权【单测｜M0a】
+
+- **前置**：四个 chunk 分别只在 tags / keywords / title_seg / content_seg 含目标词。
+- **步骤**：`bm25(chunks_fts, 3.0, 1.0, 5.0, 0.5, 8.0)` 排序。
+- **预期**：排序 tags > keywords > title_seg > content_seg；llm_keywords（0.5）低于 content_seg。
+
+#### TC-FTS-03 同步触发器与切换清列【单测｜M0a】
+
+- **步骤**：① INSERT/DELETE chunk 后核对 FTS 行；② UPDATE 五列之一后核对；③ 模拟版本切换的 UPDATE（五列清空、tombstone=1）后以旧内容 MATCH。
+- **预期**：①② FTS 与 chunks 一致（au 触发器先 'delete' 后插入）；③ MATCH 旧内容零命中——FTS 层无 tombstone 内容（机制层；矩阵层见 T9）。
+
+#### TC-FTS-04 keywords 列人工词纯净性【单测｜M1】
+
+- **步骤**：人工补标走 `PATCH /api/quality-flags/{id}` 写入 `keywords`；jieba 分词只产 `content_seg/title_seg`。
+- **预期**：`keywords` 仅含人工提交词，jieba 高频词不混入（#32 P1-3——重复会被 ×5 加权放大）；`llm_keywords` 仅由质量环 LLM 写入（来源分层可断言：内容不交叉）。
+
+### TC-ING 摄取链
+
+#### TC-ING-01 docling 解析→统一块结构【单测｜M0a】
+
+- **步骤**：解析 docx（含多级标题+表格）、pptx、xlsx、HTML、原生 PDF 样例。
+- **预期**：输出统一块结构（content / heading_path / page_no / bbox_json / sheet_name）；标题层级与页码保真；表格边界保留供切分。
+
+#### TC-ING-02 结构感知切分【单测｜M0a】
+
+- **步骤**：对带层级的文档切分；统计块 token 数。
+- **预期**：递归 token 256–512 打底、结构边界优先；`heading_path` 记录层级路径；表格整块不拆散（§9 切分边界口径）。
+
+#### TC-ING-03 Excel 行块切分【单测｜M0a】
+
+- **步骤**：多 sheet Excel 切分。
+- **预期**：按 sheet/行块切分；**每个行块 chunk 重复表头**（保留列语义）；`sheet_name` 记录（FR-1）。
+
+#### TC-ING-04 编码与老格式策略【单测｜M1】
+
+- **步骤**：① 上传 GBK 编码 TXT；② 上传 `.doc/.xls/.ppt`。
+- **预期**：① 编码探测并转 UTF-8 后正常摄取；② 明确拒收并提示转存新格式（不引入 LibreOffice——零中间件纪律）。
+
+#### TC-ING-05 mojibake 质量门三档【单测｜M1】
+
+- **步骤**：构造正常字符比 >0.55 / 0.40~0.55 / <0.40 三档解析产物。
+- **预期**：分别正常通过 / 告警（重试）/ 失败（OneRAG 借鉴项，design §5.4）。
+
+#### TC-ING-06 嵌入分批与钉版本【单测｜M1】
+
+- **步骤**：摄取 >64 块文档；断言逐批 UPDATE `embedding/embed_model`。
+- **预期**：分批 64；每块 `embed_model = 'bge-m3@<rev>'`（D12 钉版本）；批次间任务可断点续跑。
+
+#### TC-ING-07 阶段幂等续跑【单测｜M0a】
+
+- **步骤**：在 index_fts 完成后杀 worker，重启重跑同任务。
+- **预期**：从 embed 阶段续跑，index_fts 不重复写块（uq_chunks_docver + 阶段状态判定）；文档状态沿 `parsing→chunked→searchable_lexical→searchable_full` 前进。
+
+### TC-RET 检索配方
+
+#### TC-RET-01 RRF 融合【单测｜M1】
+
+- **步骤**：构造 FTS 路/向量路已知排名（含仅单路命中的 chunk），手算 RRF(k=60) 期望序列。
+- **预期**：融合排序与手算一致；单路 chunk 按该路 RRF 分自然保留（退化兼容）。
+
+#### TC-RET-02 向量缺失退化【单测｜M1】
+
+- **前置**：文档处于 searchable_lexical（embedding 全 NULL）。
+- **步骤**：search 该文档命中域。
+- **预期**：BM25 单路可搜；返回 `notice.vector_pending=true`；无异常、无空结果误判。
+
+#### TC-RET-03 分数归一【单测｜M1】
+
+- **步骤**：构造 rerank 分数集中与含离群两种分布。
+- **预期**：min-max 与 clamp 双分支各自正确把最终分归一到 [0,1]（ragflow 模式）；阈值只作用于归一后分数。
+
+#### TC-RET-04 rerank 输入与候选【单测｜M1】
+
+- **步骤**：断言 rerank 输入为 `content` 原文（非分词文本）与候选数 32；并发请求下信号量生效。
+- **预期**：喂原文（FR-2）；候选截断 32（NFR-8）；ONNX int8 推理在进程池执行不阻塞事件循环（可观测：事件循环无长阻塞）。
+
+#### TC-RET-05 LLM 增强 800ms 并行【单测｜M1】
+
+- **步骤**：① mock 网关 500ms 返回；② mock 900ms（超预算）。
+- **预期**：① 增强词作为**第三路 BM25 查询**参与 RRF，不重做向量召回；② 超时丢弃、原始两路结果不变，总延迟不受影响（并行——关键路径 = max(原始召回, 增强+BM25) + rerank）。
+
+#### TC-RET-06 双降级开关【单测｜M1】
+
+- **步骤**：分别打开「rerank 输入截断 256 token」与「候选 32→16」配置。
+- **预期**：开关生效（输入长度/候选数断言）；结果仍正确只是召回宽度变化（NFR-8 降级路径）。
+
+#### TC-RET-07 参数红线【单测｜M0a/M1】
+
+- **步骤**：① MCP search 传 `top_k=100`；② 传权重/阈值类参数；③ 传 `datasets` 过滤。
+- **预期**：① 返回 ≤20（服务端硬上限）；② 不可调参数被忽略（服务端固定，不暴露噪音旋钮）；③ datasets/doc_filter 作为组织内可选收窄正确下推（基线因子「库过滤」单测形态）。
+
+### TC-VER 版本在用制
+
+#### TC-VER-01 首次上传切换时机（D20）【单测｜M1】
+
+- **步骤**：新上传走管线至 searchable_lexical。
+- **预期**：`active_version` 0→1 即刻切换，BM25 可搜；此后嵌入进度写 `active_status`、嵌入/质量失败写 `active_error`（#33 P0-2.2）；pending 字段清空。
+
+#### TC-VER-02 覆盖上传切换时机（D20）【单测｜M1】
+
+- **步骤**：对已有 active v1 的文档覆盖上传 v2，分别观察 v2 处于 searchable_lexical / searchable_full 两时点。
+- **预期**：lexcial 时点**不切换**（检索仍只见 v1）；full 时点单事务切换；全程旧版本服务、绝无两版本同见（矩阵层 T6/T21）。
+
+#### TC-VER-03 版本号不复用【单测｜M1】
+
+- **步骤**：v2 失败后再发起覆盖上传。
+- **预期**：新 pending_version = max(历史)+1（=3，失败版本号不复用）；历史版本可追溯（tombstone 保留 90 天）。
+
+#### TC-VER-04 切换事务内容【单测｜M1】
+
+- **步骤**：触发 v1→v2 切换，事务内逐项断言。
+- **预期**：旧块 `tombstone=1, embedding=NULL`、五列 FTS 内容清空（au 触发器清 FTS）；documents 四字段更新带 `WHERE pending_version=:expected` 乐观校验；`pending_dims_json` 解析落入 `document_dimensions`（v2 维度切换前不生效）；（M2-S3 起）同事务 `semantic.untag(doc, old_version)`——事务原子：中途失败全部回滚。
+
+#### TC-VER-05 fetch 旧块替代提示【单测｜M1】
+
+- **步骤**：对已切换文档的 v1 chunk_id 调 MCP `fetch`。
+- **预期**：返回 `replaced_by: {doc_id, active_version}` 对象（**不承诺块级映射**）；不返回旧内容、不报"不存在"（agent 引用不失效为幻觉误判——FR-1）。
+
+#### TC-VER-06 embed 批次回写防护【单测｜M1】
+
+- **步骤**：embed 进行中并发触发版本切换/删除，随后批次回写。
+- **预期**：回写 SQL 带 `WHERE rid=:rid AND tombstone=0 AND version IN (:active,:pending)`——已切换/已删块的 UPDATE 零行生效（P0-2.3）。
+
+#### TC-VER-07 删除与任务取消联动【单测｜M1】
+
+- **步骤**：摄取进行中 DELETE 文档。
+- **预期**：其任务被取消；worker 每阶段开始前检查文档存在与版本归属——已删文档不再写块（P0-2.3）。
+
+#### TC-VER-08 tombstone 90 天物理清理【单测｜M2】
+
+- **步骤**：造数 `created_at`=91 天前的 tombstone 块，跑清理任务。
+- **预期**：物理删除；90 天内不删；审计留痕（M2.4）。
+
+### TC-CRED 上传凭证流
+
+#### TC-CRED-01 凭证签发与绑定【单测｜M1】
+
+- **步骤**：agent 运行时持委托 token 调 `POST /api/uploads` 声明 `{filename,size,sha256,content_type}`。
+- **预期**：返回 `{upload_id, upload_url, expires_at}`；凭证记录绑定 sub+org+服务身份（签发方）三要素（#33 P1-3）。
+
+#### TC-CRED-02 PUT 字节校验【单测｜M1】
+
+- **步骤**：对 upload_url 依次：① 超声明 size 上传；② sha256 不符；③ 同一 upload_id 第二次 PUT；④ 过期后 PUT；⑤ >200MB。
+- **预期**：① 截断/拒绝（按声明 size）；② 拒绝；③④ 拒绝（单次、短时）；⑤ 拒绝（全局上限）——全部带明确错误码（T12 展开）。
+
+#### TC-CRED-03 MCP upload 三一致校验【单测｜M1】
+
+- **步骤**：LLM 调 `upload(upload_id,…)`：① 同 sub+org+服务；② 换组织；③ 换用户；④ 换服务身份；⑤ 哈希不符。
+- **预期**：① 进摄取；②~⑤ 拒绝（T11：凭证跨组织/跨身份无效）；凭证消费后置已用。
+
+#### TC-CRED-04 file_ref 防线【单测｜M1】
+
+- **步骤**：构造携带 `../../etc/passwd`、绝对路径、`file://`/`http://` URL、指向白名单根外符号链接的引用。
+- **预期**：一律拒绝——`file_ref` 只收不透明 upload_id；共享存储场景白名单根目录 + realpath 规范化 + 前缀校验 + 只读 + 大小/扩展名限制（SSRF/任意读取/穿越三防线，NFR-6）。
+
+#### TC-CRED-05 未消费凭证回收【单测｜M1】
+
+- **步骤**：签发后不消费，跑清理任务。
+- **预期**：过期未消费凭证回收（对象目录临时文件同清——design §6.3 时序）。
+
+### TC-QUAL 区分度反馈环
+
+#### TC-QUAL-01 向量拥挤度口径【单测｜M1】
+
+- **步骤**：① 构造与库内 8 个近邻高相似的 chunk；② 构造仅与 **tombstone 旧版本块**或**他组织块**高相似的 chunk。
+- **预期**：① 判拥挤（top-8 近邻 mean(sim) > 绝对阈值）写 `quality_flags`；② **不**判拥挤——近邻限定「组织内 + 仅在用版本」（#33 P1-10）；入库单块走 SQL 暴力扫描。
+
+#### TC-QUAL-02 词面通用度【单测｜M1】
+
+- **步骤**：构造 token 平均 IDF 低于绝对阈值的 chunk；对新组织（冷启动）重复。
+- **预期**：判通用度低写 flags；冷启动引用全局语料 IDF（不因组织语料为空而误判）。
+
+#### TC-QUAL-03 LLM 兜底写独立列【单测｜M1】
+
+- **步骤**：对 flags 中 open 状态 chunk 触发 LLM 关键词生成。
+- **预期**：写入 `llm_keywords`（×0.5~1 低权列）+ 一句定位语进 `auto_keywords`；**不动** `keywords`（人工列）与 embedding（非 Contextual Retrieval——口径如实）。
+
+#### TC-QUAL-04 规模比例 + 抽样重算【单测｜M1】
+
+- **步骤**：造数 `detected_at_scale`=100（当前语料 10000）的块与近期块，跑重算任务。
+- **预期**：仅「检测时规模 < 当前一定比例」的块与抽样命中块重算；批量走 numpy 矩阵乘（非 SQL 逐行——性能断言：万级块分钟级内完成）。
+
+#### TC-QUAL-05 报告页近邻防旁路【单测｜M1】
+
+- **步骤**：u_cn（region=[CN]）查看某 flags 明细，其近邻含 OS-only 块。
+- **预期**：近邻内容展示**过同一套 ACL**（OS-only 块不出现）或仅显示相似度数值（T18 单测形态；`detail_json` 原始数据不因报告页而泄漏）。
+
+### TC-AUTH 鉴权与组织上下文
+
+#### TC-AUTH-01 静态 token 边界【单测｜M0a】
+
+- **步骤**：① dev 配置下 u1 调 `POST /api/dev/token`；② u1 给 u2 签发；③ 系统管理员给他人签发；④ 生产配置下调该端点。
+- **预期**：① 成功（仅开发/测试/CI——D18）；② 403（只能给自己签）；③ 成功；④ **404**（生产环境不注册路由——P1-7 / T16）。
+
+#### TC-AUTH-02 组织上下文统一规则【单测｜M0a/M1】
+
+- **步骤**：MCP 调用分别构造：① token 有 org claim + 注入头一致；② claim 与头不一致；③ 无 claim 无头；④ 工具参数携带 org；⑤ REST 路径 org 与 `X-Org-Id` 并存且不一致。
+- **预期**：① 正常（claim 优先）；② 400；③ 400（缺失即报错，无隐式默认）；④ 参数 org **忽略并记审计**；⑤ 400（D18 统一规则 / T14 展开）。
+
+#### TC-AUTH-03 SSO JIT 建档【单测｜M2】
+
+- **步骤**：mock SSO 首次验签通过的用户请求。
+- **预期**：users 表自动落库（id/username/display_name）；二次登录复用（D16——管理员不建账号只配授权）。
+
+#### TC-AUTH-04 委托 token 语义【单测｜M2（M0b 先实测客户端形态）】
+
+- **步骤**：构造 `aud=knowledge-lattice`、`sub`=用户、`act`=agent、`org` claim 单值的委托 token 调用；再构造透传用户原始 token、请求体夹带权限字段两种请求。
+- **预期**：前者按 sub 计权、act 进审计；后两者拒绝（MCP 规范明令；权限字段一律忽略——D18）。M0b 实测项：`langchain-mcp-adapters` 按用户切换 token 的客户端形态与刷新（TC-PERF 关联）。
+
+#### TC-AUTH-05 可信子系统三约束【单测｜M2】
+
+- **步骤**：服务凭证调用分别构造：① 白名单内 + `allowed_orgs` 匹配 + 用户在场证据一致；② org 越界；③ `X-On-Behalf-Of` 的 sub 与在场证据不符（冒充离线用户）；④ 白名单外服务。
+- **预期**：① 按声明用户计权、双身份进审计；②③④ 拒绝并审计（#33 P1-5 三约束 / T13 展开）。
+
+---
+
+## 二、集成与生产化用例
+
+### TC-E2E 端到端集成
+
+#### TC-E2E-01 摄取→检索全链【集成｜M0a（BM25 单路）/ M1（全配方）】
+
+- **前置**：dev token 用户 u_full，dataset=vat_lib。
+- **步骤**：REST multipart 上传 docx（region=[CN]）→ 轮询文档状态 → 各时点检索。
+- **预期**：`searchable_lexical` 时点 BM25 命中（中间态可搜）；`searchable_full` 后双路+rerank 命中；结果带 chunk_id/doc_id/title/page_no/score/dims/source 溯源字段（MCP 契约 §6.1）；`datasets` 过滤与 `doc_filter` 正确收窄。
+
+#### TC-E2E-02 版本切换原子性【集成｜M1】
+
+- **步骤**：覆盖上传进行中并发发起检索循环；切换瞬间（乐观校验窗口）并发第二个覆盖上传。
+- **预期**：任意时刻检索只见 v1 或 v2 之一（无中间态混见）；第二个覆盖上传得 409（T7 集成复跑）；切换失败（注入异常）回滚后 v1 继续服务、pending 块零残留（T8）。
+
+#### TC-E2E-03 任务租约重认领【集成｜M1（机制）/ M2（杀进程演练）】
+
+- **步骤**：造数 `lease_until`=过去的 running 任务；M2 再真实 kill -9 worker。
+- **预期**：任务被其他/重启 worker 重认领续跑，attempts 递增；「杀 worker 不丢任务」验收的测试化（M2.6）。
+
+#### TC-E2E-04 维度变更即时生效【集成｜M1】
+
+- **步骤**：u_full 可见 d_os(region=[OS])；撤掉其 OS 授权（或 PATCH d_os 维度收紧）后立即检索。
+- **预期**：下一次查询即不可见（查询时实时展开——D6）；PATCH 路径 `dims_json` 投影同步刷新（UPDATE 不重嵌）；文档维度多值其余值不受影响。
+
+#### TC-E2E-05 schema v1.1 迁移【集成｜M0b】
+
+- **步骤**：在 M0b 结论（dims_json 去留 / 分表与否）下执行 v1.1 迁移。
+- **预期**：迁移完成 + `PRAGMA foreign_key_check` 空（M0b 验收）；迁移后全量矩阵用例复跑绿。
+
+#### TC-E2E-06 MCP 端到端（M0a 验收原句）【集成｜M0a】
+
+- **步骤**：deepagents（或 langchain-mcp-adapters 测试客户端）经 MCP 以**开发 JWT** 调 `search`。
+- **预期**：返回带 chunk_id 的命中（M0a 验收）；60s 超时中间件挂载（超时请求不悬挂）。
+
+#### TC-E2E-07 REST 上传 + 静态页壳【集成｜M0a】
+
+- **步骤**：浏览器打开静态页；经 REST multipart 上传并查看任务状态与检索测试页。
+- **预期**：薄壳可用（上传/检索两视图最小闭环）；API 契约先行（UI 只是壳）。
+
+### TC-TASK 任务与 worker
+
+#### TC-TASK-01 心跳与租约【单测｜M2】
+
+- **步骤**：running 任务每 5s 更新 `heartbeat_at`；造数心跳停更 + `lease_until` 过期。
+- **预期**：租约 60s；过期任务可被重认领（design §5.3 状态机：pending→leased→running→done|failed）。
+
+#### TC-TASK-02 重试上限【单测｜M2】
+
+- **步骤**：持续失败的任务重跑。
+- **预期**：`attempts ≥ 3` 转 failed 留人工（error 字段落原因）。
+
+#### TC-TASK-03 任务取消【集成｜M2】
+
+- **步骤**：对 running 任务 `POST /api/orgs/{org}/tasks/{id}/cancel`。
+- **预期**：任务在**阶段边界**停止（幂等续跑不复活）；取消后文档状态一致（不滞留 parsing）。
+
+#### TC-TASK-04 子进程隔离【集成｜M2】
+
+- **步骤**：注入使 worker OOM 的解析任务。
+- **预期**：仅 worker 子进程死亡，主进程检索可用（anything-llm 样板——OOM 只杀 worker）；worker 自动拉起。
+
+#### TC-TASK-05 语义任务错峰限速【观察｜M2-S1】
+
+- **步骤**：观察 semantic_sync / semantic_retag 调度窗口与批速。
+- **预期**：分批 ≤1000 行/批、夜间窗口、重标最低优先级（NFR-11——记录级验收：语义任务运行期间 docs 检索 P95 无劣化）。
+
+### TC-OPS 生产化
+
+#### TC-OPS-01 审计 outbox 一致性【集成｜M2】
+
+- **步骤**：触发授权替换 / 取值停用 / 维度退役 / 成员变更 / 语义同步五类权限事件（含其中一类在业务提交后立即崩溃的注入场景）。
+- **预期**：业务库同事务写入 `audit_outbox`（崩溃注入下业务与 outbox 同生共死——「业务改了就一定有审计」）；后台任务搬至月库 `audit_events` 后回填 `shipped_at`（M2.6 验收）。
+
+#### TC-OPS-02 审计月库滚动【集成｜M2】
+
+- **步骤**：① 跨月边界写入（造数 202610→202611）；② UPDATE/DELETE 当月与已封存月库的 audit_events；③ 造数 13 个月前的月库文件。
+- **预期**：① 新月库由连接工厂建表+触发器，旧月库封存只读；② 全部 ABORT（append-only）；③ 整文件删除（保留期 12 个月）；哈希链每月首条引用上月末哈希（封存记末哈希）。
+
+#### TC-OPS-03 审计访问分级【集成｜M2】
+
+- **步骤**：① org_admin 查本组织审计；② 系统管理员查询；③ org_admin 查他组织。
+- **预期**：① 全量（含查询词与命中）；② **仅元数据**（查询词与命中详情不含——确需内容走审批+临时授权）；③ 拒绝（FR-6 分级）。
+
+#### TC-OPS-04 删除级联与删库流程【集成｜M2】
+
+- **步骤**：① DELETE 文档；② 对仍有文档的库发删除；③ 先删文档后删库。
+- **预期**：① chunks / document_dimensions / quality_flags 级联删除、任务取消、（M2-S3）untag 同事务；② 明确报错（RESTRICT——非裸外键异常，T19 半句）；③ 成功；90 天 tombstone 物理清理独立运行（TC-VER-08）。
+
+#### TC-OPS-05 备份快照与恢复演练【集成｜M2】
+
+- **步骤**：`VACUUM INTO`/online backup 快照（含 `data/objects/`）→ 新环境恢复 → 跑迁移 → 抽查检索与矩阵子集。
+- **预期**：恢复后数据完整、检索正常、`user_version` 前进；RPO ≤24h / RTO ≤4h 口径记录（M2.6 验收「恢复演练通过」；G-5 快照目的地缺口见 known-gaps）。
+
+#### TC-OPS-06 CSV 授权批量导入【集成｜M2】
+
+- **步骤**：① 导入 500 行 CSV（username, dim_key, values…, expires_at）；② CSV 含 org 列且与路径不一致；③ CSV 混入 sync 维度行；④ 目标用户无有效成员关系；⑤ 重复导入同文件。
+- **预期**：① 幂等全量替换、差异预览后生效（M2.6 验收「批量导入 500 行正确」）；② 整批拒绝；③ sync 授权不动（T-CSV 主断言）；④ 拒绝该用户行（防孤儿授权）；⑤ 二跑零差异（幂等）。
+
+#### TC-OPS-07 维度退役与取值停用治理【集成｜M2】
+
+- **步骤**：① `PATCH values/{id} status=disabled` 带 dry_run；② `POST dimensions/{id}/retire`。
+- **预期**：① dry_run 返回影响面预估（受影响文档/用户数）、确认后停用=收紧进计算（T3 联动）+ 审计；② 退役带影响面预估 + 二次确认 + 审计，退役后编译产物不再含该维度条件（T20 退役半句——唯一放宽路径必有审计）。
+
+#### TC-OPS-08 members grants 全量替换【集成｜M2】
+
+- **步骤**：`PUT /api/orgs/{org}/members/{id}/grants` 替换 u1 的 local 授权，u1 另有 sync 授权。
+- **预期**：仅 local 授权被替换，sync 不动（§6.2 端点语义）；支持 expires_at；审计入 outbox。
+
+#### TC-OPS-09 跨组织隔离汇总【矩阵｜M2】
+
+- **步骤**：u_gl（仅 org:gl）对 org:tax 的检索 / 文档详情 / 任务 / 审计 / 语义端点全量扫描。
+- **预期**：全部拒绝或空集——`org_id = :org` 第一条件 + 成员关系校验（M2.6 验收「跨组织隔离全绿」；T15 / T-S7 汇总）。
+
+---
+
+## 三、越权矩阵（T1~T23 + T-CSV + 补充行——CI 常跑）
+
+> 覆盖口径（design §9）：原矩阵七因子 + v0.3 四组 + T1~T19（#33）+ T20~T23（#34）。**标准矩阵 fixture**（pytest fixture 工厂，本节全部用例复用）：
+>
+> - **组织**：`org:tax`（主）、`org:gl`（隔离对照）。
+> - **维度（org:tax）**：`region`（required=1, active；值 CN/OS）、`tax_type`（required=0, active；值 VAT/CIT）、`channel`（新增维度演练——建维度时库内已有存量文档，零回填）。
+> - **用户**：`u_full`（region=[CN,OS]，tax_type=[VAT]）；`u_cn`（region=[CN]，tax_type 无授权）；`u_os`（region=[OS]）；`u_expired_grant`（region=[CN] 授权行 expires_at=昨天）；`u_expired_member`（成员关系 expires_at=昨天、授权行未过期）；`u_owner`（d_cn 的 owner，region=[OS]——授权与 owner 错位锚点）；`admin_tax`（org_admin，无维度授权）；`sysadmin`；`u_gl`（仅属 org:gl）。
+> - **文档（org:tax / vat_lib）**：`d_cn`（region=[CN]，tax_type=[VAT]）、`d_multi`（region=[CN,OS]）、`d_empty_region`（region 无值）、`d_cit`（tax_type=[CIT]）、`d_os`（region=[OS]）；版本用例另造 pending/切换序列。
+> - 时间类一律造数（直接写过期时间戳）。
+
+### 3.1 基线因子 → 用例映射
+
+| §9 基线因子 | 落点 |
+|---|---|
+| 用户授权基本过滤 | T1 / T3 / T22、TC-ACL-02 |
+| 文档维度多值（维度内 OR） | T5（d_multi）、TC-ACL-02 |
+| 库过滤（datasets/doc_filter） | TC-RET-07、TC-E2E-01 |
+| 可选维度空值放行 | T5 / T22（d_empty_region） |
+| 新增必选维度未回填 | T20①②（channel） |
+| 移出组织重加 | TC-SCAF-05（级联）+ T2/T23（不复活） |
+| 跨组织 | T15、TC-OPS-09、T-S7（语义） |
+| MCP 统计不泄露 | TC-AZ-02 |
+| v0.3 版本中间态组 | T6 / T8 / T9 / T21 |
+| v0.3 删维度取值组 | T3 / T19 |
+| v0.3 PATCH 越权组 | TC-AZ-01 |
+| v0.3 CSV 组 | T-CSV |
+
+### 3.2 T1~T23 逐条展开
+
+#### T1 过期授权：清理任务未跑仍不可见【矩阵｜M0a 单测先行→M1】
+
+- **前置**：u_expired_grant 对 region=[CN] 的授权行 expires_at=昨天；定时清理任务**从未运行**。
+- **步骤**：编译 u_expired_grant 的授权展开并检索 d_cn。
+- **预期**：展开 SQL 以 `expires_at > :now` 过滤该行——CN 不在授权集；d_cn 不可见、d_empty_region 可见（#33 P0-1①：过期即失效，不等清理）。
+
+#### T2 成员续期不复活旧授权【矩阵｜M0a→M1】
+
+- **前置**：u_x 曾属 org:tax（region=[CN]），成员关系已过期。
+- **步骤**：① 过期期间检索；② 恢复访问：先 DELETE membership 再重插（续期禁令下的唯一路径——触发器见 T23）；③ 重插后检索 d_cn 并查其授权行。
+- **预期**：① 第 0 步拒绝（无有效成员关系）；②③ DELETE 触发级联清授权——重插后授权集为空，d_cn 不可见（旧授权不复活——#33 P0-1）。
+
+#### T3 停用取值收紧【矩阵｜M0a→M1】
+
+- **前置**：u_full（region=[CN,OS]）可见 d_os（region=[OS]）。
+- **步骤**：PATCH 取值 OS `status=disabled`（经 dry_run+确认）后立即检索。
+- **预期**：OS 视为「存在但无人被授予」——u_full 授权集变 [CN]，d_os 不可见、d_cn/d_multi 仍可见（D19 停用=收紧，非放宽）。
+
+#### T4 维度改可选/停用不放宽【单测｜M0a】
+
+- **步骤**：对 region 分别 UPDATE `required` 1→0、`enabled` 1→0，重新编译同用户产物并 diff。
+- **预期**：产物逐字不变（生命周期与过滤解耦——D5 v0.4；TC-ACL-04 的矩阵断言形态）。
+
+#### T5 可选维度有值则过滤【矩阵｜M0a→M1】
+
+- **前置**：tax_type 为可选（required=0）；u_cn 无 tax_type 授权。
+- **步骤**：u_cn 检索 d_cit（tax_type=[CIT]）与 d_empty_region。
+- **预期**：d_cit 不可见（有值→需交集，空交集=不可见）；d_empty_region 可见（无值放行）——可选性不影响过滤语义。
+
+#### T6 v2 改维度：切换前后无双方可见【矩阵｜M1】
+
+- **前置**：d_cn v1 region=[CN]；u_cn 可见。发起覆盖上传 v2 带 region=[OS]（pending_dims_json）。
+- **步骤**：pending 期间检索；切换事务后检索；全程以 TC-ACL-07 两种 ACL 写法各跑一遍。
+- **预期**：pending 期间按 v1 维度判权（v2 新维度不生效——P0-2.1）；切换后按 v2（u_cn 不可见）；**任一时刻两版本块不同时出现**；两写法结论一致。
+
+#### T7 并发覆盖 409【矩阵｜M1】
+
+- **步骤**：d_cn 存在 pending v2 时，再次发起覆盖上传（REST 与 MCP 两条路径）。
+- **预期**：409（同一时刻只有一个 pending——P0-2.3）；不产生第三个版本号。
+
+#### T8 失败版本无 FTS 残留【矩阵｜M1】
+
+- **步骤**：使 d_cn 的 pending v2 在 embed 阶段失败；以 v2 独有关键词 MATCH 检索。
+- **预期**：pending_status=failed；v2 块**立即物理删除**（经 ad 触发器移出 FTS）——MATCH 零命中；v1 继续服务不受影响。
+
+#### T9 切换后 FTS 层无旧版本命中【矩阵｜M1】
+
+- **步骤**：d_cn v1→v2 切换后，以仅 v1 内容含有的关键词 MATCH（绕过服务层直接查 FTS 也测）。
+- **预期**：零命中——版本条件在 FTS 路 JOIN 上（§5.1）；tombstone 行五列已清空（切换事务）。
+
+#### T10 待嵌入清单不含 tombstone【单测｜M1】
+
+- **步骤**：切换后查询待嵌入清单（`idx_chunks_vec_pending` 谓词：`embedding IS NULL AND tombstone=0`）。
+- **预期**：旧版本块不在清单（P1-2——否则切换后旧块重回待嵌入队列、回写复活）。
+
+#### T11 凭证跨组织/跨身份无效【矩阵｜M1】
+
+- **前置**：agent A 持 u_full@org:tax 委托 token 签发的 upload_id。
+- **步骤**：分别以 org:gl 上下文、其他用户、其他服务身份消费该凭证。
+- **预期**：全部拒绝——凭证绑定 sub+org+服务身份三一致（#33 P1-3；TC-CRED-03 矩阵形态）。
+
+#### T12 PUT 超量/哈希不符拒绝【矩阵｜M1】
+
+- **步骤**：PUT 超声明 size 字节；PUT 内容 sha256 与声明不符。
+- **预期**：均拒绝且凭证不标记已用（可重新正确上传）；200MB 全局上限独立生效（TC-CRED-02 矩阵形态）。
+
+#### T13 可信子系统越界/冒充拒绝并审计【矩阵｜M1（dev 白名单模拟）→M2（生产形态收口）】
+
+- **前置**：白名单服务 S（allowed_orgs=[org:tax]）。
+- **步骤**：S 声明 `X-On-Behalf-Of`=u_gl（非本组织用户）调用；S 带 org:gl 上下文调用；白名单外服务 S2 冒充 S 调用；无用户在场证据调用。
+- **预期**：全部拒绝且 `outcome=refused` 进审计（#33 P1-5；三约束展开见 TC-AUTH-05）。里程碑口径见附录 A-1。
+
+#### T14 org claim 与头不一致 400【矩阵｜M1】
+
+- **步骤**：① token org claim=org:tax，注入头 X-Org-Id=org:gl；② 两者皆缺；③ 工具参数带 org=org:gl；④ REST 路径 org 与头不一致。
+- **预期**：①400 ②400（无隐式默认）③ 参数忽略+审计 ④400（D18 统一规则；TC-AUTH-02 矩阵形态）。
+
+#### T15 他组织维度 id 403/404【矩阵｜M1】
+
+- **步骤**：u_gl（org:gl 管理员）对 org:tax 的 dimension id / value id / document id / grant 端点逐个调用。
+- **预期**：全部 404（存在性敏感端点）或 403（明确越权端点）——按端点固定并在 API 文档落字（口径见附录 A-2）；绝不返回他组织资源内容；跨组织检索空集。
+
+#### T16 生产配置 token 端点 404【矩阵｜M1】
+
+- **步骤**：以生产配置启动服务，调 `POST /api/dev/token`。
+- **预期**：404（路由未注册——P1-7；TC-AUTH-01 矩阵形态）。
+
+#### T17 授权撤销后 owner 不再见在用文档【矩阵｜M1】
+
+- **前置**：u_owner 是 d_cn 的 owner，region=[OS]（d_cn region=[CN]——不可见）。
+- **步骤**：u_owner 检索 d_cn；调 `list_documents` 与文档详情。
+- **预期**：检索/召回零命中——**检索路径无 owner 分支**（#34 必修 2）；list_documents/详情可见自己文档的**元数据与状态**（不返回块内容）——owner 兜底走管理面。
+
+#### T18 报告页近邻不泄露无权内容【矩阵｜M1】
+
+- **前置**：u_cn 的质量报告某 flag 的 detail_json 近邻含 OS-only 块。
+- **步骤**：u_cn 查看质量报告明细。
+- **预期**：近邻展示过同一套 ACL 或仅数值——OS-only 块内容/标题不出现（#33 P1-10）。
+
+#### T19 删文档/删库：按定义成功或明确报错【矩阵｜M1（删文档）/ M2（删库）】
+
+- **步骤**：① 删除无任务运行的文档；② 删除摄取中的文档；③ 对仍有文档的库删除。
+- **预期**：① 成功（级联+取消任务）；② 成功（任务取消在阶段边界生效）；③ 明确业务报错——**非裸外键异常**（RESTRICT 之上服务层先校验）。
+
+#### T20 新建维度零消失 / 回填只收紧 / 生命周期不放宽 / 仅退役放宽且有审计【单测｜M0a（审计半句 M2）】
+
+- **步骤**：① 新建 active 必选维度 channel（存量文档零回填）→ 全用户检索；② 回填 d_cn channel=[A]（u_full 无 channel 授权）→ 检索；③ channel `required` 1→0、`enabled` 1→0 → 检索；④ channel `retire`（dry_run+确认+审计）→ 检索。
+- **预期**：① 存量文档零消失（空值放行）；② d_cn 对 u_full 不可见（回填即收紧）、d_empty 仍可见；③ 可见性不变（不放宽）；④ channel 条件从产物消失=唯一放宽路径，且退役事件已入 outbox 审计（#34 必修 1 全四断言）。
+
+#### T21 授权撤销后 owner 覆盖上传：处理窗口检索不到任何版本【矩阵｜M1】
+
+- **前置**：u_owner 的 region=[OS] 授权被撤销（现无 CN）；d_cn（region=[CN]）owner=u_owner，在用 v1。
+- **步骤**：u_owner 发起覆盖上传 v2（写权限校验：新维度取值须在其授权内——见 TC-AZ-01；owner 的管理操作放行）→ v2 处于 pending 全程检索 d_cn。
+- **预期**：处理中窗口 v1、v2 均**零命中**（旧版本按 v1 维度判权已不可见；pending 块本就不可见）——彻底消除 owner 借覆盖窗口重看全文的越权路径（#34 必修 2 验收句）。
+
+#### T22 无授权维度只见空值文档；空集不出 `IN ()`【单测｜M0a】
+
+- **步骤**：u_cn（tax_type 零授权）检索全库；断言编译产物文本。
+- **预期**：只见 tax_type 为空的文档（d_empty_region 等）；产物为 `NOT EXISTS(…)` 单条件，**无 `IN ()`**（#34 必修 3；SQL 语法非法兜底）。
+
+#### T23 过期成员关系续期被拒；先删再加旧授权不复活【单测｜M0a（触发器）/ 矩阵｜M1（行为）】
+
+- **步骤**：① 对 expires_at=昨天的 membership 行 UPDATE expires_at=未来；② DELETE 后重插同用户 membership；③ 查其旧授权。
+- **预期**：① 触发器 ABORT（`expired membership: delete then re-add`）；②③ 级联清理已发生——旧授权不存在（与 T2 行为半句互证）。
+
+### 3.3 补充矩阵行（§9 未编号、验收引用）
+
+#### T-CSV CSV 导入只替换 local 授权【矩阵｜M2】
+
+- 见 TC-OPS-06 展开（M2.6 验收引用名）；主断言：sync 来源授权在 CSV 全量替换后原样保留。
+
+#### TC-AZ-01 上传/PATCH 取值限操作者授权内【矩阵｜M1】
+
+- **步骤**：① u_cn（region=[CN]）上传 region=[OS] 文档；② u_cn PATCH d_cn 维度 region [CN]→[OS]（新值越权）与 [OS]→[CN]（旧值越权——文档先造为数组含 OS）；③ admin_tax 代标。
+- **预期**：①② 拒绝——**新旧取值均须在操作者授权集合内**（#31 P1-1/#32 P1-4：防把文档推向无权范围或打自己看不见的值）；③ org_admin 走审批/代标路径（管理动作进审计）。
+
+#### TC-AZ-02 统计与概况不泄露【矩阵｜M1】
+
+- **步骤**：u_cn 调 `list_documents` 与读 MCP 工具描述注入的组织/维度概况；对照 u_full 结果。
+- **预期**：`doc_count/chunk_count` 等一切统计按调用者权限计算——不可见文档的存在与数量不泄露（#31 P1-8）。
+
+#### TC-AZ-03 org_admin 管理权与可见权分离【矩阵｜M1/M2】
+
+- **步骤**：admin_tax（无 region 授权）：① 检索；② 文档管理列表；③ 改维度/授权管理端点。
+- **预期**：① 与普通成员同口径（不绕过维度可见性）；② 管理列表只列**自己维度可见**的文档（#32 P1-4 方案 A）；③ 管理端点可用（管理权独立）。
+
+#### TC-AZ-04 系统管理员仅管理权 + 临时授权【矩阵｜M2】
+
+- **步骤**：① sysadmin 跨组织检索；② sysadmin 建组织/指定 org_admin；③ 经临时授权（memberships/expires_at）访问数据。
+- **预期**：① 拒绝——无跨组织数据可见权；② 成功；③ 临时授权生效期内可见、审计留痕、到期自动失效（#31 P1-2 / P1-7）。
+
+#### TC-AZ-05 库过滤与 doc_filter 收窄【矩阵｜M1】
+
+- **步骤**：u_full 持多库文档，分别带/不带 `datasets`、`doc_filter` 检索。
+- **预期**：过滤为组织内可选收窄（交集语义）；不带过滤=权限内全部；库不承担权限（D15——无库级放宽路径）。
+
+---
+
+## 四、语义层用例（D23，M2-S1~S3）
+
+> 语义 fixture（叠加在标准矩阵 fixture 上）：`org:tax` 内——template `TPL_VAT_INPUT`（字段 `TAX_AMT`）、table `ods.vat_input_invoice`（列 `tax_amt`）、scenario `SC_GENERAL`（uses 模板）、report `VAT_MAIN`（项 `L12`）、concept `vat.input_credit`（YAML 纯人工、含别名「进项抵扣/抵进项」）；`org:gl` 内同名 key 的另一套实体（隔离对照）；restricted 实体 `concept:tax.scheme.internal`（sensitivity=restricted）；环图样本（A→B→C→A）与高扇出样本（一表 300 列、一模板被 10 场景 uses）。词典 `dict_rev` 造数两版 r1/r2。
+
+### 4.1 T-S1~T-S12 逐条展开（§9 冻结编号）
+
+#### T-S1 同步不覆盖人工字段【矩阵｜M2-S2】
+
+- **前置**：YAML 已为 `template:TPL_VAT_INPUT` 写入 definition/caliber 与 manual 别名「进项模板」（curated_rev=r1）。
+- **步骤**：源端（mock 适配器）改模板 name 后跑同步；查 `sem_entities` 行。
+- **预期**：`name` 更新（事实列）；`curated_json` 原样；`kind IN ('manual','abbr')` 别名原样；`kind IN ('name','code','sync')` 别名按新 name 重建——「同步不覆盖人工」由列级分工保证（#35 §13.1；TC-SYNC-05 机制互证）。
+
+#### T-S2 删除比例保护【集成｜M2-S1】
+
+- **步骤**：mock 源端分别返回 ① 空快照；② 少 30% 实体的快照（阈值默认 20%）；③ 少 10% 的快照，各跑一次 run。
+- **预期**：①② run 置 `aborted_guard`、**零写入**（库内实体/关系/别名逐行 diff 为空）、产生告警；③ 正常执行、消失实体转 missing——全量快照语义是保护前提（FR-S1）。
+
+#### T-S3 同步幂等【单测｜M2-S1】
+
+- **步骤**：同一快照连续跑两次，读第二次 run 的 `stats_json`。
+- **预期**：inserted / updated / missing 均为 0（M2-S1 验收句）；`synced_at` 刷新属预期、不计入 updated。
+
+#### T-S4 宽限期状态机【集成｜M2-S1 机制 / M2-S2 验收】
+
+- **步骤**：① 源端快照移除实体 X 后同步（造数 X 的 `synced_at`=今天）→ X 状态？② 次日快照恢复 X 再同步；③ 造数 `synced_at`=8 天前且快照仍无 X 再同步。
+- **预期**：① X 置 `missing`（关系保持）；② X 回 `active`；③ X 置 `retired` 且其关系一并 `retired`（默认 7 天——防源端偶发空返回清空图的双保险之二）。
+
+#### T-S5 关系白名单与组织一致性触发器【单测｜M2-S1】
+
+- **步骤**：向 `sem_relations` 依次插入：① src 属 org:gl、dst 属 org:tax 的跨组织关系；② `rel_type`/端点类型组合不在 `sem_rel_types` 白名单（如 concept→column 的 has_field）；③ UPDATE 已有关系的 src_id/dst_id/rel_type/org_id。
+- **预期**：①② INSERT 被 `trg_sem_rel_check` ABORT；③ 被 `trg_sem_rel_noupdate` ABORT——要改先删再插（#35 §13.1）。
+
+#### T-S6 递归展开防环/深度/截断【单测｜M2-S1】
+
+- **步骤**：对环图样本（A→B→C→A）`get_entity(A, expand, depth=2)`；请求 depth=3；对高扇出节点（表 300 列）展开（fanout_limit 默认 50）；请求 fanout_limit=500。
+- **预期**：环图正常返回不死循环（path 防环）；depth=3 服务端拒绝（≤2 强制）；300 列按 50 截断且 `truncated=true`；fanout_limit 上限 200、节点上限 500（默认 200）。
+
+#### T-S7 语义组织隔离【矩阵｜M2-S3】
+
+- **步骤**：u_gl（org:gl）调 annotate / search_entities / get_entity / describe_table / `GET /semantic/l0`，目标均为 org:tax 的同名 key 实体。
+- **预期**：不返回 org:tax 任何实体（annotate 无 span、search 无命中、get_entity 404）；两组织 `dict_rev` 互相独立（gl 构建不触达 tax 词典）；`sem_*` 全表带 org_id + 查询第一条件同 docs（T-S7 全四断言）。
+
+#### T-S8 实体召回不放宽 ACL【矩阵｜M2-S3】
+
+- **前置**：块 b1 属 d_os（region=[OS]，u_cn 不可见）；b1 被 AC 打标命中实体 E（concept，u_cn 可见 E 本身）。
+- **步骤**：u_cn 调 `search(query, entities=[E])`（实体召回路启用）；断言三路（FTS/向量/实体）结果并集 ⊆ u_cn 可见块集合。
+- **预期**：b1 不出现在任何一路——实体路 SQL 复用 §5.1 同一编译产物（同一编译器、同一产物）；三路并集断言逐块成立（#35 §13.1 核心 ACL 不变式）。
+
+#### T-S9 restricted 实体静默不可见【矩阵｜M2-S3（annotate 侧 M2-S2 可先行）】
+
+- **前置**：restricted 实体 R（别名「内部税收筹划方案」）。
+- **步骤**：无 `semantic:restricted` 权限的成员：① annotate 含 R 别名的文本；② get_entity(R)；③ 从 R 的邻居实体展开关系；④ search_entities 搜 R 别名。
+- **预期**：① 无 span（表现为不存在）；② 404；③ R 节点不出现；④ 无命中——存在性零泄露（G-3 已接受其静默性衍生效应；持权调用方全程可见且访问进权限审计）。
+
+#### T-S10 版本切换/删块 untag 同事务【集成｜M2-S3】
+
+- **步骤**：① 已打标文档覆盖上传并切换版本；② 删除已打标文档；随后查 `sem_chunk_entities` 与对账任务日志。
+- **预期**：① 旧版本块的 tag 行在**切换事务内**清除；② 删除同事务清除；定时对账任务兜底运行后断言零残留（刻意的无外键设计靠纪律+对账——design §4 设计说明②）。
+
+#### T-S11 describe_table 白名单与降级【集成｜M2-S1】
+
+- **步骤**：① 对已登记 table 实体调 describe_table；② 对未登记的表名调用；③ mock 元数据系统超时（>3s）；④ 5 分钟内重复调用①。
+- **预期**：① 透传列类型/样例/分区/血缘；② 403（防借此枚举整个数仓）；③ 返回轻量节点信息 + `degraded=true`；④ 命中缓存（mock 二次未被请求——缓存 5min）。
+
+#### T-S12 构建原子切换【集成｜M2-S2】
+
+- **步骤**：新词典构建进行中（building）并发 annotate 请求；再注入构建失败。
+- **预期**：构建期间请求全部用旧 `dict_rev`（r1）服务；失败后 r1 继续服务、r2 置 failed 不切 ready（懒加载按 (org, dict_rev) 切换——#35 §13.1）。
+
+### 4.2 TC-SYNC 同步流程
+
+#### TC-SYNC-01 per-org 连接解析【单测｜M2-S1】
+
+- **步骤**：config 配 org:tax / org:gl 两套 endpoint；`fetch(org)` 分别调用。
+- **预期**：各 org 解析各自实例（per-org 结构，重启生效——#37 前置条件③）；未配置 org 报配置错误（不静默跳过）。
+
+#### TC-SYNC-02 metadata 适配器只拉被引用【单测｜M2-S1】
+
+- **步骤**：构造 `backed_by`/`maps_to` 引用表 t1 + YAML 显式列出 t2 + 未引用 t3 的源端。
+- **预期**：只拉 t1、t2 的 table/column 节点，t3 不落库——不做全量镜像（FR-S1）。
+
+#### TC-SYNC-03 分批与单事务【单测｜M2-S1】
+
+- **步骤**：快照含 2500 实体，观察写入批次。
+- **预期**：每批 ≤1000 行提交（写锁治理——NFR-11）；批间失败重跑幂等（upsert）。
+
+#### TC-SYNC-04 关系端点冲突不写入【单测｜M2-S1】
+
+- **步骤**：快照含 src 端点在库内不存在的 RelationRecord。
+- **预期**：该关系跳过、run `stats_json.conflicts` 计数 + 冲突报告可查（不阻断整批）。
+
+#### TC-SYNC-05 别名三 kind 重建【单测｜M2-S1】
+
+- **步骤**：同步前库内已有 manual/abbr 别名；同步后查别名表。
+- **预期**：`name/code/sync` 三 kind 先删后插（按新快照）；`manual/abbr` 行原样——与 T-S1 列级分工互证。
+
+#### TC-SYNC-06 维度属性可选携带与填充率告警【单测｜M2-S1（对冲项）】
+
+- **步骤**：① mock 源快照携带模板 region 字段（值域含本地无的码）同步；② 平时携带率的源突然大面积缺值。
+- **预期**：① 维度绑定数据落库、值域走显式映射表；**可见性不受影响**（实体维度 ACL 为 NFR-5 演进缝，触发前不启用——#37）；② 触发填充率骤降告警；同步报告展示 per-source 是否携带与填充率。
+
+#### TC-SYNC-07 run 记录与审计【单测｜M2-S1】
+
+- **步骤**：任一适配器跑一次 run（成功与 aborted_guard 各一）。
+- **预期**：`sem_sync_runs` 落 running→终态与 stats_json；`semantic.sync` 事件入 audit_outbox（权限事件走 outbox——FR-6 语义层事件）。
+
+#### TC-SYNC-08 手动触发与权限【矩阵｜M2-S1】
+
+- **步骤**：① org_admin 调 `POST /semantic/sync/{adapter}`；② 普通成员调用；③ 查 `GET /semantic/builds · sync-runs`。
+- **预期**：① 成功（semantic:admin）并写 outbox；② 403；③ org_admin 可见、普通成员 403（§6.2 端点权限）。
+
+### 4.3 TC-YAML 覆盖层与 CI 校验
+
+#### TC-YAML-01 合并正路【单测｜M2-S2】
+
+- **步骤**：YAML 覆盖层引用已同步 id（definition/别名/extra_relations），跑 yaml_merge。
+- **预期**：写 `curated_json`、manual/abbr 别名、`source='curated'` 关系；`curated_rev` 记 commit SHA；纯人工实体仅 concept/system 可建（其余 type 报错）。
+
+#### TC-YAML-02 冲突与拦截规则（合并规则表逐行）【单测｜M2-S2】
+
+- **步骤**：依次构造 §5.8 合并规则表右侧各行场景：引用未同步/已 retired id、纯人工与同步实体 (type,key) 同键、同别名指向多实体且无消歧、短于 2 字/常用词别名（无 context/fuzzy_only 标注）、extra_relations 与同步重复、端点类型不在白名单、YAML 删除覆盖项、L0 超预算（>1500 token）。
+- **预期**：与规则表逐行一致——未同步不写入记冲突（实体恢复后自动生效：补一条恢复后生效断言）；同键报错；歧义别名要求 disambiguation 或 context；短词拦截；重复以同步为准提示可删；端点拦截；删除清 curated/manual 不动事实列；L0 超预算 CI 拦截。
+
+#### TC-YAML-03 webhook【集成｜M2-S2】
+
+- **步骤**：① 带正确签名调 `POST /semantic/yaml/webhook`；② 错误签名；③ 服务身份缺失。
+- **预期**：① 触发 yaml 合并 + 构建（§6.2）；②③ 拒绝——Git 回调入口仅服务身份。
+
+#### TC-YAML-04 CI 校验全集【单测｜M2-S2】
+
+- **步骤**：对含各类违规的 YAML 仓跑 CI（JSON Schema、别名冲突、短词/常用词、L0 预算、owner 必填、引用可解析）。
+- **预期**：逐类拦截并给出可定位错误（owner 缺失逐条报——「每条 YAML 必填 owner」）。
+
+#### TC-YAML-05 过渡期两端一致【契约｜M2-S3】
+
+- **步骤**：同一份 YAML + 同一文本分别过本地 AC（过渡期 package）与服务端 annotate。
+- **预期**：mentions 完全一致（规范化函数与 schema 抽小 package 两端共用——迁移零改动承诺的验证；切换灰度时用评测集对比）。
+
+### 4.4 TC-BUILD 构建产物
+
+#### TC-BUILD-01 dict_rev 与跳过【单测｜M2-S2】
+
+- **步骤**：同一 (active 实体+别名+yaml commit) 组合构建两次；改一条别名再构建。
+- **预期**：dict_rev 相同则第二次跳过（不产新 build）；变更后新 rev 构建。
+
+#### TC-BUILD-02 产物四件套【单测｜M2-S2】
+
+- **步骤**：构建后断言：AC 自动机仅收 `match_mode IN ('exact','context')` 别名；模糊索引（sem_vec/拼音/编辑距离辅助表）就绪；L0 片段渲染（l0: true 条目）；构建报告含冲突/歧义别名/孤立节点/断链关系/评测指标。
+- **预期**：四件齐备、报告字段齐（fuzzy_only 别名不进 AC——防误报）。
+
+#### TC-BUILD-03 原子切换与懒加载【单测｜M2-S2】
+
+- 见 T-S12 展开；补充断言：旧版本产物保留到无请求使用（引用计数语义），服务按 (org, dict_rev) 取用。
+
+#### TC-BUILD-04 评测回归门槛【单测｜M2-S2】
+
+- **步骤**：mock 评测指标较上一版下降 >2 个百分点（如 precision 0.96→0.93）构建。
+- **预期**：不切 ready、需人工确认（TC-SEV-02 联动）。
+
+#### TC-BUILD-05 重标投递【单测｜M2-S2】
+
+- **步骤**：构建涉及别名增删 vs 仅改 definition 两种 diff。
+- **预期**：前者投递 `semantic_retag`（dict_rev 落后块重标）；后者不投递（避免无谓重标风暴）。
+
+### 4.5 TC-SEM 语义工具契约
+
+#### TC-SEM-01 规范化同函数【单测｜M2-S2】
+
+- **步骤**：全角/半角/NFKC 等价形（「进项抵扣」全半角、大小写混排）annotate。
+- **预期**：与 `alias_norm` 同一规范化（NFKC/全半角/小写/去空白）后命中——抽取的小 package 单测复用。
+
+#### TC-SEM-02 最长匹配与权重【单测｜M2-S2】
+
+- **步骤**：构造重叠别名「进项」「进项抵扣」与等长不同 weight 别名。
+- **预期**：重叠留长 span；等长取 weight 高者。
+
+#### TC-SEM-03 消歧四级顺序【单测｜M2-S2】
+
+- **步骤**：歧义别名命中多实体，分别构造：① 同句有与候选之一 1 跳关系的其他命中实体；② 无①但传 `context_entities`；③ 无②但传 `prefer_types`；④ 三者皆无。
+- **预期**：按序消解——①共现定案 > ②会话焦点 > ③类型先验 > ④返回全部候选 `ambiguous=true`（confidence 不标 1.0——中间件不自动注入）。
+
+#### TC-SEM-04 context 短别名条件保留【单测｜M2-S2】
+
+- **步骤**：`match_mode='context'` 短别名分别在：① 同句有其他确定命中且两者有关系；② 同句有命中但无关系；③ 无其他命中的文本中出现。
+- **预期**：①保留；②③丢弃（短词防误报机制——FR-S3）。
+
+#### TC-SEM-05 search_entities / get_entity 契约【单测｜M2-S1（S3 补拼音/向量）】
+
+- **步骤**：search_entities：别名精确命中、前缀命中、拼音、向量各构造一例，断言排序与 `top_k ≤50`、`q ≤200`；get_entity：key/id 二选一、`include` 各参数、expand 带方向后缀（`uses>` / `derived_from<`）。
+- **预期**：排序链「别名精确 > 前缀 > 拼音 > 向量」（拼音/向量 M2-S3 交付——G-1 收窄选项可前移，届时本用例前置）；get_entity 返回 entity/nodes/edges/truncated/dict_rev 结构齐。
+
+#### TC-SEM-06 L0 导出【单测｜M2-S2】
+
+- **步骤**：`GET /api/orgs/{org}/semantic/l0`；构造 l0 条目超预算的 YAML。
+- **预期**：返回片段 + `dict_rev`；超预算被 CI 拦截（TC-YAML-02 联动）；刷新机制随 G-4 于 M2-S3 定（附录 A-5）。
+
+#### TC-SEM-07 annotate 契约与限流【单测｜M2-S2】
+
+- **步骤**：① 正常 annotate（≤4000 字）断言输出结构（dict_rev/mentions[span,surface,entity_id,type,name,confidence,via,ambiguous,brief]/candidates）；② >4000 字；③ `context_entities` >20。
+- **预期**：① 结构齐、via='ac'；② 拒绝或截断（按实现固定并落 API 文档）；③ 拒绝。AC 层 P99 <5ms、整体 P99 <20ms 见 TC-PERF-05。
+
+#### TC-SEM-08 agent 中间件契约【契约/观察｜M2-S3】
+
+- **步骤**：过渡期本地 AC 与服务端 annotate 灰度开关切换；观察中间件行为。
+- **预期**：注入规则——confidence=1.0 非歧义命中按类型注入 L1（概念带 brief/消歧、对象只一行 name+type+id）；歧义只注候选提示；本轮注入 ≤600 token 超出按 confidence 与出现顺序截断；annotate 超时 200ms 本轮跳过（NFR-11 降级）——中间件住 agent 侧，本侧验收为接口契约与灰度对比记录。
+
+#### TC-SEM-09 模糊兜底三层【单测｜M2-S3（依赖 G-2 澄清）】
+
+- **步骤**：构造同音错字（「留底」→「留抵」）、编辑距离 1（长度 ≥4 别名）、语义近邻（阈值 0.75）三例，`fuzzy=true` annotate。
+- **预期**：分别经拼音完全匹配 / 编辑距离 / 向量近邻 top-3 命中；结果 `via='fuzzy'`、confidence 低于第 1 层、落 candidates；jieba 词性筛选只对名词片段跑——**触发者/消费者口径按 G-2 澄清后修订**（附录 A-4）。
+
+### 4.6 TC-TAG 打标与实体召回
+
+#### TC-TAG-01 ingest 同事务打标【集成｜M2-S3】
+
+- **步骤**：① 正常摄取含「进项抵扣」的文档，查 `sem_chunk_entities` 与 chunks 事务性（造中途失败断言同回滚）；② mock AC 自动机抛错再摄取。
+- **预期**：① tag 行与块写入同事务（index_fts 阶段）；② 摄取**不阻断**——记 warning、文档标记待重标（交 semantic_retag）。
+
+#### TC-TAG-02 semantic_retag【集成｜M2-S3】
+
+- **步骤**：词典 r1→r2（别名增删）后跑 retag；观察优先级与限速。
+- **预期**：仅 `dict_rev` 落后的块分批重标；任务优先级最低（不与 ingest 抢资源——写锁治理）；retag 后 dict_rev 字段更新。
+
+#### TC-TAG-03 untag 与对账【集成｜M2-S3】
+
+- 见 T-S10 展开；补充：对账任务独立造数残留行验证清理能力（兜底路径自身可测）。
+
+#### TC-TAG-04 expand 召回关系集【单测｜M2-S3】
+
+- **步骤**：`semantic.expand(ids, ENTITY_RECALL_RELS, depth=1)`——种子含被 10 场景 uses 的模板。
+- **预期**：只沿 `refers_to/has_field/maps_to/related_to` 低扇出关系（**不沿 uses**——防召回发散）；结果 ≤50；1 跳。
+
+#### TC-TAG-05 实体路 SQL 与 matched_entities【单测｜M2-S3】
+
+- **步骤**：`search(entities=[E])`；构造种子命中与扩展命中两类块。
+- **预期**：得分 = Σhits×（种子 1.0 / 扩展 0.5）；`k_entity` 默认 30；返回块附 `matched_entities`（agent 解释召回原因）；三路 RRF 融合进 rerank（§5.10 顺序不变）。
+
+---
+
+## 五、性能与评测
+
+### TC-PERF 性能抽测
+
+#### TC-PERF-01 按块 vs 按文档 ACL 计算【性能｜M0b】
+
+- **口径**：同一授权展开函数两种写法（json_each 每块 / visible_docs CTE 按文档），1/5/10 万块三档 P95。
+- **预期**：产出实验报告并选定路线（结论回写 schema v1.1——dims_json 去留在此定，design M0b.1）。
+
+#### TC-PERF-02 向量同表 vs 分表【性能｜M0b】
+
+- **口径**：chunks.embedding 同表 vs chunk_vectors 分表的回表耗时与 WAL 放大（4KB/块）。
+- **预期**：结论随 v1.1 迁移落（M0b.2）。
+
+#### TC-PERF-03 SLO 压测【性能｜M0b 标定 / M1 基线】
+
+- **口径**：N=5 并发、~10 万块，search P95 ≤2s（NFR-8）；预算表逐项：query 嵌入 ≤150ms / 双路召回 ≤300ms / rerank ≤1000ms / 其余 ≤200ms / LLM 增强 800ms 并行不计关键路径。
+- **预期**：分项延迟埋点出数；超标触发双降级开关验证（TC-RET-06）。
+
+#### TC-PERF-04 rerank 并发与嵌入吞吐【性能｜M1】
+
+- **口径**：rerank 并发信号量上限下的吞吐曲线；CPU 嵌入分批吞吐（块/分钟）。
+- **预期**：出吞吐曲线支撑 M2 生产化容量规划（NFR-3 风险标定）。
+
+#### TC-PERF-05 语义 P99【性能｜M2-S】
+
+- **口径**：annotate 整体 P99 <20ms（AC 层 P99 <5ms）；get_entity depth=2 P99 <50ms（NFR-11）。
+- **预期**：万级词典 + 高扇出图样本下达标；AC 自动机按 (org, dict_rev) 懒加载不重复构建。
+
+### TC-EVAL 评测与门禁（docs）
+
+#### TC-EVAL-01 M1 小型黄金集【评测｜M1】
+
+- **口径**：20~50 条真实中英 query（待决-1 未到位前以合成/公开样例先行、验收顺延），人工标注 top-10；Recall@k / MRR 自算（集合运算、零 LLM）。
+- **预期**：M1 检索调参（分词/权重/阈值）有度量依据——出基线报告（M1 验收）。
+
+#### TC-EVAL-02 M3 完整黄金集【评测｜M3】
+
+- **口径**：ragas TestSetGenerator 双语合成 + 人工抽检修正；覆盖纯中/纯英/中英混排三态。
+- **预期**：黄金集覆盖三态断言（M3 验收）。
+
+#### TC-EVAL-03 judge 双语校准【评测｜M3】
+
+- **口径**：~50 条人工双评 vs judge（内部网关）；一致率 / κ。
+- **预期**：达阈值（阈值数值 M3 校准后定——附录 A-6）；judge prompt 双语。
+
+#### TC-EVAL-04 deepeval 门禁【评测｜M3】
+
+- **步骤**：人为注入一次检索层回归（如调坏权重）推 CI。
+- **预期**：门禁**卡住**该回归（M3 验收原句）；正常变更不误报。
+
+#### TC-EVAL-05 在线引用锚点抽样【观察｜M3】
+
+- **口径**：agent 会话引用 chunk_id 存在性抽样打标（引用不存在 ID = 幻觉证据）。
+- **预期**：抽样管道出数、比例记录（记录级）。
+
+#### TC-EVAL-06 区分度误报抽查【评测｜M1】
+
+- **口径**：flags 抽样人工复核误报率（M1 验收「区分度误报抽查」）。
+- **预期**：绝对阈值经真实语料重标定后误报可控（记录结论支撑阈值调整）。
+
+### TC-SEV 语义识别评测
+
+#### TC-SEV-01 评测集构建规格【评测｜M2-S2】
+
+- **口径**：150~200 条真实问法（工单/群聊/agent 日志），人工标注 span 与 entity_id；覆盖四类黑话、缩写、错别字、歧义词、负样本 ~20%。
+- **预期**：集合格式与标注规范落仓库（每次构建自动运行的输入）。
+
+#### TC-SEV-02 构建回归门槛【评测｜M2-S2】
+
+- **口径**：每次 semantic_build 自动跑评测集；门槛：AC 层 precision ≥0.95 / recall ≥0.80；歧义消解 ≥0.85（只统计歧义样本）；负样本误报 ≤0.05。
+- **预期**：指标进构建报告；较上版降 >2pp 不切 ready（TC-BUILD-04 联动；M2-S2 验收句）。
+
+#### TC-SEV-03 检索增益评测【评测｜M2-S3】
+
+- **口径**：docs 黄金集上开/关实体召回路对比 recall@10 与 MRR。
+- **预期**：**不回退才允许 `auto_entities` 默认开启**，否则保持显式参数（M2-S3 验收句）；AC+模糊 recall@3 ≥0.92 一并断言。
+
+---
+
+## 六、里程碑验收对照（收尾逐条勾验）
+
+| 里程碑 | 验收用例集（design §8 验收句 → 本文编号） |
+|---|---|
+| **M0a** | 孤儿行 IntegrityError：TC-SCAF-01；MCP 带 chunk_id 检索（开发 JWT）：TC-E2E-06；编译器单测先行：T1~T5、T20、T22（+T23 触发器半）＋TC-ACL-01~07、TC-SCAF-02~05；摄取/检索最小链：TC-ING-01~03/07、TC-FTS-01~03、TC-E2E-07 |
+| **M0b** | TC-PERF-01~03、TC-E2E-05（v1.1 迁移+foreign_key_check）；委托 token 客户端实测（TC-AUTH-04 附注） |
+| **M1** | **越权矩阵全绿：T1~T23 全量 + TC-AZ-01/02/05**（T13 以 dev 白名单模拟）；版本链：T6~T10、T21、TC-VER-01~07、TC-E2E-02；凭证：T11/T12、TC-CRED-01~05；检索配方：TC-RET-01~07、TC-E2E-01/04；区分度：TC-QUAL-01~05、TC-EVAL-06；真实 query 标注：TC-EVAL-01；性能：TC-PERF-03/04 |
+| **M2** | 杀 worker 不丢任务：TC-TASK-01/03/04、TC-E2E-03；outbox 一致性：TC-OPS-01；恢复演练：TC-OPS-05；跨组织隔离全绿：TC-OPS-09、T15、TC-AZ-04；批量导入 500 行（sync 不动）：TC-OPS-06 / T-CSV；生产化收口：TC-AUTH-03~05、T13/T16 生产形态、TC-OPS-02~04/07/08、TC-VER-08、TC-TASK-02/05 |
+| **M2-S1** | T-S2 / T-S3 / T-S5 / T-S6 / T-S11；「模板落在哪张表哪个字段」端到端：TC-SEM-05（get_entity/describe_table）+ fixture 关系链；同步流程：TC-SYNC-01~08、T-S4（机制）；性能：TC-PERF-05（部分） |
+| **M2-S2** | T-S1 / T-S4（验收）/ T-S12；AC precision ≥0.95 / recall ≥0.80、歧义 ≥0.85、负样本 ≤0.05：TC-SEV-01/02；构建回归 >2pp 不切 ready：TC-BUILD-04；YAML 与 CI：TC-YAML-01~04；annotate：TC-SEM-01~04/06/07、TC-BUILD-01~03/05 |
+| **M2-S3** | 越权矩阵 T-S7 / T-S8 / T-S9 / T-S10 全绿；AC+模糊 recall@3 ≥0.92：TC-SEV-03、TC-SEM-09；检索增益不回退方可默认开启：TC-SEV-03；打标/召回：TC-TAG-01~05；中间件切换：TC-SEM-08、TC-YAML-05 |
+| **M3** | 门禁卡住注入回归：TC-EVAL-04；judge 一致性达标：TC-EVAL-03；黄金集覆盖三态：TC-EVAL-02；在线锚点：TC-EVAL-05 |
+
+---
+
+## 附录 A：编写中发现的待澄清口径（建议走 issue / known-gaps 收口后再实现）
+
+> 本附录是展开用例时对规格做「可操作性压测」的产物（pulse-pet TEST-CASES 评审先例）。不构成决策变更，均为口径补写级；其中 A-4/A-5 已有 known-gaps 条目（G-2/G-4）。
+
+- **A-1 T13/T16 的 M1 可行性**：M1 验收要求矩阵 T1~T23 全绿，但可信子系统与 SSO 对接落地在 M2.2——本文按「M1 以 dev 白名单/静态 token 模拟跑通 T13、M2 生产形态收口」标注；若排期口径不同需回写 design §8。
+- **A-2 T15 的 403/404 分端点规则**：§9 只写「403/404」。本文按「404=存在性敏感读端点、403=明确越权写/管理端点」断言，实现时需把每个端点的选择固化进 API 文档。
+- **A-3 dims_json 投影刷新范围**：PATCH 文档维度后刷投影的作用域（在用版本块 / 全部版本块）未明写。本文按「在用版本块；pending 版本维度经切换事务落库（T6）」断言——若实现另选需回写本用例。
+- **A-4 fuzzy 层触发者/消费者（= G-2）**：TC-SEM-09 按 FR-S3 现文写（`fuzzy=true` 才跑、结果只作候选）；M2-S3 实现前随 G-2 澄清修订（中间件注入一行低信任提示 or 工具描述引导 agent 自调）。
+- **A-5 L0 dict_rev 刷新机制（= G-4）**：TC-SEM-06 只断言返回 dict_rev；刷新（轮询比对）机制随 M2-S3 定。
+- **A-6 judge 一致性阈值数值**：需求只写「一致率/κ 过阈值」；TC-EVAL-03 待 M3 校准数据出来后定数并回写。
+
