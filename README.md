@@ -8,7 +8,7 @@
 
 - 需求文档：[docs/requirements.md](docs/requirements.md)（先读这份）
 - 方案设计：[docs/design.md](docs/design.md)（架构 / 数据模型 DDL（含 `sem_*`）/ ACL 编译 / MCP 契约（docs + semantic 两组）/ 里程碑分解）
-- 验收用例：[docs/TEST-CASES.md](docs/TEST-CASES.md)（v1.0，2026-10-20——design §9 冻结编号 T1~T23 / T-S1~T-S12 的展开层（编号沿用）+ 模块 TC-* 用例 + 标准矩阵 fixture + 里程碑验收对照表；161 条覆盖 M0a~M3 与 M2-S1~S3；活文档、随实现回写口径，附录 A 登记编写中发现的待澄清口径）
+- 验收用例：[docs/TEST-CASES.md](docs/TEST-CASES.md)（v1.1，2026-10-20——design §9 冻结编号 T1~T23 / T-S1~T-S12 的展开层（编号沿用）+ 模块 TC-* 用例 + 标准矩阵 fixture + 里程碑验收对照表；164 条覆盖 M0a~M3 与 M2-S1~S3；v1.1 吸收评审 [issue #38](https://github.com/yq3/lab/issues/38)（P0×2 / P1×11 / P2 全量）；活文档、随实现回写口径，附录 A（A-1~A-16）登记待澄清口径）
 - 已预见问题登记：[docs/known-gaps.md](docs/known-gaps.md)（活文档——已接受缺口与规格开放点：语义层不可达窗口 G-1 / fuzzy 层闭环 G-2 / restricted 静默缺失 G-3 / L0 陈旧性 G-4；与需求 §9、设计 §10「有对策的风险」分工，不受设计冻结纪律约束）
 - 交互原型：[prototype/index.html](prototype/index.html)（v0.5，issue [#36](https://github.com/yq3/lab/issues/36)；浏览器直接打开、mock 数据；**信息结构与 UI 风格均为前端实现基准**，含语义层视图——实体浏览按 10⁴~10⁵ 节点规模设计：类型总览落地 + 搜索优先 + 全宽结果表 top-N + 详情独立成页，无常驻实体列表；关系图 / 关系列表按（关系类型 × 方向）分组、每组最多 3 个端点，超出以 +N 计数占位——宽扇出不成毛球）
 - 调研基础：[../research/enterprise-rag/](../research/enterprise-rag/)（22 仓源码级调研 + 四厂商第一方实践）；术语层调研沉淀见 [../glossary-agent/](../glossary-agent/)

@@ -1,7 +1,7 @@
 # knowledge-lattice 测试用例
 
-> 版本：v1.0（2026-10-20 初版，M0a 开工前）
-> 依据：[design.md](./design.md) v0.6——**§9 测试策略是冻结用例清单，本文是其展开层：T1~T23 / T-S1~T-S12 编号沿用、不另起**；§8 里程碑验收、§4 DDL 与触发器、§5 关键设计、§6 接口契约为断言细节来源。[requirements.md](./requirements.md) v0.6（FR/NFR/D 验收口径）；[known-gaps.md](./known-gaps.md)（G-1~G-5——涉及其中的用例已标注）。沿 lab 仓库 pulse-pet 先例（docs/v1/TEST-CASES.md + 评审回写）。
+> 版本：v1.1（2026-10-20 吸收 [issue #38](https://github.com/yq3/lab/issues/38) 评审——P0×2：T21 场景重造为符合 FR-4 的时序、T22/TC-ACL-03 断言改「维度片段」级；P1×11 与 P2 全量吸收；新增 TC-TASK-06 / TC-SEM-10 / TC-SYNC-09；附录 A 扩至 A-16。v1.0：2026-10-20 初版，M0a 开工前）
+> 依据：[design.md](./design.md) v0.6——**§9 测试策略是冻结用例清单，本文是其展开层：T1~T23 / T-S1~T-S12 编号沿用、不另起**；§8 里程碑验收、§4 DDL 与触发器、§5 关键设计、§6 接口契约为断言细节来源。[requirements.md](./requirements.md) v0.6（FR/NFR/D 验收口径）；[known-gaps.md](./known-gaps.md)（G-1~G-5——涉及其中的用例已标注）；评审依据 [issue #38](https://github.com/yq3/lab/issues/38)（P0×2 / P1×11 / P2 若干，行号以 b75e91a 为准）。沿 lab 仓库 pulse-pet 先例（docs/v1/TEST-CASES.md + 评审回写）。
 > 用途：M0a~M3 与 M2-S1~S3 各里程碑验收依据，里程碑收尾按 §六对照表逐条勾验。
 > 口径：**单测类**用例「预期」即 pytest 断言（CI 跑）；**矩阵/接口类**经 MCP/REST 真实调用断言（M1 起矩阵进 CI 常跑）；**契约/观察项**为记录级（验收不判失败）；**性能类**给阈值与测量口径。时间依赖（过期/宽限期/租约）一律**造数**——直接写过去时间戳，不推进系统时钟。
 > 演进纪律：本文为活文档（同 known-gaps，不受设计冻结纪律约束），随实现回写口径；**与 requirements/design 正文冲突时以正文为准并开 issue**。编写中发现的规格含糊点登记于附录 A（展开即压测——pulse-pet 用例评审先例）。
@@ -25,7 +25,7 @@
 | T1~T23 / T-CSV / TC-AZ | **越权矩阵**（§9 冻结编号 + 验收引用的补充行） | M0a / M1 / M2 |
 | T-S1~T-S12 | **语义层功能与不变式**（§9 冻结编号） | M2-S1~S3 |
 | TC-SYNC | 语义同步流程（适配器 / 保护 / 审计） | M2-S1 / S2 |
-| TC-YAML | Git YAML 覆盖层与 CI 校验 | M2-S2 |
+| TC-YAML | Git YAML 覆盖层与 CI 校验 | M2-S2（TC-YAML-05 过渡期一致性为 M2-S3） |
 | TC-BUILD | 构建产物与原子切换 | M2-S2 |
 | TC-SEM | 语义工具契约（annotate / search_entities / get_entity / describe_table / L0） | M2-S1~S3 |
 | TC-TAG | 打标 / 重标 / untag / 实体召回路 | M2-S3 |
@@ -56,13 +56,13 @@
 #### TC-SCAF-03 迁移框架：改表流程与 foreign_key_check【单测｜M0a，M0b v1.1 迁移复跑】
 
 - **前置**：迁移框架就绪；构造一份「建新表→拷数据→删旧表」的测试迁移。
-- **步骤**：① 正常跑迁移后执行 `PRAGMA foreign_key_check`；② 注入一行违反外键的数据后再跑同迁移。
+- **步骤**：① 正常跑迁移后执行 `PRAGMA foreign_key_check`；② setup：经迁移窗口内临时关闭外键的写入路径注入一行违反外键的数据，再跑同迁移。
 - **预期**：① 迁移期间临时关闭外键、结束恢复，`foreign_key_check` 返回空；② 检出违例即回滚，库内状态与迁移前一致（#33 P1-1）；③ `user_version` 只前进、重复运行迁移幂等（无重放副作用）。
 
 #### TC-SCAF-04 DDL 防护触发器全集【单测｜M0a】
 
 - **前置**：schema v1 落库完成。
-- **步骤**：① 断言 design §4 文档侧全部触发器存在（`trg_dimval_immutable`、`trg_membership_delete_cleanup`、`trg_membership_no_extend`、`trg_documents_org_immutable`、`trg_datasets_org_immutable`、`trg_dimensions_org_immutable`、`trg_documents_ds_org_check`、`trg_documents_ds_immutable`、`trg_docdims_consistency`、`chunks_ai/ad/au`、audit append-only ×2；`sem_*` 触发器除外——M2-S1 才落库）；② 逐个行为断言：UPDATE `dimension_values.value` → ABORT；UPDATE `documents/datasets/dimensions.org_id` → ABORT；插入 dataset 与 documents org 不符 → ABORT；跨组织搬库（UPDATE dataset_id 至他组织库）→ ABORT；插入 value 与 dimension 不匹配或维度 org ≠ 文档 org 的 `document_dimensions` 行 → ABORT。
+- **步骤**：① 断言 design §4 文档侧全部触发器存在（`trg_dimval_immutable`、`trg_membership_delete_cleanup`、`trg_membership_no_extend`、`trg_documents_org_immutable`、`trg_datasets_org_immutable`、`trg_dimensions_org_immutable`、`trg_documents_ds_org_check`、`trg_documents_ds_immutable`、`trg_docdims_consistency`、`chunks_ai/ad/au`；`sem_*` 触发器除外——M2-S1 才落库，见 TC-SYNC-09；**audit append-only 触发器属月库**、由连接工厂滚动创建（design §4 注）——断言见 TC-OPS-02，不在主库 schema v1 内）；② 逐个行为断言：UPDATE `dimension_values.value` → ABORT；UPDATE `documents/datasets/dimensions.org_id` → ABORT；插入 dataset 与 documents org 不符 → ABORT；跨组织搬库（UPDATE dataset_id 至他组织库）→ ABORT；插入 value 与 dimension 不匹配或维度 org ≠ 文档 org 的 `document_dimensions` 行 → ABORT。
 - **预期**：全部触发器存在且各自 ABORT；`uq_chunks_docver(doc_id, version, seq)` 唯一索引：同文档同版本 seq 重复被拒、不同版本同 seq 合法（含 version——#34 4.4）。
 
 #### TC-SCAF-05 成员关系删除级联清授权【单测｜M0a】
@@ -89,7 +89,7 @@
 
 - **前置**：用户在某 active 维度（tax_type）无任何有效授权。
 - **步骤**：编译产物文本断言 + 行为断言（对 d_cit(tax_type=[CIT]) 与 d_empty 检索）。
-- **预期**：产物仅含 `NOT EXISTS(…'$.tax_type')` 单条件，**不出现 `IN ()`**（#34 必修 3 / T22）；该用户只见 tax_type 为空的文档，非整体不可见。
+- **预期**：**tax_type 维度对应的产物片段**为 `NOT EXISTS(…'$.tax_type')` 单条件（无 OR EXISTS 分支），其余 active 维度（region）仍按统一模板生成；全局**不出现 `IN ()`**（#34 必修 3 / T22——#38 P0-2 修订：断言落在维度片段级，非整份产物）；该用户只见 tax_type 为空的文档（region 约束照常叠加），非整体不可见。
 
 #### TC-ACL-04 生命周期与过滤解耦【单测｜M0a】
 
@@ -120,9 +120,9 @@
 
 #### TC-FTS-02 五列加权【单测｜M0a】
 
-- **前置**：四个 chunk 分别只在 tags / keywords / title_seg / content_seg 含目标词。
+- **前置**：五个 chunk 分别只在 tags / keywords / title_seg / content_seg / llm_keywords 含目标词。
 - **步骤**：`bm25(chunks_fts, 3.0, 1.0, 5.0, 0.5, 8.0)` 排序。
-- **预期**：排序 tags > keywords > title_seg > content_seg；llm_keywords（0.5）低于 content_seg。
+- **预期**：排序 tags(8) > keywords(5) > title_seg(3) > content_seg(1) > llm_keywords(0.5)。
 
 #### TC-FTS-03 同步触发器与切换清列【单测｜M0a】
 
@@ -168,7 +168,7 @@
 
 #### TC-ING-07 阶段幂等续跑【单测｜M0a】
 
-- **步骤**：在 index_fts 完成后杀 worker，重启重跑同任务。
+- **步骤**：在 index_fts 完成后中断任务执行（M0a/M1 阶段=重启进程内执行器；M2 子进程化后=杀 worker，TC-TASK-04 复跑），重跑同任务。
 - **预期**：从 embed 阶段续跑，index_fts 不重复写块（uq_chunks_docver + 阶段状态判定）；文档状态沿 `parsing→chunked→searchable_lexical→searchable_full` 前进。
 
 ### TC-RET 检索配方
@@ -229,7 +229,7 @@
 #### TC-VER-04 切换事务内容【单测｜M1】
 
 - **步骤**：触发 v1→v2 切换，事务内逐项断言。
-- **预期**：旧块 `tombstone=1, embedding=NULL`、五列 FTS 内容清空（au 触发器清 FTS）；documents 四字段更新带 `WHERE pending_version=:expected` 乐观校验；`pending_dims_json` 解析落入 `document_dimensions`（v2 维度切换前不生效）；（M2-S3 起）同事务 `semantic.untag(doc, old_version)`——事务原子：中途失败全部回滚。
+- **预期**：旧块 `tombstone=1, embedding=NULL`、五列 FTS 内容清空（au 触发器清 FTS）；documents 在用/处理中五字段更新（active_version / active_status / pending_version / pending_status / pending_error——design §5.3，#38 P2 修正「四字段」）带 `WHERE pending_version=:expected` 乐观校验；`pending_dims_json` 解析落入 `document_dimensions`（v2 维度切换前不生效）；（M2-S3 起）同事务 `semantic.untag(doc, old_version)`——事务原子：中途失败全部回滚。
 
 #### TC-VER-05 fetch 旧块替代提示【单测｜M1】
 
@@ -261,7 +261,7 @@
 #### TC-CRED-02 PUT 字节校验【单测｜M1】
 
 - **步骤**：对 upload_url 依次：① 超声明 size 上传；② sha256 不符；③ 同一 upload_id 第二次 PUT；④ 过期后 PUT；⑤ >200MB。
-- **预期**：① 截断/拒绝（按声明 size）；② 拒绝；③④ 拒绝（单次、短时）；⑤ 拒绝（全局上限）——全部带明确错误码（T12 展开）。
+- **预期**：① 超出声明 size 即拒绝（413，不静默截断——design「截断/拒绝」二义口径本文定为拒绝，附录 A-13）；② 拒绝；③④ 拒绝（单次、短时）；⑤ 拒绝（全局上限）——全部带明确错误码（T12 展开）。
 
 #### TC-CRED-03 MCP upload 三一致校验【单测｜M1】
 
@@ -307,12 +307,12 @@
 
 ### TC-AUTH 鉴权与组织上下文
 
-#### TC-AUTH-01 静态 token 边界【单测｜M0a】
+#### TC-AUTH-01 静态 token 边界【接口｜M0a】
 
 - **步骤**：① dev 配置下 u1 调 `POST /api/dev/token`；② u1 给 u2 签发；③ 系统管理员给他人签发；④ 生产配置下调该端点。
 - **预期**：① 成功（仅开发/测试/CI——D18）；② 403（只能给自己签）；③ 成功；④ **404**（生产环境不注册路由——P1-7 / T16）。
 
-#### TC-AUTH-02 组织上下文统一规则【单测｜M0a/M1】
+#### TC-AUTH-02 组织上下文统一规则【接口｜M0a/M1】
 
 - **步骤**：MCP 调用分别构造：① token 有 org claim + 注入头一致；② claim 与头不一致；③ 无 claim 无头；④ 工具参数携带 org；⑤ REST 路径 org 与 `X-Org-Id` 并存且不一致。
 - **预期**：① 正常（claim 优先）；② 400；③ 400（缺失即报错，无隐式默认）；④ 参数 org **忽略并记审计**；⑤ 400（D18 统一规则 / T14 展开）。
@@ -324,8 +324,8 @@
 
 #### TC-AUTH-04 委托 token 语义【单测｜M2（M0b 先实测客户端形态）】
 
-- **步骤**：构造 `aud=knowledge-lattice`、`sub`=用户、`act`=agent、`org` claim 单值的委托 token 调用；再构造透传用户原始 token、请求体夹带权限字段两种请求。
-- **预期**：前者按 sub 计权、act 进审计；后两者拒绝（MCP 规范明令；权限字段一律忽略——D18）。M0b 实测项：`langchain-mcp-adapters` 按用户切换 token 的客户端形态与刷新（TC-PERF 关联）。
+- **步骤**：构造 `aud=knowledge-lattice`、`sub`=用户、`act`=agent、`org` claim 单值的委托 token 调用；再分别构造：透传用户原始 token；有效 token 下请求体夹带权限字段——两种请求。
+- **预期**：委托 token 按 sub 计权、act 进审计；**透传原始 token → 拒绝**（MCP 规范明令）；**请求体权限字段 → 忽略并记审计、请求正常处理**（requirements FR-4/D18「任何权限声明一律忽略」；design §5.5「拒绝…权限字段」措辞与之不一致——附录 A-9，#38 P1-9 拆分）。M0b 实测项：`langchain-mcp-adapters` 按用户切换 token 的客户端形态与刷新（TC-PERF 关联）。
 
 #### TC-AUTH-05 可信子系统三约束【单测｜M2】
 
@@ -362,7 +362,7 @@
 #### TC-E2E-05 schema v1.1 迁移【集成｜M0b】
 
 - **步骤**：在 M0b 结论（dims_json 去留 / 分表与否）下执行 v1.1 迁移。
-- **预期**：迁移完成 + `PRAGMA foreign_key_check` 空（M0b 验收）；迁移后全量矩阵用例复跑绿。
+- **预期**：迁移完成 + `PRAGMA foreign_key_check` 空（M0b 验收）；迁移后 **M0a 可达矩阵子集**复跑绿（T1~T5 / T20 / T22 + TC-SCAF / TC-ACL / TC-FTS 相关——版本链、凭证等 M1 能力尚未实现不在此列，#38 P1-5 修订）；**全量矩阵复跑在 M1 收口**（§六 M1 行）。
 
 #### TC-E2E-06 MCP 端到端（M0a 验收原句）【集成｜M0a】
 
@@ -401,17 +401,22 @@
 - **步骤**：观察 semantic_sync / semantic_retag 调度窗口与批速。
 - **预期**：分批 ≤1000 行/批、夜间窗口、重标最低优先级（NFR-11——记录级验收：语义任务运行期间 docs 检索 P95 无劣化）。
 
+#### TC-TASK-06 语义故障不波及 docs（NFR-11 故障隔离）【集成｜M2-S1~S3（各任务类型落地时逐步覆盖）】
+
+- **步骤**：分别注入 ① semantic_sync 适配器超时/抛错；② semantic_build 构建异常；③ semantic_retag 失败——各故障进行中持续调用 docs search 并上传普通文档。
+- **预期**：docs 检索全程可用（P95 无劣化、无 5xx）、ingest 任务正常推进不被阻塞；语义任务落 failed 带错误原因；告警与审计可见（NFR-11「语义同步/构建/重标故障不影响 docs 检索可用性」——#38 P1-6 补）。
+
 ### TC-OPS 生产化
 
 #### TC-OPS-01 审计 outbox 一致性【集成｜M2】
 
-- **步骤**：触发授权替换 / 取值停用 / 维度退役 / 成员变更 / 语义同步五类权限事件（含其中一类在业务提交后立即崩溃的注入场景）。
+- **步骤**：触发授权替换 / 取值停用 / 维度退役 / 成员变更 / 语义同步 / 语义构建 / YAML 合并 / restricted 实体持权访问八类权限事件（含其中一类在业务提交后立即崩溃的注入场景——语义侧三类为 #38 P1-7 补，断言同样落在对应用例 TC-BUILD-03 / TC-YAML-03 / T-S9）。
 - **预期**：业务库同事务写入 `audit_outbox`（崩溃注入下业务与 outbox 同生共死——「业务改了就一定有审计」）；后台任务搬至月库 `audit_events` 后回填 `shipped_at`（M2.6 验收）。
 
 #### TC-OPS-02 审计月库滚动【集成｜M2】
 
 - **步骤**：① 跨月边界写入（造数 202610→202611）；② UPDATE/DELETE 当月与已封存月库的 audit_events；③ 造数 13 个月前的月库文件。
-- **预期**：① 新月库由连接工厂建表+触发器，旧月库封存只读；② 全部 ABORT（append-only）；③ 整文件删除（保留期 12 个月）；哈希链每月首条引用上月末哈希（封存记末哈希）。
+- **预期**：① 新月库由连接工厂建表+触发器，旧月库封存只读；② 全部 ABORT（append-only）；③ 整文件删除（保留期 12 个月）；哈希链每月首条引用上月末哈希、封存记末哈希（requirements FR-6 口径——#38 P2 核对：与 design §4 注不冲突）。
 
 #### TC-OPS-03 审计访问分级【集成｜M2】
 
@@ -430,8 +435,8 @@
 
 #### TC-OPS-06 CSV 授权批量导入【集成｜M2】
 
-- **步骤**：① 导入 500 行 CSV（username, dim_key, values…, expires_at）；② CSV 含 org 列且与路径不一致；③ CSV 混入 sync 维度行；④ 目标用户无有效成员关系；⑤ 重复导入同文件。
-- **预期**：① 幂等全量替换、差异预览后生效（M2.6 验收「批量导入 500 行正确」）；② 整批拒绝；③ sync 授权不动（T-CSV 主断言）；④ 拒绝该用户行（防孤儿授权）；⑤ 二跑零差异（幂等）。
+- **步骤**：① 导入 500 行 CSV（username, dim_key, values…, expires_at）；② CSV 含 org 列且与路径不一致；②' CSV 含 org 列且与路径**一致**（附录 A-12 口径：一律拒绝——CSV 不带 org 列）；③ CSV 混入 sync 维度行；④ 目标用户无有效成员关系；⑤ 重复导入同文件。
+- **预期**：① 幂等全量替换、差异预览后生效（M2.6 验收「批量导入 500 行正确」）；② 与 ②' 均整批拒绝（org 一律以路径为准）；③ sync 授权不动（T-CSV 主断言）；④ 拒绝该用户行（防孤儿授权）；⑤ 二跑零差异（幂等）。
 
 #### TC-OPS-07 维度退役与取值停用治理【集成｜M2】
 
@@ -456,7 +461,8 @@
 >
 > - **组织**：`org:tax`（主）、`org:gl`（隔离对照）。
 > - **维度（org:tax）**：`region`（required=1, active；值 CN/OS）、`tax_type`（required=0, active；值 VAT/CIT）、`channel`（新增维度演练——建维度时库内已有存量文档，零回填）。
-> - **用户**：`u_full`（region=[CN,OS]，tax_type=[VAT]）；`u_cn`（region=[CN]，tax_type 无授权）；`u_os`（region=[OS]）；`u_expired_grant`（region=[CN] 授权行 expires_at=昨天）；`u_expired_member`（成员关系 expires_at=昨天、授权行未过期）；`u_owner`（d_cn 的 owner，region=[OS]——授权与 owner 错位锚点）；`admin_tax`（org_admin，无维度授权）；`sysadmin`；`u_gl`（仅属 org:gl）。
+> - **用户**：`u_full`（region=[CN,OS]，tax_type=[VAT]）；`u_cn`（region=[CN]，tax_type 无授权）；`u_os`（region=[OS]）；`u_expired_grant`（region=[CN] 授权行 expires_at=昨天、tax_type=[VAT] 作对照）；`u_expired_member`（成员关系 expires_at=昨天、授权行未过期）；`u_owner`（d_cn 的 owner，region=[OS]+tax_type=[VAT]——T17 授权与 owner 错位锚点；**T21 另行造数 u_owner'**：初始 region=[CN]+tax_type=[VAT]，步骤中撤销 region）；`admin_tax`（org_admin，无维度授权）；`sysadmin`；`u_gl`（仅属 org:gl）。
+> - **维度缺省约定（#38 P1-1）**：文档**未显式列出取值的 active 维度一律无值**（空值放行）——单因用例不引入第二维度混淆变量；需对照时按用例内造数补授权（如 T1/T2/T17 以 tax_type=[VAT] 隔离 region 单因）。
 > - **文档（org:tax / vat_lib）**：`d_cn`（region=[CN]，tax_type=[VAT]）、`d_multi`（region=[CN,OS]）、`d_empty_region`（region 无值）、`d_cit`（tax_type=[CIT]）、`d_os`（region=[OS]）；版本用例另造 pending/切换序列。
 > - 时间类一律造数（直接写过期时间戳）。
 
@@ -481,13 +487,13 @@
 
 #### T1 过期授权：清理任务未跑仍不可见【矩阵｜M0a 单测先行→M1】
 
-- **前置**：u_expired_grant 对 region=[CN] 的授权行 expires_at=昨天；定时清理任务**从未运行**。
+- **前置**：u_expired_grant 对 region=[CN] 的授权行 expires_at=昨天、tax_type=[VAT] 有效（隔离单因）；定时清理任务**从未运行**。
 - **步骤**：编译 u_expired_grant 的授权展开并检索 d_cn。
 - **预期**：展开 SQL 以 `expires_at > :now` 过滤该行——CN 不在授权集；d_cn 不可见、d_empty_region 可见（#33 P0-1①：过期即失效，不等清理）。
 
 #### T2 成员续期不复活旧授权【矩阵｜M0a→M1】
 
-- **前置**：u_x 曾属 org:tax（region=[CN]），成员关系已过期。
+- **前置**：u_x 曾属 org:tax（region=[CN]、tax_type=[VAT]），成员关系已过期。
 - **步骤**：① 过期期间检索；② 恢复访问：先 DELETE membership 再重插（续期禁令下的唯一路径——触发器见 T23）；③ 重插后检索 d_cn 并查其授权行。
 - **预期**：① 第 0 步拒绝（无有效成员关系）；②③ DELETE 触发级联清授权——重插后授权集为空，d_cn 不可见（旧授权不复活——#33 P0-1）。
 
@@ -568,7 +574,7 @@
 
 #### T17 授权撤销后 owner 不再见在用文档【矩阵｜M1】
 
-- **前置**：u_owner 是 d_cn 的 owner，region=[OS]（d_cn region=[CN]——不可见）。
+- **前置**：u_owner 是 d_cn 的 owner，region=[OS]+tax_type=[VAT]（d_cn region=[CN]——仅 region 单因不可见）。
 - **步骤**：u_owner 检索 d_cn；调 `list_documents` 与文档详情。
 - **预期**：检索/召回零命中——**检索路径无 owner 分支**（#34 必修 2）；list_documents/详情可见自己文档的**元数据与状态**（不返回块内容）——owner 兜底走管理面。
 
@@ -590,14 +596,14 @@
 
 #### T21 授权撤销后 owner 覆盖上传：处理窗口检索不到任何版本【矩阵｜M1】
 
-- **前置**：u_owner 的 region=[OS] 授权被撤销（现无 CN）；d_cn（region=[CN]）owner=u_owner，在用 v1。
-- **步骤**：u_owner 发起覆盖上传 v2（写权限校验：新维度取值须在其授权内——见 TC-AZ-01；owner 的管理操作放行）→ v2 处于 pending 全程检索 d_cn。
-- **预期**：处理中窗口 v1、v2 均**零命中**（旧版本按 v1 维度判权已不可见；pending 块本就不可见）——彻底消除 owner 借覆盖窗口重看全文的越权路径（#34 必修 2 验收句）。
+- **前置**（#38 P0-1 重造，时序符合 FR-4）：u_owner' 是 d_cn（region=[CN]，在用 v1）的 owner，**初始持 region=[CN]+tax_type=[VAT]**。
+- **步骤**：① u_owner' 发起覆盖上传 v2（region=[CN]——写权限校验在 upload 时点通过，FR-4/design §5.3）；② pending 期间**撤销** u_owner' 的 region 授权；③ v2 处理中窗口（未切换）检索 d_cn；④ v2 完成、单事务切换后再检索。
+- **预期**：③ 撤销即时生效（查询时展开）——v1、v2 均**零命中**（v1 按维度判权不可见；pending 块本不可见），owner 身份不产生任何放宽；④ 切换后仍不可见——彻底消除「授权撤销后 owner 借覆盖上传处理中窗口重新看到在用全文」的越权路径（#34 必修 2 验收句）。上传时点校验通过、撤销发生在其后，全程不违反 FR-4；设计**无 owner 写权限例外**——若未来要例外属决策变更，须先改 FR-4（不可只在用例放行）。
 
 #### T22 无授权维度只见空值文档；空集不出 `IN ()`【单测｜M0a】
 
 - **步骤**：u_cn（tax_type 零授权）检索全库；断言编译产物文本。
-- **预期**：只见 tax_type 为空的文档（d_empty_region 等）；产物为 `NOT EXISTS(…)` 单条件，**无 `IN ()`**（#34 必修 3；SQL 语法非法兜底）。
+- **预期**：只见 tax_type 为空的文档（d_empty_region 等——region 约束照常叠加）；**tax_type 维度对应的产物片段**为 `NOT EXISTS(…)` 单条件（无 OR EXISTS 分支），完整产物仍含 region 的统一模板，全局**无 `IN ()`**（#34 必修 3；SQL 语法非法兜底——#38 P0-2 修订：断言落在维度片段级，非整份产物）。
 
 #### T23 过期成员关系续期被拒；先删再加旧授权不复活【单测｜M0a（触发器）/ 矩阵｜M1（行为）】
 
@@ -608,12 +614,12 @@
 
 #### T-CSV CSV 导入只替换 local 授权【矩阵｜M2】
 
-- 见 TC-OPS-06 展开（M2.6 验收引用名）；主断言：sync 来源授权在 CSV 全量替换后原样保留。
+- 完整展开见 TC-OPS-06（M2.6 验收引用名——本行为其别名行，#38 P2 补最小断言）：CSV 全量替换后 `source='sync:…'` 授权行**逐行原样保留**、local 授权按 CSV 替换、幂等二跑零差异。
 
 #### TC-AZ-01 上传/PATCH 取值限操作者授权内【矩阵｜M1】
 
 - **步骤**：① u_cn（region=[CN]）上传 region=[OS] 文档；② u_cn PATCH d_cn 维度 region [CN]→[OS]（新值越权）与 [OS]→[CN]（旧值越权——文档先造为数组含 OS）；③ admin_tax 代标。
-- **预期**：①② 拒绝——**新旧取值均须在操作者授权集合内**（#31 P1-1/#32 P1-4：防把文档推向无权范围或打自己看不见的值）；③ org_admin 走审批/代标路径（管理动作进审计）。
+- **预期**：①② 拒绝——**新旧取值均须在操作者授权集合内**（#31 P1-1/#32 P1-4：防把文档推向无权范围或打自己看不见的值）；③ org_admin 以**自身授权内取值代标**（§6.2 无独立审批端点——附录 A-15 口径），管理动作进审计。
 
 #### TC-AZ-02 统计与概况不泄露【矩阵｜M1】
 
@@ -623,12 +629,12 @@
 #### TC-AZ-03 org_admin 管理权与可见权分离【矩阵｜M1/M2】
 
 - **步骤**：admin_tax（无 region 授权）：① 检索；② 文档管理列表；③ 改维度/授权管理端点。
-- **预期**：① 与普通成员同口径（不绕过维度可见性）；② 管理列表只列**自己维度可见**的文档（#32 P1-4 方案 A）；③ 管理端点可用（管理权独立）。
+- **预期**：① 与普通成员同口径（不绕过维度可见性）；② 管理列表只列**自己维度可见**的文档（#32 P1-4 方案 A）——与 MCP `list_documents`（TC-AZ-02，按调用者权限统计）为**两个端点两个口径**、与 T17 的 owner 元数据兜底（管理面）不冲突（#38 P2 澄清）；③ 管理端点可用（管理权独立）。
 
 #### TC-AZ-04 系统管理员仅管理权 + 临时授权【矩阵｜M2】
 
-- **步骤**：① sysadmin 跨组织检索；② sysadmin 建组织/指定 org_admin；③ 经临时授权（memberships/expires_at）访问数据。
-- **预期**：① 拒绝——无跨组织数据可见权；② 成功；③ 临时授权生效期内可见、审计留痕、到期自动失效（#31 P1-2 / P1-7）。
+- **步骤**：① sysadmin 跨组织检索；② sysadmin 建组织/指定 org_admin；③ 临时授权**完整构造**（#38 P2 补）：挂 org:tax 临时成员关系（expires_at 短期）**并授 region=[CN] 维度授权**，访问 d_cn；④ 造数过期后（成员关系或授权任一到期）再访问。
+- **预期**：① 拒绝——无跨组织数据可见权；② 成功；③ 生效期内可见 d_cn、全流程审计留痕（成员关系与授权行均带 expires_at——#31 P1-2/P1-7）；④ 到期即不可见（权限计算过滤过期、不等清理——与 T1 同构）。
 
 #### TC-AZ-05 库过滤与 doc_filter 收窄【矩阵｜M1】
 
@@ -651,7 +657,7 @@
 
 #### T-S2 删除比例保护【集成｜M2-S1】
 
-- **步骤**：mock 源端分别返回 ① 空快照；② 少 30% 实体的快照（阈值默认 20%）；③ 少 10% 的快照，各跑一次 run。
+- **步骤**：mock 源端分别返回 ① 空快照；② 相对**库内该来源 active 实体**（`source='sync' AND source_system=本适配器 AND status='active'`）少 30% 的快照（阈值默认 20%）；③ 少 10% 的快照，各跑一次 run（基数口径 #38 P2 补）。
 - **预期**：①② run 置 `aborted_guard`、**零写入**（库内实体/关系/别名逐行 diff 为空）、产生告警；③ 正常执行、消失实体转 missing——全量快照语义是保护前提（FR-S1）。
 
 #### T-S3 同步幂等【单测｜M2-S1】
@@ -671,13 +677,13 @@
 
 #### T-S6 递归展开防环/深度/截断【单测｜M2-S1】
 
-- **步骤**：对环图样本（A→B→C→A）`get_entity(A, expand, depth=2)`；请求 depth=3；对高扇出节点（表 300 列）展开（fanout_limit 默认 50）；请求 fanout_limit=500。
-- **预期**：环图正常返回不死循环（path 防环）；depth=3 服务端拒绝（≤2 强制）；300 列按 50 截断且 `truncated=true`；fanout_limit 上限 200、节点上限 500（默认 200）。
+- **步骤**：对环图样本（A→B→C→A）`get_entity(A, expand, depth=2)`；请求 depth=3（处置口径附录 A-11：本文按拒绝断言）；对高扇出节点（表 300 列）展开（fanout_limit 默认 50）；请求 fanout_limit=500。
+- **预期**：环图正常返回不死循环（path 防环）；depth=3 拒绝（400——服务端强制 ≤2）；300 列按 50 截断且 `truncated=true`；fanout_limit 上限 200、节点上限 500（默认 200）。
 
 #### T-S7 语义组织隔离【矩阵｜M2-S3】
 
-- **步骤**：u_gl（org:gl）调 annotate / search_entities / get_entity / describe_table / `GET /semantic/l0`，目标均为 org:tax 的同名 key 实体。
-- **预期**：不返回 org:tax 任何实体（annotate 无 span、search 无命中、get_entity 404）；两组织 `dict_rev` 互相独立（gl 构建不触达 tax 词典）；`sem_*` 全表带 org_id + 查询第一条件同 docs（T-S7 全四断言）。
+- **步骤**：u_gl（org:gl）调 annotate / search_entities / get_entity / describe_table / `GET /semantic/l0` 五端点，目标均为 org:tax 的同名 key 实体。
+- **预期**：不返回 org:tax 任何实体（annotate 无 span、search 无命中、get_entity 404、describe_table 403/404、l0 为 gl 自己的片段）；两组织 `dict_rev` 互相独立（gl 构建不触达 tax 词典）；**org 作用域 `sem_*` 表**（sem_entities / sem_aliases / sem_relations / sem_chunk_entities / sem_builds / sem_sync_runs）全带 org_id 且查询第一条件同 docs——`sem_rel_types` 为全局白名单配置表（无 org_id，design §4 DDL），不在隔离断言内（design §4 设计说明⑥「全部 sem_* 表带 org_id」表述不准确——附录 A-7，待 issue 修正；#38 P1-2）。
 
 #### T-S8 实体召回不放宽 ACL【矩阵｜M2-S3】
 
@@ -688,8 +694,8 @@
 #### T-S9 restricted 实体静默不可见【矩阵｜M2-S3（annotate 侧 M2-S2 可先行）】
 
 - **前置**：restricted 实体 R（别名「内部税收筹划方案」）。
-- **步骤**：无 `semantic:restricted` 权限的成员：① annotate 含 R 别名的文本；② get_entity(R)；③ 从 R 的邻居实体展开关系；④ search_entities 搜 R 别名。
-- **预期**：① 无 span（表现为不存在）；② 404；③ R 节点不出现；④ 无命中——存在性零泄露（G-3 已接受其静默性衍生效应；持权调用方全程可见且访问进权限审计）。
+- **步骤**：无 `semantic:restricted` 权限的成员：① annotate 含 R 别名的文本；② get_entity(R)；③ 从 R 的邻居实体展开关系；④ search_entities 搜 R 别名；⑤ 持 `semantic:restricted` 权限成员访问 R（annotate/get_entity）后查 `audit_outbox` 与月库；⑥ 无权成员重复①②后查审计（#38 P1-11 补）。
+- **预期**：① 无 span（表现为不存在）；② 404；③ R 节点不出现；④ 无命中——存在性零泄露（G-3 已接受其静默性衍生效应）；⑤ **持权访问产生权限事件入 outbox**（restricted 实体访问——FR-6 语义层事件）；⑥ 无权尝试不产生 outbox 权限事件、走查询级异步审计（refused 可回溯）——口径见附录 A-16。
 
 #### T-S10 版本切换/删块 untag 同事务【集成｜M2-S3】
 
@@ -726,7 +732,7 @@
 #### TC-SYNC-04 关系端点冲突不写入【单测｜M2-S1】
 
 - **步骤**：快照含 src 端点在库内不存在的 RelationRecord。
-- **预期**：该关系跳过、run `stats_json.conflicts` 计数 + 冲突报告可查（不阻断整批）。
+- **预期**：该关系跳过不写入；`GET /api/orgs/{org}/semantic/sync-runs` 该 run 可查，`stats_json.conflicts` 含跳过明细（src/dst/rel_type/原因——#38 P2 补具体断言）；整批其余写入不受阻断。
 
 #### TC-SYNC-05 别名三 kind 重建【单测｜M2-S1】
 
@@ -748,6 +754,11 @@
 - **步骤**：① org_admin 调 `POST /semantic/sync/{adapter}`；② 普通成员调用；③ 查 `GET /semantic/builds · sync-runs`。
 - **预期**：① 成功（semantic:admin）并写 outbox；② 403；③ org_admin 可见、普通成员 403（§6.2 端点权限）。
 
+#### TC-SYNC-09 `migrations/semantic/` 落库与白名单种子【单测｜M2-S1】
+
+- **步骤**：跑语义迁移后断言：① `sem_*` 全部 DDL 与触发器（`trg_sem_rel_check` / `trg_sem_rel_noupdate`）落库；② `sem_rel_types` 种子与 design §5.8 白名单表逐行一致（十种 rel_type × 端点类型组合）；③ 与代码常量（实体/关系类型白名单）三处一致（代码常量 + 种子 + 触发器——§5.8「三处一致」）。
+- **预期**：语义表 M2-S1 才落库、M0a/M1 库不含 `sem_*`（§3 边界规则 3）；未登记组合被触发器拒绝（与 T-S5 互证）；新增关系类型必须走迁移（#38 覆盖缺口补——sem_* 迁移/seed 无显式用例）。
+
 ### 4.3 TC-YAML 覆盖层与 CI 校验
 
 #### TC-YAML-01 合并正路【单测｜M2-S2】
@@ -763,7 +774,7 @@
 #### TC-YAML-03 webhook【集成｜M2-S2】
 
 - **步骤**：① 带正确签名调 `POST /semantic/yaml/webhook`；② 错误签名；③ 服务身份缺失。
-- **预期**：① 触发 yaml 合并 + 构建（§6.2）；②③ 拒绝——Git 回调入口仅服务身份。
+- **预期**：① 触发 yaml 合并 + 构建（§6.2），**yaml 合并事件入 audit_outbox**（FR-6 语义层事件——#38 P1-7）；②③ 拒绝——Git 回调入口仅服务身份。
 
 #### TC-YAML-04 CI 校验全集【单测｜M2-S2】
 
@@ -784,12 +795,12 @@
 
 #### TC-BUILD-02 产物四件套【单测｜M2-S2】
 
-- **步骤**：构建后断言：AC 自动机仅收 `match_mode IN ('exact','context')` 别名；模糊索引（sem_vec/拼音/编辑距离辅助表）就绪；L0 片段渲染（l0: true 条目）；构建报告含冲突/歧义别名/孤立节点/断链关系/评测指标。
-- **预期**：四件齐备、报告字段齐（fuzzy_only 别名不进 AC——防误报）。
+- **步骤**：构建后断言：AC 自动机仅收 `match_mode IN ('exact','context')` 别名（fuzzy_only 不进——防误报）；L0 片段渲染（l0: true 条目）；构建报告含冲突/歧义别名/孤立节点/断链关系/评测指标。
+- **预期**：三件齐备、报告字段齐；**模糊索引（sem_vec / 拼音 / 编辑距离辅助表）M2-S3 才构建**（design §5.8/§8——#38 P1-3 修正），其产物断言移至 TC-SEM-09。
 
 #### TC-BUILD-03 原子切换与懒加载【单测｜M2-S2】
 
-- 见 T-S12 展开；补充断言：旧版本产物保留到无请求使用（引用计数语义），服务按 (org, dict_rev) 取用。
+- 见 T-S12 展开；补充断言：旧版本产物保留到无请求使用（引用计数语义），服务按 (org, dict_rev) 取用；**构建完成/失败事件入 audit_outbox**（FR-6 语义层事件——#38 P1-7）。
 
 #### TC-BUILD-04 评测回归门槛【单测｜M2-S2】
 
@@ -836,7 +847,7 @@
 #### TC-SEM-07 annotate 契约与限流【单测｜M2-S2】
 
 - **步骤**：① 正常 annotate（≤4000 字）断言输出结构（dict_rev/mentions[span,surface,entity_id,type,name,confidence,via,ambiguous,brief]/candidates）；② >4000 字；③ `context_entities` >20。
-- **预期**：① 结构齐、via='ac'；② 拒绝或截断（按实现固定并落 API 文档）；③ 拒绝。AC 层 P99 <5ms、整体 P99 <20ms 见 TC-PERF-05。
+- **预期**：① 结构齐、via='ac'；② 拒绝（400——超长文本不静默截断，口径附录 A-10）；③ 拒绝。AC 层 P99 <5ms、整体 P99 <20ms 见 TC-PERF-05。
 
 #### TC-SEM-08 agent 中间件契约【契约/观察｜M2-S3】
 
@@ -846,14 +857,20 @@
 #### TC-SEM-09 模糊兜底三层【单测｜M2-S3（依赖 G-2 澄清）】
 
 - **步骤**：构造同音错字（「留底」→「留抵」）、编辑距离 1（长度 ≥4 别名）、语义近邻（阈值 0.75）三例，`fuzzy=true` annotate。
-- **预期**：分别经拼音完全匹配 / 编辑距离 / 向量近邻 top-3 命中；结果 `via='fuzzy'`、confidence 低于第 1 层、落 candidates；jieba 词性筛选只对名词片段跑——**触发者/消费者口径按 G-2 澄清后修订**（附录 A-4）。
+- **预期**：分别经拼音完全匹配 / 编辑距离 / 向量近邻 top-3 命中；结果 `via='fuzzy'`、confidence 低于第 1 层、落 candidates；jieba 词性筛选只对名词片段跑——**触发者/消费者口径按 G-2 澄清后修订**（附录 A-4）；前置构建断言：M2-S3 构建产出模糊索引（名称/别名/一句话定义的 bge-m3 向量存 sem_vec + 拼音与编辑距离辅助表——design §5.8；#38 P1-3 自 TC-BUILD-02 移入）。
+
+#### TC-SEM-10 模板链路端到端（M2-S1 验收句）【集成｜M2-S1】
+
+- **前置**：语义 fixture 关系链已同步——`TPL_VAT_INPUT --backed_by--> ods.vat_input_invoice --has_column--> tax_amt`、`TPL_VAT_INPUT.TAX_AMT --maps_to--> tax_amt`。
+- **步骤**：① `get_entity(key='template:TPL_VAT_INPUT', expand=['backed_by>','has_column>'], depth=2)`；② `get_entity(key='template_field:TPL_VAT_INPUT.TAX_AMT', expand=['maps_to>'], depth=1)`。
+- **预期**：① nodes 含目标表与列、edges 含 backed_by / has_column（含 truncated 标志）；② 返回对应列节点——「这个模板落在哪张表、哪个字段」类问题可答（M2-S1 验收句的显式端到端用例——#38 P1-8 补）。
 
 ### 4.6 TC-TAG 打标与实体召回
 
 #### TC-TAG-01 ingest 同事务打标【集成｜M2-S3】
 
 - **步骤**：① 正常摄取含「进项抵扣」的文档，查 `sem_chunk_entities` 与 chunks 事务性（造中途失败断言同回滚）；② mock AC 自动机抛错再摄取。
-- **预期**：① tag 行与块写入同事务（index_fts 阶段）；② 摄取**不阻断**——记 warning、文档标记待重标（交 semantic_retag）。
+- **预期**：① tag 行与块写入同事务（index_fts 阶段）；② 摄取**不阻断**——记 warning，该文档块进入 retag 候选集（按 dict_rev 落后比对——「待重标」标记机制 design 未定义，附录 A-14 口径），交 semantic_retag 补做。
 
 #### TC-TAG-02 semantic_retag【集成｜M2-S3】
 
@@ -914,7 +931,7 @@
 
 #### TC-EVAL-02 M3 完整黄金集【评测｜M3】
 
-- **口径**：ragas TestSetGenerator 双语合成 + 人工抽检修正；覆盖纯中/纯英/中英混排三态。
+- **口径**：合成候选生成（评测框架选型 ragas——design §7 M3 依赖清单，#38 P2 标注为选型）双语 + 人工抽检修正；覆盖纯中/纯英/中英混排三态。
 - **预期**：黄金集覆盖三态断言（M3 验收）。
 
 #### TC-EVAL-03 judge 双语校准【评测｜M3】
@@ -960,25 +977,38 @@
 
 | 里程碑 | 验收用例集（design §8 验收句 → 本文编号） |
 |---|---|
-| **M0a** | 孤儿行 IntegrityError：TC-SCAF-01；MCP 带 chunk_id 检索（开发 JWT）：TC-E2E-06；编译器单测先行：T1~T5、T20、T22（+T23 触发器半）＋TC-ACL-01~07、TC-SCAF-02~05；摄取/检索最小链：TC-ING-01~03/07、TC-FTS-01~03、TC-E2E-07 |
-| **M0b** | TC-PERF-01~03、TC-E2E-05（v1.1 迁移+foreign_key_check）；委托 token 客户端实测（TC-AUTH-04 附注） |
-| **M1** | **越权矩阵全绿：T1~T23 全量 + TC-AZ-01/02/05**（T13 以 dev 白名单模拟）；版本链：T6~T10、T21、TC-VER-01~07、TC-E2E-02；凭证：T11/T12、TC-CRED-01~05；检索配方：TC-RET-01~07、TC-E2E-01/04；区分度：TC-QUAL-01~05、TC-EVAL-06；真实 query 标注：TC-EVAL-01；性能：TC-PERF-03/04 |
-| **M2** | 杀 worker 不丢任务：TC-TASK-01/03/04、TC-E2E-03；outbox 一致性：TC-OPS-01；恢复演练：TC-OPS-05；跨组织隔离全绿：TC-OPS-09、T15、TC-AZ-04；批量导入 500 行（sync 不动）：TC-OPS-06 / T-CSV；生产化收口：TC-AUTH-03~05、T13/T16 生产形态、TC-OPS-02~04/07/08、TC-VER-08、TC-TASK-02/05 |
-| **M2-S1** | T-S2 / T-S3 / T-S5 / T-S6 / T-S11；「模板落在哪张表哪个字段」端到端：TC-SEM-05（get_entity/describe_table）+ fixture 关系链；同步流程：TC-SYNC-01~08、T-S4（机制）；性能：TC-PERF-05（部分） |
+| **M0a** | 孤儿行 IntegrityError：TC-SCAF-01；MCP 带 chunk_id 检索（开发 JWT）：TC-E2E-06；编译器单测先行：T1~T5、T20、T22（+T23 触发器半）＋TC-ACL-01~07、TC-SCAF-02~05；摄取/检索最小链：TC-ING-01~03/07、TC-FTS-01~03、TC-E2E-07；鉴权骨架：TC-AUTH-01/02（组织上下文规则随待决-2/3 并行敲定——#38 P1-10 补） |
+| **M0b** | TC-PERF-01~03、TC-E2E-05 + TC-SCAF-03（v1.1 迁移跑通 + foreign_key_check + M0a 可达矩阵子集复跑）；委托 token 客户端实测（TC-AUTH-04 附注） |
+| **M1** | **越权矩阵全绿：T1~T23 全量 + TC-AZ-01/02/03/05**（T13 以 dev 白名单模拟；**T19 删库半句、T20 退役审计半句随 M2 收口**——正文「全量」措辞冲突见附录 A-8）；版本链：T6~T10、T21、TC-VER-01~07、TC-E2E-02；**全量矩阵复跑**：TC-E2E-05 收口；凭证：T11/T12、TC-CRED-01~05；检索配方：TC-RET-01~07、TC-E2E-01/04、TC-FTS-04；摄取补全：TC-ING-04~06；鉴权：TC-AUTH-01/02 复跑；区分度：TC-QUAL-01~05、TC-EVAL-06；真实 query 标注：TC-EVAL-01；性能：TC-PERF-03/04 |
+| **M2** | 杀 worker 不丢任务：TC-TASK-01/03/04、TC-E2E-03；outbox 一致性：TC-OPS-01；恢复演练：TC-OPS-05；跨组织隔离全绿：TC-OPS-09、T15、TC-AZ-04；批量导入 500 行（sync 不动）：TC-OPS-06 / T-CSV；生产化收口：TC-AUTH-03~05、T13/T16 生产形态、T19 删库 / T20 退役审计半句、TC-AZ-03 管理端点半、TC-OPS-02~04/07/08、TC-VER-08、TC-TASK-02/05 |
+| **M2-S1** | T-S2 / T-S3 / T-S5 / T-S6 / T-S11（describe_table）；「模板落在哪张表哪个字段」端到端：**TC-SEM-10**（模板链路）+ TC-SEM-05（search_entities / get_entity 结构契约）；同步流程：TC-SYNC-01~09（含 `sem_*` 迁移与种子）、T-S4（机制）；性能：TC-PERF-05（部分） |
 | **M2-S2** | T-S1 / T-S4（验收）/ T-S12；AC precision ≥0.95 / recall ≥0.80、歧义 ≥0.85、负样本 ≤0.05：TC-SEV-01/02；构建回归 >2pp 不切 ready：TC-BUILD-04；YAML 与 CI：TC-YAML-01~04；annotate：TC-SEM-01~04/06/07、TC-BUILD-01~03/05 |
-| **M2-S3** | 越权矩阵 T-S7 / T-S8 / T-S9 / T-S10 全绿；AC+模糊 recall@3 ≥0.92：TC-SEV-03、TC-SEM-09；检索增益不回退方可默认开启：TC-SEV-03；打标/召回：TC-TAG-01~05；中间件切换：TC-SEM-08、TC-YAML-05 |
+| **M2-S3** | 越权矩阵 T-S7 / T-S8 / T-S9 / T-S10 全绿；AC+模糊 recall@3 ≥0.92：TC-SEV-03、TC-SEM-09（含模糊索引产物）；检索增益不回退方可默认开启：TC-SEV-03；打标/召回：TC-TAG-01~05；故障隔离：TC-TASK-06 收口；中间件切换：TC-SEM-08、TC-YAML-05 |
 | **M3** | 门禁卡住注入回归：TC-EVAL-04；judge 一致性达标：TC-EVAL-03；黄金集覆盖三态：TC-EVAL-02；在线锚点：TC-EVAL-05 |
 
 ---
 
 ## 附录 A：编写中发现的待澄清口径（建议走 issue / known-gaps 收口后再实现）
 
-> 本附录是展开用例时对规格做「可操作性压测」的产物（pulse-pet TEST-CASES 评审先例）。不构成决策变更，均为口径补写级；其中 A-4/A-5 已有 known-gaps 条目（G-2/G-4）。
+> 本附录是展开用例时对规格做「可操作性压测」的产物（pulse-pet TEST-CASES 评审先例）。不构成决策变更，均为口径补写级；其中 A-4/A-5 已有 known-gaps 条目（G-2/G-4）；A-7~A-16 为 #38 评审（v1.1）新增——A-7/A-8/A-9 涉及正文回写，已单开 issue 跟踪。
 
-- **A-1 T13/T16 的 M1 可行性**：M1 验收要求矩阵 T1~T23 全绿，但可信子系统与 SSO 对接落地在 M2.2——本文按「M1 以 dev 白名单/静态 token 模拟跑通 T13、M2 生产形态收口」标注；若排期口径不同需回写 design §8。
+- **A-1 T13 的 M1 可行性**：M1 验收要求矩阵 T1~T23 全绿，但可信子系统与 SSO 对接落地在 M2.2——本文按「M1 以 dev 白名单/静态 token 模拟跑通 T13、M2 生产形态收口」标注；T16 仅依赖配置开关（生产环境不注册路由），M1 直接可测、与 SSO 无关（#38 修订原「T13/T16」归类）；若排期口径不同需回写 design §8。
 - **A-2 T15 的 403/404 分端点规则**：§9 只写「403/404」。本文按「404=存在性敏感读端点、403=明确越权写/管理端点」断言，实现时需把每个端点的选择固化进 API 文档。
 - **A-3 dims_json 投影刷新范围**：PATCH 文档维度后刷投影的作用域（在用版本块 / 全部版本块）未明写。本文按「在用版本块；pending 版本维度经切换事务落库（T6）」断言——若实现另选需回写本用例。
 - **A-4 fuzzy 层触发者/消费者（= G-2）**：TC-SEM-09 按 FR-S3 现文写（`fuzzy=true` 才跑、结果只作候选）；M2-S3 实现前随 G-2 澄清修订（中间件注入一行低信任提示 or 工具描述引导 agent 自调）。
 - **A-5 L0 dict_rev 刷新机制（= G-4）**：TC-SEM-06 只断言返回 dict_rev；刷新（轮询比对）机制随 M2-S3 定。
 - **A-6 judge 一致性阈值数值**：需求只写「一致率/κ 过阈值」；TC-EVAL-03 待 M3 校准数据出来后定数并回写。
+
+以下为 #38 评审（v1.1）新增：
+
+- **A-7 `sem_rel_types` 的 org 语义（#38 P1-2）**：design §4 DDL 中 `sem_rel_types` 无 org_id（全局白名单配置表），与 §4 设计说明⑥「全部 `sem_*` 表带 org_id」表述冲突——T-S7 已按「org 作用域表断言、排除 sem_rel_types」执行；建议 issue 修正 design §4 表述（非决策变更）。
+- **A-8 M1「T1~T23 全量」与半句里程碑冲突（#38 P1-4）**：design §8 / requirements §8 的 M1 验收写全量，但 T19 删库半句、T20 退役审计半句按里程碑属 M2——§六 M1 行已按「除两半句（M2 收口）」标注；建议 issue 回写两处正文口径。
+- **A-9 请求体权限字段：忽略 vs 拒绝（#38 P1-9）**：requirements FR-4/D18「任何权限声明一律忽略」vs design §5.5「拒绝 token 原样透传与请求体权限字段」——TC-AUTH-04 按 requirements「**忽略并记审计**、透传原始 token 才拒绝」断言；建议 issue 统一 design 措辞。
+- **A-10 annotate 入参超限处置（#38 P2）**：text >4000 字、context_entities >20 的「拒绝 vs 截断」未定——TC-SEM-07 暂按拒绝（400）断言，待实现固定后回写。
+- **A-11 get_entity depth>2 处置（#38 P2）**：design「服务端强制 ≤2」未定 clamp 还是拒绝——T-S6 暂按拒绝（400）断言，待实现固定后回写。
+- **A-12 CSV 含 org 列且与路径一致（#38 P2）**：design 只写「列与路径不一致整批拒绝」，一致时未定——TC-OPS-06 暂按一律拒绝（CSV 不带 org 列）断言，待实现固定后回写。
+- **A-13 PUT 超声明 size：截断 vs 拒绝（#38 P2）**：design「按声明 size 截断/拒绝」二义——TC-CRED-02 暂按拒绝（413，不静默截断）断言，待实现固定后回写。
+- **A-14 文档「待重标」标记机制（#38 P2）**：design 未定义字段/口径——TC-TAG-01 暂以「warning + 按 dict_rev 落后比对进入 retag 候选集」断言，待实现定义后回写。
+- **A-15 org_admin 越权标注处置（#38 P2）**：§6.2 无审批端点——TC-AZ-01 暂按「org_admin 以自身授权内取值代标 + 审计」断言；若要走审批流属端点新增，需先补 §6.2。
+- **A-16 restricted 无权尝试的审计口径（#38 P1-11）**：design §6.3⑥ 未细分——T-S9 暂按「持权访问入 outbox 权限事件；无权尝试走查询级异步审计（refused 可回溯）」断言，待实现确认。
 
