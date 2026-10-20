@@ -1236,7 +1236,7 @@ function renderRail() {
   const runN = o.tasks.filter(t => ["running", "leased", "pending"].includes(t.st)).length;
   const groups = [
     ["知识", [["semantic", "业务语义", o.semantic ? `rev ${o.semantic.dictRev}` : "未接入", "M2-S"], ["docs", "文档知识", `${visN}/${o.docs.length}`], ["search", "检索测试", ""]]],
-    ["治理", [["access", "权限", `${activeDims().length} 维`]]],
+    ["管理", [["access", "维度与权限", `${activeDims().length} 维`]]],
     ["运维", [["ops", "任务与审计", runN ? `${runN} 进行` : ""]]],
   ];
   $("#nav").innerHTML = groups.map(([g, items]) => `<div class="nav-group">${g}</div>` + items.map(([k, name, c, tag]) =>
