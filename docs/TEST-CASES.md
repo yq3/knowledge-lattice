@@ -1,6 +1,6 @@
 # knowledge-lattice 测试用例
 
-> 版本：v1.2（2026-10-20 吸收 [issue #40](https://github.com/yq3/lab/issues/40) 复审——P0-R1：T6 重造（查看者改 `u_cn_vat`、v2 明确由 `u_full` 上传）；P1-R1~R3：TC-AZ-04 临时授权补双维度、TC-AZ-01 改用 u_cn 自有文档并区分操作权限/取值越权（fixture 补 `admin_full`）、TC-ACL-02 声明本地单维 fixture 并统一命名；P2×7 全量回写（`d_empty_region` 改名×3、TC-BUILD-02 标题、fanout_limit 超限并入 A-11、conflicts 字段标注测试约定、T-S9 月库侧异步断言、附录 A 补 #39 链接、T7 补操作者）。v1.1：2026-10-20 吸收 #38 评审——P0×2 / P1×11 / P2 全量；新增 TC-TASK-06 / TC-SEM-10 / TC-SYNC-09；附录 A 扩至 A-16。v1.0：2026-10-20 初版，M0a 开工前）
+> 版本：v1.2.1（2026-10-20 复审二轮——①T6 上传者 `u_full`→`admin_full`：u_full 是普通成员，按 FR-4 操作矩阵（覆盖上传=owner/org_admin）会先 403，用例不可执行；admin_full 兼具操作权限与 region=[CN,OS] 授权，双前提成立；②TC-AZ-01 的 d_cn_own 置空 tax_type——防实现按「结果集全维度」校验时拒绝原因来自 tax_type、掩盖 region 取值越权；③design 前置阅读版本引用同步 v0.6.1。v1.2（2026-10-20 吸收 [issue #40](https://github.com/yq3/lab/issues/40) 复审——P0-R1：T6 重造（查看者改 `u_cn_vat`、v2 明确上传者——复审二轮修正为 `admin_full`）；P1-R1~R3：TC-AZ-04 临时授权补双维度、TC-AZ-01 改用 u_cn 自有文档并区分操作权限/取值越权（fixture 补 `admin_full`）、TC-ACL-02 声明本地单维 fixture 并统一命名；P2×7 全量回写（`d_empty_region` 改名×3、TC-BUILD-02 标题、fanout_limit 超限并入 A-11、conflicts 字段标注测试约定、T-S9 月库侧异步断言、附录 A 补 #39 链接、T7 补操作者）。v1.1：2026-10-20 吸收 #38 评审——P0×2 / P1×11 / P2 全量；新增 TC-TASK-06 / TC-SEM-10 / TC-SYNC-09；附录 A 扩至 A-16。v1.0：2026-10-20 初版，M0a 开工前）
 > 依据：[design.md](./design.md) v0.6.1——**§9 测试策略是冻结用例清单，本文是其展开层：T1~T23 / T-S1~T-S12 编号沿用、不另起**；§8 里程碑验收、§4 DDL 与触发器、§5 关键设计、§6 接口契约为断言细节来源。[requirements.md](./requirements.md) v0.6.1（FR/NFR/D 验收口径）；[known-gaps.md](./known-gaps.md)（G-1~G-5——涉及其中的用例已标注）；评审依据 [issue #38](https://github.com/yq3/lab/issues/38)（P0×2 / P1×11 / P2 若干，行号以 b75e91a 为准）。沿 lab 仓库 pulse-pet 先例（docs/v1/TEST-CASES.md + 评审回写）。
 > 用途：M0a~M3 与 M2-S1~S3 各里程碑验收依据，里程碑收尾按 §六对照表逐条勾验。
 > 口径：**单测类**用例「预期」即 pytest 断言（CI 跑）；**矩阵/接口类**经 MCP/REST 真实调用断言（M1 起矩阵进 CI 常跑）；**契约/观察项**为记录级（验收不判失败）；**性能类**给阈值与测量口径。时间依赖（过期/宽限期/租约）一律**造数**——直接写过去时间戳，不推进系统时钟。
@@ -516,7 +516,7 @@
 
 #### T6 v2 改维度：切换前后无双方可见【矩阵｜M1】
 
-- **前置**（#40 P0-R1 重造）：查看者 `u_cn_vat`（region=[CN]+tax_type=[VAT]——可见 d_cn v1 的双维度前提）；覆盖上传由 `u_full`（region=[CN,OS]——v2 取值 region=[OS] 在其授权内，FR-4 写权限成立）发起，v2 带 region=[OS]（pending_dims_json）。
+- **前置**（#40 P0-R1 重造；复审二轮修正上传者）：查看者 `u_cn_vat`（region=[CN]+tax_type=[VAT]——可见 d_cn v1 的双维度前提）；覆盖上传由 `admin_full` 发起——**操作权限**（org_admin——FR-4 操作矩阵：覆盖上传 = owner 与 org_admin；u_full 是普通成员会先 403）与**写权限**（region=[CN,OS]+tax_type=[VAT]，v2 取值 region=[OS] 在其授权内）双前提成立，v2 带 region=[OS]（pending_dims_json）。
 - **步骤**：pending 期间以 u_cn_vat 检索；切换事务后再检索；全程以 TC-ACL-07 两种 ACL 写法各跑一遍。
 - **预期**：pending 期间按 v1 维度判权（v2 新维度不生效——P0-2.1），u_cn_vat 可见 v1；切换后按 v2 判权（region=[OS] 与其 [CN] 无交集），u_cn_vat 不可见；**任一时刻两版本块不同时出现**；两写法结论一致。
 
@@ -618,7 +618,7 @@
 
 #### TC-AZ-01 上传/PATCH 取值限操作者授权内【矩阵｜M1】
 
-- **步骤**：① u_cn（region=[CN]）上传 region=[OS] 文档；② u_cn PATCH **d_cn_own**（owner=u_cn、region=[CN]+tax_type=[VAT]，本用例造数——#40 P1-R2：u_cn 非 d_cn 的 owner，用自有文档避免先撞操作权限 403 而测不到取值校验）维度：[CN]→[OS]（新值越权）；再造数 [CN,OS] 后 [CN,OS]→[CN]（旧值越权——OS 不在 u_cn 授权内）；③ `admin_full`（org_admin，region=[CN,OS]+tax_type=[VAT]）对 d_cn_own 代标 region=[OS]；④ `admin_tax`（org_admin、无维度授权）同操作。
+- **步骤**：① u_cn（region=[CN]）上传 region=[OS] 文档；② u_cn PATCH **d_cn_own**（owner=u_cn、region=[CN]、**tax_type 无值**——本用例造数；#40 P1-R2 用自有文档避免先撞操作权限 403；复审二轮置空 tax_type：防实现按「结果集全维度」校验时拒绝原因来自 tax_type、掩盖 region 取值越权）维度：[CN]→[OS]（新值越权）；再造数 [CN,OS] 后 [CN,OS]→[CN]（旧值越权——OS 不在 u_cn 授权内）；③ `admin_full`（org_admin，region=[CN,OS]+tax_type=[VAT]）对 d_cn_own 代标 region=[OS]；④ `admin_tax`（org_admin、无维度授权）同操作。
 - **预期**：①② 拒绝——**新旧取值均须在操作者授权集合内**（#31 P1-1/#32 P1-4：防把文档推向无权范围或打自己看不见的值）；③ 代标成功且管理动作进审计（org_admin 以自身授权内取值代标——附录 A-15 口径）；④ 操作权限放行但取值越权仍拒并审计——管理权与写权限分离（与 TC-AZ-03 呼应）。
 
 #### TC-AZ-02 统计与概况不泄露【矩阵｜M1】
