@@ -1,7 +1,7 @@
 # knowledge-lattice 测试用例
 
-> 版本：v1.1（2026-10-20 吸收 [issue #38](https://github.com/yq3/lab/issues/38) 评审——P0×2：T21 场景重造为符合 FR-4 的时序、T22/TC-ACL-03 断言改「维度片段」级；P1×11 与 P2 全量吸收；新增 TC-TASK-06 / TC-SEM-10 / TC-SYNC-09；附录 A 扩至 A-16。v1.0：2026-10-20 初版，M0a 开工前）
-> 依据：[design.md](./design.md) v0.6——**§9 测试策略是冻结用例清单，本文是其展开层：T1~T23 / T-S1~T-S12 编号沿用、不另起**；§8 里程碑验收、§4 DDL 与触发器、§5 关键设计、§6 接口契约为断言细节来源。[requirements.md](./requirements.md) v0.6（FR/NFR/D 验收口径）；[known-gaps.md](./known-gaps.md)（G-1~G-5——涉及其中的用例已标注）；评审依据 [issue #38](https://github.com/yq3/lab/issues/38)（P0×2 / P1×11 / P2 若干，行号以 b75e91a 为准）。沿 lab 仓库 pulse-pet 先例（docs/v1/TEST-CASES.md + 评审回写）。
+> 版本：v1.2（2026-10-20 吸收 [issue #40](https://github.com/yq3/lab/issues/40) 复审——P0-R1：T6 重造（查看者改 `u_cn_vat`、v2 明确由 `u_full` 上传）；P1-R1~R3：TC-AZ-04 临时授权补双维度、TC-AZ-01 改用 u_cn 自有文档并区分操作权限/取值越权（fixture 补 `admin_full`）、TC-ACL-02 声明本地单维 fixture 并统一命名；P2×7 全量回写（`d_empty_region` 改名×3、TC-BUILD-02 标题、fanout_limit 超限并入 A-11、conflicts 字段标注测试约定、T-S9 月库侧异步断言、附录 A 补 #39 链接、T7 补操作者）。v1.1：2026-10-20 吸收 #38 评审——P0×2 / P1×11 / P2 全量；新增 TC-TASK-06 / TC-SEM-10 / TC-SYNC-09；附录 A 扩至 A-16。v1.0：2026-10-20 初版，M0a 开工前）
+> 依据：[design.md](./design.md) v0.6.1——**§9 测试策略是冻结用例清单，本文是其展开层：T1~T23 / T-S1~T-S12 编号沿用、不另起**；§8 里程碑验收、§4 DDL 与触发器、§5 关键设计、§6 接口契约为断言细节来源。[requirements.md](./requirements.md) v0.6.1（FR/NFR/D 验收口径）；[known-gaps.md](./known-gaps.md)（G-1~G-5——涉及其中的用例已标注）；评审依据 [issue #38](https://github.com/yq3/lab/issues/38)（P0×2 / P1×11 / P2 若干，行号以 b75e91a 为准）。沿 lab 仓库 pulse-pet 先例（docs/v1/TEST-CASES.md + 评审回写）。
 > 用途：M0a~M3 与 M2-S1~S3 各里程碑验收依据，里程碑收尾按 §六对照表逐条勾验。
 > 口径：**单测类**用例「预期」即 pytest 断言（CI 跑）；**矩阵/接口类**经 MCP/REST 真实调用断言（M1 起矩阵进 CI 常跑）；**契约/观察项**为记录级（验收不判失败）；**性能类**给阈值与测量口径。时间依赖（过期/宽限期/租约）一律**造数**——直接写过去时间戳，不推进系统时钟。
 > 演进纪律：本文为活文档（同 known-gaps，不受设计冻结纪律约束），随实现回写口径；**与 requirements/design 正文冲突时以正文为准并开 issue**。编写中发现的规格含糊点登记于附录 A（展开即压测——pulse-pet 用例评审先例）。
@@ -81,14 +81,14 @@
 
 #### TC-ACL-02 统一空值模板（有值交集 / 无值放行）【单测｜M0a】
 
-- **前置**：region 为 active；文档 d_cn（region=[CN]）与 d_empty（region 无值）。
-- **步骤**：对 u_cn（region=[CN]）与 u_gl_only_region_os（region=[OS]）分别编译并执行召回。
-- **预期**：模板形如 `(NOT EXISTS(json_each(c.dims_json,'$.region')) OR EXISTS(… IN (:grants)))`；u_cn 可见 d_cn 与 d_empty；u_os 可见 d_empty 而**不见 d_cn**——维度间 AND、维度内 OR（D5）。
+- **前置**（本地 fixture，**不复用标准矩阵**——#40 P1-R3：只启用 region 单个维度，消除多维度混淆）：文档 `d_cn_r`（region=[CN]）与 `d_empty_r`（region 无值）；用户 `u_cn_r`（region=[CN]）、`u_os_r`（region=[OS]）。
+- **步骤**：对 u_cn_r 与 u_os_r 分别编译并执行召回。
+- **预期**：模板形如 `(NOT EXISTS(json_each(c.dims_json,'$.region')) OR EXISTS(… IN (:grants)))`；u_cn_r 可见 d_cn_r 与 d_empty_r；u_os_r 可见 d_empty_r 而**不见 d_cn_r**——维度间 AND、维度内 OR（D5）。
 
 #### TC-ACL-03 空授权集 → NOT EXISTS 单条件【单测｜M0a】
 
 - **前置**：用户在某 active 维度（tax_type）无任何有效授权。
-- **步骤**：编译产物文本断言 + 行为断言（对 d_cit(tax_type=[CIT]) 与 d_empty 检索）。
+- **步骤**：编译产物文本断言 + 行为断言（对 d_cit(tax_type=[CIT]) 与 d_empty_region 检索）。
 - **预期**：**tax_type 维度对应的产物片段**为 `NOT EXISTS(…'$.tax_type')` 单条件（无 OR EXISTS 分支），其余 active 维度（region）仍按统一模板生成；全局**不出现 `IN ()`**（#34 必修 3 / T22——#38 P0-2 修订：断言落在维度片段级，非整份产物）；该用户只见 tax_type 为空的文档（region 约束照常叠加），非整体不可见。
 
 #### TC-ACL-04 生命周期与过滤解耦【单测｜M0a】
@@ -325,7 +325,7 @@
 #### TC-AUTH-04 委托 token 语义【单测｜M2（M0b 先实测客户端形态）】
 
 - **步骤**：构造 `aud=knowledge-lattice`、`sub`=用户、`act`=agent、`org` claim 单值的委托 token 调用；再分别构造：透传用户原始 token；有效 token 下请求体夹带权限字段——两种请求。
-- **预期**：委托 token 按 sub 计权、act 进审计；**透传原始 token → 拒绝**（MCP 规范明令）；**请求体权限字段 → 忽略并记审计、请求正常处理**（requirements FR-4/D18「任何权限声明一律忽略」；design §5.5「拒绝…权限字段」措辞与之不一致——附录 A-9，#38 P1-9 拆分）。M0b 实测项：`langchain-mcp-adapters` 按用户切换 token 的客户端形态与刷新（TC-PERF 关联）。
+- **预期**：委托 token 按 sub 计权、act 进审计；**透传原始 token → 拒绝**（MCP 规范明令）；**请求体权限字段 → 忽略并记审计、请求正常处理**（requirements FR-4/D18 与 design §5.5 已于 v0.6.1 统一为该口径——原措辞不一致登记见附录 A-9，随 #39 闭环）。M0b 实测项：`langchain-mcp-adapters` 按用户切换 token 的客户端形态与刷新（TC-PERF 关联）。
 
 #### TC-AUTH-05 可信子系统三约束【单测｜M2】
 
@@ -461,7 +461,7 @@
 >
 > - **组织**：`org:tax`（主）、`org:gl`（隔离对照）。
 > - **维度（org:tax）**：`region`（required=1, active；值 CN/OS）、`tax_type`（required=0, active；值 VAT/CIT）、`channel`（新增维度演练——建维度时库内已有存量文档，零回填）。
-> - **用户**：`u_full`（region=[CN,OS]，tax_type=[VAT]）；`u_cn`（region=[CN]，tax_type 无授权）；`u_os`（region=[OS]）；`u_expired_grant`（region=[CN] 授权行 expires_at=昨天、tax_type=[VAT] 作对照）；`u_expired_member`（成员关系 expires_at=昨天、授权行未过期）；`u_owner`（d_cn 的 owner，region=[OS]+tax_type=[VAT]——T17 授权与 owner 错位锚点；**T21 另行造数 u_owner'**：初始 region=[CN]+tax_type=[VAT]，步骤中撤销 region）；`admin_tax`（org_admin，无维度授权）；`sysadmin`；`u_gl`（仅属 org:gl）。
+> - **用户**：`u_full`（region=[CN,OS]，tax_type=[VAT]）；`u_cn`（region=[CN]，tax_type 无授权）；`u_cn_vat`（region=[CN]+tax_type=[VAT]——T6 查看者，#40 P0-R1 补）；`u_os`（region=[OS]）；`u_expired_grant`（region=[CN] 授权行 expires_at=昨天、tax_type=[VAT] 作对照）；`u_expired_member`（成员关系 expires_at=昨天、授权行未过期）；`u_owner`（d_cn 的 owner，region=[OS]+tax_type=[VAT]——T17 授权与 owner 错位锚点；**T21 另行造数 u_owner'**：初始 region=[CN]+tax_type=[VAT]，步骤中撤销 region）；`admin_tax`（org_admin，无维度授权）；`admin_full`（org_admin，region=[CN,OS]+tax_type=[VAT]——TC-AZ-01③ 代标用，#40 P1-R2 补）；`sysadmin`；`u_gl`（仅属 org:gl）。
 > - **维度缺省约定（#38 P1-1）**：文档**未显式列出取值的 active 维度一律无值**（空值放行）——单因用例不引入第二维度混淆变量；需对照时按用例内造数补授权（如 T1/T2/T17 以 tax_type=[VAT] 隔离 region 单因）。
 > - **文档（org:tax / vat_lib）**：`d_cn`（region=[CN]，tax_type=[VAT]）、`d_multi`（region=[CN,OS]）、`d_empty_region`（region 无值）、`d_cit`（tax_type=[CIT]）、`d_os`（region=[OS]）；版本用例另造 pending/切换序列。
 > - 时间类一律造数（直接写过期时间戳）。
@@ -516,13 +516,13 @@
 
 #### T6 v2 改维度：切换前后无双方可见【矩阵｜M1】
 
-- **前置**：d_cn v1 region=[CN]；u_cn 可见。发起覆盖上传 v2 带 region=[OS]（pending_dims_json）。
-- **步骤**：pending 期间检索；切换事务后检索；全程以 TC-ACL-07 两种 ACL 写法各跑一遍。
-- **预期**：pending 期间按 v1 维度判权（v2 新维度不生效——P0-2.1）；切换后按 v2（u_cn 不可见）；**任一时刻两版本块不同时出现**；两写法结论一致。
+- **前置**（#40 P0-R1 重造）：查看者 `u_cn_vat`（region=[CN]+tax_type=[VAT]——可见 d_cn v1 的双维度前提）；覆盖上传由 `u_full`（region=[CN,OS]——v2 取值 region=[OS] 在其授权内，FR-4 写权限成立）发起，v2 带 region=[OS]（pending_dims_json）。
+- **步骤**：pending 期间以 u_cn_vat 检索；切换事务后再检索；全程以 TC-ACL-07 两种 ACL 写法各跑一遍。
+- **预期**：pending 期间按 v1 维度判权（v2 新维度不生效——P0-2.1），u_cn_vat 可见 v1；切换后按 v2 判权（region=[OS] 与其 [CN] 无交集），u_cn_vat 不可见；**任一时刻两版本块不同时出现**；两写法结论一致。
 
 #### T7 并发覆盖 409【矩阵｜M1】
 
-- **步骤**：d_cn 存在 pending v2 时，再次发起覆盖上传（REST 与 MCP 两条路径）。
+- **步骤**：d_cn 存在 pending v2 时，再次发起覆盖上传（操作者 `u_owner`——d_cn 的 owner，满足操作权限；REST 与 MCP 两条路径——#40 P2 补操作者）。
 - **预期**：409（同一时刻只有一个 pending——P0-2.3）；不产生第三个版本号。
 
 #### T8 失败版本无 FTS 残留【矩阵｜M1】
@@ -592,7 +592,7 @@
 #### T20 新建维度零消失 / 回填只收紧 / 生命周期不放宽 / 仅退役放宽且有审计【单测｜M0a（审计半句 M2）】
 
 - **步骤**：① 新建 active 必选维度 channel（存量文档零回填）→ 全用户检索；② 回填 d_cn channel=[A]（u_full 无 channel 授权）→ 检索；③ channel `required` 1→0、`enabled` 1→0 → 检索；④ channel `retire`（dry_run+确认+审计）→ 检索。
-- **预期**：① 存量文档零消失（空值放行）；② d_cn 对 u_full 不可见（回填即收紧）、d_empty 仍可见；③ 可见性不变（不放宽）；④ channel 条件从产物消失=唯一放宽路径，且退役事件已入 outbox 审计（#34 必修 1 全四断言）。
+- **预期**：① 存量文档零消失（空值放行）；② d_cn 对 u_full 不可见（回填即收紧）、d_empty_region 仍可见；③ 可见性不变（不放宽）；④ channel 条件从产物消失=唯一放宽路径，且退役事件已入 outbox 审计（#34 必修 1 全四断言）。
 
 #### T21 授权撤销后 owner 覆盖上传：处理窗口检索不到任何版本【矩阵｜M1】
 
@@ -618,8 +618,8 @@
 
 #### TC-AZ-01 上传/PATCH 取值限操作者授权内【矩阵｜M1】
 
-- **步骤**：① u_cn（region=[CN]）上传 region=[OS] 文档；② u_cn PATCH d_cn 维度 region [CN]→[OS]（新值越权）与 [OS]→[CN]（旧值越权——文档先造为数组含 OS）；③ admin_tax 代标。
-- **预期**：①② 拒绝——**新旧取值均须在操作者授权集合内**（#31 P1-1/#32 P1-4：防把文档推向无权范围或打自己看不见的值）；③ org_admin 以**自身授权内取值代标**（§6.2 无独立审批端点——附录 A-15 口径），管理动作进审计。
+- **步骤**：① u_cn（region=[CN]）上传 region=[OS] 文档；② u_cn PATCH **d_cn_own**（owner=u_cn、region=[CN]+tax_type=[VAT]，本用例造数——#40 P1-R2：u_cn 非 d_cn 的 owner，用自有文档避免先撞操作权限 403 而测不到取值校验）维度：[CN]→[OS]（新值越权）；再造数 [CN,OS] 后 [CN,OS]→[CN]（旧值越权——OS 不在 u_cn 授权内）；③ `admin_full`（org_admin，region=[CN,OS]+tax_type=[VAT]）对 d_cn_own 代标 region=[OS]；④ `admin_tax`（org_admin、无维度授权）同操作。
+- **预期**：①② 拒绝——**新旧取值均须在操作者授权集合内**（#31 P1-1/#32 P1-4：防把文档推向无权范围或打自己看不见的值）；③ 代标成功且管理动作进审计（org_admin 以自身授权内取值代标——附录 A-15 口径）；④ 操作权限放行但取值越权仍拒并审计——管理权与写权限分离（与 TC-AZ-03 呼应）。
 
 #### TC-AZ-02 统计与概况不泄露【矩阵｜M1】
 
@@ -633,7 +633,7 @@
 
 #### TC-AZ-04 系统管理员仅管理权 + 临时授权【矩阵｜M2】
 
-- **步骤**：① sysadmin 跨组织检索；② sysadmin 建组织/指定 org_admin；③ 临时授权**完整构造**（#38 P2 补）：挂 org:tax 临时成员关系（expires_at 短期）**并授 region=[CN] 维度授权**，访问 d_cn；④ 造数过期后（成员关系或授权任一到期）再访问。
+- **步骤**：① sysadmin 跨组织检索；② sysadmin 建组织/指定 org_admin；③ 临时授权**完整构造**（#38 P2 补、#40 P1-R1 修正）：挂 org:tax 临时成员关系（expires_at 短期）**并授 region=[CN]+tax_type=[VAT] 双维度授权**（d_cn 双维度均有值——缺一仍不可见），访问 d_cn；④ 造数过期后（成员关系或授权任一到期）再访问。
 - **预期**：① 拒绝——无跨组织数据可见权；② 成功；③ 生效期内可见 d_cn、全流程审计留痕（成员关系与授权行均带 expires_at——#31 P1-2/P1-7）；④ 到期即不可见（权限计算过滤过期、不等清理——与 T1 同构）。
 
 #### TC-AZ-05 库过滤与 doc_filter 收窄【矩阵｜M1】
@@ -678,12 +678,12 @@
 #### T-S6 递归展开防环/深度/截断【单测｜M2-S1】
 
 - **步骤**：对环图样本（A→B→C→A）`get_entity(A, expand, depth=2)`；请求 depth=3（处置口径附录 A-11：本文按拒绝断言）；对高扇出节点（表 300 列）展开（fanout_limit 默认 50）；请求 fanout_limit=500。
-- **预期**：环图正常返回不死循环（path 防环）；depth=3 拒绝（400——服务端强制 ≤2）；300 列按 50 截断且 `truncated=true`；fanout_limit 上限 200、节点上限 500（默认 200）。
+- **预期**：环图正常返回不死循环（path 防环）；depth=3 拒绝（400——服务端强制 ≤2）；300 列按 50 截断且 `truncated=true`；fanout_limit=500 超上限拒绝（400——与 depth 同口径，附录 A-11，#40 P2 补）；节点上限 500（默认 200）。
 
 #### T-S7 语义组织隔离【矩阵｜M2-S3】
 
 - **步骤**：u_gl（org:gl）调 annotate / search_entities / get_entity / describe_table / `GET /semantic/l0` 五端点，目标均为 org:tax 的同名 key 实体。
-- **预期**：不返回 org:tax 任何实体（annotate 无 span、search 无命中、get_entity 404、describe_table 403/404、l0 为 gl 自己的片段）；两组织 `dict_rev` 互相独立（gl 构建不触达 tax 词典）；**org 作用域 `sem_*` 表**（sem_entities / sem_aliases / sem_relations / sem_chunk_entities / sem_builds / sem_sync_runs）全带 org_id 且查询第一条件同 docs——`sem_rel_types` 为全局白名单配置表（无 org_id，design §4 DDL），不在隔离断言内（design §4 设计说明⑥「全部 sem_* 表带 org_id」表述不准确——附录 A-7，待 issue 修正；#38 P1-2）。
+- **预期**：不返回 org:tax 任何实体（annotate 无 span、search 无命中、get_entity 404、describe_table 403/404、l0 为 gl 自己的片段）；两组织 `dict_rev` 互相独立（gl 构建不触达 tax 词典）；**org 作用域 `sem_*` 表**（sem_entities / sem_aliases / sem_relations / sem_chunk_entities / sem_builds / sem_sync_runs）全带 org_id 且查询第一条件同 docs——`sem_rel_types` 为全局白名单配置表（无 org_id，design §4 DDL），不在隔离断言内（design §4 设计说明⑥ 原表述不准确，已随 v0.6.1 修正——附录 A-7 闭环；#38 P1-2）。
 
 #### T-S8 实体召回不放宽 ACL【矩阵｜M2-S3】
 
@@ -694,8 +694,8 @@
 #### T-S9 restricted 实体静默不可见【矩阵｜M2-S3（annotate 侧 M2-S2 可先行）】
 
 - **前置**：restricted 实体 R（别名「内部税收筹划方案」）。
-- **步骤**：无 `semantic:restricted` 权限的成员：① annotate 含 R 别名的文本；② get_entity(R)；③ 从 R 的邻居实体展开关系；④ search_entities 搜 R 别名；⑤ 持 `semantic:restricted` 权限成员访问 R（annotate/get_entity）后查 `audit_outbox` 与月库；⑥ 无权成员重复①②后查审计（#38 P1-11 补）。
-- **预期**：① 无 span（表现为不存在）；② 404；③ R 节点不出现；④ 无命中——存在性零泄露（G-3 已接受其静默性衍生效应）；⑤ **持权访问产生权限事件入 outbox**（restricted 实体访问——FR-6 语义层事件）；⑥ 无权尝试不产生 outbox 权限事件、走查询级异步审计（refused 可回溯）——口径见附录 A-16。
+- **步骤**：无 `semantic:restricted` 权限的成员：① annotate 含 R 别名的文本；② get_entity(R)；③ 从 R 的邻居实体展开关系；④ search_entities 搜 R 别名；⑤ 持 `semantic:restricted` 权限成员访问 R（annotate/get_entity）后查 `audit_outbox`（近实时）；月库侧待后台搬运回填 `shipped_at` 后再断言 `audit_events`（搬运异步——#40 P2）；⑥ 无权成员重复①②后查审计（#38 P1-11 补）。
+- **预期**：① 无 span（表现为不存在）；② 404；③ R 节点不出现；④ 无命中——存在性零泄露（G-3 已接受其静默性衍生效应）；⑤ **持权访问产生权限事件入 outbox**（restricted 实体访问——FR-6 语义层事件），月库 `shipped_at` 回填后事件可查；⑥ 无权尝试不产生 outbox 权限事件、走查询级异步审计（refused 可回溯）——口径见附录 A-16。
 
 #### T-S10 版本切换/删块 untag 同事务【集成｜M2-S3】
 
@@ -732,7 +732,7 @@
 #### TC-SYNC-04 关系端点冲突不写入【单测｜M2-S1】
 
 - **步骤**：快照含 src 端点在库内不存在的 RelationRecord。
-- **预期**：该关系跳过不写入；`GET /api/orgs/{org}/semantic/sync-runs` 该 run 可查，`stats_json.conflicts` 含跳过明细（src/dst/rel_type/原因——#38 P2 补具体断言）；整批其余写入不受阻断。
+- **预期**：该关系跳过不写入；`GET /api/orgs/{org}/semantic/sync-runs` 该 run 可查，`stats_json.conflicts` 含跳过明细（src/dst/rel_type/原因——字段结构为**测试约定**，design 未定义明细格式，#40 P2 标注）；整批其余写入不受阻断。
 
 #### TC-SYNC-05 别名三 kind 重建【单测｜M2-S1】
 
@@ -793,7 +793,7 @@
 - **步骤**：同一 (active 实体+别名+yaml commit) 组合构建两次；改一条别名再构建。
 - **预期**：dict_rev 相同则第二次跳过（不产新 build）；变更后新 rev 构建。
 
-#### TC-BUILD-02 产物四件套【单测｜M2-S2】
+#### TC-BUILD-02 产物三件套（模糊索引 M2-S3，见 TC-SEM-09）【单测｜M2-S2】
 
 - **步骤**：构建后断言：AC 自动机仅收 `match_mode IN ('exact','context')` 别名（fuzzy_only 不进——防误报）；L0 片段渲染（l0: true 条目）；构建报告含冲突/歧义别名/孤立节点/断链关系/评测指标。
 - **预期**：三件齐备、报告字段齐；**模糊索引（sem_vec / 拼音 / 编辑距离辅助表）M2-S3 才构建**（design §5.8/§8——#38 P1-3 修正），其产物断言移至 TC-SEM-09。
@@ -990,7 +990,7 @@
 
 ## 附录 A：编写中发现的待澄清口径（建议走 issue / known-gaps 收口后再实现）
 
-> 本附录是展开用例时对规格做「可操作性压测」的产物（pulse-pet TEST-CASES 评审先例）。不构成决策变更，均为口径补写级；其中 A-4/A-5 已有 known-gaps 条目（G-2/G-4）；A-7~A-16 为 #38 评审（v1.1）新增——A-7/A-8/A-9 涉及正文回写，已单开 issue 跟踪。
+> 本附录是展开用例时对规格做「可操作性压测」的产物（pulse-pet TEST-CASES 评审先例）。不构成决策变更，均为口径补写级；其中 A-4/A-5 已有 known-gaps 条目（G-2/G-4）；A-7~A-16 为 #38 评审（v1.1）新增——**A-7/A-8/A-9 涉及正文回写，已开 [#39](https://github.com/yq3/lab/issues/39) 跟踪并随正文 v0.6.1 闭环**。
 
 - **A-1 T13 的 M1 可行性**：M1 验收要求矩阵 T1~T23 全绿，但可信子系统与 SSO 对接落地在 M2.2——本文按「M1 以 dev 白名单/静态 token 模拟跑通 T13、M2 生产形态收口」标注；T16 仅依赖配置开关（生产环境不注册路由），M1 直接可测、与 SSO 无关（#38 修订原「T13/T16」归类）；若排期口径不同需回写 design §8。
 - **A-2 T15 的 403/404 分端点规则**：§9 只写「403/404」。本文按「404=存在性敏感读端点、403=明确越权写/管理端点」断言，实现时需把每个端点的选择固化进 API 文档。
@@ -1001,11 +1001,11 @@
 
 以下为 #38 评审（v1.1）新增：
 
-- **A-7 `sem_rel_types` 的 org 语义（#38 P1-2）**：design §4 DDL 中 `sem_rel_types` 无 org_id（全局白名单配置表），与 §4 设计说明⑥「全部 `sem_*` 表带 org_id」表述冲突——T-S7 已按「org 作用域表断言、排除 sem_rel_types」执行；建议 issue 修正 design §4 表述（非决策变更）。
-- **A-8 M1「T1~T23 全量」与半句里程碑冲突（#38 P1-4）**：design §8 / requirements §8 的 M1 验收写全量，但 T19 删库半句、T20 退役审计半句按里程碑属 M2——§六 M1 行已按「除两半句（M2 收口）」标注；建议 issue 回写两处正文口径。
-- **A-9 请求体权限字段：忽略 vs 拒绝（#38 P1-9）**：requirements FR-4/D18「任何权限声明一律忽略」vs design §5.5「拒绝 token 原样透传与请求体权限字段」——TC-AUTH-04 按 requirements「**忽略并记审计**、透传原始 token 才拒绝」断言；建议 issue 统一 design 措辞。
+- **A-7 `sem_rel_types` 的 org 语义（#38 P1-2）——已闭环（design v0.6.1 §4 设计说明⑥，#39）**：design §4 DDL 中 `sem_rel_types` 无 org_id（全局白名单配置表），与 §4 设计说明⑥「全部 `sem_*` 表带 org_id」表述冲突——T-S7 按「org 作用域表断言、排除 sem_rel_types」执行；正文已修正为「org 作用域六表带 org_id、`sem_rel_types` 除外」。
+- **A-8 M1「T1~T23 全量」与半句里程碑冲突（#38 P1-4）——已闭环（design §8 / requirements §8 M1 验收句，v0.6.1，#39）**：design §8 / requirements §8 的 M1 验收写全量，但 T19 删库半句、T20 退役审计半句按里程碑属 M2——§六 M1 行按「除两半句（M2 收口）」标注；两处正文已补同款限定。
+- **A-9 请求体权限字段：忽略 vs 拒绝（#38 P1-9）——已闭环（design §5.5 + requirements FR-4/D18 措辞统一，v0.6.1，#39）**：原 requirements「任何权限声明一律忽略」vs design「拒绝…请求体权限字段」并存——TC-AUTH-04 断言口径「**透传原始 token 拒绝；请求体权限字段忽略并记审计、请求正常处理**」已回写两份正文（含 requirements D18 决策行）。
 - **A-10 annotate 入参超限处置（#38 P2）**：text >4000 字、context_entities >20 的「拒绝 vs 截断」未定——TC-SEM-07 暂按拒绝（400）断言，待实现固定后回写。
-- **A-11 get_entity depth>2 处置（#38 P2）**：design「服务端强制 ≤2」未定 clamp 还是拒绝——T-S6 暂按拒绝（400）断言，待实现固定后回写。
+- **A-11 get_entity 超限处置（#38 P2；#40 P2 扩至 fanout_limit）**：design「服务端强制 ≤2」「fanout_limit ≤200」未定 clamp 还是拒绝——T-S6 暂按拒绝（400）断言（depth>2 与 fanout_limit>200 同口径），待实现固定后回写。
 - **A-12 CSV 含 org 列且与路径一致（#38 P2）**：design 只写「列与路径不一致整批拒绝」，一致时未定——TC-OPS-06 暂按一律拒绝（CSV 不带 org 列）断言，待实现固定后回写。
 - **A-13 PUT 超声明 size：截断 vs 拒绝（#38 P2）**：design「按声明 size 截断/拒绝」二义——TC-CRED-02 暂按拒绝（413，不静默截断）断言，待实现固定后回写。
 - **A-14 文档「待重标」标记机制（#38 P2）**：design 未定义字段/口径——TC-TAG-01 暂以「warning + 按 dict_rev 落后比对进入 retag 候选集」断言，待实现定义后回写。

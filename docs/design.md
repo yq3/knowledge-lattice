@@ -1,7 +1,7 @@
 # knowledge-lattice 方案设计
 
-> 版本：v0.6（2026-10-20 吸收 [issue #37](https://github.com/yq3/lab/issues/37)：**非决策变更**——①§5.8 新增「源系统接入前置条件」小节（接口形态 / 维度属性可选携带 / 连接配置 per-org，两处按 #37 评论决策修正 issue 原文：不强制携带、缺维度值按空值放行）；②§2 升级缝与需求 NFR-5 同步登记「语义层实体维度 ACL」演进缝；③§1 映射表与 §10 风险表同步补行；D1~D23 与 v0.4 冻结结论不动；同日起需求与设计文档**版本号统一**（起点 v0.6）。v0.5.2（2026-10-19 术语修订：语义层内容层「骨架」统一改称「源端事实」，列级相应称「事实列」——旧词易被误读为抽象类别（实际是源系统已有对象与关系的具体同步记录），且与 M0a「骨架周」（工程脚手架）撞词；**非决策变更**，只改措辞不改任何结论。v0.5.1（2026-10-19 原型基线更新：吸收 [issue #36](https://github.com/yq3/lab/issues/36)——`prototype/index.html` 替换为 v0.5，五视图（文档 / 检索测试 / 权限 / 语义层 / 任务与审计），§5.7 前端薄壳以其为**信息结构与 UI 风格双基准**；语义层视图原型已含（实现仍可选，M2-S3 节奏不变）；**非决策变更**——D1~D23 与 v0.4 冻结结论均不受影响，冻结纪律延续）
-> 日期：2026-10-16 初稿 → v0.2（#31）→ v0.3（#32）→ v0.4（#33+#34，冻结版）→ v0.5（#35，D23）→ v0.5.1（#36，原型基线更新）→ v0.5.2（术语修订：骨架→源端事实）→ v0.6（#37，非决策变更：源系统接入前置条件 + 实体维度 ACL 演进缝登记；版本号与需求文档统一）
+> 版本：v0.6.1（2026-10-20 吸收 [issue #39](https://github.com/yq3/lab/issues/39)：**非决策变更**——#38 用例评审衍生的三处正文修正：①§4 设计说明⑥「全部 `sem_*` 表带 org_id」修正为「org 作用域六表带 org_id，`sem_rel_types` 为全局白名单配置表除外」（与 §4 DDL 一致）；②§5.5 请求体权限字段口径对齐需求 FR-4——**透传原始 token 拒绝；请求体权限字段一律忽略并记审计**；③§8 M1 验收句限定 T19 删库半句、T20 退役审计半句随 M2 收口；D1~D23 与 v0.4 冻结结论不动。v0.6（2026-10-20 吸收 [issue #37](https://github.com/yq3/lab/issues/37)：**非决策变更**——①§5.8 新增「源系统接入前置条件」小节（接口形态 / 维度属性可选携带 / 连接配置 per-org，两处按 #37 评论决策修正 issue 原文：不强制携带、缺维度值按空值放行）；②§2 升级缝与需求 NFR-5 同步登记「语义层实体维度 ACL」演进缝；③§1 映射表与 §10 风险表同步补行；D1~D23 与 v0.4 冻结结论不动；同日起需求与设计文档**版本号统一**（起点 v0.6）。v0.5.2（2026-10-19 术语修订：语义层内容层「骨架」统一改称「源端事实」，列级相应称「事实列」——旧词易被误读为抽象类别（实际是源系统已有对象与关系的具体同步记录），且与 M0a「骨架周」（工程脚手架）撞词；**非决策变更**，只改措辞不改任何结论。v0.5.1（2026-10-19 原型基线更新：吸收 [issue #36](https://github.com/yq3/lab/issues/36)——`prototype/index.html` 替换为 v0.5，五视图（文档 / 检索测试 / 权限 / 语义层 / 任务与审计），§5.7 前端薄壳以其为**信息结构与 UI 风格双基准**；语义层视图原型已含（实现仍可选，M2-S3 节奏不变）；**非决策变更**——D1~D23 与 v0.4 冻结结论均不受影响，冻结纪律延续）
+> 日期：2026-10-16 初稿 → v0.2（#31）→ v0.3（#32）→ v0.4（#33+#34，冻结版）→ v0.5（#35，D23）→ v0.5.1（#36，原型基线更新）→ v0.5.2（术语修订：骨架→源端事实）→ v0.6（#37，非决策变更：源系统接入前置条件 + 实体维度 ACL 演进缝登记；版本号与需求文档统一）→ v0.6.1（#39，非决策变更：#38 评审衍生三处正文修正——sem_rel_types 全局表表述 / 请求体权限字段口径对齐 FR-4 / M1 验收 T19·T20 半句限定）
 > 前置阅读：[requirements.md](./requirements.md)（本文所有 FR/NFR/D 编号均指向需求文档 v0.6）
 > 调研依据：[enterprise-rag 调研](../../research/enterprise-rag/)，参考架构基线 `blog/10-build-kb-for-agent.md`
 
@@ -26,6 +26,7 @@
 | **issue #33 收口修订（v0.4，冻结）** | 权限状态进计算（P0-1）/ 版本在用制闭环（P0-2）/ 外键动作补齐 / 凭证流闭环 / 审计 outbox / 可信子系统约束 / REST 路径统一 / M0a-M0b 拆分 / T1~T19 | 全文（决策汇总见需求 D22） |
 | **issue #35 决策修订（v0.5，D23）** | 业务语义层并入（取代 D17 部署形态）：类型化对象图 + SQLite 递归 CTE，**不做 GraphRAG / 图数据库**；源端事实同步 + YAML 覆盖层分层真相源；M2-S1~S3 并行轨道 | §2~§4 / §5.2~5.3 / §5.8~5.10 / §6 / §8~10（决策汇总见需求 D23） |
 | **issue #37 吸收（v0.6，非决策变更）** | 源系统接入前置条件显式化（§5.8 新增小节）+ **语义层实体维度 ACL 登记为演进缝**（§2 升级缝，与需求 NFR-5 同步——延后决策，触发条件与已预评实施要点见 issue #37 及其评论） | §2 / §5.8 / §10 |
+| **issue #39 吸收（v0.6.1，非决策变更——#38 用例评审衍生）** | 三处正文修正：§4 设计说明⑥ org 作用域表述（`sem_rel_types` 全局白名单表除外）/ §5.5 请求体权限字段「忽略并记审计」对齐需求 FR-4 / §8 M1 验收限定 T19 删库、T20 退役审计半句随 M2 收口 | §4 / §5.5 / §8 |
 
 ## 2. 进程与部署架构
 
@@ -575,7 +576,7 @@ CREATE TABLE sem_sync_runs (
 - **维度冗余的取舍**：`chunks.dims_json` 是 `document_dimensions` 的投影（多值数组），检索 SQL 按 JSON 解析编译成常量条件（§5.1）；文档维度变更时由服务层同步刷投影（UPDATE，不重嵌——D6）。**M0b 实验若选定"按文档计算"（visible_docs），dims_json 整体删除**（消除一致性维护点，§5.1）。
 - **向量存 BLOB 不用 vec0**（P0-1）：vec0 的 KNN 在虚拟表内部取 top-k 后才能 JOIN 过滤，等于 post-trim；BLOB + `vec_distance_cosine()` 在 ACL 过滤后的行集上算距离，"先过滤后扫描"（扫描量 = 用户可见量）。M0b 实验对比 `chunk_vectors` 分表（4KB/块拖慢回表与放大 WAL）。
 - **FTS5 五列**（v0.4）：`unicode61` 只做兜底分词；`title_seg`（3）/`content_seg`（1）/`keywords` 仅人工词（5）/`llm_keywords`（0.5~1）/`tags`（8）分列加权；查询侧同词典切分 + token 双引号包裹且内部 `"` 转义为 `""`。
-- **语义表设计要点（D23，#35 §6.3）**：①**事实列与人工列分开**——同步只写 `name` / `attrs_json` / `parent_id` / `status` / `synced_at`，**从不写** `curated_json`，也不动 `kind IN ('manual','abbr')` 的别名："同步不覆盖人工内容"由列级分工保证，不依赖代码自觉（T-S1）；②**`sem_chunk_entities` 不加外键到 `chunks`**——`chunks` 走版本在用制与墓碑机制，清理由 docs 在删块/版本切换时**同事务**调 `semantic.untag(doc_id, version)`，另有定时对账任务兜底（T-S10），避免语义表反向约束文档核心表；③**`missing` 宽限期**（默认 7 天后转 `retired`）与同步侧**删除比例保护**（§5.8）双保险，防源系统接口偶发空返回把图清空；④`sensitivity='restricted'` 实体只有持 `semantic:restricted` 权限的调用方可见（annotate 不返回 span、get_entity 404、展开不出现——T-S9）；⑤`parent_id` 只是展示用冗余，真相以 `has_field` / `has_column` / `has_item` 关系为准，同步时两者同事务写入；⑥组织隔离硬约束：全部 `sem_*` 表带 `org_id`、关系端点同组织由触发器校验（T-S5/T-S7）。
+- **语义表设计要点（D23，#35 §6.3）**：①**事实列与人工列分开**——同步只写 `name` / `attrs_json` / `parent_id` / `status` / `synced_at`，**从不写** `curated_json`，也不动 `kind IN ('manual','abbr')` 的别名："同步不覆盖人工内容"由列级分工保证，不依赖代码自觉（T-S1）；②**`sem_chunk_entities` 不加外键到 `chunks`**——`chunks` 走版本在用制与墓碑机制，清理由 docs 在删块/版本切换时**同事务**调 `semantic.untag(doc_id, version)`，另有定时对账任务兜底（T-S10），避免语义表反向约束文档核心表；③**`missing` 宽限期**（默认 7 天后转 `retired`）与同步侧**删除比例保护**（§5.8）双保险，防源系统接口偶发空返回把图清空；④`sensitivity='restricted'` 实体只有持 `semantic:restricted` 权限的调用方可见（annotate 不返回 span、get_entity 404、展开不出现——T-S9）；⑤`parent_id` 只是展示用冗余，真相以 `has_field` / `has_column` / `has_item` 关系为准，同步时两者同事务写入；⑥组织隔离硬约束：**org 作用域 `sem_*` 表**（sem_entities / sem_aliases / sem_relations / sem_chunk_entities / sem_builds / sem_sync_runs）全带 `org_id`、关系端点同组织由触发器校验（T-S5/T-S7）——`sem_rel_types` 为**全局白名单配置表、无 org_id**，不在此列（v0.6.1 修正表述，#38 P1-2/#39：原「全部 `sem_*` 表」与 §4 DDL 不符）。
 
 ## 5. 关键设计
 
@@ -714,7 +715,7 @@ COMMIT;
 ### 5.5 鉴权、身份与组织上下文（domain/auth.py + mcp/server.py）
 
 - **登录：企业 SSO（D16）**——token 验签（OIDC 优先，协议待需求待决-2 确认）→ 解析全局用户；**首次登录 JIT 建档**（`users` 表自动落库：id/username/display_name），管理员不建账号只配授权。
-- **agent 代人检索（D18）**：**委托 token（Token Exchange）**——`aud=knowledge-lattice`、短 TTL、`sub`=用户、`act`=agent 标识进审计；拒绝 token 原样透传与请求体权限字段。**降级（v0.3）**：IdP 不支持时走**可信子系统**——agent 服务自身凭证（mTLS/服务 token）须在服务白名单，请求头 `X-On-Behalf-Of: <user_id>` 声明用户，知识库校验白名单后按声明用户计权、双身份（服务+用户）进审计；数据模型与 D18 一致（弱化 act/sub）。静态 token 仅开发/测试（含 CI）。
+- **agent 代人检索（D18）**：**委托 token（Token Exchange）**——`aud=knowledge-lattice`、短 TTL、`sub`=用户、`act`=agent 标识进审计；**拒绝 token 原样透传**（MCP 规范明令）；**请求体权限字段一律忽略并记审计、请求正常处理**（对齐 requirements FR-4/D18——v0.6.1 措辞对齐，#38 P1-9/#39）。**降级（v0.3）**：IdP 不支持时走**可信子系统**——agent 服务自身凭证（mTLS/服务 token）须在服务白名单，请求头 `X-On-Behalf-Of: <user_id>` 声明用户，知识库校验白名单后按声明用户计权、双身份（服务+用户）进审计；数据模型与 D18 一致（弱化 act/sub）。静态 token 仅开发/测试（含 CI）。
 - **M0b 实测项（issue #32 P1-6）**：`langchain-mcp-adapters` 按用户切换委托 token 的客户端形态（每用户会话一个 client vs 自定义 transport 每请求注入头）、连接开销与 token 过期刷新。
 - **组织上下文统一规则（v0.4，D18）**：REST 用 `X-Org-Id` 请求头；MCP 以委托 token 的 `org` claim 优先（按组织签发、单值）、无 claim 时读运行时在连接/传输层注入的 `X-Org-Id` 头；两者并存且不一致 → 400；**工具参数中的 org 一律忽略并记审计**；缺失即 400，无隐式默认。逐请求按 §5.1 第 0 步（含过期）校验成员关系。
 - **可信子系统降级三条约束（v0.4，#33 P1-5）**：①白名单条目带 `allowed_orgs` + 按服务限流；②**用户在场证据**——请求附用户 SSO id_token/短期断言，校验 `sub` 与 `X-On-Behalf-Of` 一致（防服务凭证冒充离线用户）；③`X-Org-Id` 由运行时按用户会话注入。**有期限：上生产前必须切 Token Exchange 或落实②**（D18）。
@@ -1110,7 +1111,7 @@ SELECT e.id, e.type, e.key, e.name, MIN(w.depth) AS depth, GROUP_CONCAT(DISTINCT
 
 **过渡期（现在~M2，#35 §12.3）**：agent 侧用「同 schema 的 Git YAML + 本地 AC 自动机（pyahocorasick）」只覆盖 concept/system 与 L0；YAML schema 与规范化函数抽成小 package 两端共用（本地版与服务端行为一致，迁移零改动）；中间件接口保持不变（输入文本、输出 mentions），本地 AC ↔ 服务端 annotate 经开关切换并支持灰度，切换时用评测集对比。过渡期 concept 的 `refers_to` 可指向尚未同步的实体，CI 只警告，M2-S1/S2 完成后自然生效。
 
-**权限口径（semantic，#35 §10）**：①**组织隔离是硬约束**——全部 `sem_*` 表带 `org_id`，查询一律从 `/api/orgs/{org}` 或 MCP 会话组织上下文取 org（规则同 §5.5），关系端点同组织由触发器校验（T-S7）；②**语义层不复用维度 ACL 编译器**——业务对象（模板名/字段名/表名）组织内默认对所有成员可见，可见性要求与文档内容不在一个级别，对实体套维度 ACL 会把必修 1~3 的复杂度再来一遍；③**`restricted` 实体**：极少数敏感对象只有持 `semantic:restricted` 权限的调用方可见其实体、别名命中与关系展开，无权时 annotate 中表现为不存在（T-S9）；④**文档证据的 ACL 不变**——凡涉及文档块（`search` 的实体召回路）一律走 docs 的维度 ACL 编译产物（§5.10），语义层只提供实体 ID，**不能给文档可见性开任何后门**（T-S8）；⑤`describe_table` 用服务身份调元数据系统、只允许已登记 table 实体（防借此枚举整个数仓）；元数据系统本身有表级权限则改用委托 token（RFC 8693）透传用户身份，与 D18 一致；⑥**审计**：同步、构建、YAML 合并、restricted 实体访问走审计 outbox（权限类事件）；annotate / get_entity 普通查询走查询级异步审计，与 docs 查询审计共用月库。
+**权限口径（semantic，#35 §10）**：①**组织隔离是硬约束**——org 作用域 `sem_*` 表全带 `org_id`（`sem_rel_types` 为全局白名单配置表、无 org_id，除外——v0.6.1 修正，#39），查询一律从 `/api/orgs/{org}` 或 MCP 会话组织上下文取 org（规则同 §5.5），关系端点同组织由触发器校验（T-S7）；②**语义层不复用维度 ACL 编译器**——业务对象（模板名/字段名/表名）组织内默认对所有成员可见，可见性要求与文档内容不在一个级别，对实体套维度 ACL 会把必修 1~3 的复杂度再来一遍；③**`restricted` 实体**：极少数敏感对象只有持 `semantic:restricted` 权限的调用方可见其实体、别名命中与关系展开，无权时 annotate 中表现为不存在（T-S9）；④**文档证据的 ACL 不变**——凡涉及文档块（`search` 的实体召回路）一律走 docs 的维度 ACL 编译产物（§5.10），语义层只提供实体 ID，**不能给文档可见性开任何后门**（T-S8）；⑤`describe_table` 用服务身份调元数据系统、只允许已登记 table 实体（防借此枚举整个数仓）；元数据系统本身有表级权限则改用委托 token（RFC 8693）透传用户身份，与 D18 一致；⑥**审计**：同步、构建、YAML 合并、restricted 实体访问走审计 outbox（权限类事件）；annotate / get_entity 普通查询走查询级异步审计，与 docs 查询审计共用月库。
 
 **上传凭证的 agent 侧时序（v0.4，#33 P1-3——M1 集成项，与 D23 无关、保留）**：deepagents 侧需要一个**运行时工具/中间件**（非 LLM 直接参与）——LLM 决定"上传某文件"→ 运行时①持委托 token 调 `POST /api/uploads`（声明 filename/size/sha256）→ ②PUT 字节到 upload_url → ③把 `upload_id` 交回对话，LLM 再调 MCP `upload(upload_id, dims, ...)`。凭证绑定 sub+org+服务身份（跨组织无效——T11）；未消费凭证由清理任务回收。
 
@@ -1158,7 +1159,7 @@ SELECT e.id, e.type, e.key, e.name, MIN(w.depth) AS depth, GROUP_CONCAT(DISTINCT
 4. **上传凭证制 + deepagents 集成**（§6.3 时序：运行时工具 + PUT 端点 + 绑定 sub+org+服务 + 清理任务）
 5. 区分度环（绝对阈值 + numpy 批量重算 + 报告页近邻过 ACL）
 6. 真实文档批量上线（待决-1，合成样例先行）+ 小型黄金集 + Recall@k/MRR + P95 基线
-7. 验收：**越权矩阵全绿（§9 含 T1~T23）**；真实 query 标注；区分度误报抽查
+7. 验收：**越权矩阵全绿（§9 含 T1~T23——T19 删库半句、T20 退役审计半句随 M2 收口，v0.6.1 限定 #38 P1-4/#39）**；真实 query 标注；区分度误报抽查
 
 **M2（第 4~6 周）——生产化**
 1. worker 子进程化（心跳/租约/重试）+ 写竞争治理 + embed 回写防护
