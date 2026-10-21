@@ -1,8 +1,8 @@
 # knowledge-lattice 方案设计
 
-> 版本：v0.6.1（2026-10-20 吸收 [issue #39](https://github.com/yq3/lab/issues/39)：**非决策变更**——#38 用例评审衍生的三处正文修正：①§4 设计说明⑥「全部 `sem_*` 表带 org_id」修正为「org 作用域六表带 org_id，`sem_rel_types` 为全局白名单配置表除外」（与 §4 DDL 一致）；②§5.5 请求体权限字段口径对齐需求 FR-4——**透传原始 token 拒绝；请求体权限字段一律忽略并记审计**；③§8 M1 验收句限定 T19 删库半句、T20 退役审计半句随 M2 收口；D1~D23 与 v0.4 冻结结论不动。v0.6（2026-10-20 吸收 [issue #37](https://github.com/yq3/lab/issues/37)：**非决策变更**——①§5.8 新增「源系统接入前置条件」小节（接口形态 / 维度属性可选携带 / 连接配置 per-org，两处按 #37 评论决策修正 issue 原文：不强制携带、缺维度值按空值放行）；②§2 升级缝与需求 NFR-5 同步登记「语义层实体维度 ACL」演进缝；③§1 映射表与 §10 风险表同步补行；D1~D23 与 v0.4 冻结结论不动；同日起需求与设计文档**版本号统一**（起点 v0.6）。v0.5.2（2026-10-19 术语修订：语义层内容层「骨架」统一改称「源端事实」，列级相应称「事实列」——旧词易被误读为抽象类别（实际是源系统已有对象与关系的具体同步记录），且与 M0a「骨架周」（工程脚手架）撞词；**非决策变更**，只改措辞不改任何结论。v0.5.1（2026-10-19 原型基线更新：吸收 [issue #36](https://github.com/yq3/lab/issues/36)——`prototype/index.html` 替换为 v0.5，五视图（文档 / 检索测试 / 权限 / 语义层 / 任务与审计），§5.7 前端薄壳以其为**信息结构与 UI 风格双基准**；语义层视图原型已含（实现仍可选，M2-S3 节奏不变）；**非决策变更**——D1~D23 与 v0.4 冻结结论均不受影响，冻结纪律延续）
-> 日期：2026-10-16 初稿 → v0.2（#31）→ v0.3（#32）→ v0.4（#33+#34，冻结版）→ v0.5（#35，D23）→ v0.5.1（#36，原型基线更新）→ v0.5.2（术语修订：骨架→源端事实）→ v0.6（#37，非决策变更：源系统接入前置条件 + 实体维度 ACL 演进缝登记；版本号与需求文档统一）→ v0.6.1（#39，非决策变更：#38 评审衍生三处正文修正——sem_rel_types 全局表表述 / 请求体权限字段口径对齐 FR-4 / M1 验收 T19·T20 半句限定）
-> 前置阅读：[requirements.md](./requirements.md)（本文所有 FR/NFR/D 编号均指向需求文档 v0.6.1）
+> 版本：v0.7（2026-10-21 吸收 [issue #41](https://github.com/yq3/lab/issues/41)：**决策变更**——v0.4 冻结后第二个（沿 #35/D23 先例）——①**D12 修订**：嵌入/重排外置为 OpenAI 兼容 API + provider 接口（§2 部署形态与资源预算重写、§3 adapters、§5.2/5.3/5.4、§7 依赖表；`embed_model` 升级为查询谓词 + 指纹探针 + 重嵌入流程）；②**新增 D24**：存储后端抽象双实现（SQLite 默认 / PostgreSQL+pgvector）——§3 store/ 重构为 StorageBackend 协议 + 方言包、§5.1 编译产物改为方言无关 AclPlan、§7/§8/§10 同步；③§5.8 补源系统 MCP 可选传输口径（FR-S1 本就传输方式无关，非决策变更）；④NFR-5 登记 ES 召回引擎演进缝；D1~D11、D13~D23 其余结论与 v0.4 冻结的必修 1~3 不动，冻结纪律延续。v0.6.1（2026-10-20 吸收 [issue #39](https://github.com/yq3/lab/issues/39)：**非决策变更**——#38 用例评审衍生的三处正文修正：①§4 设计说明⑥「全部 `sem_*` 表带 org_id」修正为「org 作用域六表带 org_id，`sem_rel_types` 为全局白名单配置表除外」（与 §4 DDL 一致）；②§5.5 请求体权限字段口径对齐需求 FR-4——**透传原始 token 拒绝；请求体权限字段一律忽略并记审计**；③§8 M1 验收句限定 T19 删库半句、T20 退役审计半句随 M2 收口；D1~D23 与 v0.4 冻结结论不动。v0.6（2026-10-20 吸收 [issue #37](https://github.com/yq3/lab/issues/37)：**非决策变更**——①§5.8 新增「源系统接入前置条件」小节（接口形态 / 维度属性可选携带 / 连接配置 per-org，两处按 #37 评论决策修正 issue 原文：不强制携带、缺维度值按空值放行）；②§2 升级缝与需求 NFR-5 同步登记「语义层实体维度 ACL」演进缝；③§1 映射表与 §10 风险表同步补行；D1~D23 与 v0.4 冻结结论不动；同日起需求与设计文档**版本号统一**（起点 v0.6）。v0.5.2（2026-10-19 术语修订：语义层内容层「骨架」统一改称「源端事实」，列级相应称「事实列」——旧词易被误读为抽象类别（实际是源系统已有对象与关系的具体同步记录），且与 M0a「骨架周」（工程脚手架）撞词；**非决策变更**，只改措辞不改任何结论。v0.5.1（2026-10-19 原型基线更新：吸收 [issue #36](https://github.com/yq3/lab/issues/36)——`prototype/index.html` 替换为 v0.5，五视图（文档 / 检索测试 / 权限 / 语义层 / 任务与审计），§5.7 前端薄壳以其为**信息结构与 UI 风格双基准**；语义层视图原型已含（实现仍可选，M2-S3 节奏不变）；**非决策变更**——D1~D23 与 v0.4 冻结结论均不受影响，冻结纪律延续）
+> 日期：2026-10-16 初稿 → v0.2（#31）→ v0.3（#32）→ v0.4（#33+#34，冻结版）→ v0.5（#35，D23）→ v0.5.1（#36，原型基线更新）→ v0.5.2（术语修订：骨架→源端事实）→ v0.6（#37，非决策变更：源系统接入前置条件 + 实体维度 ACL 演进缝登记；版本号与需求文档统一）→ v0.6.1（#39，非决策变更：#38 评审衍生三处正文修正——sem_rel_types 全局表表述 / 请求体权限字段口径对齐 FR-4 / M1 验收 T19·T20 半句限定）→ v0.7（#41，决策变更：D12 嵌入/重排 API 化 + D24 存储后端双实现 + 源系统 MCP 口径 + ES 演进缝登记）
+> 前置阅读：[requirements.md](./requirements.md)（本文所有 FR/NFR/D 编号均指向需求文档 v0.7）
 > 调研依据：[enterprise-rag 调研](../../research/enterprise-rag/)，参考架构基线 `blog/10-build-kb-for-agent.md`
 
 ---
@@ -12,13 +12,13 @@
 | 需求 | 方案落点 | 本文章节 |
 |---|---|---|
 | FR-1 摄取 | 单进程 + worker 子进程 + 任务表；docling 进程内解析 | §2 / §5.3 |
-| FR-2 检索 | SQLite 内双路（FTS5 + sqlite-vec）→ RRF → 进程内 rerank | §5.2 |
+| FR-2 检索 | 存储后端内双路（SQLite：FTS5 + sqlite-vec / PG：tsvector + `<=>`——D24）→ RRF → rerank API | §5.2 |
 | FR-3 区分度反馈环 | 摄取管线尾部 quality 阶段 + 质量报告接口 | §5.4 |
 | FR-4 维度权限 | 维度模型五表 + ACL 编译器（查询时展开，引擎内下推） | §4 / §5.1 |
 | FR-5 接口面 | FastMCP 单一 server：docs 组四工具（search/upload/fetch/list_documents）+ semantic 组四工具（annotate/search_entities/get_entity/describe_table，M2-S——D23）+ REST + 静态薄壳前端 | §6 |
 | FR-6/7 治理与评测 | audit_events 触发器；评测脚本集（黄金集 + 门禁） | §4 / §9 |
-| NFR-1 零中间件 | 全部组件进程内/文件级，无外部常驻服务 | §2 |
-| NFR-5 演进缝 | repository 接口 + 配置级切换点清单 | §7 |
+| NFR-1 部署形态 | SQLite 后端零中间件；PG 为可选外部后端（D24）；嵌入/重排为外部 API 依赖（D12 修订） | §2 |
+| NFR-5 演进缝 | StorageBackend 协议 + 配置级切换点清单（存储已升格 D24 双实现；ES 召回引擎为登记缝） | §7 |
 | **FR-S1~S6 业务语义（D23）** | `core/semantic/`：同步适配器（源端事实）+ Git YAML 覆盖层（人工内容）+ AC 自动机识别 + 递归 CTE 关系展开 + 实体召回路（**复用 §5.1 ACL 编译产物**）+ describe_table 透传；与 docs 同进程同库、单一 MCP server 分组注册 | §3 / §4（`sem_*`）/ §5.8~5.10 / §6.3 |
 | **NFR-11 语义层性能与隔离（D23）** | 独立 worker 任务类型（semantic_sync/build/retag）限速错峰；删除比例保护 + 宽限期；构建产物原子切换；中间件降级 | §2 / §5.8 / §6.3 |
 | **issue #31 评审修订（v0.2）** | P0 五项修复（检索侧）+ 权限真值源 + 性能运维 | §4 / §5.1~5.3 / §5.6 / §8~10 |
@@ -27,6 +27,7 @@
 | **issue #35 决策修订（v0.5，D23）** | 业务语义层并入（取代 D17 部署形态）：类型化对象图 + SQLite 递归 CTE，**不做 GraphRAG / 图数据库**；源端事实同步 + YAML 覆盖层分层真相源；M2-S1~S3 并行轨道 | §2~§4 / §5.2~5.3 / §5.8~5.10 / §6 / §8~10（决策汇总见需求 D23） |
 | **issue #37 吸收（v0.6，非决策变更）** | 源系统接入前置条件显式化（§5.8 新增小节）+ **语义层实体维度 ACL 登记为演进缝**（§2 升级缝，与需求 NFR-5 同步——延后决策，触发条件与已预评实施要点见 issue #37 及其评论） | §2 / §5.8 / §10 |
 | **issue #39 吸收（v0.6.1，非决策变更——#38 用例评审衍生）** | 三处正文修正：§4 设计说明⑥ org 作用域表述（`sem_rel_types` 全局白名单表除外）/ §5.5 请求体权限字段「忽略并记审计」对齐需求 FR-4 / §8 M1 验收限定 T19 删库、T20 退役审计半句随 M2 收口 | §4 / §5.5 / §8 |
+| **issue #41 吸收（v0.7，决策变更）** | **D12 修订**（嵌入/重排外置 OpenAI 兼容 API + provider 接口；`embed_model` 查询谓词 + 指纹探针 + 重嵌入流程）+ **D24 新增**（StorageBackend 双实现 SQLite/PG、AclPlan 方言无关计划）+ 源系统 MCP 可选传输 + ES 召回引擎演进缝登记 | §2 / §3 / §4 / §5.1~5.4 / §5.8 / §7 / §8 / §10 |
 
 ## 2. 进程与部署架构
 
@@ -54,10 +55,10 @@
  └────────┬────────────────────────────────────┬──────────────┘
           │ 子进程 IPC（unix socket / stdin）    │ 读写
  ┌────────▼──────────────┐          ┌───────────▼──────────────┐
- │ worker 子进程           │          │ SQLite（data/lattice.db）  │
- │ docs 任务：解析→切分→     │          │ 元数据 + FTS5 + 向量BLOB   │
- │   打标*(M2-S3)→index_fts │          │ + sem_*（业务语义——D23）   │
- │   →嵌入→index_vec→质量    │          │ WAL 模式（多读单写）        │
+ │ worker 子进程           │          │ 存储后端（D24）：        │
+ │ docs 任务：解析→切分→     │          │ SQLite 默认 / PG+pgvector │
+ │   打标*(M2-S3)→index_fts │          │ 元数据+FTS+向量+sem_*    │
+ │   →嵌入→index_vec→质量    │          │ SQLite=WAL；PG 无单写限制 │
  │ semantic 任务（D23）：    │          └──────────────────────────┘
  │   semantic_sync（每日/   │
  │   手动）· semantic_build │
@@ -66,20 +67,20 @@
  └────────┬───────┬──────┘
           │       │                ┌──────────────────────────┐
  ┌────────▼──┐ ┌──▼─────────┐      │ data/objects/ 对象目录     │
- │ docling    │ │ 内部 LLM    │      │ 原始文件+解析产物           │
- │ （进程内库）│ │ 网关客户端   │      │ （canonical 真相，可重建）   │
- │ MinerU 懒载│ │ (关键词增强/ │      └──────────────────────────┘
- │ （可选服务）│ │  区分度兜底) │
+ │ docling    │ │ 模型 API 客户│      │ 原始文件+解析产物           │
+ │ （进程内库）│ │ 端（OpenAI 兼│      │ （canonical 真相，可重建）   │
+ │ MinerU 懒载│ │ 容——D12 修订│      └──────────────────────────┘
+ │ （可选服务）│ │ LLM/嵌入/rer.│
  └───────────┘ └────────────┘
 ```
 
-**部署形态（NFR-1/9）**：`knowledge-lattice` 主进程 ×1（内含 worker 子进程）+ `lattice.db` ×1 + `data/objects/` 目录 ×1。无消息队列、无独立向量库、无嵌入服务容器——它们分别是 tasks 表轮询、**chunks.embedding BLOB 列 + sqlite-vec 距离函数**、进程内 bge-m3。worker 经 IPC 被唤醒 + 兜底轮询（anything-llm 的最小进程隔离样板：OOM 只杀 worker）。**业务语义层并入后形态不变（D23）**：`core/semantic/` 与文档层同进程、同主库（`sem_*` 前缀表，迁移脚本分目录）、同一 MCP server——不新增独立服务、不引入图数据库（10⁴~10⁵ 节点、1~2 跳查询，递归 CTE 毫秒级）；同步适配器只读拉取源系统（模板中心/场景配置/报表中心/元数据系统）快照，`describe_table` 实时透传元数据系统。**资源预算**：主进程与 worker 各加载一份模型（嵌入+reranker+docling），峰值 6~8 GB——最低规格 16 GB RAM / 8 核；**CPU 推理全部进线程/进程池**，不阻塞事件循环；AC 自动机与模糊索引按 `(org, dict_rev)` 懒加载（数千~数万条，内存开销 MB 级）。
+**部署形态（NFR-1/9，v0.7 按 D12/D24 修订）**：`knowledge-lattice` 主进程 ×1（内含 worker 子进程）+ 所选存储后端 ×1（**SQLite `lattice.db` 默认 / PostgreSQL+pgvector 可选——D24，配置级切换**）+ `data/objects/` 目录 ×1。无消息队列、无独立向量库——分别是 tasks 表轮询、SQLite 的 **chunks.embedding BLOB 列 + sqlite-vec 距离函数**（PG 后端为向量列 + `<=>` 算子）；**嵌入与重排不在本机（D12 修订）**——经 OpenAI 兼容 API 调内部网关（不可达时检索降级 BM25 单路、摄取停在 `searchable_lexical`，服务不中断）。worker 经 IPC 被唤醒 + 兜底轮询（anything-llm 的最小进程隔离样板：OOM 只杀 worker）。**业务语义层并入后形态不变（D23）**：`core/semantic/` 与文档层同进程、同主库（`sem_*` 前缀表，迁移脚本分目录）、同一 MCP server——不新增独立服务、不引入图数据库（10⁴~10⁵ 节点、1~2 跳查询，递归 CTE 毫秒级）；同步适配器只读拉取源系统（模板中心/场景配置/报表中心/元数据系统）快照（**传输 REST 或 MCP 均可——§5.8 前置条件，v0.7 #41**），`describe_table` 实时透传元数据系统。**资源预算（v0.7 重写）**：模型外置后主进程轻量（无 torch——嵌入/重排经 API）；worker 仅 docling + torch，峰值 ~2~2.5 GB；服务侧合计 ~3~3.5 GB——最低规格 8 GB RAM / 4 核（网关与模型内存不在本预算；原「16 GB / 8 核、峰值 6~8 GB」口径作废）；**模型 API 调用全部异步/线程池**，不阻塞事件循环；AC 自动机与模糊索引按 `(org, dict_rev)` 懒加载（数千~数万条，内存开销 MB 级）。
 
-**并发模型（NFR-9）**：SQLite WAL 模式（多读单写）。检索（读）不受摄取（写）阻塞；写竞争治理：`busy_timeout` + worker 短事务分批提交 + **审计按月分库后与业务写天然隔离**（FR-6）。数百用户检索并发的实际瓶颈在 rerank 计算（§5.2 缓解：候选 32 / ONNX int8 / 信号量）。**语义任务的写锁治理（D23，NFR-11）**：`semantic_sync` / `semantic_retag` 与 ingest 抢 WAL 写锁——同步与重标为独立任务类型、分批 ≤1000 行/批、限速、默认夜间错峰；重标优先级最低不与 ingest 抢资源；语义任务失败不影响 docs 检索可用性；必要时把 `sem_*` 拆到 ATTACH 的独立库文件（repository 接口不变）。
+**并发模型（NFR-9）**：SQLite WAL 模式（多读单写）。检索（读）不受摄取（写）阻塞；写竞争治理：`busy_timeout` + worker 短事务分批提交 + **审计按月分库后与业务写天然隔离**（FR-6）。数百用户检索并发的实际瓶颈在 rerank 调用（§5.2 缓解：候选 32 / rerank API 异步化与并发信号量 / 不可达跳过——D12 修订）。**语义任务的写锁治理（D23，NFR-11）**：`semantic_sync` / `semantic_retag` 与 ingest 抢 WAL 写锁——同步与重标为独立任务类型、分批 ≤1000 行/批、限速、默认夜间错峰；重标优先级最低不与 ingest 抢资源；语义任务失败不影响 docs 检索可用性；必要时把 `sem_*` 拆到 ATTACH 的独立库文件（repository 接口不变）。**v0.7（D24）**：本段写竞争治理为 SQLite 后端口径——PG 后端为 MVCC 多写、无 WAL 单写限制，`busy_timeout`/短事务错峰治理天然缓解；审计按月分库在 PG 上落地为按月分区表（连接工厂滚动建分区，接口不变）。
 
 **备份恢复（NFR-10）**：SQLite `VACUUM INTO` / online backup 定时快照 + `data/objects/` 一并备份；RPO ≤ 24h / RTO ≤ 4h（POC 目标）；恢复演练进 runbook。
 
-**升级缝（NFR-5 落点）**：存储（repository 接口后换 pgvector/milvus，触发阈值为 100 万 chunk 或 P95 超标——NFR-2）、嵌入与重排（进程内 → TEI 容器，接口不变）、解析（docling → MinerU api_server，路由表驱动）、授权同步（grant_sync 适配器启用只读同步维度——D16）、**语义层实体维度 ACL（#37 登记为延后决策的演进缝）**：`sem_entity_dims` 绑定表 + §5.1 编译器**第二渲染目标**（同一套授权展开渲染到实体表——统一模板原样套用、无类型分支），读时过滤、AC 自动机与打标不动（纯加法）；触发条件与已预评实施要点见 #37 及其评论；过渡期按区域灰度同步范围、**禁用 `restricted` + `semantic:restricted` 充当区域控制**（二进制开关非分维授权）；触发时先做「第二区域实体是否必须进语义层」前置评估，不进 = 延续灰度零成本。
+**升级缝（NFR-5 落点，v0.7 更新）**：存储（repository 接口后换 pgvector/milvus → **已升格为 D24 双实现**：SQLite↔PG 配置级切换，触发线 100 万 chunk 或 P95 超标——NFR-2；milvus 保留为缝；**ES 召回引擎为登记缝（#41，不实现）**——价值形态为 BM25+向量**同引擎**混合、届时抽走 recall_fts+recall_vec 两路而非向量-only，配方：AclPlan 第三渲染器 + 影子元数据同步 + 查询时以关系库真相二次断言 + 对账任务，触发条件见需求 NFR-5）、嵌入与重排（原「进程内 → TEI 容器」缝已由 D12 修订启用：provider 接口 + OpenAI 兼容客户端，换端点为配置级）、解析（docling → MinerU api_server，路由表驱动）、授权同步（grant_sync 适配器启用只读同步维度——D16）、**语义层实体维度 ACL（#37 登记为延后决策的演进缝）**：`sem_entity_dims` 绑定表 + §5.1 编译器**第二渲染目标**（同一套授权展开渲染到实体表——统一模板原样套用、无类型分支），读时过滤、AC 自动机与打标不动（纯加法）；触发条件与已预评实施要点见 #37 及其评论；过渡期按区域灰度同步范围、**禁用 `restricted` + `semantic:restricted` 充当区域控制**（二进制开关非分维授权）；触发时先做「第二区域实体是否必须进语义层」前置评估，不进 = 延续灰度零成本。
 
 ## 3. 代码模块划分
 
@@ -103,7 +104,7 @@ knowledge_lattice/
 │   ├── chunking.py         # 结构感知切分（docling 结构树 + 递归 token）
 │   ├── excel_chunking.py   # Excel 表格型切分（sheet/行块）
 │   ├── retrieve.py         # 检索管线编排：召回（FTS/向量/实体路*）→融合→重排→过滤→溯源（*M2-S3，调 semantic.expand）
-│   ├── acl.py              # 维度 ACL 编译器（§5.1）——实体召回路复用其产物，语义层不另写
+│   ├── acl.py              # 维度 ACL 编译器（§5.1）——产出方言无关 AclPlan（D24）；实体召回路复用其产物，语义层不另写
 │   ├── quality.py          # 区分度检测 + LLM 关键词增强（§5.4）
 │   └── semantic/           # ★D23 业务语义（M2-S1~S3）：与 docs 共基础设施（store/domain），不共享领域模型与 ACL 编译器
 │       ├── annotator.py    #   AC 自动机识别 + 消歧（§5.9）；对外显式接口 tag(chunks, org) / untag(doc_id, version)（ingest 打标同源）
@@ -119,18 +120,25 @@ knowledge_lattice/
 ├── adapters/
 │   ├── parser_docling.py   # docling 封装（DoclingDocument→统一块结构）
 │   ├── parser_mineru.py    # MinerU 懒加载路由（可选，按配置启用）
-│   ├── embedder.py         # bge-m3 进程内（钉版本）
-│   ├── reranker.py         # bge-reranker-v2-m3 进程内（归一 [0,1]）
+│   ├── embedder.py         # Embedder provider 接口 + OpenAI 兼容客户端（D12 修订——进程内实现取消）；
+│   │                        #   写入校验 len==config.dim + 启动指纹探针（防网关静默换底模）
+│   ├── reranker.py         # Reranker provider 接口（D12 修订；**含 none 实现**——跳过重排用 RRF 序；
+│   │                        #   端点形态待需求待决-5 确认）
 │   ├── llm.py              # 内部网关客户端（OpenAI 兼容）
 │   ├── auth_sso.py         # SSO 验签（OIDC/CAS 适配，协议待定；JIT 建档；可信子系统降级——D18）
 │   ├── grant_sync.py       # 授权同步适配器（D16 演进缝，默认禁用）
 │   └── tokenizer.py        # jieba 预分词（生成 content_seg / title_seg；人工词与 LLM 词分层——P1-3）
-├── store/
-│   ├── db.py               # 连接工厂（**唯一连接入口**：WAL/busy_timeout/foreign_keys=ON+断言/
-│   │                        #   sqlite-vec 扩展加载；禁止绕过直连——P0-B，NFR-4）+ 迁移（user_version）
-│   ├── repo.py             # repository 接口：hybrid_search/insert/delete_by_doc
-│   ├── fts.py              # FTS5 建表/查询（五列权重）/MATCH 转义（含 " 的 "" 转义——P1-3）
-│   └── vec.py              # 向量 BLOB 读写与距离计算（sqlite-vec 标量函数——P0-1）
+├── store/                  # ★D24（v0.7）：StorageBackend 协议 + 双方言包，各自拥有 DDL/迁移、FTS、向量、
+│   │                        #   ACL 渲染（AclPlan→SQL）、审计 sink、备份钩子；**不引入 ORM**（方言差异集中
+│   │                        #   在 FTS/向量/JSON 三处，查询构建器帮不上——维持「SQL 收口在 store 层手写」）
+│   ├── backend.py          # StorageBackend 协议（原 repo.py 接口 hybrid_search/insert/delete_by_doc 为种子；
+│   │                        #   recall_fts/recall_vec/recall_by_entities 均收 AclPlan；write_embeddings/
+│   │                        #   switch_active_version/pending_embeddings/审计 sink）
+│   ├── sqlite/             # 连接工厂（**唯一连接入口**：WAL/busy_timeout/foreign_keys=ON+断言/sqlite-vec
+│   │                        #   扩展加载；禁止绕过直连——P0-B，NFR-4）+ 迁移（user_version）+ fts.py（FTS5
+│   │                        #   五列/MATCH 转义——P1-3）+ vec.py（BLOB 距离——P0-1）+ acl_render.py
+│   └── postgres/           # 连接工厂（psycopg + 连接池）+ DDL/触发器等价（tsvector 五列 GENERATED、
+│                            #   `<=>` 距离、审计按月分区）+ acl_render.py（差异口径见 known-gaps G-6）
 ├── domain/
 │   ├── models.py           # pydantic 实体
 │   └── auth.py             # token→user 解析（SSO 验签 + JIT 建档；静态 token 仅开发/测试——D18；委托 token/可信子系统校验）
@@ -141,7 +149,7 @@ knowledge_lattice/
 └── web/                    # 前端薄壳（§5.7，原型见 prototype/）
 ```
 
-分层纪律：`api/mcp` 只做协议转换；`core` 是纯业务编排（不碰 SQL 细节）；`store` 是唯一碰 SQL 的层——**全部连接经 `store/db.py` 连接工厂**（外键 PRAGMA 每连接生效、扩展加载一致——issue #32 P0-B）：
+分层纪律：`api/mcp` 只做协议转换；`core` 是纯业务编排（不碰 SQL 细节）；`store` 是唯一碰 SQL 的层——**全部连接经 store 层连接工厂（SQLite：`store/sqlite/`；PG：`store/postgres/`——D24；外键/PRAGMA/扩展加载/连接池一致性——issue #32 P0-B）**：
 
 ```python
 def connect(path: str) -> sqlite3.Connection:
@@ -342,8 +350,9 @@ CREATE TABLE chunks (
   llm_keywords  TEXT NOT NULL DEFAULT '',  -- LLM 生成（FTS 权重 0.5~1，独立低权列，P1-1）
   tags          TEXT NOT NULL DEFAULT '',  -- 人工标签（FTS 权重 8）
   embedding     BLOB,                -- 向量 BLOB（P0-1：ACL 过滤后算距离；NULL=未就绪走 BM25 单路）。
-                                     --   M0 实验对比拆 chunk_vectors 分表（P1-2）——4KB/块拖慢回表与放大 WAL
-  embed_model   TEXT,                -- 钉版本：bge-m3@<rev>（D12）；NULL 表示未嵌入
+                                     --   M0 实验对比拆 chunk_vectors 分表（P1-2）——~10KB/块（2560 维 float32，D12 修订）拖慢回表与放大 WAL
+  embed_model   TEXT,                -- 模型标签 model:dim（D12 修订：如 qwen3-embedding-4b:2560）；NULL=未嵌入；
+                                     -- v0.7 起兼作向量召回查询谓词（=当前 config 标签才参与距离计算，防混模型向量）
   dims_json     TEXT NOT NULL,       -- 文档维度冗余投影（多值数组）——M0 实验候选去除项（P1-2 按文档计算后可删）
   detected_at_scale INTEGER,         -- 检测时语料规模（区分度重算策略——P1-8）
   content_sha   TEXT,                -- 区分度检测缓存（内容指纹，重检跳过）
@@ -375,7 +384,9 @@ CREATE TRIGGER chunks_au AFTER UPDATE OF title_seg, content_seg, keywords, llm_k
   INSERT INTO chunks_fts(rid, title_seg, content_seg, keywords, llm_keywords, tags)
   VALUES (new.rid, new.title_seg, new.content_seg, new.keywords, new.llm_keywords, new.tags);
 END;
--- 注：无 vec0 虚表——向量即 chunks.embedding BLOB（或实验后的 chunk_vectors 分表）；容量与量化见 NFR-2/3。
+-- 注：无 vec0 虚表——向量即 chunks.embedding BLOB（或实验后的 chunk_vectors 分表——M0b 分表实验新增
+--   模型迁移蓝绿判据，D12/#41）；容量与量化见 NFR-2/3（现网 2560 维为原 1024 假设的 2.5×，M0b 真实维度压测）。
+--   PG 后端（D24）：向量列 + `<=>` 精确扫描起步，索引化与 2000 维上限见 known-gaps G-6。
 
 -- ============ 质量反馈环（FR-3） ============
 CREATE TABLE quality_flags (
@@ -574,7 +585,7 @@ CREATE TABLE sem_sync_runs (
 
 - **组织与库的隔离纪律**：一切检索/列表 SQL 的第一条件是 `org_id = :org`（跨组织零可见；检索路径无 owner 分支——D22③/#34 必修 2，owner 经管理面看元数据）；库过滤（`dataset_id IN (...)`）是组织内的可选收窄；维度授权与维度定义都在组织作用域内解析。
 - **维度冗余的取舍**：`chunks.dims_json` 是 `document_dimensions` 的投影（多值数组），检索 SQL 按 JSON 解析编译成常量条件（§5.1）；文档维度变更时由服务层同步刷投影（UPDATE，不重嵌——D6）。**M0b 实验若选定"按文档计算"（visible_docs），dims_json 整体删除**（消除一致性维护点，§5.1）。
-- **向量存 BLOB 不用 vec0**（P0-1）：vec0 的 KNN 在虚拟表内部取 top-k 后才能 JOIN 过滤，等于 post-trim；BLOB + `vec_distance_cosine()` 在 ACL 过滤后的行集上算距离，"先过滤后扫描"（扫描量 = 用户可见量）。M0b 实验对比 `chunk_vectors` 分表（4KB/块拖慢回表与放大 WAL）。
+- **向量存 BLOB 不用 vec0**（P0-1）：vec0 的 KNN 在虚拟表内部取 top-k 后才能 JOIN 过滤，等于 post-trim；BLOB + `vec_distance_cosine()` 在 ACL 过滤后的行集上算距离，"先过滤后扫描"（扫描量 = 用户可见量）。M0b 实验对比 `chunk_vectors` 分表（~10KB/块——2560 维 float32，D12 修订——拖慢回表与放大 WAL）。
 - **FTS5 五列**（v0.4）：`unicode61` 只做兜底分词；`title_seg`（3）/`content_seg`（1）/`keywords` 仅人工词（5）/`llm_keywords`（0.5~1）/`tags`（8）分列加权；查询侧同词典切分 + token 双引号包裹且内部 `"` 转义为 `""`。
 - **语义表设计要点（D23，#35 §6.3）**：①**事实列与人工列分开**——同步只写 `name` / `attrs_json` / `parent_id` / `status` / `synced_at`，**从不写** `curated_json`，也不动 `kind IN ('manual','abbr')` 的别名："同步不覆盖人工内容"由列级分工保证，不依赖代码自觉（T-S1）；②**`sem_chunk_entities` 不加外键到 `chunks`**——`chunks` 走版本在用制与墓碑机制，清理由 docs 在删块/版本切换时**同事务**调 `semantic.untag(doc_id, version)`，另有定时对账任务兜底（T-S10），避免语义表反向约束文档核心表；③**`missing` 宽限期**（默认 7 天后转 `retired`）与同步侧**删除比例保护**（§5.8）双保险，防源系统接口偶发空返回把图清空；④`sensitivity='restricted'` 实体只有持 `semantic:restricted` 权限的调用方可见（annotate 不返回 span、get_entity 404、展开不出现——T-S9）；⑤`parent_id` 只是展示用冗余，真相以 `has_field` / `has_column` / `has_item` 关系为准，同步时两者同事务写入；⑥组织隔离硬约束：**org 作用域 `sem_*` 表**（sem_entities / sem_aliases / sem_relations / sem_chunk_entities / sem_builds / sem_sync_runs）全带 `org_id`、关系端点同组织由触发器校验（T-S5/T-S7）——`sem_rel_types` 为**全局白名单配置表、无 org_id**，不在此列（v0.6.1 修正表述，#38 P1-2/#39：原「全部 `sem_*` 表」与 §4 DDL 不符）。
 
@@ -614,7 +625,7 @@ WHERE g.user_id = :uid
 **全部 active 维度统一"有值则过滤、空值不过滤"**（必选/可选、启用/停用无差别——required/enabled 不影响过滤，只管上传）；**用户在维度 k 无授权（:grants_k 为空集）→ 编译器直接生成 `NOT EXISTS(...)` 单条件**（该用户只能看到 k 为空的文档，非"整体不可见"——#34 必修 3；空集**禁止**生成 `IN ()` 语法）；`retired` 维度不生成条件（唯一放宽路径，走退役权限事件）；**新增维度时零存量文档消失**（全空值放行），回填即逐篇收紧（上传页与管理页对空值文档提示"待补维度"）；必选改可选、停用均不放宽（T4/T20）。
 4. **无 owner 分支**（#34 必修 2 推荐方案）：检索路径只有维度 ACL 一种语义；owner 查看自己处理中/在用文档走 `list_documents` 与文档详情接口（管理面，只返回元数据与状态，不返回块内容）——彻底消除"覆盖上传处理中窗口重新看到在用全文"的 T17/T21 越权路径。
 
-编译产物（示意——统一模板 + 外层约束 + 版本限定，#34 必修 1/2/3）：
+编译产物（**v0.7 起为方言无关结构化计划 AclPlan**——org / 各维度规则（key + 授权集）/ dataset / doc 过滤；空授权集单条件、统一空值模板、retired 不生成等语义规则**只在编译器实现一次**，由所选后端渲染为对应 SQL（D24）；下例为 **SQLite 渲染**示意——统一模板 + 外层约束 + 版本限定，#34 必修 1/2/3）：
 
 ```sql
 -- 组织 org:tax 内，用户 region=[CN, OVERSEAS]、tax_type=[VAT]；两维度均 active；文档维度多值（D19）
@@ -642,24 +653,27 @@ query ─→ LLM 关键词增强（**800ms 硬预算、与原始召回并行**�
      │   向量召回；超时丢弃。关键路径 = max(原始召回, 增强+BM25) + rerank，计入 NFR-8 预算表——#33 P1-9）
      ├─→ FTS5 BM25 路：query 经 jieba 切分 + token 双引号转义（内部 " → ""）→
      │    bm25(chunks_fts, 3.0, 1.0, 5.0, 0.5, 8.0)   -- 五列按序：title/content/keywords/llm/tags
+     │    （PG 后端渲染：tsvector 五列 GENERATED + 加权 ts_rank 求和——D24；评分函数差异见 known-gaps G-6）
      │    + 版本条件（JOIN chunks/documents）+ ACL WHERE
-     ├─→ 向量路（P0-1 写法）：query embed(bge-m3) →
-     │    SELECT ..., vec_distance_cosine(c.embedding, :q) AS dist
+     ├─→ 向量路（P0-1 写法）：query embed（Embedder provider——OpenAI 兼容 API，D12 修订；
+     │    **服务不可达→本路跳过，降级 BM25 单路并记审计**）→
+     │    SELECT ..., vec_distance_cosine(c.embedding, :q) AS dist          -- PG：<=> 算子（D24）
      │    FROM chunks c JOIN documents d ... WHERE <完整 ACL 条件>      -- ← 先过滤
-     │    AND c.embedding IS NOT NULL
-     │    ORDER BY dist LIMIT :k                                        -- ← 后排序取 top-k
+     │    AND c.embedding IS NOT NULL AND c.embed_model = :current_model   -- ← D12：模型标签谓词，
+     │    ORDER BY dist LIMIT :k                                        --   非当前标签视同未嵌入
+     │   （旧标签块只走 BM25 路——换模型迁移期自然成立，见 §5.3 重嵌入流程）
      ├─→ 实体召回路（**M2-S3 可选，D23**——调用方传 entities 或 auto_entities=true 才启用；§5.10）：
      │    semantic.expand(seed, ENTITY_RECALL_RELS, depth=1) → 实体集合 E（≤50）→
      │    SELECT c.rid, SUM(ce.hits × 权重) FROM sem_chunk_entities ce JOIN chunks c JOIN documents d
      │    WHERE ce.entity_id IN E AND <与上两路**完全相同**的 ACL 编译产物 + 版本条件>   -- ← 不另写 ACL
      ─→ RRF 融合（k=60；向量缺失的 chunk 只在 BM25 路，自然退化单路；实体路 k 相同、权重可配默认 1.0）
      ─→ ACL 兜底断言（rerank 前：不该进模型的内容不进模型——P2-4 统一）
-     ─→ 取 top-32 → rerank（bge-reranker-v2-m3，ONNX int8，喂 content 原文）
+     ─→ 取 top-32 → rerank（Reranker provider——API 调用，D12 修订；**不可达或 none 实现→跳过重排用 RRF 序并记审计**，喂 content 原文）
      ─→ 分数归一 [0,1]（min-max/clamp 双分支，ragflow 模式）
      ─→ 返回前二次 ACL 断言 → top-k（≤20，含 chunk_id/doc_id/title/page_no/score/dims/source；M2-S3 起附 matched_entities）
 ```
 
-要点：召回期不做用户阈值过滤（dify #35233 教训）；阈值只作用于归一后的最终分；**useful-early 语义**由"向量 BLOB 可空 + 先过滤后距离"自然成立——`embedding IS NULL` 的 chunk 只走 BM25 路，摄取中的文档即刻可搜（FR-1 阶段拆分）；**CPU 推理（query 嵌入 + rerank）放线程/进程池，绝不阻塞事件循环**；rerank 并发上限信号量保护；`top_k` 服务端硬上限 20。性能预算与 SLO（P95 ≤ 2s）见需求 NFR-8，M1 实测校准。**实体召回路（D23）**：三路（FTS/向量/实体）必须使用**同一个** ACL 编译产物（T-S8 断言三路并集 ⊆ 用户可见块集合）；M2-S3 在 docs 黄金集上做开/关对比，recall@10 与 MRR **不回退**才允许 `auto_entities` 默认开启，否则保持显式参数。
+要点：召回期不做用户阈值过滤（dify #35233 教训）；阈值只作用于归一后的最终分；**useful-early 语义**由"向量 BLOB 可空 + 先过滤后距离"自然成立——`embedding IS NULL` 的 chunk 只走 BM25 路，摄取中的文档即刻可搜（FR-1 阶段拆分）；**CPU 推理改为模型 API 调用（v0.7——本机不再有模型推理）：query 嵌入 + rerank + LLM 增强的 HTTP 调用全部异步/线程池，绝不阻塞事件循环**；rerank 并发上限信号量保护；`top_k` 服务端硬上限 20。性能预算与 SLO（P95 ≤ 2s）见需求 NFR-8，M1 实测校准。**实体召回路（D23）**：三路（FTS/向量/实体）必须使用**同一个** ACL 编译产物（T-S8 断言三路并集 ⊆ 用户可见块集合）；M2-S3 在 docs 黄金集上做开/关对比，recall@10 与 MRR **不回退**才允许 `auto_entities` 默认开启，否则保持显式参数。
 
 ### 5.3 摄取管线与 worker（core/ingest.py + worker/runner.py）
 
@@ -673,7 +687,9 @@ parse（docling→统一块结构；扫描件路由 MinerU；mojibake 质量门�
 → index_fts（chunks + FTS 同一事务；**M2-S3 起同事务追加语义打标**：`semantic.annotator.tag(chunks, org)` 用当前 ready 的
      AC 自动机只做第 1 层识别写 sem_chunk_entities（不跑模糊兜底）；打标失败不阻断——记 warning、标记文档待重标，
      交 semantic_retag 补做——D23/#35 §8.4；文档状态 → searchable_lexical）
-→ embed（bge-m3 分批 64，CPU 线程池；逐批 UPDATE embedding/embed_model）
+→ embed（Embedder provider 分批 64（OpenAI 兼容 API——D12 修订）；每批**写入前校验 len==config.dim**
+     （不符 raise，不写库）；逐批 UPDATE embedding/embed_model=model:dim；服务启动时**指纹探针**——
+     对固定哨兵文本取向量与首部署存档比对余弦，偏差超阈值拒绝以同标签写入并告警，防网关静默换底模）
 → index_vec（逐批就位；全部完成 → searchable_full）
 → quality（区分度检测 → quality_flags → LLM 关键词 → 回写 llm_keywords）
 ```
@@ -703,10 +719,12 @@ COMMIT;
 
 **切换时机（D20）**：首次上传（active_version=0）在 `searchable_lexical` 即切换在用（保留先可搜收益；此后嵌入进度写 `active_status`、失败写 `active_error`——P0-2.2）；覆盖上传等新版本 `searchable_full` 再切换（旧版本全程服务）；新版本失败旧版本不受影响。tombstone 块保留 90 天（审计回溯）后物理删除；`fetch` 旧块返回 `{doc_id, active_version}` 对象替代提示（**不承诺块级映射**——重切分后无对应）。
 
+**换模型重嵌入（v0.7 新增，D12/#41）**：换嵌入模型（或网关换底模被指纹探针拦下）→ ①改 config 四件套（provider/model/dim/度量）；②`UPDATE chunks SET embedding=NULL, embed_model=NULL WHERE embed_model != :new`（一条语句）→ 既有 `idx_chunks_vec_pending` + worker 待嵌入扫描**自动重做全库**，期间检索降级 BM25 单路、**不中断**（useful-early 同款语义）；③quality 阶段随之重跑、区分度拥挤度绝对阈值按新模型余弦分布**重标定**（rerank/RRF 不受影响——前者独立模型、后者只看名次）；MRL 截断时标签带 `:trunc` 后缀区分。M0b 分表实验若选 `chunk_vectors(rid, embed_model, embedding)`：新旧模型并存、覆盖率 100% 原子切 `current_model`、旧向量延后清理（**蓝绿，向量路零降级**——同 `dict_rev` 原子切换模式，§5.8）。流程挂 M2 管理面「手动重索引」。
+
 ### 5.4 区分度检测（core/quality.py，v0.3 P1-8 + v0.4 P1-10 更正）
 
-- **向量拥挤度**：新 chunk 向量取**组织内且仅在用版本**（`tombstone=0 AND version=active_version`——否则新旧版本互为拥挤近邻制造误报，#33 P1-10）的 top-8 近邻，`mean(sim) > 绝对阈值` 判拥挤（初值 M1 真实语料重标定）；入库单块检测走 SQL 暴力扫描（量小）；
-- **批量重算路径（v0.4 更正）**：10 万 × 1024 维全量矩阵乘约 10¹³ flops，numpy/BLAS 分块矩阵乘 CPU **分钟级可行**（v0.3"不可行"论断有误——真正慢的是 SQL 标量函数逐行）；重算（`detected_at_scale` 比例 + 每周抽样）在 worker 低峰期把组织内在用块向量分块载入 numpy（float16 或流式，~400MB@10 万块，纳入内存预算 NFR-9）批处理；
+- **向量拥挤度**：新 chunk 向量取**组织内且仅在用版本**（`tombstone=0 AND version=active_version`——否则新旧版本互为拥挤近邻制造误报，#33 P1-10）的 top-8 近邻，`mean(sim) > 绝对阈值` 判拥挤（初值 M1 真实语料重标定；**换嵌入模型须重标**——阈值按模型余弦分布，v0.7 D12）；入库单块检测走 SQL 暴力扫描（量小）；
+- **批量重算路径（v0.4 更正；v0.7 维度按现网模型更新）**：10 万 × 2560 维（qwen3-embedding-4b，D12 修订——原 1024 维假设）全量矩阵乘约 2.5×10¹³ flops，numpy/BLAS 分块矩阵乘 CPU **分钟级可行**（v0.3"不可行"论断有误——真正慢的是 SQL 标量函数逐行）；重算（`detected_at_scale` 比例 + 每周抽样）在 worker 低峰期把组织内在用块向量分块载入 numpy（float16 或流式，~1GB@10 万块，纳入内存预算 NFR-9）批处理；
 - **词面通用度**：token 平均 IDF 低于**绝对阈值**；新组织冷启动引用全局语料 IDF；
 - **报告页防旁路（#33 P1-10）**：`quality_flags.detail_json` 的近邻信息展示时**过同一套 ACL**，或只显示相似度数值不展示近邻内容（T18）；
 - 触发 → LLM 生成关键词写 **`llm_keywords` 独立低权重列**（标来源，不与人工 `keywords`×5 混列）；**口径如实**（非 Contextual Retrieval）；
@@ -768,6 +786,7 @@ COMMIT;
 1. **接口形态**：每个源系统提供能枚举「当前完整状态」的**只读查询面**——可以是多个列表接口由适配器分页拼装，也可以是约定的导出文件（`SourceAdapter.fetch()` 只要求吐出全量快照记录，传输方式无关）；不要求单一大接口，**不做增量**（增量同步是 NFR-5 已登记演进缝）。**全量快照语义是删除比例保护与 missing 检测的前提，不可退让**。
 2. **维度属性（可选携带，不强制——#37 评论决策）**：快照可携带实体的维度属性（如模板的 region/国家字段）；是否携带由各业务系统按自身业务自定——需要维度隔离的源系统在接口/导出中携带并写入实体维度绑定，维度值域与本地维度不一致走**显式映射表**（grant_sync 同款模式，映射关系进 YAML / 配置维护）。实体维度 ACL 为 NFR-5 登记的演进缝（#37），触发前不启用；届时缺维度值的实体按统一模板**空值放行**（与文档侧 D5 同构，编译器无类型分支），「应带而未带」**记冲突**（数据质量事件，管理面提示补齐，不是权限事件）。配套对冲：适配器对平时携带维度属性的源做**填充率骤降告警**（参照删除比例保护，防缺值静默变宽）；管理面/同步报告展示**每个源是否携带维度属性与填充率**（维度覆盖是 per-source 属性，防误判区域隔离已全局生效）。
 3. **连接配置（per-org）**：源系统连接参数（endpoint / 凭证 / 超时）进 `config.py` 的 **per-org 结构**（org → 源系统实例），部署时配置、重启生效；`fetch(org)` 据此解析目标实例，多组织多实例场景由该配置承载。**不引入管理页 CRUD 与 `sem_sources` 注册表**（POC 取舍：源系统种类封闭、适配器本质是代码）。
+4. **MCP 为允许的传输形态之一（v0.7 #41 确认，非决策变更——本节本就「传输方式无关」）**：源业务系统可自建 MCP 服务、同步适配器作 MCP client（复用 fastmcp 的 client 能力，无新依赖类型）。给源系统团队的工具契约四条：①**全量快照语义不可退让**（不做增量、不做按需查询——第 1 条不变）；②可翻页拼全量（`list_xxx(cursor, limit) → {records, next_cursor}` 契约，10⁴~10⁵ 实体每晚几十至几百次调用可承受）；③只读 + 服务身份认证 + per-org 实例路由（第 3 条同款）；④**`describe_table` 透传必须留在本服务内部**（「只对已登记 table 实体开放」的防枚举门 + 3s 超时 + degraded——§6.3），**不允许 agent 直连源系统 MCP**。组织成本权衡：源系统本就计划自建 MCP（供其 AI 场景）时复用一份省一套 REST 快照接口，否则 REST 分页更成熟。
 
 **同步适配器接口**（`core/semantic/adapters/`，只读拉取、幂等、输出始终是"当前快照"）：
 
@@ -861,7 +880,7 @@ class RelationRecord:
 **构建产物（`semantic_build`，同步或 YAML 合并后触发）**：
 
 1. `dict_rev = hash(active 实体 + 别名 + yaml commit)`，与当前 ready 版本相同则跳过；
-2. 产物：**AC 自动机**（`pyahocorasick`，键 `alias_norm`、值 `entity_id` 列表，只收 `match_mode IN ('exact','context')`）；**模糊索引**（名称/别名/一句话定义的 bge-m3 向量存 `sem_vec` BLOB 复用 sqlite-vec，外加拼音与编辑距离辅助表——M2-S3）；**L0 片段**（`l0: true` 条目渲染 markdown，`GET /semantic/l0` 导出）；**构建报告**（冲突、歧义别名、孤立节点、断链关系、评测指标）；
+2. 产物：**AC 自动机**（`pyahocorasick`，键 `alias_norm`、值 `entity_id` 列表，只收 `match_mode IN ('exact','context')`）；**模糊索引**（名称/别名/一句话定义的向量存 `sem_vec` BLOB 复用 sqlite-vec——向量经 **Embedder provider** 生成、标签随 config 钉死，D12 修订；外加拼音与编辑距离辅助表——M2-S3）；**L0 片段**（`l0: true` 条目渲染 markdown，`GET /semantic/l0` 导出）；**构建报告**（冲突、歧义别名、孤立节点、断链关系、评测指标）；
 3. **原子切换**：`sem_builds` 新版本置 `ready`；服务进程按 `(org, dict_rev)` 懒加载，旧版本保留到无请求使用（构建中请求始终用旧 `dict_rev`，构建失败旧版本继续服务——T-S12）；**评测回归**：构建报告指标较上一版下降 >2 个百分点则不切 ready，需人工确认；
 4. **重标判断**：词典变更涉及别名增删即投递 `semantic_retag`，对 `dict_rev` 落后的文档块分批重新打标——最低优先级、限速，不与 ingest 抢资源。
 
@@ -1121,52 +1140,54 @@ SELECT e.id, e.type, e.key, e.name, MIN(w.depth) AS depth, GROUP_CONCAT(DISTINCT
 |---|---|---|
 | Python 3.11+ / uv | 运行时与包管理 | |
 | fastapi + uvicorn | 控制面 REST | |
-| fastmcp | MCP server | OneRAG 模块结构参考 |
+| fastmcp | MCP server（**+ 语义同步适配器的 MCP client**——源系统可选 MCP 传输，v0.7 #41） | OneRAG 模块结构参考 |
 | docling | 解析（docx/pptx/xlsx/html/pdf 原生） | 进程内库；MIT 代码 + 模型权重 license 风险标注（NFR-7） |
-| jieba | 中文预分词 | 中英混排效果 M1 实测（风险登记） |
-| FlagEmbedding（或 sentence-transformers）+ onnxruntime | bge-m3 嵌入 + bge-reranker-v2-m3 重排，进程内 | **钉版本**记录进 chunk.embed_model；CPU 分批推理 + **int8 量化**（NFR-8） |
-| sqlite-vec | **距离函数**（`vec_distance_cosine` 等标量函数作用于 BLOB 列，P0-1；非 vec0 虚表 KNN） | 一期 ~10 万 chunk 实测（NFR-2） |
+| jieba | 中文预分词 | 中英混排效果 M1 实测（风险登记）；PG 后端预分词结果直接进 `to_tsvector('simple')`，**无需 zhparser**（D24） |
+| **httpx（v0.7 扩用途——D12 修订）** | **模型 API 客户端：嵌入（Embedder）/ 重排（Reranker）/ LLM 增强 + 内部网关** | OpenAI 兼容（进程内推理路线取消）；语义同步适配器与 describe_table 透传同用 |
+| ~~FlagEmbedding + onnxruntime~~（**v0.7 删除**） | ~~bge-m3 嵌入 + bge-reranker-v2-m3 重排，进程内~~ | 取消（D12/#41）；钉版本纪律保留——标签 `model:dim` 记录进 `chunks.embed_model` 兼作查询谓词；**Reranker 接口必带 none 实现**（端点形态待需求待决-5） |
+| sqlite-vec | **距离函数**（`vec_distance_cosine` 等标量函数作用于 BLOB 列，P0-1；非 vec0 虚表 KNN）——**SQLite 后端** | 一期 ~10 万 chunk 实测（NFR-2，**真实 2560 维**） |
+| **psycopg（v0.7 新增，D24）** | **PG 后端**：连接 + pgvector（`<=>` 距离，精确扫描起步） | 扩展白名单前置确认（待决-6）；FTS 用 tsvector 五列 GENERATED（不依赖 ParadeDB）；差异口径见 known-gaps G-6 |
 | pydantic v2 | 实体与配置 | |
 | python-ulid | 主键 | 时间有序，利于排序与溯源可读 |
-| httpx | 内部网关客户端 | OpenAI 兼容；语义同步适配器与 describe_table 透传同用 |
 | pyahocorasick（M2-S2） | AC 自动机多模式精确匹配——`annotate` 第 1 层、ingest 打标、过渡期 agent 本地版共用（D23） | C 扩展；数万别名构建秒级、匹配 P99 < 5ms；按 (org, dict_rev) 懒加载 |
 | pypinyin（M2-S3，可选） | 模糊兜底：拼音完全匹配（同音错字） | 与 jieba 词性筛选、编辑距离、sqlite-vec 向量近邻组成第 3 层 |
 |（M3）ragas + deepeval + pytest | 评测与门禁 | judge 走内部网关 |
 
-排除项（明确不引入）：消息队列（tasks 表轮询 + IPC 唤醒足够）、ORM（SQL 收口在 store 层手写，DDL 即文档）、前端构建链（静态页）、**图数据库与 GraphRAG 框架**（D23：关系来自确定性配置、规模 10⁴~10⁵ 节点，SQLite 递归 CTE 足够；再评估条件见 §5.8）。
+排除项（明确不引入）：消息队列（tasks 表轮询 + IPC 唤醒足够）、ORM（SQL 收口在 store 层手写，DDL 即文档——**双后端方言包各自渲染 AclPlan，不引入 SQLAlchemy**：方言差异集中在 FTS/向量/JSON 三处，查询构建器帮不上，D24）、前端构建链（静态页）、**图数据库与 GraphRAG 框架**（D23：关系来自确定性配置、规模 10⁴~10⁵ 节点，SQLite 递归 CTE 足够；再评估条件见 §5.8）。**v0.7（D12）另排除**：进程内嵌入/重排推理库（FlagEmbedding / sentence-transformers / onnxruntime）——模型统一走 OpenAI 兼容 API，本地 ollama `/v1` 仅作开发/测试端点。
 
 ## 8. 里程碑任务分解（v0.5，与需求 §8 逐条对齐——#33 P1-11/P1-12；M2-S1~S3 语义并行轨道——D23）
 
 **M0a（第 1 周）——骨架 + schema 全量落**
-1. 脚手架（uv/config/迁移框架含外键处理约定，§4 **文档侧**全部 DDL 与触发器一次性落——**`sem_*` 除外**，语义表 M2-S1 经 `migrations/semantic/` 落库，见 §3 边界规则 3 / §4 注）；连接工厂（foreign_keys=ON + 显式 raise + 月库滚动建表）
-2. 摄取最小链：docling 解析 → 结构切分（五列分词）→ index_fts 入库（BM25 即刻可搜）→ 嵌入分批补齐
+1. 脚手架（uv/config/**StorageBackend 协议 + AclPlan 结构化产物 + 嵌入/重排 provider 接口（D12/D24——SQLite 实现先行，测试自 M0a 起按后端参数化、PG 无 DSN 自动 skip）**/迁移框架含外键处理约定，§4 **文档侧**全部 DDL 与触发器一次性落——**`sem_*` 除外**，语义表 M2-S1 经 `migrations/semantic/` 落库，见 §3 边界规则 3 / §4 注）；连接工厂（foreign_keys=ON + 显式 raise + 月库滚动建表）
+2. 摄取最小链：docling 解析 → 结构切分（五列分词）→ index_fts 入库（BM25 即刻可搜）→ 嵌入分批补齐（Embedder API + dim 校验 + 指纹探针——D12）
 3. 检索最小链：BM25 单路 + **完整 ACL 编译器（含状态过滤与统一空值模板——D22①，#34 必修 1/3）**
 4. FastMCP `search` + REST multipart 上传 + 静态页壳
 5. 验收：deepagents 经 MCP 一次带 chunk_id 的检索（**开发 JWT 即可**）；插孤儿行 IntegrityError；T1~T5 + T20/T22 在编译器单测先行
 6. 并行：待决-2/3（SSO 协议、token 方案）
 
-**M0b（第 2 周前半）——实验**
-1. 按块 json_each vs 按文档 visible_docs（同一授权展开函数，1/5/10 万块 P95）
-2. 向量同表 vs chunk_vectors 分表回表耗时
+**M0b（第 2 周前半）——实验（v0.7 扩：五实验 + 结论回写）**
+1. 按块 json_each vs 按文档 visible_docs（同一授权展开函数，1/5/10 万块 P95；**双后端各跑 + 可移植性判据——D24**：后者纯 JOIN/EXISTS 无 JSON 方言函数，可共用渲染逻辑）
+2. 向量同表 vs chunk_vectors 分表回表耗时（**新增模型迁移蓝绿判据——D12/#41**）
 3. langchain-mcp-adapters 按用户委托 token 实测
-4. SLO 压测（NFR-8 预算表逐项标定）
-5. 结论回写 **schema v1.1 迁移**（含 foreign_key_check；dims_json 去留、分表与否在此定）
+4. SLO 压测（NFR-8 预算表分项标定，**真实 2560 维**）
+5. **PG 后端 spike（D24）**：DDL + AclPlan 渲染器；编译器单测 T1~T5/T20/T22 双后端绿（无 PG 环境标 blocked——待决-6）
+6. 结论回写 **schema v1.1 迁移**（含 foreign_key_check；dims_json 去留、分表与否在此定）
 
 **M1（第 2 周后半~第 3 周）——完整配方 + 版本在用制全链（前移）+ 权限全链 + 凭证集成**
-1. 五列 FTS + 双路（先过滤后距离）+ RRF（增强第三路）+ rerank 32（ONNX int8）+ 归一
+1. 五列 FTS + 双路（先过滤后距离，向量路含 `embed_model` 谓词）+ RRF（增强第三路）+ rerank 32（**Reranker API + none/失败降级——D12**）+ 归一；**PG 后端追平全矩阵（D24）**
 2. **版本在用制全链**：active/pending 状态机、切换事务（清 FTS 列）、tombstone、并发 409、失败删块、fetch 替代提示（**前移自 M2——M1 越权验收依赖**）
 3. 维度 ACL 全链：多值、上传/PATCH 值限授权内、统一空值模板、维度停用/改可选不影响过滤（D5 v0.4）
 4. **上传凭证制 + deepagents 集成**（§6.3 时序：运行时工具 + PUT 端点 + 绑定 sub+org+服务 + 清理任务）
 5. 区分度环（绝对阈值 + numpy 批量重算 + 报告页近邻过 ACL）
 6. 真实文档批量上线（待决-1，合成样例先行）+ 小型黄金集 + Recall@k/MRR + P95 基线
-7. 验收：**越权矩阵全绿（§9 含 T1~T23——T19 删库半句、T20 退役审计半句随 M2 收口，v0.6.1 限定 #38 P1-4/#39）**；真实 query 标注；区分度误报抽查
+7. 验收：**越权矩阵全绿（双后端参数化各跑——D24；§9 含 T1~T23——T19 删库半句、T20 退役审计半句随 M2 收口，v0.6.1 限定 #38 P1-4/#39）**；真实 query 标注；区分度误报抽查
 
 **M2（第 4~6 周）——生产化**
 1. worker 子进程化（心跳/租约/重试）+ 写竞争治理 + embed 回写防护
 2. SSO/JIT 对接（M0a 已敲定协议）；委托 token / 可信子系统落地（三约束 + 期限）
-3. 管理面 API + 最小 UI（§6.2 全端点：维度停用 dry_run/退役/授权 expires_at/任务取消/重索引/审计分级查询）
+3. 管理面 API + 最小 UI（§6.2 全端点：维度停用 dry_run/退役/授权 expires_at/任务取消/重索引（**含换模型重嵌入入口——D12/#41；嵌入面板只读展示当前模型/维度/各库嵌入覆盖率，不做可改参数——改模型=走重嵌入流程**）/审计分级查询）
 4. 审计 outbox + 月库滚动 + 封存；删除级联与 90 天物理清理
-5. 备份快照 + 恢复演练
+5. 备份快照 + 恢复演练（**双后端各一份 runbook——D24：SQLite `VACUUM INTO` / PG pg_dump**）
 6. 验收：**杀 worker 不丢任务**（任务租约重认领）；outbox 一致性（权限事件必有审计）；恢复演练通过；跨组织隔离全绿；批量导入 500 行正确（sync 不动——T-CSV）
 
 **M2-S1~S3（M2 并行轨道，D23 业务语义——与 M2 生产化并行；M0a/M0b/M1 不含语义层，只在 worker 任务类型与组织上下文上预留扩展点）**
@@ -1221,14 +1242,16 @@ SELECT e.id, e.type, e.key, e.name, MIN(w.depth) AS depth, GROUP_CONCAT(DISTINCT
 
 | 风险 | 工程对策 | 触发点 |
 |---|---|---|
-| 无 GPU 嵌入吞吐 | 阶段拆分（index_fts 先行）+ 分批 64 + int8 量化；`config.py` 预留 embedding_model 配置位（e5-small 384 维备选，维度不兼容需全量重嵌决策） | M2 实测吞吐曲线后决策 |
+| 嵌入吞吐受网关限速（v0.7 模型外置后） | 阶段拆分（index_fts 先行）+ 分批 64 + useful-early；换模型重嵌入流程挂手动重索引（§5.3）；评估 MRL 截断（known-gaps G-8） | M2 实测吞吐曲线后决策 |
+| **网关静默换底模 / 嵌入服务不可用**（v0.7，#41） | 启动指纹探针（哨兵文本余弦偏差超阈 → 拒绝同标签写入 + 告警）；`embed_model` 查询谓词隔离旧向量；查询侧不可达降级 BM25 单路、摄取停 `searchable_lexical`、rerank 不可达跳过（§5.2） | 探针偏差告警 / 网关故障时 |
 | jieba 中英混排 | tokenizer 独立模块（可换 trigram/自定义词表）；M1 真实 query 标注集是判据 | M1 验收 |
-| sqlite-vec BLOB 扫描边界 | repo 接口已隔离向量路；pgvector 适配器为升级缝首个目标 | 一期 10 万块 P95 超标（NFR-2/8） |
-| dims_json json_each 性能 | **M0b 按文档计算实验**（胜出即删 dims_json）；备选维度物化列（schema v2） | M0b / 十万级实测 |
-| P95 延迟超标 | NFR-8 预算表 + **双降级开关**（rerank 截断 256 / 候选 32→16） | M0b 压测、M1 基线 |
+| SQLite BLOB 扫描边界（2560 维为原 1024 假设的 2.5×） | StorageBackend 已隔离向量路（D24）；超标**切 PG 后端**（正式实现、配置级切换）而非再评估 | 一期 10 万块 P95 超标（NFR-2/8，真实维度） |
+| **PG 后端差异**（FTS 评分函数 / 索引维度上限，D24） | ts_rank vs bm25：RRF 只看名次抹掉大部分差异、黄金集分后端校准；pgvector 索引 2000 维上限 → `halfvec(2560)` 或精确扫描起步、HNSW 启用需 ≥0.8 迭代扫描并重跑矩阵（known-gaps G-6） | PG spike（M0b）/ PG 全矩阵（M1） |
+| dims_json json_each 性能 | **M0b 按文档计算实验**（胜出即删 dims_json；v0.7 加可移植性判据——visible_docs 写法无 JSON 方言，D24）；备选维度物化列（schema v2） | M0b / 十万级实测 |
+| P95 延迟超标 | NFR-8 预算表 + **降级链**（嵌入不可达 BM25 单路 / rerank 不可达跳过 / rerank 截断 256 / 候选 32→16） | M0b 压测（真实维度）、M1 基线 |
 | 区分度失真 | 绝对阈值 + 分位下限；**规模比例 + 抽样重算（numpy 批量）**；近邻限在用版本；报告页近邻过 ACL | M1 抽查 + 周期重算 |
 | 权限漂移（D16） | 季度对账 + 审计回放；grant_sync 适配器；生产前语义匹配维度切只读同步 | 季度对账；高敏文档从严 |
-| 模型权重 license | 模型清单进 `config.py` 单一登记处，商用核查逐卡打勾 | 商用前（NFR-7） |
+| 模型权重 license | docling 权重清单进 `config.py` 单一登记处，商用核查逐卡打勾；嵌入/重排模型在网关侧（D12 修订）——license 责任随 API 转移，本侧只钉标签 | 商用前（NFR-7） |
 | **语义层职责膨胀**（D23） | §3 模块边界规则（semantic 不 import docs 内部实现，交叉点仅 tag/untag 与 expand 两处显式接口）；新增实体/关系类型 = 迁移 + 评审；非目标明确（GraphRAG / 图数据库 / 全量元数据镜像） | 新增实体或关系类型提案时 |
 | **语义同步故障波及服务**（源系统抖动清空图 / 写锁拖慢检索） | 删除比例保护（20% 中止零写入）+ missing 宽限期（7 天）；独立任务类型、分批 ≤1000 行、夜间错峰限速；语义失败不影响 docs 可用性（NFR-11）；必要时 `sem_*` 拆 ATTACH 独立库（repo 接口不变） | 源系统接口异常；M2-S 并行期压测 |
 | **源系统无快照接口**（#37） | 接入前置条件 day-one 成文（§5.8）；推动源系统排期开发；确无法满足则该源不接入（灰度），不降低全量快照语义 | 对应源系统接入排期时 |
