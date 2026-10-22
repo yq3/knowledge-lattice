@@ -3,14 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Knowledge Lattice · 企业知识层控制台（原型 v0.5）</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<title>Knowledge Lattice · 企业知识层控制台（原型 v0.5.1）</title>
 <style>
 /* ==========================================================================
-   Knowledge Lattice 控制台原型 v0.5 —— 企业 SaaS 视觉：浅灰底 + 白色卡片 + 品牌蓝
-   信息结构对齐 design.md v0.5：§5.1 维度 ACL / §5.3 版本在用 / §5.4 区分度 / §5.8~5.10 语义层 / §6.2 REST
+   Knowledge Lattice 控制台原型 v0.5.1 —— 企业 SaaS 视觉：浅灰底 + 白色卡片 + 品牌蓝
+   信息结构对齐 design.md v0.8：§5.1 维度 ACL / §5.3 版本在用 / §5.4 区分度 / §5.8~5.10 语义层 / §6.2 REST
    ========================================================================== */
 :root {
   /* 表面与描边（变量名沿用，值为 SaaS 灰阶） */
@@ -51,9 +48,9 @@
   --t-table: #079455;
   --t-column: #17B26A;
 
-  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --sans: -apple-system, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
   --serif: var(--sans);
-  --mono: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+  --mono: "SFMono-Regular", Menlo, Consolas, monospace;
 
   --sh-xs: 0 1px 2px rgba(16, 24, 40, .05);
   --sh-sm: 0 1px 3px rgba(16, 24, 40, .08), 0 1px 2px rgba(16, 24, 40, .04);
@@ -567,7 +564,7 @@ details[open] > summary::before { transform: rotate(90deg); }
     <div class="picker" id="orgPicker"></div>
     <div class="tb-spacer"></div>
     <button class="tb-link" data-act="stub" data-msg="OpenAPI 参考：/api/docs · 与 design.md §6.2 REST 对齐"><svg class="ic" viewBox="0 0 24 24"><path d="M4 19.5V5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2Zm0 0A2 2 0 0 0 6 22h12"/></svg><span>API 参考</span></button>
-    <button class="tb-link" data-act="stub" data-msg="MCP 接入：agent 通过 search / annotate / expand / describe_table 调用，身份由网关透传"><svg class="ic" viewBox="0 0 24 24"><path d="M9 7H6a3 3 0 0 0 0 6h3m6-6h3a3 3 0 0 1 0 6h-3M8 10h8"/></svg><span>MCP 接入</span></button>
+    <button class="tb-link" data-act="stub" data-msg="MCP 接入：agent 通过 search / annotate / expand / describe_table 调用，委托 token（sub=用户、act=agent、org 单值 claim）；禁止 token 原样透传（D18）"><svg class="ic" viewBox="0 0 24 24"><path d="M9 7H6a3 3 0 0 0 0 6h3m6-6h3a3 3 0 0 1 0 6h-3M8 10h8"/></svg><span>MCP 接入</span></button>
     <span class="tb-div" aria-hidden="true"></span>
     <div class="tb-lens">
       <span class="rail-label" title="检索、可见性、上传可选取值都按此身份计算">以此身份查看</span>
@@ -578,8 +575,8 @@ details[open] > summary::before { transform: rotate(90deg); }
   <aside class="rail" aria-label="导航">
     <nav class="nav" id="nav"></nav>
     <div class="rail-foot">
-      <div class="rf-h"><i></i>原型 v0.5 · Mock 数据</div>
-      信息结构对齐 <code>design.md v0.5</code><br>
+      <div class="rf-h"><i></i>原型 v0.5.1 · Mock 数据</div>
+      信息结构对齐 <code>design.md v0.8</code><br>
       §5.1 ACL · §5.3 版本在用<br>§5.8–5.10 语义 · §6.2 REST
     </div>
   </aside>
@@ -827,7 +824,7 @@ const ORGS = [
   tasks: [
     { id: "01JT11", type: "ingest", doc: "01J8A1", st: "running", stage: "chunked", hb: 3, lease: 52, att: 0 },
     { id: "01JT12", type: "ingest", doc: "01J8A8", st: "running", stage: "parsing", hb: 2, lease: 57, att: 0 },
-    { id: "01JT13", type: "embed",  doc: "01J8A5", st: "leased", stage: "searchable_lexical", hb: 1, lease: 59, att: 1 },
+    { id: "01JT13", type: "reembed", doc: "01J8A5", st: "leased", stage: "searchable_lexical", hb: 1, lease: 59, att: 1 },
     { id: "01JT09", type: "semantic_sync", target: "report_center", st: "failed", stage: "aborted_guard", hb: null, lease: null, att: 1 },
     { id: "01JT10", type: "semantic_build", target: "dict_rev 42", st: "running", stage: "building", hb: 4, lease: 50, att: 0 },
     { id: "01JT07", type: "semantic_retag", target: "dict_rev 41 · 312 块", st: "pending", stage: "—", hb: null, lease: null, att: 0, note: "最低优先级，夜间错峰" },
@@ -1013,12 +1010,13 @@ function neighbors(k) {
   }
   return out;
 }
-function expand(keys, depth) {
+const RECALL_RELS = ["refers_to", "has_field", "maps_to", "related_to"];   // §5.10 ENTITY_RECALL_RELS：实体召回只沿低扇出关系展开，不沿 uses 这类高扇出关系
+function expand(keys, depth, rels) {
   const dist = new Map(); let frontier = [...keys].filter(k => visEnt(entOf(k)));
   frontier.forEach(k => dist.set(k, 0));
   for (let d = 1; d <= depth; d++) {
     const next = [];
-    for (const k of frontier) for (const n of neighbors(k)) if (!dist.has(n.k)) { dist.set(n.k, d); next.push(n.k); }   // 防环：已访问不再访问
+    for (const k of frontier) for (const n of rels ? neighbors(k).filter(x => rels.includes(x.rel)) : neighbors(k)) if (!dist.has(n.k)) { dist.set(n.k, d); next.push(n.k); }   // 防环：已访问不再访问
     frontier = next;
   }
   return dist;
@@ -1141,9 +1139,9 @@ function runSearch(q) {
   let ent = [], expanded = new Map();
   const entOn = !!(o.semantic && state.entRoute && qEnts.size);
   if (entOn) {
-    expanded = expand(qEnts, 1);
+    expanded = expand(qEnts, 1, RECALL_RELS);   // depth 1 · 只沿 RECALL_RELS 展开（§5.10）
     ent = pool.filter(c => c.ents.some(e => expanded.has(e)))
-      .map(c => ({ c, s: Math.max(...c.ents.filter(e => expanded.has(e)).map(e => expanded.get(e) === 0 ? 1 : 0.6)) }))
+      .map(c => ({ c, s: Math.max(...c.ents.filter(e => expanded.has(e)).map(e => expanded.get(e) === 0 ? 1 : 0.5)) }))   // 种子实体 1.0、扩展实体 0.5（§5.10）
       .sort((a, b) => b.s - a.s);
   }
   const routes = { fts, vec, ent }, stat = {}, blockedDocs = new Set(), rrf = new Map(), via = new Map();
@@ -1807,7 +1805,8 @@ function syncHTML() {
    ========================================================================== */
 function viewOps() {
   const o = O();
-  const typeCn = { ingest: "入库", embed: "嵌入", semantic_sync: "语义同步", semantic_build: "词典构建", semantic_retag: "重打标" };
+  const typeCn = { ingest: "入库", reembed: "重嵌入", semantic_sync: "语义同步", semantic_build: "词典构建", semantic_retag: "重打标" };
+  const vCover = { ds_vat: 98.5, ds_cit: 96.2, ds_intl: 100, ds_exp: 100 };   // mock：各知识库向量覆盖率
   const html = `
   <header class="head"><h1>运行</h1>
     <p class="lede">一张任务表承载入库、嵌入与语义任务：租约 60s、心跳 15s，过期由 reaper 回收重新入队，attempts 上限 3。</p>
@@ -1818,6 +1817,22 @@ function viewOps() {
         <td>${t.doc ? (d ? `<button class="link" data-act="openDoc" data-id="${d.id}">${esc(d.title)}</button>` : `<span class="muted">（文档已删除）</span>`) : `<span class="mono tiny">${esc(t.target)}</span>`}</td>
         <td>${t.st === "cancelled" ? `<span class="pill idle">已取消</span>` : stPill(t.st)}</td><td class="tiny">${esc(STAGE_CN[t.stage] || t.stage)}</td>
         <td class="num tiny">${t.hb != null ? t.hb + "s 前" : "—"}</td><td class="num tiny">${t.lease != null ? t.lease + "s" : "—"}</td><td class="num">${t.att}</td><td class="tiny muted">${esc(t.note || "")}</td></tr>`; }).join("")}</tbody></table>
+  <section style="background:var(--paper);border:1px solid var(--rule);border-radius:var(--r-lg);box-shadow:var(--sh-xs);padding:var(--s4) var(--s5);margin-top:32px">
+    <div class="lane-h"><h3>嵌入与存储</h3><span class="tiny muted">只读 · 嵌入面板（design §8 M2 管理面）</span></div>
+    <dl style="display:grid;grid-template-columns:96px 1fr;gap:6px 12px;font-size:13px">
+      <dt class="muted">嵌入模型</dt><dd><code>qwen3-embedding-4b:2560</code> · 维度 2560</dd>
+      <dt class="muted">存储后端</dt><dd>sqlite（默认）/ postgres+pgvector（可选，D24）</dd>
+    </dl>
+    <div class="defn-k" style="margin:12px 0 6px">各知识库向量覆盖率</div>
+    <div class="funnel">${o.datasets.map(d => { const p = vCover[d.id] ?? 100;
+      return `<div class="fn-row" style="grid-template-columns:88px 1fr 56px"><span>${esc(d.name)}</span>
+        <div class="fn-bar"><span class="fb-ok" style="width:${p}%"></span></div>
+        <span class="fn-n">${p.toFixed(1)}%</span></div>`; }).join("")}
+    </div>
+    <div class="tiny muted" style="margin-top:8px">存储后端为 postgres+pgvector 时，向量与业务数据同库，随 PG 实例统一备份 / 迁移。</div>
+    <div style="margin-top:12px"><button class="btn sm" disabled title="M2 管理面提供">重嵌入（M2 管理面）</button>
+      <span class="tiny muted" style="margin-left:8px">面板只读、不做可改参数；换模型 = 走重嵌入流程（嵌入模型是查询谓词）</span></div>
+  </section>
   <div class="lanes" style="margin-top:32px">
     <section><div class="lane-h"><h3>查询审计</h3><span class="tiny muted">异步批量写 · 允许极少量丢失 · 不阻塞检索</span></div>
       ${o.queryAudit.map(evHTML).join("")}</section>
