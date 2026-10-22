@@ -1,9 +1,9 @@
 # knowledge-lattice 测试用例
 
-> 版本：v1.4.2（2026-10-22 依据区版本引用同步 v0.8.2 与 known-gaps 范围 G-1~G-11——正文运行时口径登记（目标机系统 Python 3.9.9 → uv 托管 CPython 3.12，G-11），**无用例变更**、用例数不变。v1.4.1（2026-10-22 依据区版本引用同步 v0.8.1——正文待决-6 关闭（公司 PG 16 + pgvector 0.8.x，G-6 收窄①闭环），**无用例变更**、用例数不变。v1.4（2026-10-22 吸收 [issue #42](https://github.com/yq3/lab/issues/42) 必修 2/3/4 与 P1/P2 用例项——①必修2：TC-EMB-06 重造（reembed 任务类型 + **竞态子句**——孤儿向量断言）；②必修3：T7 操作者改 `admin_full`（u_owner 授权不符会先 403）、T11 重造（新增双组织用户 `u_multi` + 凭证绑定专属错误码）；③必修4：TC-SCAF-01~05 逐条标 `both / sqlite-only`、TC-EMB-02 拆分（M0a＝Plan 层谓词单测 + 新增 TC-EMB-07 M1 检索行为）、TC-EMB-03 补全（首部署建档 / 两档阈值 0.99·0.95 / 周期探测 / 拒后状态）、共享 fake provider fixture 入口径段；④P1：新增 **TC-ACL-08**（rerank 前后 ACL 双断言）、TC-ACL-02/06 与 TC-FTS-02 主断言上移 AclPlan 层（「无 `IN ()`」升为 Plan 不变式）、TC-CRED-02/03 凭证语义统一（「用掉」＝摄取成功入队）、TC-YAML-04 补样本值 ≤3（DataAgent 借鉴②）；⑤P2：fixture 补 `u_multi` / `u_gl` 角色 / channel 值 A、时间戳造数格式钉死 UTC `YYYY-MM-DD HH:MM:SS`；用例 170→**172** 条。v1.3.2（2026-10-22 随正文 v0.7.2 / [#42](https://github.com/yq3/lab/issues/42) 三项拍板——①TC-EMB-03 断言改：探针拒绝档同步关查询侧向量路（降级 BM25 单路 + notice——跨底模距离无意义，拍板2）；②口径段 PG skip 政策：本地可 skip、CI 必跑 PG job 且 skip 视为失败（拍板1：PG 正式备选）；③语义层用例（T-S6/T-S8/TC-SEM-09）自 M2-S 起双后端参数化（拍板3：expand_relations / recall_by_entities 收口 backend）；用例数不变。v1.3.1（2026-10-22 随正文 v0.7.1 / [#42](https://github.com/yq3/lab/issues/42) 必修1 回写——①TC-EMB-05 前置口径：rerank 端点已确认（网关提供 Cohere 风格 `/rerank`，待决-5 关闭），`none` 从「缺省兜底」改述为「显式降级路径」；②依据区版本引用同步 v0.7.1、known-gaps 范围补 G-9/G-10；用例数不变。v1.3（2026-10-21 随正文 v0.7 / [#41](https://github.com/yq3/lab/issues/41) 决策变更增补——①新增 **TC-EMB 组**（嵌入服务与模型治理：维度校验 / `embed_model` 查询谓词 / 指纹探针 / 查询侧降级链 / Reranker none / 换模型重嵌入迁移，D12）；②TC-ING-06 钉版本改 `model:dim` 标签、TC-RET-04 rerank 改 API 口径；③口径补**测试按存储后端参数化**（D24——`backend ∈ {sqlite, pg}`，PG 无 DSN 自动 skip，越权矩阵与编译器单测双后端各跑）；④附录 A 补 A-17（PG 后端 FTS 评分差异→known-gaps G-6）；用例 164→170 条。v1.2.1（2026-10-20 复审二轮——①T6 上传者 `u_full`→`admin_full`：u_full 是普通成员，按 FR-4 操作矩阵（覆盖上传=owner/org_admin）会先 403，用例不可执行；admin_full 兼具操作权限与 region=[CN,OS] 授权，双前提成立；②TC-AZ-01 的 d_cn_own 置空 tax_type——防实现按「结果集全维度」校验时拒绝原因来自 tax_type、掩盖 region 取值越权；③design 前置阅读版本引用同步 v0.6.1。v1.2（2026-10-20 吸收 [issue #40](https://github.com/yq3/lab/issues/40) 复审——P0-R1：T6 重造（查看者改 `u_cn_vat`、v2 明确上传者——复审二轮修正为 `admin_full`）；P1-R1~R3：TC-AZ-04 临时授权补双维度、TC-AZ-01 改用 u_cn 自有文档并区分操作权限/取值越权（fixture 补 `admin_full`）、TC-ACL-02 声明本地单维 fixture 并统一命名；P2×7 全量回写（`d_empty_region` 改名×3、TC-BUILD-02 标题、fanout_limit 超限并入 A-11、conflicts 字段标注测试约定、T-S9 月库侧异步断言、附录 A 补 #39 链接、T7 补操作者）。v1.1：2026-10-20 吸收 #38 评审——P0×2 / P1×11 / P2 全量；新增 TC-TASK-06 / TC-SEM-10 / TC-SYNC-09；附录 A 扩至 A-16。v1.0：2026-10-20 初版，M0a 开工前）
-> 依据：[design.md](./design.md) v0.8.2——**§9 测试策略是冻结用例清单，本文是其展开层：T1~T23 / T-S1~T-S12 编号沿用、不另起**；§8 里程碑验收、§4 DDL 与触发器、§5 关键设计、§6 接口契约为断言细节来源。[requirements.md](./requirements.md) v0.8.2（FR/NFR/D 验收口径）；[known-gaps.md](./known-gaps.md)（G-1~G-11——涉及其中的用例已标注）；评审依据 [issue #38](https://github.com/yq3/lab/issues/38)（P0×2 / P1×11 / P2 若干，行号以 b75e91a 为准）与 [#41](https://github.com/yq3/lab/issues/41)（v1.3 增补依据）与 [#42](https://github.com/yq3/lab/issues/42)（v1.3.1~v1.4 增补与拍板依据）。沿 lab 仓库 pulse-pet 先例（docs/v1/TEST-CASES.md + 评审回写）。
+> 版本：v1.5（2026-10-22 随正文 v0.9 新增 **TC-UI 界面国际化组**（FR-8——对话决策轻量决策变更：TC-UI-01 语言切换与持久化 / 02 双语完整性 / 03 业务数据与行为不随语言变化 / 04 服务端不感知语言，共 4 条**手动走查用例**——薄壳无测试框架不进 CI，M0a 机制 + M1 起页面）；依据区版本引用同步 v0.9（**顺带清 v0.8.3~v0.8.5 欠账**：§3 结构澄清 / core 对称分包 / 运行日志落点均无用例影响，未另出版本段）；复审 P2 顺手项：编号约定表 TC-UI 行移至 TC-OPS 后与正文组顺序对齐、口径段补「手动走查类」类目、TC-UI-02 排除项措辞改「章节引用」；用例 172→**176** 条。v1.4.2（2026-10-22 依据区版本引用同步 v0.8.2 与 known-gaps 范围 G-1~G-11——正文运行时口径登记（目标机系统 Python 3.9.9 → uv 托管 CPython 3.12，G-11），**无用例变更**、用例数不变。v1.4.1（2026-10-22 依据区版本引用同步 v0.8.1——正文待决-6 关闭（公司 PG 16 + pgvector 0.8.x，G-6 收窄①闭环），**无用例变更**、用例数不变。v1.4（2026-10-22 吸收 [issue #42](https://github.com/yq3/lab/issues/42) 必修 2/3/4 与 P1/P2 用例项——①必修2：TC-EMB-06 重造（reembed 任务类型 + **竞态子句**——孤儿向量断言）；②必修3：T7 操作者改 `admin_full`（u_owner 授权不符会先 403）、T11 重造（新增双组织用户 `u_multi` + 凭证绑定专属错误码）；③必修4：TC-SCAF-01~05 逐条标 `both / sqlite-only`、TC-EMB-02 拆分（M0a＝Plan 层谓词单测 + 新增 TC-EMB-07 M1 检索行为）、TC-EMB-03 补全（首部署建档 / 两档阈值 0.99·0.95 / 周期探测 / 拒后状态）、共享 fake provider fixture 入口径段；④P1：新增 **TC-ACL-08**（rerank 前后 ACL 双断言）、TC-ACL-02/06 与 TC-FTS-02 主断言上移 AclPlan 层（「无 `IN ()`」升为 Plan 不变式）、TC-CRED-02/03 凭证语义统一（「用掉」＝摄取成功入队）、TC-YAML-04 补样本值 ≤3（DataAgent 借鉴②）；⑤P2：fixture 补 `u_multi` / `u_gl` 角色 / channel 值 A、时间戳造数格式钉死 UTC `YYYY-MM-DD HH:MM:SS`；用例 170→**172** 条。v1.3.2（2026-10-22 随正文 v0.7.2 / [#42](https://github.com/yq3/lab/issues/42) 三项拍板——①TC-EMB-03 断言改：探针拒绝档同步关查询侧向量路（降级 BM25 单路 + notice——跨底模距离无意义，拍板2）；②口径段 PG skip 政策：本地可 skip、CI 必跑 PG job 且 skip 视为失败（拍板1：PG 正式备选）；③语义层用例（T-S6/T-S8/TC-SEM-09）自 M2-S 起双后端参数化（拍板3：expand_relations / recall_by_entities 收口 backend）；用例数不变。v1.3.1（2026-10-22 随正文 v0.7.1 / [#42](https://github.com/yq3/lab/issues/42) 必修1 回写——①TC-EMB-05 前置口径：rerank 端点已确认（网关提供 Cohere 风格 `/rerank`，待决-5 关闭），`none` 从「缺省兜底」改述为「显式降级路径」；②依据区版本引用同步 v0.7.1、known-gaps 范围补 G-9/G-10；用例数不变。v1.3（2026-10-21 随正文 v0.7 / [#41](https://github.com/yq3/lab/issues/41) 决策变更增补——①新增 **TC-EMB 组**（嵌入服务与模型治理：维度校验 / `embed_model` 查询谓词 / 指纹探针 / 查询侧降级链 / Reranker none / 换模型重嵌入迁移，D12）；②TC-ING-06 钉版本改 `model:dim` 标签、TC-RET-04 rerank 改 API 口径；③口径补**测试按存储后端参数化**（D24——`backend ∈ {sqlite, pg}`，PG 无 DSN 自动 skip，越权矩阵与编译器单测双后端各跑）；④附录 A 补 A-17（PG 后端 FTS 评分差异→known-gaps G-6）；用例 164→170 条。v1.2.1（2026-10-20 复审二轮——①T6 上传者 `u_full`→`admin_full`：u_full 是普通成员，按 FR-4 操作矩阵（覆盖上传=owner/org_admin）会先 403，用例不可执行；admin_full 兼具操作权限与 region=[CN,OS] 授权，双前提成立；②TC-AZ-01 的 d_cn_own 置空 tax_type——防实现按「结果集全维度」校验时拒绝原因来自 tax_type、掩盖 region 取值越权；③design 前置阅读版本引用同步 v0.6.1。v1.2（2026-10-20 吸收 [issue #40](https://github.com/yq3/lab/issues/40) 复审——P0-R1：T6 重造（查看者改 `u_cn_vat`、v2 明确上传者——复审二轮修正为 `admin_full`）；P1-R1~R3：TC-AZ-04 临时授权补双维度、TC-AZ-01 改用 u_cn 自有文档并区分操作权限/取值越权（fixture 补 `admin_full`）、TC-ACL-02 声明本地单维 fixture 并统一命名；P2×7 全量回写（`d_empty_region` 改名×3、TC-BUILD-02 标题、fanout_limit 超限并入 A-11、conflicts 字段标注测试约定、T-S9 月库侧异步断言、附录 A 补 #39 链接、T7 补操作者）。v1.1：2026-10-20 吸收 #38 评审——P0×2 / P1×11 / P2 全量；新增 TC-TASK-06 / TC-SEM-10 / TC-SYNC-09；附录 A 扩至 A-16。v1.0：2026-10-20 初版，M0a 开工前）
+> 依据：[design.md](./design.md) v0.9——**§9 测试策略是冻结用例清单，本文是其展开层：T1~T23 / T-S1~T-S12 编号沿用、不另起**；§8 里程碑验收、§4 DDL 与触发器、§5 关键设计、§6 接口契约为断言细节来源。[requirements.md](./requirements.md) v0.9（FR/NFR/D 验收口径；FR-8 界面国际化→TC-UI 组）；[known-gaps.md](./known-gaps.md)（G-1~G-11——涉及其中的用例已标注）；评审依据 [issue #38](https://github.com/yq3/lab/issues/38)（P0×2 / P1×11 / P2 若干，行号以 b75e91a 为准）与 [#41](https://github.com/yq3/lab/issues/41)（v1.3 增补依据）与 [#42](https://github.com/yq3/lab/issues/42)（v1.3.1~v1.4 增补与拍板依据）。沿 lab 仓库 pulse-pet 先例（docs/v1/TEST-CASES.md + 评审回写）。
 > 用途：M0a~M3 与 M2-S1~S3 各里程碑验收依据，里程碑收尾按 §六对照表逐条勾验。
-> 口径：**单测类**用例「预期」即 pytest 断言（CI 跑）；**矩阵/接口类**经 MCP/REST 真实调用断言（M1 起矩阵进 CI 常跑）；**契约/观察项**为记录级（验收不判失败）；**性能类**给阈值与测量口径。时间依赖（过期/宽限期/租约）一律**造数**——直接写过去时间戳，不推进系统时钟。**存储后端参数化（v1.3，D24；v1.3.2 修订——#42 拍板1：PG 正式备选）**：涉及持久化与召回 SQL 的用例按 `backend ∈ {sqlite, pg}` 参数化双跑（越权矩阵与编译器单测必跑双后端；本地无 DSN 可 skip、不阻塞纯 SQLite 环境，**CI 设必跑 PG job（docker postgres+pgvector）——CI 内 skip 视为失败**；语义层展开/召回类用例（T-S6/T-S8/TC-SEM-09）自 M2-S 起同样双后端参数化——#42 拍板3）；两后端 FTS 评分函数差异为已登记口径（A-17 / G-6），排序类断言按「名次集等价」而非逐分相等。**fake provider fixture（v1.4，#42 必修4——TC-EMB 组 / TC-RET 降级 / TC-ACL-08 共享）**：Embedder/Reranker 假实现统一 fixture——①确定性向量（按文本 hash 种子，同文本同向量）；②可注入延迟与失败（超时 / 不可达）；③换底模模式（`drift`：哨兵文本返回偏移向量——探针用例专用）；④Reranker `none` 实现。
+> 口径：**单测类**用例「预期」即 pytest 断言（CI 跑）；**矩阵/接口类**经 MCP/REST 真实调用断言（M1 起矩阵进 CI 常跑）；**契约/观察项**为记录级（验收不判失败）；**手动走查类**为浏览器人工执行、不进 CI（TC-UI——v1.5 新增类目）；**性能类**给阈值与测量口径。时间依赖（过期/宽限期/租约）一律**造数**——直接写过去时间戳，不推进系统时钟。**存储后端参数化（v1.3，D24；v1.3.2 修订——#42 拍板1：PG 正式备选）**：涉及持久化与召回 SQL 的用例按 `backend ∈ {sqlite, pg}` 参数化双跑（越权矩阵与编译器单测必跑双后端；本地无 DSN 可 skip、不阻塞纯 SQLite 环境，**CI 设必跑 PG job（docker postgres+pgvector）——CI 内 skip 视为失败**；语义层展开/召回类用例（T-S6/T-S8/TC-SEM-09）自 M2-S 起同样双后端参数化——#42 拍板3）；两后端 FTS 评分函数差异为已登记口径（A-17 / G-6），排序类断言按「名次集等价」而非逐分相等。**fake provider fixture（v1.4，#42 必修4——TC-EMB 组 / TC-RET 降级 / TC-ACL-08 共享）**：Embedder/Reranker 假实现统一 fixture——①确定性向量（按文本 hash 种子，同文本同向量）；②可注入延迟与失败（超时 / 不可达）；③换底模模式（`drift`：哨兵文本返回偏移向量——探针用例专用）；④Reranker `none` 实现。
 > 演进纪律：本文为活文档（同 known-gaps，不受设计冻结纪律约束），随实现回写口径；**与 requirements/design 正文冲突时以正文为准并开 issue**。编写中发现的规格含糊点登记于附录 A（展开即压测——pulse-pet 用例评审先例）。
 
 ## 编号约定
@@ -23,6 +23,7 @@
 | TC-E2E | 摄取→检索端到端集成 | M0a / M0b / M1 |
 | TC-TASK | 任务与 worker 机制 | M2 |
 | TC-OPS | 生产化（审计 / 备份 / 清理 / 管理面 / CSV） | M2 |
+| TC-UI | 界面国际化（前端薄壳中/英双语——FR-8，v1.5 新增；手动走查、不进 CI） | M0a（机制）/ M1 起页面 |
 | T1~T23 / T-CSV / TC-AZ | **越权矩阵**（§9 冻结编号 + 验收引用的补充行） | M0a / M1 / M2 |
 | T-S1~T-S12 | **语义层功能与不变式**（§9 冻结编号） | M2-S1~S3 |
 | TC-SYNC | 语义同步流程（适配器 / 保护 / 审计） | M2-S1 / S2 |
@@ -508,6 +509,30 @@
 
 - **步骤**：u_gl（仅 org:gl）对 org:tax 的检索 / 文档详情 / 任务 / 审计 / 语义端点全量扫描。
 - **预期**：全部拒绝或空集——`org_id = :org` 第一条件 + 成员关系校验（M2.6 验收「跨组织隔离全绿」；T15 / T-S7 汇总）。
+
+### TC-UI 界面国际化（FR-8，v1.5 新增——需求 v0.9 对话决策）
+
+> 口径：本组为**手动走查用例**——前端薄壳无构建链/测试框架（FR-5 薄壳纪律），不进 CI 自动化；随各视图页面落地时执行并在 §六 对照表勾验。断言对象为浏览器实际渲染；后端行为不为本组断言对象（语言仅为前端状态——FR-8「服务端不感知语言」）。
+
+#### TC-UI-01 语言切换与持久化【手动｜M0a 机制就位，M1 随检索页复验】
+
+- **步骤**：①清 `localStorage` 后打开页面（默认态）；②点头部「中 | EN」切英文、再切回中文；③英文态刷新页面、重开浏览器。
+- **预期**：①默认中文、`<html lang="zh-CN">`；②切换后全页 UI 文案即时切换，`<html lang>`（zh-CN / en）与 `<title>` 同步更新；③语言选择保持（localStorage 持久化）。
+
+#### TC-UI-02 双语完整性——无混语言 UI 文案【手动｜M1 检索页起，各视图落地时扩展】
+
+- **步骤**：EN 态逐视图走查导航 / 按钮 / 表头 / 状态标签旁注 / 空态 / 教学说明 / placeholder / 提示语；zh 态反向抽查。
+- **预期**：EN 下无裸中文 UI 文案、zh 下无裸英文 UI 文案；**排除项按口径原样保留**——状态枚举（`searchable_full` 等）、API 路径、工具名（`annotate` 等）、章节引用（§5.1 等文档内锚点）、业务数据（不译——FR-8）。
+
+#### TC-UI-03 业务数据与行为不随语言变化【手动｜M1】
+
+- **步骤**：同一 query 分别在 zh / EN 界面语言下检索并对照命中列表；抽一条越权拒绝用例（如 T1 过期授权）在两语言下各执行。
+- **预期**：命中集合、排序、score、dims 展示两语言一致；文档标题 / 实体名 / 维度取值标签保持数据本身语言；越权用例两语言下均拒绝且拒绝语义不变。
+
+#### TC-UI-04 服务端不感知语言【手动｜M1】
+
+- **步骤**：切换界面语言前后，对同一操作（一次检索 + 一次管理操作）抓取 API 请求与响应。
+- **预期**：请求不带语言参数、报文无语言差异；审计事件字段与错误码不随界面语言变化。
 
 ---
 
@@ -1033,10 +1058,10 @@
 
 | 里程碑 | 验收用例集（design §8 验收句 → 本文编号） |
 |---|---|
-| **M0a** | 孤儿行 IntegrityError：TC-SCAF-01（both）；MCP 带 chunk_id 检索（开发 JWT）：TC-E2E-06；编译器单测先行：T1~T5、T20、T22（+T23 触发器半）＋TC-ACL-01~07、TC-SCAF-02~05（**后端标注 v1.4：02~05 sqlite-only，PG 等价随 M0b spike 补——#42 必修4**）；摄取/检索最小链：TC-ING-01~03/07、TC-FTS-01~03、TC-E2E-07、**TC-EMB-01~03（02 为 Plan 层谓词单测——检索行为随 M1 的 TC-EMB-07）**；鉴权骨架：TC-AUTH-01/02（组织上下文规则随待决-2/3 并行敲定——#38 P1-10 补） |
+| **M0a** | 孤儿行 IntegrityError：TC-SCAF-01（both）；MCP 带 chunk_id 检索（开发 JWT）：TC-E2E-06；编译器单测先行：T1~T5、T20、T22（+T23 触发器半）＋TC-ACL-01~07、TC-SCAF-02~05（**后端标注 v1.4：02~05 sqlite-only，PG 等价随 M0b spike 补——#42 必修4**）；摄取/检索最小链：TC-ING-01~03/07、TC-FTS-01~03、TC-E2E-07、**TC-EMB-01~03（02 为 Plan 层谓词单测——检索行为随 M1 的 TC-EMB-07）**；鉴权骨架：TC-AUTH-01/02（组织上下文规则随待决-2/3 并行敲定——#38 P1-10 补）；**i18n 机制就位：TC-UI-01（切换/持久化/默认中文——静态页壳，v1.5/FR-8）** |
 | **M0b** | TC-PERF-01~03、TC-E2E-05 + TC-SCAF-03（v1.1 迁移跑通 + foreign_key_check + M0a 可达矩阵子集复跑；**v1.3 扩：双后端各跑 + 真实 2560 维 + PG spike（编译器单测双后端绿）——D12/D24**）；委托 token 客户端实测（TC-AUTH-04 附注） |
-| **M1** | **越权矩阵全绿：T1~T23 全量 + TC-AZ-01/02/03/05（双后端各跑——D24）**（T13 以 dev 白名单模拟；**T19 删库半句、T20 退役审计半句随 M2 收口**——正文「全量」措辞冲突见附录 A-8）；版本链：T6~T10、T21、TC-VER-01~07、TC-E2E-02；**全量矩阵复跑**：TC-E2E-05 收口；凭证：T11/T12、TC-CRED-01~05；检索配方：TC-RET-01~07、TC-E2E-01/04、TC-FTS-04、**TC-ACL-08（rerank 前后 ACL 双断言）/ TC-EMB-07（混模型零距离——自 TC-EMB-02 拆出）**；摄取补全：TC-ING-04~06、**TC-EMB-04/05**；鉴权：TC-AUTH-01/02 复跑；区分度：TC-QUAL-01~05、TC-EVAL-06；真实 query 标注：TC-EVAL-01；性能：TC-PERF-03/04 |
-| **M2** | 杀 worker 不丢任务：TC-TASK-01/03/04、TC-E2E-03；outbox 一致性：TC-OPS-01；恢复演练：TC-OPS-05（**双后端各一份——D24**）；跨组织隔离全绿：TC-OPS-09、T15、TC-AZ-04；批量导入 500 行（sync 不动）：TC-OPS-06 / T-CSV；生产化收口：TC-AUTH-03~05、T13/T16 生产形态、T19 删库 / T20 退役审计半句、TC-AZ-03 管理端点半、TC-OPS-02~04/07/08、TC-VER-08、TC-TASK-02/05、**TC-EMB-06（换模型重嵌入）** |
+| **M1** | **越权矩阵全绿：T1~T23 全量 + TC-AZ-01/02/03/05（双后端各跑——D24）**（T13 以 dev 白名单模拟；**T19 删库半句、T20 退役审计半句随 M2 收口**——正文「全量」措辞冲突见附录 A-8）；版本链：T6~T10、T21、TC-VER-01~07、TC-E2E-02；**全量矩阵复跑**：TC-E2E-05 收口；凭证：T11/T12、TC-CRED-01~05；检索配方：TC-RET-01~07、TC-E2E-01/04、TC-FTS-04、**TC-ACL-08（rerank 前后 ACL 双断言）/ TC-EMB-07（混模型零距离——自 TC-EMB-02 拆出）**；摄取补全：TC-ING-04~06、**TC-EMB-04/05**；鉴权：TC-AUTH-01/02 复跑；区分度：TC-QUAL-01~05、TC-EVAL-06；真实 query 标注：TC-EVAL-01；性能：TC-PERF-03/04；**界面国际化走查：TC-UI-01 复验 + TC-UI-02（检索页）/ 03 / 04（FR-8，v1.5）** |
+| **M2** | 杀 worker 不丢任务：TC-TASK-01/03/04、TC-E2E-03；outbox 一致性：TC-OPS-01；恢复演练：TC-OPS-05（**双后端各一份——D24**）；跨组织隔离全绿：TC-OPS-09、T15、TC-AZ-04；批量导入 500 行（sync 不动）：TC-OPS-06 / T-CSV；生产化收口：TC-AUTH-03~05、T13/T16 生产形态、T19 删库 / T20 退役审计半句、TC-AZ-03 管理端点半、TC-OPS-02~04/07/08、TC-VER-08、TC-TASK-02/05、**TC-EMB-06（换模型重嵌入）**；TC-UI-02 管理面视图扩展（v1.5） |
 | **M2-S1** | T-S2 / T-S3 / T-S5 / T-S6 / T-S11（describe_table）；「模板落在哪张表哪个字段」端到端：**TC-SEM-10**（模板链路）+ TC-SEM-05（search_entities / get_entity 结构契约）；同步流程：TC-SYNC-01~09（含 `sem_*` 迁移与种子）、T-S4（机制）；性能：TC-PERF-05（部分） |
 | **M2-S2** | T-S1 / T-S4（验收）/ T-S12；AC precision ≥0.95 / recall ≥0.80、歧义 ≥0.85、负样本 ≤0.05：TC-SEV-01/02；构建回归 >2pp 不切 ready：TC-BUILD-04；YAML 与 CI：TC-YAML-01~04；annotate：TC-SEM-01~04/06/07、TC-BUILD-01~03/05 |
 | **M2-S3** | 越权矩阵 T-S7 / T-S8 / T-S9 / T-S10 全绿；AC+模糊 recall@3 ≥0.92：TC-SEV-03、TC-SEM-09（含模糊索引产物）；检索增益不回退方可默认开启：TC-SEV-03；打标/召回：TC-TAG-01~05；故障隔离：TC-TASK-06 收口；中间件切换：TC-SEM-08、TC-YAML-05 |
