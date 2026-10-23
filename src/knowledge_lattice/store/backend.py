@@ -61,8 +61,11 @@ class AclPlan:
 
 @runtime_checkable
 class SearchBackend(Protocol):
-    def recall_fts(self, query: str, plan: AclPlan, *, top_k: int = 20) -> list[dict]:
-        """FTS/BM25 召回（收 AclPlan——引擎内下推）。"""
+    def recall_fts(
+        self, tokens: Sequence[str], plan: AclPlan, *, top_k: int = 20
+    ) -> list[dict]:
+        """FTS/BM25 召回（收 AclPlan——引擎内下推；tokens 为 jieba 切分产物，
+        方言转义在本层完成——SQLite 双引号包裹 / PG to_tsquery，D24）。"""
         ...
 
     def recall_vec(self, query_vec: bytes, plan: AclPlan, *, top_k: int = 20) -> list[dict]:
@@ -83,21 +86,27 @@ class SearchBackend(Protocol):
 @runtime_checkable
 class IngestBackend(Protocol):
     def insert(self, doc_id: str, version: int, chunks: Sequence[dict]) -> None:
-        """chunks + FTS 同一事务写入。"""
+        """chunks + FTS 同一事务写入（幂等：同 (doc_id, version) 先删后插）+ 阶段状态推进
+        （pending_status→searchable_lexical + 首次上传 D20 切换）。"""
         ...
 
     def write_embeddings(self, batch_label: str, rows: Sequence[tuple[int, bytes]]) -> int:
-        """逐批回写 embedding/embed_model（带 tombstone/版本防护——P0-2.3，M1 实装）。"""
+        """逐批回写 embedding/embed_model（带 tombstone/embedding IS NULL/标签防护——M0a 基础版）。"""
         ...
 
     def delete_by_doc(self, doc_id: str, version: int) -> int:
         ...
 
     def switch_active_version(self, doc_id: str, expected_pending: int) -> None:
-        """版本切换单事务（乐观校验——M1 实装）。"""
+        """版本切换单事务（乐观校验——M1 实装；M0a 仅首次上传切换，在 insert 事务内）。"""
         ...
 
     def pending_embeddings(self, batch_label: str) -> list[dict]:
+        """已钉标签未回写的待嵌入块（embed_model=:label AND embedding IS NULL AND tombstone=0）。"""
+        ...
+
+    def mark_embedding_batch(self, doc_id: str, version: int, batch_label: str) -> list[dict]:
+        """批次启动钉死标签（§5.3）：认领 embedding IS NULL AND tombstone=0 的在处理块。"""
         ...
 
 
@@ -117,7 +126,76 @@ class AdminBackend(Protocol):
     """组织/维度/取值/授权/成员 CRUD + 任务队列（租约·心跳·认领）+ 上传凭证 + 审计查询。
 
     方法随 M1/M2 管理面 API 逐个进域（种子非穷举——v0.8.3）。
+    M0a-3 落：任务队列（状态机 pending→leased→running→done/failed）、文档状态读写、
+    嵌入指纹基线（embedding_fingerprints）、维度/取值只读（页壳上传表单所需）。
     """
+
+    def create_task(self, doc_id: str, *, task_type: str = "ingest") -> str:
+        ...
+
+    def get_task(self, task_id: str) -> dict | None:
+        ...
+
+    def list_tasks(self, org_id: str, *, doc_id: str | None = None) -> list[dict]:
+        ...
+
+    def update_task(
+        self, task_id: str, *, status: str | None = None, error: str | None = None
+    ) -> None:
+        """任务状态机推进（leased/running 由执行器调用；attempts 随 running 递增）。"""
+        ...
+
+    def get_document(self, doc_id: str) -> dict | None:
+        ...
+
+    def create_document(
+        self,
+        *,
+        doc_id: str,
+        org_id: str,
+        dataset_id: str,
+        title: str,
+        source_uri: str,
+        content_hash: str,
+        mime_type: str,
+        parser: str,
+        owner_user_id: str,
+        raw_object_key: str,
+        pending_dims_json: str | None,
+    ) -> None:
+        """首次上传的文档行（pending_version=1、pending_status='parsing'）。"""
+        ...
+
+    def set_doc_pending_status(self, doc_id: str, version: int, status: str) -> None:
+        ...
+
+    def set_doc_active_status(self, doc_id: str, version: int, status: str) -> None:
+        ...
+
+    def set_doc_active_error(self, doc_id: str, version: int, error: str) -> None:
+        ...
+
+    def read_fingerprint(self, embed_model: str) -> str | None:
+        """指纹基线 JSON（无基线 → None——首部署建档判定）。"""
+        ...
+
+    def save_fingerprint(self, embed_model: str, baseline_json: str) -> None:
+        ...
+
+    def list_dimensions(self, org_id: str) -> list[dict]:
+        """active 维度 + active 取值（上传表单/校验所需——M0a 只读）。"""
+        ...
+
+    def list_datasets(self, org_id: str) -> list[dict]:
+        ...
+
+    def find_user_by_token_hash(self, token_hash: str) -> dict | None:
+        """静态 token 查 user（sha256——仅 dev/test，D18）。"""
+        ...
+
+    def get_user_auth(self, user_id: str) -> dict | None:
+        """认证侧用户态（存在 / 禁用 / 系统管理员）。"""
+        ...
 
 
 @runtime_checkable
@@ -128,7 +206,8 @@ class SemanticBackend(Protocol):
 @runtime_checkable
 class AuditBackend(Protocol):
     def append_outbox(self, event_type: str, payload_json: str) -> None:
-        """outbox 写入（与业务写同事务——「业务改了就一定有审计」，M2 实装）。"""
+        """outbox 写入（与业务写同事务——「业务改了就一定有审计」；M0a-3 起实装：
+        探针两档告警 / 工具参数 org 忽略等事件）。"""
         ...
 
     def roll_monthly(self, when: object | None = None) -> object:
