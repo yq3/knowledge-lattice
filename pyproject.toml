@@ -1,0 +1,25 @@
+[project]
+name = "knowledge-lattice"
+version = "0.1.0"
+description = "企业知识层服务（文档知识 + 业务语义）——lab POC，设计见 docs/design.md"
+readme = "README.md"
+# G-11：requires-python 钉 >=3.11（docling/FastMCP 硬性下限），部署钉 uv 托管 CPython 3.12（开发=部署同版本）
+requires-python = ">=3.11"
+dependencies = [
+    "sqlite-vec>=0.1.6",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/knowledge_lattice"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
