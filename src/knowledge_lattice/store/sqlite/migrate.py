@@ -126,7 +126,11 @@ def _apply_one(conn: sqlite3.Connection, m: Migration) -> bool:
                 pass
             raise
     finally:
-        conn.execute("PRAGMA foreign_keys = ON")  # 结束恢复（含失败路径）
+        try:
+            conn.execute("PRAGMA foreign_keys = ON")  # 结束恢复（含失败路径）
+        except sqlite3.Error:
+            # 连接不可执行（已关闭/损坏）时保留原始异常链——恢复动作不得覆盖 MigrationError
+            pass
 
 
 def _split_statements(sql: str, *, origin: Migration) -> list[str]:

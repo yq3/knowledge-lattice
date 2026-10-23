@@ -96,12 +96,13 @@ def test_behavior_u_os_r_sees_only_null(single_region) -> None:
 
 
 def test_sql_text_snapshot_renderer_side(single_region) -> None:
-    """渲染器附带断言（sqlite-only）：单维 WHERE 文本快照 + 参数表。"""
+    """渲染器附带断言（sqlite-only）：单维 WHERE 文本快照 + 参数表。
+    参数名为渲染器序列名（g<seq>_<i>，与维度 key 无关——Committer R1 P1-1）。"""
     sql, params = render_sql(build_where_ast(_compile(single_region, "u_cn_r")))
     assert sql == (
         "(NOT EXISTS (SELECT 1 FROM json_each(c.dims_json, '$.region'))"
         " OR EXISTS (SELECT 1 FROM json_each(c.dims_json, '$.region') AS je"
-        " WHERE je.value IN (:g_region_0)))"
+        " WHERE je.value IN (:g0_0)))"
         " AND (c.version = d.active_version AND c.tombstone = 0 AND d.org_id = :org)"
     )
-    assert params == {"g_region_0": "CN", "org": "org:tax"}
+    assert params == {"g0_0": "CN", "org": "org:tax"}

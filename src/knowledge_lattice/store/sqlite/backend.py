@@ -52,6 +52,10 @@ class SqliteBackend:
         v.status='active'（停用取值=收紧——视为存在但无人被授予）、
         g.expires_at 过滤（过期即失效，不等清理任务）。无授权的 active 维度以
         空元组出现（→ 渲染为 NotExists 单条件——T22）。
+
+        取值 JOIN 校验 `v.dimension_id = dim.id`（Committer R1 P2-1）：grants 侧无
+        trg_docdims_consistency 等价触发器，FK 只保证 value_id 存在——不校验归属时
+        畸形授权行（dimension=region、value=tax_type 的 VAT）会跨维度挂取值越权。
         """
         # 仅方言关键字选择（CURRENT_TIMESTAMP / :now），无数据值插值
         now_filter = "CURRENT_TIMESTAMP" if now is None else ":now"
@@ -65,7 +69,7 @@ class SqliteBackend:
             "   ON g.dimension_id = dim.id AND g.user_id = :uid"
             f"  AND (g.expires_at IS NULL OR g.expires_at > {now_filter})"
             " LEFT JOIN dimension_values v"
-            "   ON v.id = g.value_id AND v.status = 'active'"
+            "   ON v.id = g.value_id AND v.dimension_id = dim.id AND v.status = 'active'"
             " WHERE dim.org_id = :org AND dim.status = 'active'"
             " ORDER BY dim.key, v.value"
         )

@@ -2,6 +2,10 @@
 
 - 产物一律由 AST 节点树渲染，**禁止字符串拼接**：授权取值 / org / dataset / doc /
   模型标签全部经绑定参数；JSON path（'$.<key>'）与维度 key 为结构常量（转义渲染）；
+- **绑定参数名由渲染器按 AST 遍历顺序自控生成（g<seq>_<i>），与库内数据（维度
+  key 等）完全无关**（Committer R1 P1-1：由 key 拼接参数名时，含 SQL 记号的 key
+  会截断参数名、残余字符落入 SQL 文本——可注释掉外层常量造成跨组织/跨版本泄露）；
+  `InValue.param_prefix` 仅为 trace 标签（标识符白名单校验、绝不进入 SQL）；
 - 「无 IN ()」为 Plan 层不变式：InValue 节点构造即拒绝空值集——空授权集维度只产
   NotExists 单条件（§5.1 第 3 步 / T22）；
 - 双写法（§5.1 性能注 / TC-ACL-07）：按块 json_each 模板（render_select /
@@ -15,9 +19,13 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from knowledge_lattice.store.backend import AclDimensionRule, AclPlan
+
+# 参数名 trace 标签白名单（fail-closed——构造即拒；渲染参数名另由渲染器序列生成）
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # ============ AST 节点（frozen——结构断言与逐字 diff 的基础） ============
 
@@ -61,7 +69,12 @@ class Or:
 
 @dataclass(frozen=True)
 class InValue:
-    """expr IN (绑定参数列表)——值集非空为构造不变式（「无 IN ()」Plan 层红线）。"""
+    """expr IN (绑定参数列表)——值集非空为构造不变式（「无 IN ()」Plan 层红线）。
+
+    param_prefix 仅为 trace 标签：标识符白名单校验（fail-closed，构造即拒——
+    Committer R1 P1-1 防御纵深），**绝不进入 SQL 文本**——渲染参数名由渲染器
+    按遍历顺序自控生成（g<seq>_<i>），与库内数据（维度 key 等）无关。
+    """
 
     expr: "Expr"
     param_prefix: str
@@ -72,6 +85,11 @@ class InValue:
             raise ValueError(
                 "InValue 空值集会渲染出非法的 `IN ()`——空授权集维度只产 NotExists "
                 "单条件（Plan 层不变式，#34 必修 3 / T22）"
+            )
+        if not _IDENTIFIER_RE.match(self.param_prefix):
+            raise ValueError(
+                f"InValue.param_prefix 必须为合法 SQL 标识符（trace 标签，"
+                f"不进入 SQL 文本）: {self.param_prefix!r}"
             )
 
 
@@ -141,69 +159,81 @@ Expr = (
 # ============ 渲染器（AST → SQL 文本 + 参数表；数据值绝不进 SQL 文本） ============
 
 
-def render_expr(node: Expr, params: dict[str, object]) -> str:
-    if isinstance(node, ColumnRef):
-        return f"{node.table}.{node.name}" if node.table else node.name
-    if isinstance(node, BindParam):
-        params[node.name] = node.value
-        return f":{node.name}"
-    if isinstance(node, Literal):
-        if isinstance(node.value, str):
-            return "'" + node.value.replace("'", "''") + "'"
-        return str(node.value)
-    if isinstance(node, Eq):
-        return f"{render_expr(node.left, params)} = {render_expr(node.right, params)}"
-    if isinstance(node, And):
-        return " AND ".join(_child(part, params) for part in node.parts)
-    if isinstance(node, Or):
-        return " OR ".join(_child(part, params) for part in node.parts)
-    if isinstance(node, InValue):
-        names = []
-        for i, value in enumerate(node.values):
-            name = f"{node.param_prefix}_{i}"
-            params[name] = value
-            names.append(f":{name}")
-        return f"{render_expr(node.expr, params)} IN ({', '.join(names)})"
-    if isinstance(node, InSubquery):
-        return f"{render_expr(node.expr, params)} IN ({node.subquery})"
-    if isinstance(node, Match):
-        params[node.param.name] = node.param.value
-        return f"{node.source}.{node.fts_name} MATCH :{node.param.name}"
-    if isinstance(node, Func):
-        args = ", ".join(render_expr(a, params) for a in node.args)
-        return f"{node.name}({args})"
-    if isinstance(node, TableRef):
-        return f"{node.name} AS {node.alias}" if node.alias else node.name
-    if isinstance(node, Join):
-        return f" JOIN {render_expr(node.table, params)} ON {render_expr(node.on, params)}"
-    if isinstance(node, Select1):
-        sql = f"SELECT 1 FROM {render_expr(node.from_table, params)}"
-        if node.alias:
-            sql += f" AS {node.alias}"
-        for join in node.joins:
-            sql += render_expr(join, params)
-        if node.predicate is not None:
-            sql += f" WHERE {render_expr(node.predicate, params)}"
-        return sql
-    if isinstance(node, Exists):
-        return f"EXISTS ({render_expr(node.subquery, params)})"
-    if isinstance(node, NotExists):
-        return f"NOT EXISTS ({render_expr(node.subquery, params)})"
-    raise TypeError(f"unknown AST node: {type(node).__name__}")
+class _Renderer:
+    """单趟渲染状态：参数表 + InValue 序列计数。
 
+    绑定参数名由渲染器按 AST 遍历顺序自控生成（g<seq>_<i>）——与库内数据
+    （维度 key 等）完全无关（P1-1：参数名不得由数据拼接，防 SQL 文本注入）；
+    显式命名的参数（org / current_model / q）为渲染器与 builder 的固定常量。
+    """
 
-def _child(node: Expr, params: dict[str, object]) -> str:
-    """And/Or 的子节点：复合项显式括号（无优先级歧义——TC-ACL-01）。"""
-    rendered = render_expr(node, params)
-    if isinstance(node, (And, Or)):
-        return f"({rendered})"
-    return rendered
+    def __init__(self) -> None:
+        self.params: dict[str, object] = {}
+        self._invalue_seq = 0
+
+    def expr(self, node: Expr) -> str:
+        if isinstance(node, ColumnRef):
+            return f"{node.table}.{node.name}" if node.table else node.name
+        if isinstance(node, BindParam):
+            self.params[node.name] = node.value
+            return f":{node.name}"
+        if isinstance(node, Literal):
+            if isinstance(node.value, str):
+                return "'" + node.value.replace("'", "''") + "'"
+            return str(node.value)
+        if isinstance(node, Eq):
+            return f"{self.expr(node.left)} = {self.expr(node.right)}"
+        if isinstance(node, And):
+            return " AND ".join(self.child(part) for part in node.parts)
+        if isinstance(node, Or):
+            return " OR ".join(self.child(part) for part in node.parts)
+        if isinstance(node, InValue):
+            names = []
+            for i, value in enumerate(node.values):
+                name = f"g{self._invalue_seq}_{i}"  # 渲染器自控序列名（P1-1）
+                self.params[name] = value
+                names.append(f":{name}")
+            self._invalue_seq += 1
+            return f"{self.expr(node.expr)} IN ({', '.join(names)})"
+        if isinstance(node, InSubquery):
+            return f"{self.expr(node.expr)} IN ({node.subquery})"
+        if isinstance(node, Match):
+            self.params[node.param.name] = node.param.value
+            return f"{node.source}.{node.fts_name} MATCH :{node.param.name}"
+        if isinstance(node, Func):
+            args = ", ".join(self.expr(a) for a in node.args)
+            return f"{node.name}({args})"
+        if isinstance(node, TableRef):
+            return f"{node.name} AS {node.alias}" if node.alias else node.name
+        if isinstance(node, Join):
+            return f" JOIN {self.expr(node.table)} ON {self.expr(node.on)}"
+        if isinstance(node, Select1):
+            sql = f"SELECT 1 FROM {self.expr(node.from_table)}"
+            if node.alias:
+                sql += f" AS {node.alias}"
+            for join in node.joins:
+                sql += self.expr(join)
+            if node.predicate is not None:
+                sql += f" WHERE {self.expr(node.predicate)}"
+            return sql
+        if isinstance(node, Exists):
+            return f"EXISTS ({self.expr(node.subquery)})"
+        if isinstance(node, NotExists):
+            return f"NOT EXISTS ({self.expr(node.subquery)})"
+        raise TypeError(f"unknown AST node: {type(node).__name__}")
+
+    def child(self, node: Expr) -> str:
+        """And/Or 的子节点：复合项显式括号（无优先级歧义——TC-ACL-01）。"""
+        rendered = self.expr(node)
+        if isinstance(node, (And, Or)):
+            return f"({rendered})"
+        return rendered
 
 
 def render_sql(root: Expr) -> tuple[str, dict[str, object]]:
     """AST → (SQL 片段, 参数表)——确定性渲染（同 AST 同文本，逐字 diff 稳定）。"""
-    params: dict[str, object] = {}
-    return render_expr(root, params), params
+    renderer = _Renderer()
+    return renderer.expr(root), renderer.params
 
 
 # ============ AST builder（AclPlan → 节点树） ============
@@ -232,7 +262,8 @@ def build_dimension_rule_ast(rule: AclDimensionRule) -> Expr:
         Select1(
             from_table=_dims_scan(rule.key),
             alias=_JE,
-            predicate=InValue(ColumnRef(_JE, "value"), f"g_{rule.key}", rule.grants),
+            # param_prefix 为静态 trace 标签（P1-1：渲染参数名由渲染器序列生成）
+            predicate=InValue(ColumnRef(_JE, "value"), "dim", rule.grants),
         )
     )
     return Or((null_pass, hit))
@@ -344,12 +375,14 @@ def _visible_docs_rule_ast(rule: AclDimensionRule, org_id: str) -> Expr:
     或有一行取值 ∈ 授权集——与按块 json_each 模板逐字等价（TC-ACL-07）。
 
     空授权 → 无任何行才可见（与 NOT EXISTS 单条件同义——不出 IN ()）。
+    只按 dim.key/org_id 匹配、**不读 dim.status**（Committer R1 P3-1）：Plan 规则集
+    编译时点已只含 active 维度，CTE 再读可变状态会在 compile→execute 竞态下
+    （维度被退役）与 json_each 路（按 Plan 授权集过滤）不等价。
     """
     conds: list[Expr] = [
         Eq(ColumnRef("dd", "doc_id"), ColumnRef("d", "id")),
         Eq(ColumnRef("dim", "key"), Literal(rule.key)),
         Eq(ColumnRef("dim", "org_id"), BindParam("org", org_id)),
-        Eq(ColumnRef("dim", "status"), Literal("active")),
     ]
     if not rule.is_empty:
         # 有行且无一行命中授权集 → 该维不可见（NOT EXISTS 反转：可见=无行或有命中）
@@ -360,6 +393,7 @@ def _visible_docs_rule_ast(rule: AclDimensionRule, org_id: str) -> Expr:
                     TableRef("dimension_values", "v"),
                     And((
                         Eq(ColumnRef("v", "id"), ColumnRef("dd2", "value_id")),
+                        Eq(ColumnRef("v", "dimension_id"), ColumnRef("dd2", "dimension_id")),
                         Eq(ColumnRef("v", "status"), Literal("active")),
                     )),
                 ),
@@ -367,7 +401,7 @@ def _visible_docs_rule_ast(rule: AclDimensionRule, org_id: str) -> Expr:
             predicate=And((
                 Eq(ColumnRef("dd2", "doc_id"), ColumnRef("dd", "doc_id")),
                 Eq(ColumnRef("dd2", "dimension_id"), ColumnRef("dd", "dimension_id")),
-                InValue(ColumnRef("v", "value"), f"g_{rule.key}", rule.grants),
+                InValue(ColumnRef("v", "value"), "dim", rule.grants),
             )),
         )
         conds.append(NotExists(inner))
@@ -389,10 +423,10 @@ def render_visible_docs_select(plan: AclPlan) -> tuple[str, dict[str, object]]:
     """按文档 visible_docs CTE 备选写法（§5.1 性能注）——同一 AclPlan/授权展开，
     先求可见文档集合再 `c.doc_id IN (visible_docs)`（走 uq_chunks_docver）；
     结果集与 render_select 逐字等价（TC-ACL-07；M0b 实验选定后二删其一）。"""
-    params: dict[str, object] = {}
+    renderer = _Renderer()  # CTE 与外层同一渲染状态（参数名序列连续、org 复用同名同值）
     blocks = [_visible_docs_rule_ast(rule, plan.org_id) for rule in plan.dimension_rules]
-    cte_where = render_expr(
-        And((Eq(ColumnRef("d", "org_id"), BindParam("org", plan.org_id)), *blocks)), params
+    cte_where = renderer.expr(
+        And((Eq(ColumnRef("d", "org_id"), BindParam("org", plan.org_id)), *blocks))
     )
     outer = And((
         InSubquery(ColumnRef("c", "doc_id"), "SELECT doc_id FROM visible_docs"),
@@ -407,6 +441,6 @@ def render_visible_docs_select(plan: AclPlan) -> tuple[str, dict[str, object]]:
         f" WHERE {cte_where})"
         " SELECT c.rid, c.id, c.doc_id"
         " FROM chunks c JOIN documents d ON d.id = c.doc_id"
-        f" WHERE {render_expr(outer, params)}"
+        f" WHERE {renderer.expr(outer)}"
     )
-    return sql, params
+    return sql, renderer.params

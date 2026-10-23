@@ -3,9 +3,10 @@
 ② 三条轻量回归测试：事务中 FK OFF → MigrationError / `:memory:` journal 失败 →
 RuntimeError + 连接关闭 / `__init__` 导入身份（re-export 不覆盖同名子模块）；
 ③ R2 复审其余 P3 择要（触碰 migrate/connection 时顺手）：WAL 切换重试耗尽包装
-RuntimeError、FK OFF 复查移入 try/finally（失败路径也恢复外键——本文件首测直接
-取证）；journal_mode 查询纳入重试已在 M0a-1 R2 落地（connection.py 现行为）；
-跳过分支 foreign_keys==1 断言补在 test_scaf_03_migrations.py。
+RuntimeError、FK OFF 复查移入 try/finally（finally 恢复的直接取证在
+test_scaf_03_migrations.py 的 fk_violation 用例——本文件事务场景 OFF 本为 no-op，
+仅断言失败路径不留关闭态）；journal_mode 查询纳入重试已在 M0a-1 R2 落地
+（connection.py 现行为）；跳过分支 foreign_keys==1 断言补在 test_scaf_03_migrations.py。
 """
 
 from __future__ import annotations
@@ -38,8 +39,9 @@ def regress_dirs(tmp_path: Path) -> list[Path]:
 
 def test_fk_off_in_transaction_raises_migration_error(conn, regress_dirs) -> None:
     """连接处于事务中 → `PRAGMA foreign_keys=OFF` 静默无效 → 复查检出 →
-    MigrationError；且失败路径恢复 foreign_keys=ON（③ try/finally 修正取证——
-    raises 后、任何手动 PRAGMA 之前断言）。"""
+    MigrationError。注：本场景 OFF 本为 no-op（FK 从未真正关闭），raises 后
+    `foreign_keys==1` 断言仅确认失败路径未留下关闭态外泄；finally 恢复动作的
+    **直接取证**在 test_scaf_03_migrations.py 的 fk_violation 用例（M0a-1 R2）。"""
     from knowledge_lattice.store.sqlite.migrate import MigrationError, migrate_db
 
     assert "regress_probe" not in table_names(conn)  # 迁移未应用（前置）
@@ -49,7 +51,7 @@ def test_fk_off_in_transaction_raises_migration_error(conn, regress_dirs) -> Non
             migrate_db(conn, dirs=regress_dirs)
     finally:
         conn.execute("ROLLBACK")
-    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1  # 恢复为 ON
+    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1  # 仍为 ON
     assert "regress_probe" not in table_names(conn)  # 迁移未生效
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
 
