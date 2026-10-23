@@ -238,6 +238,8 @@ def test_apply_one_skips_when_version_already_applied(db_path: Path, tmp_path: P
     v2 = [m for m in discover(dirs) if m.version == 2][0]
     assert _apply_one(conn, v2) is False  # 写锁内重读 2>=2 → COMMIT + 跳过，绝不重放 DDL
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    # P3（M0a-1 遗留③-4）：干净跳过分支同样恢复 foreign_keys=ON（finally 覆盖跳过路径）
+    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     conn.close()
 
 
