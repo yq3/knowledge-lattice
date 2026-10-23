@@ -20,9 +20,9 @@ def db_path(tmp_path: Path) -> Path:
 
 @pytest.fixture()
 def conn(db_path: Path) -> Iterator[sqlite3.Connection]:
-    from knowledge_lattice.store.sqlite import connect, migrate
+    from knowledge_lattice.store.sqlite import connect, migrate_db
 
     c = connect(db_path)
-    migrate(c)
+    migrate_db(c)
     yield c
     c.close()

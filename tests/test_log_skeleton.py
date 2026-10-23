@@ -4,11 +4,24 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
 
 import pytest
 
 
-def test_json_log_line_with_context(capsys: pytest.CaptureFixture[str]) -> None:
+@pytest.fixture()
+def _root_logging_state() -> Iterator[None]:
+    """P3-21：setup_logging 直接替换 root handlers/level——测试后恢复原状，避免顺序依赖。"""
+    root = logging.getLogger()
+    saved_handlers, saved_level = root.handlers[:], root.level
+    yield
+    root.handlers[:] = saved_handlers
+    root.setLevel(saved_level)
+
+
+def test_json_log_line_with_context(
+    capsys: pytest.CaptureFixture[str], _root_logging_state: None
+) -> None:
     from knowledge_lattice.log import request_id_var, setup_logging, task_id_var
 
     setup_logging(level="INFO", fmt="json")
@@ -28,7 +41,9 @@ def test_json_log_line_with_context(capsys: pytest.CaptureFixture[str]) -> None:
     assert payload["task_id"] == "task-9"
 
 
-def test_human_format_and_defaults(capsys: pytest.CaptureFixture[str]) -> None:
+def test_human_format_and_defaults(
+    capsys: pytest.CaptureFixture[str], _root_logging_state: None
+) -> None:
     from knowledge_lattice.log import request_id_var, setup_logging
 
     setup_logging(level="WARNING", fmt="human")

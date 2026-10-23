@@ -49,12 +49,14 @@ def test_all_doc_side_triggers_exist(conn: sqlite3.Connection) -> None:
 
 def test_trg_dimval_immutable(conn: sqlite3.Connection) -> None:
     seed_org(conn)
-    dim_id = seed_dimension(conn)
-    val_id = seed_dim_value(conn, dim_id, value="CN")
+    dim1 = seed_dimension(conn, key="region")
+    dim2 = seed_dimension(conn, key="tax_type")
+    val_id = seed_dim_value(conn, dim1, value="CN")
     with pytest.raises(sqlite3.IntegrityError, match="immutable"):
         conn.execute("UPDATE dimension_values SET value='ZH' WHERE id=?", (val_id,))
+    # 真跨维度搬移（P3-10）：把 region 的值搬到 tax_type 下 → ABORT
     with pytest.raises(sqlite3.IntegrityError, match="immutable"):
-        conn.execute("UPDATE dimension_values SET dimension_id=? WHERE id=?", (dim_id, val_id))
+        conn.execute("UPDATE dimension_values SET dimension_id=? WHERE id=?", (dim2, val_id))
     # label 可改（显示名，不影响引用）
     conn.execute("UPDATE dimension_values SET label='中国大陆' WHERE id=?", (val_id,))
 
@@ -201,14 +203,16 @@ def test_chunks_fts_sync_triggers(conn: sqlite3.Connection) -> None:
         ).fetchone()[0]
 
     # ai：INSERT 后 FTS 行就位（content 不进 FTS——rerank 专用；_seg 列为分词后文本，空格分隔 token）
-    insert_chunk(conn, doc_id, seq=1, version=1, content_seg="进项税额 抵扣凭证")
+    insert_chunk(conn, doc_id, seq=1, version=1, content_seg="进项税额 抵扣凭证", keywords="旧词")
     assert fts_count('"进项税额"') == 1
-    # au：UPDATE 五列之一 → 先 'delete' 旧值再插入新值
+    assert fts_count('"旧词"') == 1
+    # au：UPDATE 五列之一 → 先 'delete' 旧值再插入新值（P3-9：旧词计数必须归零）
     conn.execute(
         "UPDATE chunks SET keywords='留抵退税' WHERE doc_id=? AND seq=1 AND version=1",
         (doc_id,),
     )
     assert fts_count('"留抵退税"') == 1
+    assert fts_count('"旧词"') == 0
     # ad：DELETE 后 FTS 行移除
     conn.execute("DELETE FROM chunks WHERE doc_id=? AND seq=1 AND version=1", (doc_id,))
     assert fts_count('"进项税额"') == 0

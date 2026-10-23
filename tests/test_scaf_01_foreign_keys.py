@@ -58,15 +58,19 @@ def test_pragma_failure_raises_runtime_error(
 
     def fake_sqlite_connect(*args: object, **kwargs: object) -> object:
         inner = real_connect(*args, **kwargs)  # type: ignore[arg-type]
-        wrapper = MagicMock(wraps=inner)
+        try:
+            wrapper = MagicMock(wraps=inner)
 
-        def execute(sql: str, *rest: object) -> object:
-            if sql.strip().upper() == "PRAGMA FOREIGN_KEYS":
-                return _Row()  # 模拟 pragma 未生效
-            return inner.execute(sql, *rest)  # type: ignore[arg-type]
+            def execute(sql: str, *rest: object) -> object:
+                if sql.strip().upper() == "PRAGMA FOREIGN_KEYS":
+                    return _Row()  # 模拟 pragma 未生效
+                return inner.execute(sql, *rest)  # type: ignore[arg-type]
 
-        wrapper.execute = execute  # type: ignore[method-assign]
-        return wrapper
+            wrapper.execute = execute  # type: ignore[method-assign]
+            return wrapper
+        except BaseException:
+            inner.close()  # P3-22：包装失败不泄漏真实连接
+            raise
 
     monkeypatch.setattr(sqlite3, "connect", fake_sqlite_connect)
     with pytest.raises(RuntimeError, match="foreign_keys"):

@@ -125,7 +125,7 @@ def insert_chunk(
         "seq": seq,
         "version": version,
         "content": content,
-        "dims_json": "{}",
+        "dims_json": "[]",  # 文档维度冗余投影为多值数组（D19）——json_each 逐元素展开
         **overrides,
     }
     cols = ", ".join(row.keys())

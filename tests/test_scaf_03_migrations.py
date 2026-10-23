@@ -2,12 +2,15 @@
 
 - ① 迁移期间临时关闭外键、结束恢复；正常迁移后 `PRAGMA foreign_key_check` 空；
 - ② 迁移窗口内注入违反外键的数据 → 同迁移检出违例即回滚，库内状态与迁移前一致（#33 P1-1）；
-- ③ `user_version` 只前进、重复运行迁移幂等（无重放副作用）。
+- ③ `user_version` 只前进、重复运行迁移幂等（无重放副作用）；
+- ④ P2-1 并发语义：版本判定在 BEGIN IMMEDIATE 写锁内重读——并发进程已应用同版本
+  迁移时第二条连接干净跳过（绝不撞 "table already exists"）。
 """
 
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
@@ -19,6 +22,7 @@ from helpers import (
     seed_org,
     seed_user,
     table_names,
+    trigger_names,
 )
 
 # 测试迁移 v2：「建新表→拷数据→删旧表」形态（dimensions 重建 + remark 列）。
@@ -65,10 +69,10 @@ BEGIN SELECT RAISE(ABORT, 'document_dimensions consistency violation'); END;
 
 
 def _migrated_conn(db_path: Path) -> sqlite3.Connection:
-    from knowledge_lattice.store.sqlite import connect, migrate
+    from knowledge_lattice.store.sqlite import connect, migrate_db
 
     c = connect(db_path)
-    migrate(c)
+    migrate_db(c)
     return c
 
 
@@ -77,6 +81,12 @@ def _write_v2(tmp_path: Path) -> Path:
     mig_dir.mkdir()
     (mig_dir / "0002_test_rebuild_dimensions.sql").write_text(V2_REBUILD_SQL, encoding="utf-8")
     return mig_dir
+
+
+def _v2_dirs(tmp_path: Path) -> list[Path]:
+    from knowledge_lattice.store.sqlite.migrate import BUILTIN_DIRS
+
+    return [BUILTIN_DIRS["docs"], BUILTIN_DIRS["semantic"], _write_v2(tmp_path)]
 
 
 def test_fresh_migrate_applies_schema_v1(db_path: Path) -> None:
@@ -101,12 +111,12 @@ def test_fresh_migrate_applies_schema_v1(db_path: Path) -> None:
     # 内置迁移目录为二维结构 store/sqlite/migrations/{docs,semantic}
     assert (BUILTIN_DIRS["docs"] / "0001_schema_v1.sql").is_file()
     assert BUILTIN_DIRS["semantic"].is_dir()
-    assert [m.version for m in discover()] == [1]
+    assert [m.version for m in discover()] == [1]  # M0a-1 基线（新增迁移后此处随之更新）
     conn.close()
 
 
 def test_migrate_idempotent_rerun_no_side_effects(db_path: Path) -> None:
-    from knowledge_lattice.store.sqlite import migrate
+    from knowledge_lattice.store.sqlite import migrate_db
 
     conn = _migrated_conn(db_path)
     seed_org(conn)
@@ -119,7 +129,7 @@ def test_migrate_idempotent_rerun_no_side_effects(db_path: Path) -> None:
     )
     before = conn.execute("SELECT count(*) FROM documents").fetchone()[0]
 
-    applied = migrate(conn)
+    applied = migrate_db(conn)
     assert applied == []  # user_version 已是最新，无重放
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
     assert conn.execute("SELECT count(*) FROM documents").fetchone()[0] == before
@@ -128,16 +138,15 @@ def test_migrate_idempotent_rerun_no_side_effects(db_path: Path) -> None:
 
 def test_migration_rebuild_flow_with_fk_check(db_path: Path, tmp_path: Path) -> None:
     """① 正常「建新表→拷数据→删旧表」迁移：外键窗口内关闭、结束 foreign_key_check 空。"""
-    from knowledge_lattice.store.sqlite import migrate
-    from knowledge_lattice.store.sqlite.migrate import BUILTIN_DIRS
+    from knowledge_lattice.store.sqlite import migrate_db
 
     conn = _migrated_conn(db_path)
     seed_org(conn)
     dim_id = seed_dimension(conn)
     seed_dim_value(conn, dim_id)
-    extra = _write_v2(tmp_path)
+    extra_dirs = _v2_dirs(tmp_path)
 
-    applied = migrate(conn, dirs=[BUILTIN_DIRS["docs"], BUILTIN_DIRS["semantic"], extra])
+    applied = migrate_db(conn, dirs=extra_dirs)
     assert applied == [2]
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -158,8 +167,8 @@ def test_migration_rebuild_flow_with_fk_check(db_path: Path, tmp_path: Path) -> 
 
 def test_migration_fk_violation_detected_and_rolled_back(db_path: Path, tmp_path: Path) -> None:
     """② 迁移窗口内注入违例行 → 同迁移 foreign_key_check 检出即回滚，库态与迁移前一致。"""
-    from knowledge_lattice.store.sqlite import migrate
-    from knowledge_lattice.store.sqlite.migrate import BUILTIN_DIRS, MigrationError
+    from knowledge_lattice.store.sqlite import migrate_db
+    from knowledge_lattice.store.sqlite.migrate import MigrationError
 
     conn = _migrated_conn(db_path)
     seed_org(conn)
@@ -167,7 +176,7 @@ def test_migration_fk_violation_detected_and_rolled_back(db_path: Path, tmp_path
     dim_id = seed_dimension(conn)
     val_id = seed_dim_value(conn, dim_id)
     seed_grant(conn, dim_id=dim_id, val_id=val_id)  # 正常授权行（v1 态基线）
-    extra = _write_v2(tmp_path)
+    extra_dirs = _v2_dirs(tmp_path)
 
     # setup：经迁移窗口同款写入路径（临时关闭外键）注入一行违反外键的脏数据
     conn.execute("PRAGMA foreign_keys = OFF")
@@ -180,7 +189,12 @@ def test_migration_fk_violation_detected_and_rolled_back(db_path: Path, tmp_path
 
     grants_before = conn.execute("SELECT count(*) FROM user_dimension_grants").fetchone()[0]
     with pytest.raises(MigrationError, match="foreign_key_check"):
-        migrate(conn, dirs=[BUILTIN_DIRS["docs"], BUILTIN_DIRS["semantic"], extra])
+        migrate_db(conn, dirs=extra_dirs)
+
+    # P2-2：失败路径 finally 恢复外键的直接证据——raises 后、任何手动 PRAGMA 之前断言
+    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    # P3-6：回滚后触发器集合与迁移前一致（v2 迁移 DROP 的两个触发器随事务回滚恢复）
+    assert {"trg_membership_delete_cleanup", "trg_docdims_consistency"} <= trigger_names(conn)
 
     # 回滚后库态与迁移前一致：user_version 未前进、DDL 未生效、既有数据不动
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
@@ -188,10 +202,8 @@ def test_migration_fk_violation_detected_and_rolled_back(db_path: Path, tmp_path
     assert "remark" not in cols
     assert conn.execute("SELECT count(*) FROM user_dimension_grants").fetchone()[0] == grants_before
 
-    # 回滚后外键恢复 ON（finally 语义）
-    conn.execute("PRAGMA foreign_keys = OFF")
-    conn.execute("DELETE FROM user_dimension_grants WHERE user_id = 'ghost-user'")  # 清理注入行
-    conn.execute("PRAGMA foreign_keys = ON")
+    # 清理注入行无需关闭外键（DELETE 本身不触发外键约束）；清理后孤儿插入仍被拒
+    conn.execute("DELETE FROM user_dimension_grants WHERE user_id = 'ghost-user'")
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(
             "INSERT INTO user_dimension_grants(user_id, dimension_id, value_id)"
@@ -199,3 +211,62 @@ def test_migration_fk_violation_detected_and_rolled_back(db_path: Path, tmp_path
             (dim_id, val_id),
         )
     conn.close()
+
+
+# ============ P2-1 并发补偿测试（committer 建议的重读分支单测等价形式） ============
+
+
+def test_apply_one_skips_when_version_already_applied(db_path: Path, tmp_path: Path) -> None:
+    """写锁内重读分支：绕过 migrate_db 快速路径直调 _apply_one，库上版本已被
+    并发推进（=2）时对同一 v2 迁移干净跳过——返回 False、无 "table already exists"。"""
+    from knowledge_lattice.store.sqlite.migrate import _apply_one, discover
+
+    conn = _migrated_conn(db_path)
+    seed_org(conn)
+    seed_dimension(conn)
+    dirs = _v2_dirs(tmp_path)
+
+    # 模拟并发进程已应用 v2：第二条连接真实跑完 0001+v2
+    from knowledge_lattice.store.sqlite import connect, migrate_db
+
+    other = connect(db_path)
+    try:
+        assert migrate_db(other, dirs=dirs) == [2]
+    finally:
+        other.close()
+
+    v2 = [m for m in discover(dirs) if m.version == 2][0]
+    assert _apply_one(conn, v2) is False  # 写锁内重读 2>=2 → COMMIT + 跳过，绝不重放 DDL
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    conn.close()
+
+
+def test_concurrent_migrate_both_processes_survive(db_path: Path, tmp_path: Path) -> None:
+    """双连接 barrier 对齐并发跑 migrate_db：一者应用、另一者干净跳过；
+    两者都正常返回（无 OperationalError 崩溃），每个版本恰好应用一次。"""
+    from knowledge_lattice.store.sqlite import connect, migrate_db
+
+    dirs = _v2_dirs(tmp_path)
+    barrier = threading.Barrier(2)
+    results: list[list[int] | BaseException] = []
+
+    def run_migrate() -> None:
+        c = connect(db_path)
+        try:
+            barrier.wait(timeout=10)
+            results.append(migrate_db(c, dirs=dirs))
+        except BaseException as exc:  # noqa: BLE001——记录失败供断言
+            results.append(exc)
+        finally:
+            c.close()
+
+    t = threading.Thread(target=run_migrate)
+    t.start()
+    run_migrate()
+    t.join(timeout=30)
+
+    assert len(results) == 2
+    failures = [r for r in results if isinstance(r, BaseException)]
+    assert failures == [], f"concurrent migrate crashed: {failures!r}"
+    flattened = sorted(v for r in results for v in r)  # type: ignore[union-attr]
+    assert flattened == [1, 2]  # 恰好应用一次，另一进程跳过
