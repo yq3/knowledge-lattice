@@ -46,9 +46,12 @@ def connect(path: str | Path) -> sqlite3.Connection:
                 break
             try:
                 conn.execute("PRAGMA journal_mode = WAL")
-            except sqlite3.OperationalError:
+            except sqlite3.OperationalError as exc:
                 if attempt == _WAL_RETRY_ATTEMPTS - 1:
-                    raise
+                    # 重试耗尽包装 RuntimeError（连接工厂失败契约——非裸 OperationalError）
+                    raise RuntimeError(
+                        f"journal_mode WAL switch failed after {_WAL_RETRY_ATTEMPTS} attempts: {exc}"
+                    ) from exc
                 time.sleep(0.05 * (attempt + 1))
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA synchronous = NORMAL")

@@ -17,7 +17,7 @@ class Settings:
     environment: str = "dev"  # dev | test | prod（POST /api/dev/token 仅 dev/test 注册——TC-AUTH-01）
     data_dir: Path = Path("data")
 
-    # 连接纪律（design §3 连接工厂；值与 store/sqlite/connect.py 一致）
+    # 连接纪律（design §3 连接工厂；值与 store/sqlite/connection.py 一致）
     journal_mode: str = "wal"
     busy_timeout_ms: int = 5000
     synchronous: str = "NORMAL"

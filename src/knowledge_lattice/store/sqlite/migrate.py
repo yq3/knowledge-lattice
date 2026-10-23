@@ -90,15 +90,16 @@ def migrate_db(conn: sqlite3.Connection, dirs: Iterable[Path] | None = None) -> 
 def _apply_one(conn: sqlite3.Connection, m: Migration) -> bool:
     """单步应用一个迁移；返回是否实际应用（False=写锁内重读发现已被并发进程应用）。"""
     statements = _split_statements(m.path.read_text(encoding="utf-8"), origin=m)
-    # 迁移窗口：PRAGMA foreign_keys 必须在事务外设置才生效——设置后复查，
-    # 静默无效（连接已在事务中）即视为迁移窗口打开失败
-    conn.execute("PRAGMA foreign_keys = OFF")
-    if conn.execute("PRAGMA foreign_keys").fetchone()[0] != 0:
-        raise MigrationError(
-            f"migration {m.version:04d} ({m.name}): PRAGMA foreign_keys=OFF failed "
-            "(connection in transaction?)"
-        )
     try:
+        # 迁移窗口：PRAGMA foreign_keys 必须在事务外设置才生效——设置后复查，
+        # 静默无效（连接已在事务中）即视为迁移窗口打开失败；移入 try/finally，
+        # 该失败路径同样恢复 foreign_keys=ON（不留关闭态外泄）
+        conn.execute("PRAGMA foreign_keys = OFF")
+        if conn.execute("PRAGMA foreign_keys").fetchone()[0] != 0:
+            raise MigrationError(
+                f"migration {m.version:04d} ({m.name}): PRAGMA foreign_keys=OFF failed "
+                "(connection in transaction?)"
+            )
         conn.execute("BEGIN IMMEDIATE")
         try:
             # P2-1：写锁内重读——并发进程可能已推进 user_version；已应用则干净跳过
