@@ -83,7 +83,9 @@ def test_resume_from_embed_after_interrupt(ingest_env) -> None:
     doc = backend.get_document(doc_id)
     assert doc["active_status"] == "searchable_full"
     embedded = conn.execute(
-        "SELECT COUNT(*) FROM chunks WHERE doc_id = ? AND embedding IS NOT NULL", (doc_id,)
+        "SELECT COUNT(*) FROM chunk_vectors cv JOIN chunks c ON c.rid = cv.rid"
+        " WHERE c.doc_id = ?",
+        (doc_id,),
     ).fetchone()[0]
     assert embedded == len(ids_before)
 
@@ -117,8 +119,8 @@ def test_index_fts_double_insert_idempotent(ingest_env) -> None:
     ).fetchone()
     try:
         conn.execute(
-            "INSERT INTO chunks(id, doc_id, seq, version, content, dims_json)"
-            " VALUES('chk_dup', ?, ?, 1, 'x', '{}')",
+            "INSERT INTO chunks(id, doc_id, seq, version, content)"
+            " VALUES('chk_dup', ?, ?, 1, 'x')",
             (doc_id, first[1]),
         )
         raise AssertionError("uq_chunks_docver 应拒绝同 (doc,version,seq)")

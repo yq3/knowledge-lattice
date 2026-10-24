@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 
 # 过去时间戳（早于任何 CURRENT_TIMESTAMP 比较场景）
@@ -130,7 +129,8 @@ def insert_chunk(
         "seq": seq,
         "version": version,
         "content": content,
-        "dims_json": "[]",  # 文档维度冗余投影为多值数组（D19）——json_each 逐元素展开
+        # v1.1 起 chunks 无 dims_json/embedding 列——legacy 造数经 overrides 显式传
+        #（test_v11_schema 存量搬运场景）；chunk_vectors 向量一律走 backend 写路径
         **overrides,
     }
     cols = ", ".join(row.keys())
@@ -186,21 +186,11 @@ def seed_doc_dims(
     org_id: str = "org:tax",
 ) -> None:
     """文档维度造数（**合并**语义——回填场景保留既有维度行）：document_dimensions
-    追加新行 + chunks.dims_json 冗余投影按全量重投影。
+    追加新行。
 
-    按块 json_each 模板（读 dims_json）与按文档 visible_docs CTE（读
-    document_dimensions）两写法逐字等价的前提——两处数据源必须一致（TC-ACL-07）。
-    未列出的维度一律无值（口径段缺省约定——#38 P1-1）。
+    v1.1（拍板 1）：chunks.dims_json 投影已删——ACL 唯一数据源即 document_dimensions
+    （visible_docs CTE）；未列出的维度一律无值（口径段缺省约定——#38 P1-1）。
     """
-    projection: dict[str, list[str]] = {}
-    for dim_key, value in conn.execute(
-        "SELECT dim.key, v.value FROM document_dimensions dd"
-        " JOIN dimensions dim ON dim.id = dd.dimension_id"
-        " JOIN dimension_values v ON v.id = dd.value_id"
-        " WHERE dd.doc_id = ? ORDER BY dim.key, v.value",
-        (doc_id,),
-    ):
-        projection.setdefault(dim_key, []).append(value)
     for key, values in dims.items():
         for value in values:
             conn.execute(
@@ -208,11 +198,6 @@ def seed_doc_dims(
                 " VALUES(?, ?, ?)",
                 (doc_id, dim_id_for(org_id, key), val_id_for(org_id, key, value)),
             )
-        projection.setdefault(key, []).extend(values)
-    conn.execute(
-        "UPDATE chunks SET dims_json = ? WHERE doc_id = ?",
-        (json.dumps(projection), doc_id),
-    )
 
 
 def seed_searchable_doc(

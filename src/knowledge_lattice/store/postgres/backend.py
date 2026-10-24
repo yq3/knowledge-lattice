@@ -122,7 +122,7 @@ class PgBackend:
 
     _CHUNK_COLS = (
         "id, doc_id, seq, version, content, title_seg, content_seg, token_count,"
-        " heading_path, page_no, sheet_name, bbox_json, keywords, llm_keywords, tags, dims_json"
+        " heading_path, page_no, sheet_name, bbox_json, keywords, llm_keywords, tags"
     )
 
     def insert(self, doc_id: str, version: int, chunks: list[dict]) -> None:
@@ -144,7 +144,7 @@ class PgBackend:
                     " (%(id)s, %(doc_id)s, %(seq)s, %(version)s, %(content)s,"
                     " %(title_seg)s, %(content_seg)s, %(token_count)s, %(heading_path)s,"
                     " %(page_no)s, %(sheet_name)s, %(bbox_json)s, %(keywords)s,"
-                    " %(llm_keywords)s, %(tags)s, %(dims_json)s)",
+                    " %(llm_keywords)s, %(tags)s)",
                     {
                         "id": ch["id"],
                         "doc_id": doc_id,
@@ -161,7 +161,6 @@ class PgBackend:
                         "keywords": ch.get("keywords", ""),
                         "llm_keywords": ch.get("llm_keywords", ""),
                         "tags": ch.get("tags", ""),
-                        "dims_json": ch.get("dims_json", "{}"),
                     },
                 )
             conn.execute(
@@ -229,11 +228,13 @@ class PgBackend:
             raise
 
     def mark_embedding_batch(self, doc_id: str, version: int, batch_label: str) -> list[dict]:
-        """批次启动时钉死标签（§5.3）——认领 embedding IS NULL AND tombstone=0 的在处理块。"""
+        """批次启动时钉死标签（§5.3）——认领在处理块且 chunk_vectors 无该 (rid, label)
+        行（v1.1 分表口径，与 SqliteBackend 同构）。"""
         rows = self._conn.execute(
             "UPDATE chunks SET embed_model = %(label)s"
-            " WHERE doc_id = %(doc)s AND version = %(v)s AND embedding IS NULL"
-            "   AND tombstone = 0"
+            " WHERE doc_id = %(doc)s AND version = %(v)s AND tombstone = 0"
+            "   AND NOT EXISTS (SELECT 1 FROM chunk_vectors cv"
+            "     WHERE cv.rid = chunks.rid AND cv.embed_model = %(label)s)"
             " RETURNING rid, content",
             {"doc": doc_id, "v": version, "label": batch_label},
         ).fetchall()
@@ -242,7 +243,8 @@ class PgBackend:
     def write_embeddings(
         self, batch_label: str, rows: list[tuple[int, list[float]]]
     ) -> int:
-        """逐批回写 embedding（防护：rid + tombstone=0 + embedding IS NULL + 标签匹配）。
+        """逐批回写向量入 chunk_vectors（防护：rid 在批 + tombstone=0 + 标签匹配
+        + (rid, label) 无行——PK 冲突零触碰；同 rid 异标签照常写入=蓝绿并存）。
 
         P2-3/D24：接收浮点向量、pgvector 文本序列化收口本方言侧
         （`%(vec)s::vector` 显式转型——core 不碰方言）。
@@ -250,19 +252,23 @@ class PgBackend:
         written = 0
         for rid, vector in rows:
             cur = self._conn.execute(
-                "UPDATE chunks SET embedding = %(vec)s::vector, embed_model = %(label)s"
-                " WHERE rid = %(rid)s AND tombstone = 0 AND embedding IS NULL"
-                "   AND embed_model = %(label)s",
+                "INSERT INTO chunk_vectors(rid, embed_model, embedding)"
+                " SELECT %(rid)s, %(label)s, %(vec)s::vector FROM chunks c"
+                " WHERE c.rid = %(rid)s AND c.tombstone = 0 AND c.embed_model = %(label)s"
+                " ON CONFLICT (rid, embed_model) DO NOTHING",
                 {"vec": format_vector(vector), "label": batch_label, "rid": rid},
             )
             written += cur.rowcount
         return written
 
     def pending_embeddings(self, batch_label: str) -> list[dict]:
+        """已钉标签未回写的待嵌入块（v1.1：无行判定 = chunk_vectors 无该 (rid, label)）。"""
         rows = self._conn.execute(
-            "SELECT rid, content FROM chunks"
-            " WHERE embed_model = %(label)s AND embedding IS NULL AND tombstone = 0"
-            " ORDER BY rid",
+            "SELECT c.rid, c.content FROM chunks c"
+            " WHERE c.embed_model = %(label)s AND c.tombstone = 0"
+            "   AND NOT EXISTS (SELECT 1 FROM chunk_vectors cv"
+            "     WHERE cv.rid = c.rid AND cv.embed_model = %(label)s)"
+            " ORDER BY c.rid",
             {"label": batch_label},
         ).fetchall()
         return [{"rid": r[0], "content": r[1]} for r in rows]

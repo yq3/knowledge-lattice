@@ -1,9 +1,10 @@
-"""TC-ACL-07 visible_docs 备选逐字等价【单测｜M0a→M0b 双后端】。
+"""TC-ACL-07 visible_docs 唯一路径回归【单测｜M0a→M0b 双后端】。
 
-对同一用户/文档矩阵，「按块模板」（sqlite=json_each / pg=jsonb 等价路径谓词）
-与「按文档 visible_docs CTE（基于 document_dimensions）」结果集完全一致
-（T5/T6/T22 两写法都测——#34 必修 3；CTE 为纯 JOIN/EXISTS，双方言同构渲染）；
-M0b 实验选定后保留其一为常规断言、另一删除（design §5.1 性能注）。
+M0b-2 实验选定（2026-10-24 拍板 1）：按文档 visible_docs CTE 为唯一路径——
+按块 json_each 模板已删（12/12 等价性复核 + sqlite 2.3~4.8× 优势 + PG
+MATERIALIZED 6/6 不劣 + 可移植性满分，报告 §2.5）；本文件保留常规断言：
+同一用户/文档矩阵下 CTE 路径行为正确（T5/T6/T22 形态）、SQL 形态断言
+（MATERIALIZED / document_dimensions / 可见集引用 / 无 IN () / 无 json_each）。
 """
 
 from __future__ import annotations
@@ -17,47 +18,56 @@ from helpers import NOW_TS, insert_chunk, seed_doc_dims, seed_document
 _USERS = ["u_full", "u_cn", "u_cn_vat", "u_os", "admin_tax"]
 
 
-def _rows_both_writings(matrix, user_id: str) -> tuple[list, list]:
+def _rows(matrix, user_id: str) -> list:
     plan = matrix.compile_acl(user_id, "org:tax", now=NOW_TS)
-    by_chunk = sorted(matrix.execute(*matrix.render_select(plan)))
-    by_doc = sorted(matrix.execute(*matrix.render_visible_docs_select(plan)))
-    return by_chunk, by_doc
+    return sorted(matrix.execute(*matrix.render_select(plan)))
 
 
 @pytest.mark.parametrize("user_id", _USERS)
-def test_same_result_set_both_writings(matrix, user_id) -> None:
-    """同一矩阵两写法结果集逐字等价（行级：rid/chunk_id/doc_id 全同）。"""
-    by_chunk, by_doc = _rows_both_writings(matrix, user_id)
-    assert by_chunk == by_doc
-    assert by_chunk  # 非空结果集（等价性有实际内容）
+def test_visible_docs_result_set_per_user(matrix, user_id) -> None:
+    """CTE 唯一路径的按用户可见集（原双写法等价断言的保留半句——by_doc 常规断言）。"""
+    rows = _rows(matrix, user_id)
+    assert rows  # 非空结果集（断言有实际内容）
+    by_doc = {r[2] for r in rows}
+    if user_id == "u_full":
+        assert by_doc == {"d_cn", "d_multi", "d_empty_region", "d_os"}
+    elif user_id == "u_cn":  # tax_type 零授权 → 只见 tax 无行文档（T5/T22）
+        assert by_doc == {"d_multi", "d_empty_region"}
+    elif user_id == "u_cn_vat":  # region=[CN]+tax_type=[VAT]
+        assert by_doc == {"d_cn", "d_multi", "d_empty_region"}
+    elif user_id == "u_os":  # region=[OS]+tax_type 零授权（d_os 无 tax 行 → 放行）
+        assert by_doc == {"d_multi", "d_empty_region", "d_os"}
+    elif user_id == "admin_tax":  # 全维度零授权 → 只见全空值文档
+        assert by_doc == {"d_empty_region"}
 
 
 def test_visible_docs_sql_shape(matrix) -> None:
-    """渲染器附带断言（双方言同构）：CTE 基于 document_dimensions、组织限定在场、
-    外层 `c.doc_id IN (SELECT doc_id FROM visible_docs)`、无 `IN ()`。"""
+    """渲染器附带断言（双方言同构）：CTE 基于 document_dimensions、MATERIALIZED
+    加注、组织限定在场、外层 `c.doc_id IN (SELECT doc_id FROM visible_docs)`、
+    无 `IN ()`、无 json_each/dims_json（拍板 1 零残留）。"""
     plan = matrix.compile_acl("u_full", "org:tax", now=NOW_TS)
-    sql, params = matrix.render_visible_docs_select(plan)
+    sql, params = matrix.render_select(plan)
     org_param = ":org" if matrix.is_sqlite else "%(org)s"
     assert sql.startswith(
-        "WITH visible_docs(doc_id) AS (SELECT d.id FROM documents d"
+        "WITH visible_docs(doc_id) AS MATERIALIZED (SELECT d.id FROM documents d"
         f" WHERE d.org_id = {org_param}"
     )
     assert "document_dimensions" in sql
     assert "c.doc_id IN (SELECT doc_id FROM visible_docs)" in sql
     assert "IN ()" not in sql
+    assert "json_each" not in sql and "dims_json" not in sql
     assert params["org"] == "org:tax"
 
 
-def test_version_pair_scenario_both_writings(matrix) -> None:
+def test_version_pair_scenario(matrix) -> None:
     """T6 形态（M0a 版本条件半句——完整切换链随 M1）：d_cn 追加 pending v2 块
-    （version=2、active_version 仍 1）→ 两写法都只见 v1 块；d_tomb 在用 v2、
-    v1 块 tombstone=1 → 两写法都只见 v2 块。"""
-    # d_cn 的 pending v2 块（dims_json 投影按 doc 全量重投影——不重复插 document_dimensions）
+    （version=2、active_version 仍 1）→ 只见 v1 块；d_tomb 在用 v2、v1 块
+    tombstone=1 → 只见 v2 块。"""
+    # d_cn 的 pending v2 块（不重复插 document_dimensions——文档维度按 doc 生效）
     insert_chunk(
         matrix, doc_id="d_cn", seq=1, version=2, chunk_id="chk:d_cn:v2:1",
         content_seg="common sample", title_seg="common sample",
     )
-    seed_doc_dims(matrix, "d_cn", {})  # 空合并=按 document_dimensions 全量重投影
     # d_tomb：v1 块 tombstone=1（region=[CN]）、在用 v2 块（region 空值）
     seed_document(
         matrix, doc_id="d_tomb", dataset_id="ds:vat_lib", owner_user_id="u_owner"
@@ -75,10 +85,10 @@ def test_version_pair_scenario_both_writings(matrix) -> None:
 
     expected_u_full = {"d_cn", "d_multi", "d_empty_region", "d_os", "d_tomb"}
     for user_id in ("u_full", "u_cn"):
-        by_chunk, by_doc = _rows_both_writings(matrix, user_id)
-        chunk_ids = {r[1] for r in by_chunk}
-        doc_ids = {r[2] for r in by_chunk}
-        # 版本条件（两写法一致）：d_tomb 只见在用 v2 块（v1 块 tombstone=1 不可见）
+        rows = _rows(matrix, user_id)
+        chunk_ids = {r[1] for r in rows}
+        doc_ids = {r[2] for r in rows}
+        # 版本条件：d_tomb 只见在用 v2 块（v1 块 tombstone=1 不可见）
         assert "chk:d_tomb:v2:1" in chunk_ids and "chk:d_tomb:v1:1" not in chunk_ids
         if user_id == "u_full":
             # u_full（region=[CN,OS]+tax_type=[VAT]）：d_cn 只见在用 v1 块
@@ -89,4 +99,3 @@ def test_version_pair_scenario_both_writings(matrix) -> None:
             # u_cn（tax_type 零授权）：d_cn 整体不可见（T22 维度过滤照常叠加）
             assert "d_cn" not in doc_ids
             assert not any(cid.startswith("chk:d_cn") for cid in chunk_ids)
-        assert by_chunk == by_doc

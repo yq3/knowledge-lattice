@@ -24,8 +24,8 @@ import pytest
 # ============ TC-SCAF-02 PG 等价：连接池参数 + pgvector 距离函数 ============
 
 
-def _assert_public_free_of_audit_objects(pg_db) -> None:
-    """P2-2：工厂调用不得把 audit 对象泄漏到 public（schema 生命周期外）。"""
+def _public_audit_objects(pg_db) -> tuple[list, list, list]:
+    """public 内 audit 对象三面清单（表/触发器/函数）。"""
     tables = pg_db.execute(
         "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
         " AND tablename LIKE 'audit%%'"
@@ -41,17 +41,48 @@ def _assert_public_free_of_audit_objects(pg_db) -> None:
         " JOIN pg_namespace n ON n.oid = p.pronamespace"
         " WHERE n.nspname = 'public' AND p.proname LIKE 'lattice_audit%%'"
     ).fetchall()
+    return tables, triggers, funcs
+
+
+def _assert_public_free_of_audit_objects(pg_db) -> None:
+    """P2-2：工厂调用不得把 audit 对象泄漏到 public（schema 生命周期外）。"""
+    tables, triggers, funcs = _public_audit_objects(pg_db)
     assert not (tables or triggers or funcs), (
         f"public 被 audit 对象污染（越出 lattice_test schema 生命周期）: "
         f"tables={tables} triggers={triggers} funcs={funcs}"
     )
 
 
-def test_pg_connect_pool_params_and_probe(pg_db) -> None:
+@pytest.fixture()
+def public_audit_guard(pg_db):
+    """R2-P3-4：public audit 对象**幂等自清理** fixture——先清历史残留（若上一次
+    运行/其他任务留下），yield 后再清一次（即便用例中途失败也不留痕迹）+ 断言
+    public 三面零对象。两个工厂用例改用本 fixture（原裸断言不自清理）。"""
+    def _cleanup() -> None:
+        import psycopg
+
+        admin = psycopg.connect(pg_db.dsn, autocommit=True)
+        try:
+            for obj in _public_audit_objects(pg_db)[1]:
+                admin.execute(f'DROP TRIGGER IF EXISTS {obj[0]} ON audit_events')
+            for name in ("audit_no_delete", "audit_no_update", "audit_no_truncate"):
+                admin.execute(f"DROP FUNCTION IF EXISTS {name}() CASCADE")
+            admin.execute("DROP TABLE IF EXISTS audit_events CASCADE")
+        finally:
+            admin.close()
+
+    _cleanup()  # 幂等：历史残留先清（DROP IF EXISTS）
+    yield pg_db
+    _cleanup()
+    _assert_public_free_of_audit_objects(pg_db)
+
+
+def test_pg_connect_pool_params_and_probe(pg_db, public_audit_guard) -> None:
     """连接池 min/max 参数生效 + 池连接可执行 + `<=>` 余弦距离可用（同向量距离 0）。
 
     P2-2：池连接走 search_path=pg_db.schema（audit 对象留在测试 schema 内，
-    随 DROP SCHEMA CASCADE 清理——不逃逸到 public）。"""
+    随 DROP SCHEMA CASCADE 清理——不逃逸到 public）。R2-P3-4：public_audit_guard
+    fixture 自清理（进出各清一次 + 断言三面零对象）。"""
     from knowledge_lattice.store.postgres import connect_pool
 
     pool = connect_pool(
@@ -76,7 +107,7 @@ def test_pg_connect_pool_params_and_probe(pg_db) -> None:
     _assert_public_free_of_audit_objects(pg_db)
 
 
-def test_pg_connect_factory_server_version_assert(pg_db) -> None:
+def test_pg_connect_factory_server_version_assert(pg_db, public_audit_guard) -> None:
     """连接工厂版本断言（≥16——G-6）：setup 后连接可查版本；16.15 实测通过。
 
     P2-2：单连接工厂调用同样走 search_path=pg_db.schema——public 无 audit 对象。"""
@@ -205,17 +236,40 @@ def test_pg_timezone_grant_expiry_comparison_uses_utc(pg_db) -> None:
         setup_connection(conn)  # 恢复工厂纪律（UTC）
 
 
+def _db_level_timezone(admin) -> str | None:
+    """读库级默认 timezone（pg_db_role_setting；无库级设置 → None=簇默认）。"""
+    row = admin.execute(
+        "SELECT s.setconfig FROM pg_db_role_setting s"
+        " JOIN pg_database d ON d.oid = s.setdatabase"
+        " WHERE d.datname = current_database()"
+    ).fetchone()
+    if not row or not row[0]:
+        return None
+    for item in row[0]:
+        if item.startswith("timezone="):
+            return item.split("=", 1)[1]
+    return None
+
+
 def test_pg_pool_connections_pinned_utc_against_non_utc_db_default(pg_db) -> None:
     """非 UTC 数据库默认（ALTER DATABASE timezone='Asia/Shanghai'——模拟公司
     内网 PG）下，**新建**工厂连接（池 configure / 单连接 setup）仍被钉 UTC：
     P2-1 的目标环境级对冲（容器默认恰为 UTC 时其余时区用例无区分力，本用例
-    构造非 UTC 默认补齐）。"""
+    构造非 UTC 默认补齐）。
+
+    R2-P3-1 可移植性：库名经 current_database() 推导（不硬编码 lattice——
+    公司内网库名任意）；finally 按**原库级默认**还原（原无库级设置 → RESET 回
+    簇默认；原有设置 → 恢复原值——不留测试痕迹）。"""
     import psycopg
 
     from knowledge_lattice.store.postgres import connect, connect_pool
 
     admin = psycopg.connect(pg_db.dsn, autocommit=True)
-    admin.execute("ALTER DATABASE lattice SET timezone TO 'Asia/Shanghai'")
+    original_tz = _db_level_timezone(admin)  # 保存原库级默认（R2-P3-1）
+    admin.execute(
+        f"ALTER DATABASE {admin.execute('SELECT current_database()').fetchone()[0]}"
+        " SET timezone TO 'Asia/Shanghai'"
+    )
     pool = None
     conn = None
     try:
@@ -233,7 +287,13 @@ def test_pg_pool_connections_pinned_utc_against_non_utc_db_default(pg_db) -> Non
         conn = connect(pg_db.dsn, search_path=f"{pg_db.schema},public")
         assert conn.execute("SHOW TimeZone").fetchone()[0] == "UTC"  # 单连接同纪律
     finally:
-        admin.execute("ALTER DATABASE lattice RESET timezone")  # 还原库级默认
+        db_name = admin.execute("SELECT current_database()").fetchone()[0]
+        if original_tz is None:
+            admin.execute(f"ALTER DATABASE {db_name} RESET timezone")  # 还原簇默认
+        else:
+            admin.execute(
+                f"ALTER DATABASE {db_name} SET timezone TO '{original_tz}'"
+            )
         admin.close()
         if pool is not None:
             pool.close()
@@ -272,22 +332,23 @@ def test_pg_audit_truncate_blocked_parent_and_partition(pg_db) -> None:
 
 
 def test_pg_fresh_migrate_schema_v1(pg_db) -> None:
-    """全新 schema 迁移：schema_migrations 落 version=1；16 表等价落库（15 主表 +
-    工厂滚动 audit_events 分区表——主库 schema 不含）；sem_* 不在；chunks 五列
-    tsvector GENERATED 在场（FTS5 虚表 + ai/ad/au 的 PG 等价物）。"""
+    """全新 schema 迁移：schema_migrations 落 [1, 2]（v1 全量 + v1.1 分表——M0b-3）；
+    表落库（15 主表 + chunk_vectors 分表 + 工厂滚动 audit_events 分区表——主库
+    schema 不含）；sem_* 不在；chunks 五列 tsvector GENERATED 在场（FTS5 虚表 +
+    ai/ad/au 的 PG 等价物）。"""
     from knowledge_lattice.store.postgres.migrate import BUILTIN_DIRS, discover
 
     rows = pg_db.execute(
         "SELECT version, name, domain FROM schema_migrations ORDER BY version"
     ).fetchall()
-    assert rows == [(1, "schema_v1", "docs")]
+    assert rows == [(1, "schema_v1", "docs"), (2, "schema_v1_1", "docs")]
 
     names = pg_db.table_names()
     expected = {
         "orgs", "datasets", "dimensions", "dimension_values", "users",
         "user_org_memberships", "user_dimension_grants", "documents",
-        "document_dimensions", "acl_entries", "chunks", "quality_flags",
-        "tasks", "embedding_fingerprints", "audit_outbox",
+        "document_dimensions", "acl_entries", "chunks", "chunk_vectors",
+        "quality_flags", "tasks", "embedding_fingerprints", "audit_outbox",
     }
     assert expected <= names, f"missing tables: {expected - names}"
     assert "audit_events" in names  # 连接工厂滚动的分区父表（月库的 PG 等价）
@@ -307,18 +368,33 @@ def test_pg_fresh_migrate_schema_v1(pg_db) -> None:
         "title_tsv", "content_tsv", "keywords_tsv", "llm_keywords_tsv", "tags_tsv",
     }
 
-    # vector 列在场（pgvector；`<=>` 可用已在工厂断言/距离测试覆盖——G-6 精确扫描起步）
-    col_type = pg_db.execute(
+    # v1.1（M0b-3）：chunks.embedding/dims_json 已删；向量列迁 chunk_vectors
+    #（pgvector；`<=>` 可用已在工厂断言/距离测试覆盖——G-6 精确扫描起步）
+    chunk_cols = {
+        r[0]
+        for r in pg_db.execute(
+            "SELECT column_name FROM information_schema.columns"
+            " WHERE table_schema = current_schema() AND table_name = 'chunks'"
+        )
+    }
+    assert "embedding" not in chunk_cols and "dims_json" not in chunk_cols
+    cv_type = pg_db.execute(
         "SELECT udt_name FROM information_schema.columns"
-        " WHERE table_schema = current_schema() AND table_name = 'chunks'"
+        " WHERE table_schema = current_schema() AND table_name = 'chunk_vectors'"
         "   AND column_name = 'embedding'"
     ).fetchone()[0]
-    assert col_type == "vector"
+    assert cv_type == "vector"
+    cv_pk = pg_db.execute(
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint"
+        " WHERE conrelid = 'chunk_vectors'::regclass AND contype = 'p'"
+    ).fetchone()[0]
+    assert 'PRIMARY KEY (rid, embed_model)' in cv_pk  # 蓝绿键形（报告 §3.5）
 
     # 迁移目录二维结构 store/postgres/migrations/{docs,semantic}（semantic 空占位）
     assert (BUILTIN_DIRS["docs"] / "0001_schema_v1.sql").is_file()
+    assert (BUILTIN_DIRS["docs"] / "0002_schema_v1_1.sql").is_file()
     assert BUILTIN_DIRS["semantic"].is_dir()
-    assert [m.version for m in discover()] == [1]
+    assert [m.version for m in discover()] == [1, 2]
 
 
 def test_pg_migrate_idempotent_rerun(pg_db, tmp_path: Path) -> None:
@@ -333,41 +409,44 @@ def test_pg_migrate_idempotent_rerun(pg_db, tmp_path: Path) -> None:
     assert migrate_db(pg_db.raw) == []
     assert pg_db.execute(
         "SELECT version FROM schema_migrations ORDER BY version"
-    ).fetchall() == [(1,)]
+    ).fetchall() == [(1,), (2,)]
     assert pg_db.execute("SELECT count(*) FROM datasets").fetchone()[0] == before
 
 
-def _write_pg_v2(tmp_path: Path, violation: bool) -> Path:
-    """构造 v2 测试迁移：加 remark 列；（violation=True 时）再插一行违反外键的数据——
-    同事务内约束违例 → 整事务回滚（PG 原生约束即时校验，无外键窗口）。"""
+def _write_pg_v3(tmp_path: Path, violation: bool) -> Path:
+    """构造 v3 测试迁移（0002 已被 schema v1.1 占用——M0b-3）：加 remark 列；
+    （violation=True 时）再插一行违反外键的数据——同事务内约束违例 → 整事务回滚
+    （PG 原生约束即时校验，无外键窗口）。"""
     mig_dir = tmp_path / "pg_extra_migrations"
     mig_dir.mkdir(parents=True, exist_ok=True)
-    sql = "-- 0002 测试迁移：dimensions 加 remark 列\nALTER TABLE dimensions ADD COLUMN remark TEXT;\n"
+    sql = "-- 0003 测试迁移：dimensions 加 remark 列\nALTER TABLE dimensions ADD COLUMN remark TEXT;\n"
     if violation:
         sql += (
             "-- 违例行（引用不存在 user）：PG 原生外键即时拒绝 → 整事务回滚\n"
             "INSERT INTO user_dimension_grants(user_id, dimension_id, value_id)"
             " SELECT 'ghost-user', id, id FROM dimensions LIMIT 1;\n"
         )
-    (mig_dir / "0002_test_add_remark.sql").write_text(sql, encoding="utf-8")
+    (mig_dir / "0003_test_add_remark.sql").write_text(sql, encoding="utf-8")
     return mig_dir
 
 
 def test_pg_migration_applies_and_tracks_schema_migrations(pg_db, tmp_path: Path) -> None:
-    """正常迁移：v2 应用后 schema_migrations 前进到 2、DDL 生效、数据保真。"""
+    """正常迁移：v3 应用后 schema_migrations 前进到 3、DDL 生效、数据保真。"""
     from knowledge_lattice.store.postgres import migrate_db
 
     from helpers import seed_dimension, seed_org
 
     seed_org(pg_db)
     seed_dimension(pg_db)
-    dirs = [_write_pg_v2(tmp_path, violation=False)]
+    dirs = [_write_pg_v3(tmp_path, violation=False)]
 
     applied = migrate_db(pg_db.raw, dirs=dirs)
-    assert applied == [2]
+    assert applied == [3]
     assert pg_db.execute(
         "SELECT version, name FROM schema_migrations ORDER BY version"
-    ).fetchall() == [(1, "schema_v1"), (2, "test_add_remark")]
+    ).fetchall() == [
+        (1, "schema_v1"), (2, "schema_v1_1"), (3, "test_add_remark"),
+    ]
     cols = {
         r[0]
         for r in pg_db.execute(
@@ -388,31 +467,31 @@ def test_pg_migration_out_of_order_rejected(pg_db, tmp_path: Path) -> None:
     from knowledge_lattice.store.postgres import migrate_db
     from knowledge_lattice.store.postgres.migrate import BUILTIN_DIRS, MigrationError
 
-    d3 = tmp_path / "only_v3"
-    d3.mkdir()
-    (d3 / "0003_test_add_col3.sql").write_text(
-        "-- 0003 测试迁移：dimensions 加 col3 列\nALTER TABLE dimensions ADD COLUMN col3 TEXT;\n",
+    d4 = tmp_path / "only_v4"
+    d4.mkdir()
+    (d4 / "0004_test_add_col4.sql").write_text(
+        "-- 0004 测试迁移：dimensions 加 col4 列\nALTER TABLE dimensions ADD COLUMN col4 TEXT;\n",
         encoding="utf-8",
     )
-    d23 = tmp_path / "v2_and_v3"
-    d23.mkdir()
-    (d23 / "0002_test_backfill.sql").write_text(
-        "-- 0002 补入迁移（乱序场景：水位已到 3）\nALTER TABLE dimensions ADD COLUMN col2 TEXT;\n",
+    d34 = tmp_path / "v3_and_v4"
+    d34.mkdir()
+    (d34 / "0003_test_backfill.sql").write_text(
+        "-- 0003 补入迁移（乱序场景：水位已到 4）\nALTER TABLE dimensions ADD COLUMN col3 TEXT;\n",
         encoding="utf-8",
     )
-    (d23 / "0003_test_add_col3.sql").write_text(
-        "-- 0003 测试迁移：dimensions 加 col3 列\nALTER TABLE dimensions ADD COLUMN col3 TEXT;\n",
+    (d34 / "0004_test_add_col4.sql").write_text(
+        "-- 0004 测试迁移：dimensions 加 col4 列\nALTER TABLE dimensions ADD COLUMN col4 TEXT;\n",
         encoding="utf-8",
     )
 
-    # 先应用 0003（跳过 0002 —— 目录里本来就没有）
-    assert migrate_db(pg_db.raw, dirs=[BUILTIN_DIRS["docs"], d3]) == [3]
+    # 先应用 0004（跳过 0003 —— 目录里本来就没有；内置 0001+0002 已随 fixture 应用）
+    assert migrate_db(pg_db.raw, dirs=[BUILTIN_DIRS["docs"], d4]) == [4]
 
-    # 后补入 0002：未应用且 2 <= MAX(applied)=3 → fail-fast
-    with pytest.raises(MigrationError, match="0002|只前进|out-of-order"):
-        migrate_db(pg_db.raw, dirs=[BUILTIN_DIRS["docs"], d23])
+    # 后补入 0003：未应用且 3 <= MAX(applied)=4 → fail-fast
+    with pytest.raises(MigrationError, match="0003|只前进|out-of-order"):
+        migrate_db(pg_db.raw, dirs=[BUILTIN_DIRS["docs"], d34])
 
-    # 库态：0002 的 DDL 绝未执行、0003 不重放、版本水位不动
+    # 库态：0003 的 DDL 绝未执行、0004 不重放、版本水位不动
     cols = {
         r[0]
         for r in pg_db.execute(
@@ -420,15 +499,15 @@ def test_pg_migration_out_of_order_rejected(pg_db, tmp_path: Path) -> None:
             " WHERE table_schema = current_schema() AND table_name = 'dimensions'"
         )
     }
-    assert "col2" not in cols
-    assert "col3" in cols
+    assert "col3" not in cols
+    assert "col4" in cols
     assert pg_db.execute(
         "SELECT version FROM schema_migrations ORDER BY version"
-    ).fetchall() == [(1,), (3,)]
+    ).fetchall() == [(1,), (2,), (4,)]
 
 
 def test_pg_migration_violation_rolls_back_atomically(pg_db, tmp_path: Path) -> None:
-    """违例回滚：v2 含外键违例 INSERT → 迁移失败、schema_migrations 不前进、
+    """违例回滚：v3 含外键违例 INSERT → 迁移失败、schema_migrations 不前进、
     已执行 DDL 一并回滚（库态与迁移前一致）——TC-SCAF-03 后端行「约束校验
     （违例回滚）」。"""
     import psycopg
@@ -440,15 +519,15 @@ def test_pg_migration_violation_rolls_back_atomically(pg_db, tmp_path: Path) -> 
 
     seed_org(pg_db)
     seed_dimension(pg_db)
-    bad_dirs = [BUILTIN_DIRS["docs"], _write_pg_v2(tmp_path, violation=True)]
+    bad_dirs = [BUILTIN_DIRS["docs"], _write_pg_v3(tmp_path, violation=True)]
 
     with pytest.raises(psycopg.errors.ForeignKeyViolation):
         migrate_db(pg_db.raw, dirs=bad_dirs)
 
-    # 回滚后库态与迁移前一致：版本未前进、DDL 未生效
+    # 回滚后库态与迁移前一致：版本未前进（停在 v1.1）、DDL 未生效
     assert pg_db.execute(
         "SELECT version FROM schema_migrations ORDER BY version"
-    ).fetchall() == [(1,)]
+    ).fetchall() == [(1,), (2,)]
     cols = {
         r[0]
         for r in pg_db.execute(
@@ -462,8 +541,8 @@ def test_pg_migration_violation_rolls_back_atomically(pg_db, tmp_path: Path) -> 
     ).fetchone()[0] == 0
 
     # 修复后同号迁移可正常应用（无残留半成品）
-    good_dirs = [BUILTIN_DIRS["docs"], _write_pg_v2(tmp_path / "good", violation=False)]
-    assert migrate_db(pg_db.raw, dirs=good_dirs) == [2]
+    good_dirs = [BUILTIN_DIRS["docs"], _write_pg_v3(tmp_path / "good", violation=False)]
+    assert migrate_db(pg_db.raw, dirs=good_dirs) == [3]
 
 
 def test_pg_concurrent_migrate_advisory_lock_clean_skip(pg_db, tmp_path: Path) -> None:
@@ -474,7 +553,7 @@ def test_pg_concurrent_migrate_advisory_lock_clean_skip(pg_db, tmp_path: Path) -
     from knowledge_lattice.store.postgres import migrate_db
     from knowledge_lattice.store.postgres.migrate import BUILTIN_DIRS
 
-    dirs = [BUILTIN_DIRS["docs"], _write_pg_v2(tmp_path, violation=False)]
+    dirs = [BUILTIN_DIRS["docs"], _write_pg_v3(tmp_path, violation=False)]
     schema = pg_db.schema
 
     barrier = threading.Barrier(2)
@@ -500,7 +579,49 @@ def test_pg_concurrent_migrate_advisory_lock_clean_skip(pg_db, tmp_path: Path) -
     failures = [r for r in results if isinstance(r, BaseException)]
     assert failures == [], f"concurrent migrate crashed: {failures!r}"
     flattened = sorted(v for r in results for v in r)  # type: ignore[union-attr]
-    assert flattened == [2]  # 恰好应用一次，另一连接干净跳过
+    assert flattened == [3]  # 恰好应用一次，另一连接干净跳过
+
+
+# ============ P3-6（M0b-1 移交，M0b-3 清偿）：schema_migrations 锁外竞态 ============
+
+
+def test_pg_ensure_schema_migrations_survives_duplicate_table_race(pg_db) -> None:
+    """P3-6：_ensure_schema_migrations 在 advisory lock 之外执行，并发 fresh 连接
+    同跑 CREATE TABLE IF NOT EXISTS 可抛 42P07 DuplicateTable（PG 该语句对并发建表
+    非原子）——确定性模拟：包装连接令首条 CREATE 语句抛 DuplicateTable 后表已在
+    场，恢复分支复核存在即干净继续（不重抛、不崩溃）。"""
+    from psycopg import errors as pg_errors
+
+    from knowledge_lattice.store.postgres.migrate import _ensure_schema_migrations
+
+    class _RaceConn:
+        """并发竞态模拟：CREATE TABLE IF NOT EXISTS schema_migrations 首次调用
+        抛 DuplicateTable（对端刚建好），其余语句透传真实连接。"""
+
+        def __init__(self, real) -> None:
+            self._real = real
+
+        def execute(self, sql, params=None):
+            if sql.strip().startswith("CREATE TABLE IF NOT EXISTS schema_migrations"):
+                raise pg_errors.DuplicateTable(
+                    'relation "schema_migrations" already exists'
+                )
+            return self._real.execute(sql, params)
+
+    # ① 恢复分支：表已在场（对端已建好）→ 复核存在 → 干净返回、不重抛
+    _ensure_schema_migrations(_RaceConn(pg_db.raw))
+    assert pg_db.execute(
+        "SELECT count(*) FROM schema_migrations"
+    ).fetchone()[0] >= 1  # 表仍可用
+
+    # ② fail-closed：表确实不在（DROP 后）→ 同款 42P07 照抛（不静默吞）
+    pg_db.execute("DROP TABLE schema_migrations")
+    with pytest.raises(pg_errors.DuplicateTable):
+        _ensure_schema_migrations(_RaceConn(pg_db.raw))
+    # 真实路径恢复：无注入时正常重建（独立于上面两条断言面）
+    from knowledge_lattice.store.postgres.migrate import _ensure_schema_migrations as _ens
+
+    _ens(pg_db.raw)
 
 
 # ============ 审计月库 → 按月分区表（§4 PG 映射） ============

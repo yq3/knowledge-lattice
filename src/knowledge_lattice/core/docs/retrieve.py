@@ -14,7 +14,6 @@ BM25 单路（向量路开闭行为断言随 M1 TC-EMB-07）。分层纪律：�
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 
 from knowledge_lattice.adapters import tokenizer
@@ -63,10 +62,6 @@ def search(
     for rank, r in enumerate(rows, start=1):
         raw = -(r["score_raw"] or 0.0)
         score = 1.0 if hi == lo else round((raw - lo) / (hi - lo), 4)  # min-max 归一
-        try:
-            dims = json.loads(r.get("dims_json") or "{}")
-        except (TypeError, ValueError):
-            dims = {}
         content = r.get("content") or ""
         results.append(
             {
@@ -81,7 +76,10 @@ def search(
                 "sheet_name": r.get("sheet_name"),
                 "score": score,
                 "rank": rank,
-                "dims": dims,
+                # dims 契约（拍板 3 择型：保留 §6.1 字段形态）：v1.1 起 chunks 无
+                # dims_json 投影——store.recall_fts 按 doc_id 从 document_dimensions
+                # 聚合回填（D22 真相源；SQL 收口 store 层——core 不碰方言）
+                "dims": r.get("dims") or {},
                 "source": r.get("source_uri"),
                 "snippet": content[:120],
             }

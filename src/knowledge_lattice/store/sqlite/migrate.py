@@ -21,10 +21,13 @@ False），绝不重放 DDL（否则第二条连接撞 "table already exists" �
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class MigrationError(RuntimeError):
@@ -128,9 +131,17 @@ def _apply_one(conn: sqlite3.Connection, m: Migration) -> bool:
     finally:
         try:
             conn.execute("PRAGMA foreign_keys = ON")  # 结束恢复（含失败路径）
-        except sqlite3.Error:
-            # 连接不可执行（已关闭/损坏）时保留原始异常链——恢复动作不得覆盖 MigrationError
-            pass
+        except sqlite3.Error as exc:
+            # 连接不可执行（已关闭/损坏）时保留原始异常链——恢复动作不得覆盖
+            # MigrationError。成功路径（无原始异常在飞）下恢复失败必须**可观测**：
+            # 静默吞掉会在"库已迁移成功但连接处于 FK 关闭态"时留下隐患（M0a-2
+            # 移交项——migrate 成功路径恢复失败告警）。
+            logger.warning(
+                "migration %04d (%s): foreign_keys=ON 恢复失败（连接不可执行？）: %r",
+                m.version,
+                m.name,
+                exc,
+            )
 
 
 def _split_statements(sql: str, *, origin: Migration) -> list[str]:

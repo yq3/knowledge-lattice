@@ -115,14 +115,37 @@ def applied_versions(conn: psycopg.Connection) -> list[int]:
 
 
 def _ensure_schema_migrations(conn: psycopg.Connection) -> None:
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS schema_migrations ("
-        "  version    INTEGER PRIMARY KEY,"
-        "  name       TEXT NOT NULL,"
-        "  domain     TEXT NOT NULL,"
-        "  applied_at TIMESTAMPTZ NOT NULL DEFAULT now()"
-        ")"
-    )
+    """确保 schema_migrations 表在场（CREATE IF NOT EXISTS）。
+
+    P3-6（M0b-1 移交）：本调用发生在 advisory lock **之外**（migrate_db 入口与
+    applied_versions 查询面）——PG 的 CREATE TABLE IF NOT EXISTS 对并发建表并非
+    原子（两个 fresh 连接同跑可抛 42P07 DuplicateTable）。处置：捕获后复核表
+    已在场（并发对端已建好）即继续，其余异常照抛。
+    """
+    from psycopg import errors as pg_errors
+
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_migrations ("
+            "  version    INTEGER PRIMARY KEY,"
+            "  name       TEXT NOT NULL,"
+            "  domain     TEXT NOT NULL,"
+            "  applied_at TIMESTAMPTZ NOT NULL DEFAULT now()"
+            ")"
+        )
+    except pg_errors.DuplicateTable:
+        if _schema_migrations_exists(conn):
+            return  # 并发对端已建好（锁外竞态窗口）——干净继续
+        raise  # 真 42P07（表确实不在）——保留原异常
+
+
+def _schema_migrations_exists(conn: psycopg.Connection) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.tables"
+        " WHERE table_name = 'schema_migrations'"
+        "   AND table_schema = current_schema()"
+    ).fetchone()
+    return row is not None
 
 
 def _apply_one(conn: psycopg.Connection, m: Migration) -> bool:

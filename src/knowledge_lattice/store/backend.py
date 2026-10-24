@@ -69,7 +69,8 @@ class SearchBackend(Protocol):
         ...
 
     def recall_vec(self, query_vec: bytes, plan: AclPlan, *, top_k: int = 20) -> list[dict]:
-        """向量召回：先过滤后距离（`embedding IS NOT NULL AND embed_model = plan.embed_model`）。"""
+        """向量召回：先过滤后距离（v1.1 谓词迁 `JOIN chunk_vectors cv ON cv.rid = c.rid
+        AND cv.embed_model = plan.embed_model`——cv 无行即未嵌入，TC-EMB-02）。"""
         ...
 
     def recall_by_entities(self, entity_ids: Sequence[int], plan: AclPlan, *, top_k: int = 30) -> list[dict]:
@@ -93,9 +94,10 @@ class IngestBackend(Protocol):
     def write_embeddings(
         self, batch_label: str, rows: Sequence[tuple[int, Sequence[float]]]
     ) -> int:
-        """逐批回写 embedding/embed_model——rows=(rid, float 向量)；**方向序列化收口
-        实现侧**（SQLite=vec_f32 BLOB / PG=vector 列——core 不碰方言，P2-3/D24）；
-        带 tombstone/embedding IS NULL/标签防护（M0a 基础版）。"""
+        """逐批回写向量入 chunk_vectors(rid, embed_model, embedding)——rows=(rid,
+        float 向量)；**方向序列化收口实现侧**（SQLite=vec_f32 BLOB / PG=vector 列
+        ——core 不碰方言，P2-3/D24）；防护：tombstone=0 + 标签匹配 + (rid,label)
+        无行（PK 冲突零触碰；同 rid 异标签照常写入=蓝绿并存，v1.1）。"""
         ...
 
     def delete_by_doc(self, doc_id: str, version: int) -> int:
@@ -106,11 +108,13 @@ class IngestBackend(Protocol):
         ...
 
     def pending_embeddings(self, batch_label: str) -> list[dict]:
-        """已钉标签未回写的待嵌入块（embed_model=:label AND embedding IS NULL AND tombstone=0）。"""
+        """已钉标签未回写的待嵌入块（embed_model=:label AND chunk_vectors 无该
+        (rid,label) 行 AND tombstone=0——v1.1 分表口径）。"""
         ...
 
     def mark_embedding_batch(self, doc_id: str, version: int, batch_label: str) -> list[dict]:
-        """批次启动钉死标签（§5.3）：认领 embedding IS NULL AND tombstone=0 的在处理块。"""
+        """批次启动钉死标签（§5.3）：认领在处理块且 chunk_vectors 无该 (rid,label)
+        行——chunks.embed_model 为摄取状态标签（v1.1，向量查询谓词已迁分表）。"""
         ...
 
 

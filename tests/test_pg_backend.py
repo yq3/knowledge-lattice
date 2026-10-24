@@ -53,7 +53,6 @@ def _chunk(chunk_id: str, seq: int, content: str = "一般纳税人销售自产�
         "title_seg": "增值税 指南",
         "content_seg": "一般纳税人 销售",
         "token_count": 8,
-        "dims_json": "{}",
     }
 
 
@@ -121,9 +120,9 @@ def test_pending_dims_mismatch_rolls_back(pg_env) -> None:
 
 
 def test_embedding_batch_roundtrip_and_exact_scan_distance(pg_env) -> None:
-    """标签钉死 → 待嵌清单 → write_embeddings（pgvector 文本序列化收口方言侧）
-    → `<=>` 余弦距离精确扫描实证（同向量距离 0、方向一致向量距离小于无关向量）；
-    防护：tombstone/已回写/标签不符零触碰。"""
+    """标签钉死 → 待嵌清单 → write_embeddings（pgvector 文本序列化收口方言侧，
+    v1.1 落 chunk_vectors）→ `<=>` 余弦距离精确扫描实证（同向量距离 0、正交
+    距离 1）；防护：tombstone/(rid,label) 冲突/标签不符零触碰。"""
     backend = pg_env.make_backend()
     backend.create_document(
         doc_id="doc:3", org_id="org:tax", dataset_id="ds:vat", title="t",
@@ -149,7 +148,7 @@ def test_embedding_batch_roundtrip_and_exact_scan_distance(pg_env) -> None:
     assert abs(d_self) < 1e-6
     assert abs(d_cross - 1.0) < 1e-6
 
-    # 已回写块零触碰（embedding IS NULL 防护）；标签不符零触碰
+    # 已回写块零触碰（(rid,label) PK 冲突防护）；标签不符零触碰
     assert backend.write_embeddings("m:8", [(rids[0], vec_a)]) == 0
     assert backend.write_embeddings("other:8", [(rids[0], [0.0, 0.0])]) == 0
 
@@ -283,21 +282,25 @@ def test_semantic_backend_seed_signatures_defined() -> None:
 
 
 def test_vec_render_vec_recall_select_shape(pg_env) -> None:
-    """向量路渲染形态（M0b-2 实验起步）：`<=>` 距离 + embed_model 谓词 + 先过滤
-    后距离（ORDER BY dist LIMIT）+ 查询向量经绑定参数与 ::vector 转型。"""
-    from knowledge_lattice.core.docs.acl import AclDeniedError, compile_acl
+    """向量路渲染形态（v1.1 谓词迁 chunk_vectors——拍板 2）：visible_docs CTE
+    （MATERIALIZED）+ `JOIN cv ON cv.rid = c.rid AND cv.embed_model` 谓词 +
+    `<=>` 距离（cv.embedding）+ 先过滤后距离（ORDER BY dist LIMIT）+ 查询向量
+    经绑定参数与 ::vector 转型；无 c.embedding/c.embed_model 残留引用。"""
+    from knowledge_lattice.core.docs.acl import compile_acl
     from knowledge_lattice.store.postgres.acl_render import render_vec_recall_select
     from knowledge_lattice.store.postgres.vec import format_vector
 
     backend = pg_env.make_backend()
     plan = compile_acl(backend, "u1", "org:tax", now=NOW_TS, embed_model="m:8")
     sql, params = render_vec_recall_select(plan, format_vector([1.0, 0.0]), top_k=10)
-    assert "embedding <=> %(q_vec)s::vector AS dist" in sql
-    assert "c.embed_model = %(current_model)s" in sql
-    assert "c.embedding IS NOT NULL" in sql
+    assert sql.startswith("WITH visible_docs(doc_id) AS MATERIALIZED (")
+    assert "cv.embedding <=> %(q_vec)s::vector AS dist" in sql
+    assert "JOIN chunk_vectors AS cv ON cv.rid = c.rid AND cv.embed_model = %(current_model)s" in sql
+    assert "c.embedding" not in sql and "c.embed_model" not in sql  # 谓词已迁 cv
     assert sql.rstrip().endswith("ORDER BY dist LIMIT %(top_k)s")
     assert params["q_vec"] == "[1.0,0.0]"
-    # vector 渲染前置：Plan 缺 embed_model → ValueError（build_where_ast vector=True）
+    assert params["current_model"] == "m:8"
+    # 向量路前置：Plan 缺 embed_model → ValueError（build_vec_parts——TC-EMB-02）
     plan_base = compile_acl(backend, "u1", "org:tax", now=NOW_TS)
     with pytest.raises(ValueError, match="embed_model"):
         render_vec_recall_select(plan_base, "[1.0]", top_k=10)

@@ -127,18 +127,8 @@ class BenchDb:
 
         return render_select(plan)
 
-    def render_visible_docs_select(self, plan):
-        if self.is_sqlite:
-            from knowledge_lattice.store.sqlite.acl_render import (
-                render_visible_docs_select,
-            )
-
-            return render_visible_docs_select(plan)
-        from knowledge_lattice.store.postgres.acl_render import (
-            render_visible_docs_select,
-        )
-
-        return render_visible_docs_select(plan)
+    # M0b-3 注：render_visible_docs_select 已随拍板 1 删除（v1.1 起 render_select
+    # 即 visible_docs+MATERIALIZED 唯一路径）——本实验 harness 同步收敛。
 
     # ---- 尺寸/WAL 快照（实验 2） ----
 

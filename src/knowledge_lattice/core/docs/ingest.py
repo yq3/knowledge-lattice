@@ -217,8 +217,8 @@ class IngestService:
         return drafts
 
     def _index_fts_stage(self, doc: dict, drafts: list[ChunkDraft]) -> None:
-        dims = json.loads(doc.get("pending_dims_json") or "{}")
-        dims_json = json.dumps(dims, ensure_ascii=False) if dims else "{}"
+        # v1.1（拍板 1）：chunk 不再携带 dims_json 投影——维度经 documents.
+        # pending_dims_json 在 insert 事务内解析入 document_dimensions（D22 机制）
         chunks = [
             {
                 "id": new_ulid("chk"),
@@ -231,7 +231,6 @@ class IngestService:
                 "page_no": d.page_no,
                 "sheet_name": d.sheet_name,
                 "bbox_json": d.bbox_json,
-                "dims_json": dims_json,
             }
             for d in drafts
         ]

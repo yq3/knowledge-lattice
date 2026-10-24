@@ -65,16 +65,15 @@ def test_new_dimension_zero_disappear(matrix) -> None:
     plan = _compile(matrix, "u_full")
     rules = {r.key: r for r in plan.dimension_rules}
     assert rules["channel"].is_empty
-    block = matrix.build_dimension_rule_ast(rules["channel"])
-    assert isinstance(block, NotExists)  # 空值放行条件（零授权 → 只见空值文档）
+    block = matrix.build_rule_ast(rules["channel"], plan)
+    assert isinstance(block, NotExists)  # 空值放行条件（零授权 → 只见无行文档）
     fragment = matrix.render_sql(block)[0]
-    if matrix.is_sqlite:
-        assert fragment == "NOT EXISTS (SELECT 1 FROM json_each(c.dims_json, '$.channel'))"
-    else:
-        assert fragment == (
-            "NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text("
-            "jsonb_extract_path(c.dims_json, 'channel')))"
-        )
+    org = ":org" if matrix.is_sqlite else "%(org)s"
+    assert fragment == (
+        "NOT EXISTS (SELECT 1 FROM document_dimensions AS dd"
+        " JOIN dimensions AS dim ON dim.id = dd.dimension_id"
+        f" WHERE dd.doc_id = d.id AND dim.key = 'channel' AND dim.org_id = {org})"
+    )
     # 存量文档零消失（全部 channel 空值 → 放行）
     assert _visible(matrix, "u_full") == base_full
     assert _visible(matrix, "u_cn") == base_cn

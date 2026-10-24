@@ -22,7 +22,6 @@ v1.4 / #42 必修4）：
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 import psycopg
 from psycopg_pool import ConnectionPool
