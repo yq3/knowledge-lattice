@@ -75,7 +75,7 @@ updatedAt: 2026-10-24T15:23:00+0800
 ## 遗留事项（跨任务移交）
 
 - [x] **承接自 M0a-2（done）注意事项**：`render_expr`/`_child` 已移除——本任务渲染走 `_Renderer`/`render_sql`；`_Renderer` 不得跨调用拼接片段（注意事项性质，随实现自然遵守）——**✅ 已遵守并经核验（committer R1 基线核对：render_expr 零引用、_Renderer 均为单次 render_sql 调用、无跨调用拼接；render_fts_recall_select 单次产出完整 (sql, params)）**
-- [ ] **M0b 批次（不并入本任务）**：backend 参数化骨架；DDL 勘误登记；M0a-1/M0a-2 的 M0b 顺手项（CTE v.status 残留、竞态回归入仓、CTE 恶意 key 断言、fullmatch、标识符 docstring、migrate 告警、CTE 过滤下推、_Renderer 拼接文档化）
+- [ ] **M0b 批次（不并入本任务）**：~~backend 参数化骨架~~（✅ 已清偿：来源 task-knowledge-lattice-m0b-1 R1——backend fixture 双臂参数化 + 存量测试参数化改造）；DDL 勘误登记；M0a-1/M0a-2 的 M0b 顺手项（CTE v.status 残留、竞态回归入仓、CTE 恶意 key 断言、fullmatch、标识符 docstring、migrate 告警、CTE 过滤下推、_Renderer 拼接文档化——均→M0b-3）
 - [ ] **M1 批次（不并入本任务）**：trigram 判据；T6 完整切换链；conftest channel 口径；grants 写路径校验；TC-ING-04/05/06 断言；TC-EMB-03 向量路开闭复验
 - [ ] **移交 M0b 勘误批次（2026-10-24 R1 需求边界问题，用户拍板选项 A）**：TEST-CASES TC-FTS-01 预期句回写——"`*` 作字面量可命中"改为"纯标点 token 不进入 MATCH 表达式；无 malformed、操作符不激活；`AND`/`NEAR` 作字面量可命中"（FTS5 unicode61 不索引纯标点，原子句不可满足；实现等价处置经 committer 裁定）+ 版本段记录；与 M0a-1 的"DDL 两处执行层修正勘误"合并统一落笔（由 supervised-coding edit，coder 禁改）
 - [ ] **新增移交（本任务 R1 committer P3 记录项，2026-10-24 登记）**：P3-6（page_count None 计入）、P3-9（嵌入回写防护谓词——TC-VER-06 同款，M1）、P3-10（静态 token disabled 检查）、P3-11（embed 四件套 env 覆盖）、P3-13（上传大小上限 413——M1 200MB）、P3-16（60s 中间件绑定断言）、P3-18（pdf_models skipif）、P3-20（threaded 连接清理钩子）、P3-21（上传三步补偿）、P3-22（可取消执行器评估）、P3-23（search.degraded 审计与 rank 协议——M1）、P3-24（tester 报告表述更正——已由本检查点轮次记录执行）；归一口径注记（BM25 单路 min-max 显示归一≠M1 融合归一——交付时写入验收注记，✅ 已写入 PR #46 交付注记段）

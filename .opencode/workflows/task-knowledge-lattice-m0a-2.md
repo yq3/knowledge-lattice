@@ -72,7 +72,7 @@ updatedAt: 2026-10-23T17:11:00+0800
 ## 遗留事项（跨任务移交）
 
 - [x] **承接自 task-knowledge-lattice-m0a-1（已 done，移交 M0a-2 条目默认并入本任务）**：① `config.py:20` 注释 `connect.py`→`connection.py`（R2 改名不彻底唯一遗漏，一行修正）；② 为 P3-1/2/12/13/19 补 3 条轻量回归测试（事务中 FK OFF → MigrationError / `:memory:` journal 失败 RuntimeError+连接关闭 / `__init__` 导入身份 pkg.migrate 为模块、pkg.migrate_db is migrate.migrate_db、pkg.connect is connection.connect）；③ R2 复审其余 P3 择要（journal_mode 查询纳入重试、重试耗尽包装 RuntimeError、FK OFF 复查移入 try/finally、跳过分支测试补 foreign_keys==1 断言）——触碰 migrate/connection 文件时顺手，本任务不强制触碰则顺延——**✅ 三项全部清偿（R1 commit 7e68936：①config.py:20 已修；②3 条回归测试落地且经 tester 独立核验连接关闭断言真实；③3 项已做 + journal_mode 查询经核实确已由 M0a-1 R2 落地——committer R1 第七节裁定"遗留承接整体合格"）**
-- [ ] **M0b 批次（不并入本任务，去向已注明）**：backend 参数化骨架；DDL 两处执行层修正勘误登记；P3-3/4/5/7/8/11/15/16/17/18/23
+- [ ] **M0b 批次（不并入本任务，去向已注明）**：~~backend 参数化骨架~~（✅ 已清偿：来源 task-knowledge-lattice-m0b-1 R1——backend fixture 双臂参数化 + 存量测试参数化改造）；~~P3-17 空 Protocol 种子~~（✅ 已清偿：来源 task-knowledge-lattice-m0b-1——SemanticBackend 5 种子签名 + PgBackend 桩）；DDL 两处执行层修正勘误登记；P3-3/4/5/7/8/11/15/16/18/23（→M0b-3）
 - [ ] **M1 批次（不并入本任务）**：FTS5 trigram/自定义词表判据
 - [ ] **新增移交（本任务 R2 committer P3 记录项，2026-10-23 登记）**：
   - [ ] **移交 M0b/M1 顺手**：CTE 内层 `v.status='active'` 残留（值 disabled 窗口双写法差异，committer R2 P3-1——移除或明确口径+补 value-disable 竞态测试）；P3-1 竞态回归入仓（编译后退役同一 Plan 双写法等价，约 5 行，committer R2 P3-2）；`render_visible_docs_select` 恶意 key 常量/标识符断言（committer R2 P3-3）；白名单 `re.match`→`fullmatch`（committer R2 P3-4，prefix 仅 trace 标签无安全影响）；标识符路径不变式 docstring（committer R2 P3-5）；migrate 成功路径恢复失败告警（committer R2 P3-6）
