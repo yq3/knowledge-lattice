@@ -1,6 +1,7 @@
-"""越权矩阵 T1~T5 的 M0a 编译器单测先行形态（design §8 M0a.5——M1 矩阵复跑）。
+"""越权矩阵 T1~T5 的 M0a 编译器单测先行形态（design §8 M0a.5——M1 矩阵复跑；
+M0b-1 起双后端参数化：sqlite + pg 同一测试代码）。
 
-在真实 SQLite 库上执行编译产物 SQL 断言可见性（不依赖 M0a-3 检索管线）。
+在真实库（sqlite / PG）上执行编译产物 SQL 断言可见性（不依赖 M0a-3 检索管线）。
 T1 过期授权清理未跑仍不可见 / T2 成员续期不复活旧授权（行为半句——触发器半句
 M0a-1 T23 已覆盖）/ T3 停用取值收紧 / T4 维度改可选/停用不放宽 / T5 可选维度
 有值则过滤。
@@ -12,22 +13,18 @@ import pytest
 
 from helpers import NOW_TS, seed_membership
 
-from knowledge_lattice.core.docs.acl import AclDeniedError, compile_acl
-from knowledge_lattice.store.sqlite.acl_render import render_select
-from knowledge_lattice.store.sqlite.backend import SqliteBackend
+from knowledge_lattice.core.docs.acl import AclDeniedError
 
 
 def _visible(matrix, user_id: str) -> set[str]:
-    sql, params = render_select(
-        compile_acl(SqliteBackend(matrix), user_id, "org:tax", now=NOW_TS)
-    )
+    sql, params = matrix.render_select(matrix.compile_acl(user_id, "org:tax", now=NOW_TS))
     return {r[2] for r in matrix.execute(sql, params)}
 
 
 def test_t1_expired_grant_invisible_without_cleanup(matrix) -> None:
     """T1：过期授权（expires_at=昨天）清理任务从未运行仍不可见——展开 SQL 以
     `expires_at > :now` 过滤该行，CN 不在授权集；d_cn 不可见、d_empty_region 可见。"""
-    backend = SqliteBackend(matrix)
+    backend = matrix.make_backend()
     grants = backend.read_grants("u_expired_grant", "org:tax", now=NOW_TS)
     assert grants == {"region": (), "tax_type": ("VAT",)}  # CN 被过期过滤（隔离单因对照：VAT 仍在）
     # 清理任务从未运行：过期授权行仍在库内（不可见 ≠ 已删除）
@@ -41,9 +38,9 @@ def test_t1_expired_grant_invisible_without_cleanup(matrix) -> None:
 def test_t2_membership_renewal_does_not_revive_old_grants(matrix) -> None:
     """T2（行为半句）：① 过期期间检索 → 第 0 步拒绝；② DELETE membership 再重插
     （续期禁令下唯一路径）；③ 重插后授权集为空（级联清理）、d_cn 不可见。"""
-    backend = SqliteBackend(matrix)
+    backend = matrix.make_backend()
     with pytest.raises(AclDeniedError):  # ① 成员关系过期 → 编译入口拒绝
-        compile_acl(backend, "u_expired_member", "org:tax", now=NOW_TS)
+        matrix.compile_acl("u_expired_member", "org:tax", now=NOW_TS)
     # ② 恢复访问：先删再插
     matrix.execute("DELETE FROM user_org_memberships WHERE user_id = 'u_expired_member'")
     seed_membership(matrix, "u_expired_member", "org:tax")
@@ -68,7 +65,7 @@ def test_t3_disabled_value_tightens(matrix) -> None:
         " WHERE value = 'OS' AND dimension_id = (SELECT id FROM dimensions"
         "   WHERE org_id = 'org:tax' AND key = 'region')"
     )
-    grants = SqliteBackend(matrix).read_grants("u_full", "org:tax", now=NOW_TS)
+    grants = matrix.make_backend().read_grants("u_full", "org:tax", now=NOW_TS)
     assert grants["region"] == ("CN",)  # 授权集变 [CN]
     assert _visible(matrix, "u_full") == {"d_cn", "d_multi", "d_empty_region"}
 
@@ -76,13 +73,13 @@ def test_t3_disabled_value_tightens(matrix) -> None:
 def test_t4_optional_or_disabled_dimension_no_relax(matrix) -> None:
     """T4：region 分别 UPDATE required 1→0、enabled 1→0 → 产物逐字不变
     （生命周期与过滤解耦——D5；TC-ACL-04 的矩阵断言形态）。"""
-    before = render_select(compile_acl(SqliteBackend(matrix), "u_cn", "org:tax", now=NOW_TS))
+    before = matrix.render_select(matrix.compile_acl("u_cn", "org:tax", now=NOW_TS))
     for column in ("required", "enabled"):
         matrix.execute(
             f"UPDATE dimensions SET {column} = 0 WHERE org_id = 'org:tax' AND key = 'region'"
         )
-        assert render_select(
-            compile_acl(SqliteBackend(matrix), "u_cn", "org:tax", now=NOW_TS)
+        assert matrix.render_select(
+            matrix.compile_acl("u_cn", "org:tax", now=NOW_TS)
         ) == before  # 产物逐字不变（SQL 文本 + 参数）
         assert _visible(matrix, "u_cn") == {"d_multi", "d_empty_region"}  # 可见性不变
         matrix.execute(

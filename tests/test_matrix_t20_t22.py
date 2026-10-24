@@ -1,29 +1,22 @@
-"""越权矩阵 T20 / T22 的 M0a 编译器单测先行形态（design §8 M0a.5）。
+"""越权矩阵 T20 / T22 的 M0a 编译器单测先行形态（design §8 M0a.5；M0b-1 起双后端）。
 
 T20 新建维度零消失 / 回填只收紧 / 生命周期不放宽 / 仅退役放宽（审计半句「退役
 事件入 outbox」随 M2——条件消失断言必做）；T22 无授权维度只见空值文档、空集
-不出 `IN ()`（维度片段级断言）。
+不出 `IN ()`（维度片段级断言）。维度条件在场/缺席的逐字断言经 dbwrap
+dim_marker 方言分派（sqlite `'$.k'` / PG `jsonb_extract_path(c.dims_json, 'k')`）。
 """
 
 from __future__ import annotations
 
 from helpers import NOW_TS, dim_id_for, seed_dim_value, seed_dimension, seed_doc_dims
 
-from knowledge_lattice.core.docs.acl import compile_acl
-from knowledge_lattice.store.sqlite.acl_render import (
-    build_dimension_rule_ast,
-    render_select,
-    render_sql,
-)
-from knowledge_lattice.store.sqlite.backend import SqliteBackend
-
 
 def _compile(matrix, user_id: str):
-    return compile_acl(SqliteBackend(matrix), user_id, "org:tax", now=NOW_TS)
+    return matrix.compile_acl(user_id, "org:tax", now=NOW_TS)
 
 
 def _visible(matrix, user_id: str) -> set[str]:
-    sql, params = render_select(_compile(matrix, user_id))
+    sql, params = matrix.render_select(_compile(matrix, user_id))
     return {r[2] for r in matrix.execute(sql, params)}
 
 
@@ -59,8 +52,8 @@ def test_t20_new_dimension_lifecycle(matrix) -> None:
     )
     plan = _compile(matrix, "u_full")
     assert all(r.key != "channel" for r in plan.dimension_rules)  # 条件从 Plan 消失
-    sql, _ = render_select(plan)
-    assert "'$.channel'" not in sql
+    sql, _ = matrix.render_select(plan)
+    assert matrix.dim_marker("channel") not in sql
     assert _visible(matrix, "u_full") == base_full
 
 
@@ -72,12 +65,18 @@ def test_t22_no_grant_dimension_only_null_docs(matrix) -> None:
     rules = {r.key: r for r in plan.dimension_rules}
     assert rules["tax_type"].is_empty
 
-    fragment = render_sql(build_dimension_rule_ast(rules["tax_type"]))[0]
-    assert fragment == "NOT EXISTS (SELECT 1 FROM json_each(c.dims_json, '$.tax_type'))"
+    fragment = matrix.render_sql(matrix.build_dimension_rule_ast(rules["tax_type"]))[0]
+    if matrix.is_sqlite:
+        assert fragment == "NOT EXISTS (SELECT 1 FROM json_each(c.dims_json, '$.tax_type'))"
+    else:
+        assert fragment == (
+            "NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text("
+            "jsonb_extract_path(c.dims_json, 'tax_type')))"
+        )
     assert " OR " not in fragment
 
-    sql, params = render_select(plan)
-    assert "'$.region'" in sql and " OR " in sql  # region 统一模板照常在场
+    sql, params = matrix.render_select(plan)
+    assert matrix.dim_marker("region") in sql and " OR " in sql  # region 统一模板照常在场
     assert "IN ()" not in sql
     assert set(params.values()) >= {"CN", "org:tax"}
 
