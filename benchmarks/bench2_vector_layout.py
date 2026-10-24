@@ -53,13 +53,22 @@ CHUNKS_PER_DOC = 10
 BATCH = 2_000
 MODEL_NEW = "synth-embed-v2:2560"
 
-_SCAN_WARMUP, SCAN_N = 2, 12
-_RECALL_WARMUP, RECALL_N = 1, 8
+# P3-7：全部计时相 n≥20——nearest-rank P95 在 n<20 时≈max（单一离群敏感），
+# 提样本量使 P95 脱离 "=max"区；报告 §1/§5 披露该口径
+_SCAN_WARMUP, SCAN_N = 2, 20
+_RECALL_WARMUP, RECALL_N = 1, 20
+_POINT_WARMUP, POINT_N = 2, 20
 
 CHUNK_COLS_NARROW = (
     "rid, id, doc_id, seq, version, tombstone, content, title_seg, content_seg,"
     " token_count, heading_path, page_no, sheet_name, bbox_json, keywords,"
     " llm_keywords, tags, dims_json, detected_at_scale, content_sha, created_at"
+)
+# PG 侧 v1.1 真实窄 chunks 形态**保留 tsvector 五列 GENERATED**（只去掉
+# embedding/embed_model）——CTAS 丢列会使 heap 变小、跌出并行扫描阈值，
+# 得到"串行 vs 并行"的计划伪差异（实测 216 vs 117ms 系并行所致，非布局）
+CHUNK_COLS_NARROW_PG = CHUNK_COLS_NARROW + (
+    ", title_tsv, content_tsv, keywords_tsv, llm_keywords_tsv, tags_tsv"
 )
 
 
@@ -69,8 +78,8 @@ CHUNK_COLS_NARROW = (
 def create_layout_tables(db: Any) -> None:
     """分表 DDL：主键 (rid, embed_model)——蓝绿并存（§5.3：新旧模型标签同表
     共存、覆盖率 100% 原子切、旧向量延后清理）要求键含 embed_model；仅
-    PRIMARY KEY(rid) 时新标签行无法与旧行并存（实测 IntegrityError——v1.1
-    分表建议的键形结论之一）。"""
+    PRIMARY KEY(rid) 时新标签行无法与旧行并存（probe_pk_rid_conflict 实测
+    IntegrityError——v1.1 分表建议的键形结论之一）。"""
     if db.is_sqlite:
         db.execute(
             "CREATE TABLE chunk_vectors ("
@@ -79,7 +88,9 @@ def create_layout_tables(db: Any) -> None:
             " PRIMARY KEY(rid, embed_model))"
         )
         db.execute(f"CREATE TABLE chunks_narrow AS SELECT {CHUNK_COLS_NARROW} FROM chunks")
+        db.execute("CREATE UNIQUE INDEX idx_narrow_rid ON chunks_narrow(rid)")
         db.execute("CREATE UNIQUE INDEX idx_narrow_docver ON chunks_narrow(doc_id, version, seq)")
+        db.execute("ANALYZE chunks_narrow")  # CTAS 无统计——planner 会选坏计划（P3-10 实测教训）
     else:
         db.execute(
             "CREATE TABLE chunk_vectors ("
@@ -87,11 +98,43 @@ def create_layout_tables(db: Any) -> None:
             " embed_model TEXT NOT NULL, embedding vector,"
             " PRIMARY KEY(rid, embed_model))"
         )
-        db.execute(f"CREATE TABLE chunks_narrow AS SELECT {CHUNK_COLS_NARROW} FROM chunks")
+        db.execute(f"CREATE TABLE chunks_narrow AS SELECT {CHUNK_COLS_NARROW_PG} FROM chunks")
+        db.execute("CREATE UNIQUE INDEX idx_narrow_rid ON chunks_narrow(rid)")
         db.execute("CREATE UNIQUE INDEX idx_narrow_docver ON chunks_narrow(doc_id, version, seq)")
+        db.execute("ANALYZE chunks_narrow")  # 同上：CTAS 无统计——补齐后近似真实分表布局的 chunks
 
 
 # ============ 计时相（写路径 / 查询形态） ============
+
+
+def probe_pk_rid_conflict(db: Any) -> dict[str, str]:
+    """P2-5 证据脚本化：PRIMARY KEY(rid)（不含 embed_model）的分表在新标签行
+    写入时即唯一冲突——蓝绿并存的物理前提是键含 embed_model。双后端各跑，
+    catch 唯一冲突异常并报告；若未冲突则报 FAIL（结论失效，报告须改）。"""
+    if db.is_sqlite:
+        import sqlite3
+
+        uniq = (sqlite3.IntegrityError,)
+    else:
+        from psycopg import errors as pg_errors
+
+        uniq = (pg_errors.UniqueViolation,)
+    db.execute(
+        "CREATE TEMP TABLE cv_pkrid (rid INTEGER NOT NULL, embed_model TEXT NOT NULL,"
+        " PRIMARY KEY(rid))"
+    )
+    outcome: dict[str, str] = {}
+    try:
+        db.execute("INSERT INTO cv_pkrid(rid, embed_model) VALUES(1, 'old:2560')")
+        try:
+            db.execute("INSERT INTO cv_pkrid(rid, embed_model) VALUES(1, 'new:2560')")
+            outcome["result"] = "NO-CONFLICT（PK(rid) 允许并存——结论失效，需上报）"
+        except uniq as exc:
+            outcome["result"] = "IntegrityError（新标签行被拒）"
+            outcome["exception"] = f"{type(exc).__name__}: {str(exc).splitlines()[0][:120]}"
+    finally:
+        db.execute("DROP TABLE cv_pkrid")
+    return outcome
 
 
 def write_phase(db: Any, layout: str, vectors: Any, rids: list[int]) -> dict[str, float]:
@@ -191,8 +234,16 @@ def _mark(db: Any) -> Any:
     return lambda n: f"%({n})s"
 
 
-def recall_sql(db: Any, layout: str, table: str) -> tuple[str, dict[str, Any]]:
-    """向量路精确扫描 top-20（固定谓词隔离布局变量；G-6 起步口径）。"""
+def recall_sql(
+    db: Any, layout: str, table: str, *, model: str = MODEL_LABEL
+) -> tuple[str, dict[str, Any]]:
+    """向量路精确扫描 top-20（固定谓词隔离布局变量；G-6 起步口径）。
+
+    - layout="same"：向量在 chunks.embedding（同表形态）；
+    - layout="sep"：向量在 chunk_vectors（分表形态，JOIN 回块表）——**基表 table
+      可选 chunks（宽行·上界口径）或 chunks_narrow（窄行·真实分表布局的干净
+      口径，P2-1）**；model 用于蓝绿共存期以新标签谓词计时（P2-4）。
+    """
     mk = _mark(db)
     if layout == "same":
         vec_pred = f"c.embedding IS NOT NULL AND c.embed_model = {mk('m')}"
@@ -218,12 +269,12 @@ def recall_sql(db: Any, layout: str, table: str) -> tuple[str, dict[str, Any]]:
     if db.is_sqlite:
         from knowledge_lattice.store.sqlite.vec import pack_f32
 
-        return base, {"org": BENCH_ORG, "m": MODEL_LABEL, "q": pack_f32([float(x) for x in _QUERY_VEC])}
+        return base, {"org": BENCH_ORG, "m": model, "q": pack_f32([float(x) for x in _QUERY_VEC])}
     from knowledge_lattice.store.postgres.vec import format_vector
 
     return base, {
         "org": BENCH_ORG,
-        "m": MODEL_LABEL,
+        "m": model,
         "q": format_vector(_QUERY_VEC),
     }
 
@@ -238,15 +289,19 @@ def meta_scan_sql(table: str, db: Any) -> tuple[str, dict[str, Any]]:
 
 
 def point_lookup_sql(table: str, db: Any, rids: list[int]) -> tuple[str, dict[str, Any]]:
+    """rid IN (…) 点查（小列投影，不含 embedding 载荷——行定位 + 标量列读）。
+
+    chunk_vectors 无 id/doc_id 列，取 (rid, embed_model) 保持同形态。"""
+    cols = "rid, embed_model" if table == "chunk_vectors" else "rid, id, doc_id"
     if db.is_sqlite:
         marks = ",".join(f":r{i}" for i in range(len(rids)))
         return (
-            f"SELECT rid, id, doc_id FROM {table} WHERE rid IN ({marks})",
+            f"SELECT {cols} FROM {table} WHERE rid IN ({marks})",
             {f"r{i}": int(r) for i, r in enumerate(rids)},
         )
     marks = ",".join(f"%(r{i})s" for i in range(len(rids)))
     return (
-        f"SELECT rid, id, doc_id FROM {table} WHERE rid IN ({marks})",
+        f"SELECT {cols} FROM {table} WHERE rid IN ({marks})",
         {f"r{i}": int(r) for i, r in enumerate(rids)},
     )
 
@@ -361,6 +416,28 @@ def phase_blue_green(db: Any, results: list[dict]) -> None:
             "note": f"覆盖率 old={cov[MODEL_LABEL]} new={cov[MODEL_NEW]}；current_model 原子切=配置翻转（零 SQL、瞬时）",
         }
     )
+
+    # ---- P2-4：共存期读路径——新旧标签并存（各 50K 行）时按 current（新标签）
+    # 谓词的向量召回（窄基表——真实分表布局）。"功能零降级"≠"性能零降级"，
+    # 此处量化共存窗口的向量路代价（扫描需先过滤掉另一半旧行）。
+    # （只读相位；checkpoint TRUNCATE 对齐其他读相位的干净起点，autocheckpoint
+    # 保持 0——下方 DELETE 相位的 WAL 计量窗口与 R1 同款）
+    if db.is_sqlite:
+        db.wal_checkpoint_truncate()
+    co_sql, co_params = recall_sql(db, "sep", "chunks_narrow", model=MODEL_NEW)
+    co_t = sample_timings(lambda: db.execute(co_sql, co_params), warmup=_RECALL_WARMUP, n=RECALL_N)
+    co_rows = [r[0] for r in db.execute(co_sql, co_params)]
+    results.append(
+        {
+            "phase": "方案二:共存期向量召回(窄基表)",
+            "p50_ms": co_t["p50_ms"],
+            "p95_ms": co_t["p95_ms"],
+            "wall_s": 0.0,
+            "wal_mb": 0.0,
+            "note": f"新旧各 50K 行并存、按新标签谓词 top-20（n={RECALL_N}）；对照 §3.2 单标签分表窄基表行",
+        }
+    )
+
     # 旧向量延后清理
     lo2 = db.wal_lsn() if db.is_pg else None
     if db.is_sqlite:
@@ -426,13 +503,25 @@ def run_dialect(dialect: str, vectors: Any) -> tuple[dict[str, Any], list[dict]]
         out: dict[str, Any] = {"dialect": dialect, "seed_s": round(seed_s, 1)}
         out["sizes_seed"] = db.db_bytes()
 
+        if db.is_pg:
+            # 计划伪差异消除（P2-1 附带发现）：PG 并行计划按 heap 页数阈值翻转——
+            # 同表 chunks（42MB，含 UPDATE 死元组膨胀）走 3-worker 并行（实测
+            # 117ms），CTAS 窄表（22MB）走串行（216ms），差异系并行而非布局；
+            # 且阈值随 vacuum 状态漂移。会话级禁用并行统一串行口径（可复现、
+            # 布局可比），报告注明。
+            db.execute("SET max_parallel_workers_per_gather = 0")
+            out["pg_parallelism"] = "disabled(max_parallel_workers_per_gather=0)"
+
+        # ---- P2-5：PK(rid)（不含 embed_model）分表新标签写入即唯一冲突——脚本化证据 ----
+        out["pk_rid_conflict_probe"] = probe_pk_rid_conflict(db)
+
         # ---- 元数据/点查基线（两表此时同构：chunks.embedding 全 NULL vs narrow） ----
         for table, label in (("chunks", "同表(NULL向量)"), ("chunks_narrow", "分表对照(narrow)")):
             sql, p = meta_scan_sql(table, db)
             t = sample_timings(lambda: db.execute(sql, p), warmup=_SCAN_WARMUP, n=SCAN_N)
             out[f"meta_scan_base_{label}"] = t
             sql2, p2 = point_lookup_sql(table, db, probe_rids)
-            t2 = sample_timings(lambda: db.execute(sql2, p2), warmup=2, n=15)
+            t2 = sample_timings(lambda: db.execute(sql2, p2), warmup=_POINT_WARMUP, n=POINT_N)
             out[f"point_lookup_base_{label}"] = t2
 
         # ---- Phase A：同表写入（UPDATE 回写——生产链形态） ----
@@ -442,7 +531,9 @@ def run_dialect(dialect: str, vectors: Any) -> tuple[dict[str, Any], list[dict]]
             lambda: db.execute(sql, p), warmup=_SCAN_WARMUP, n=SCAN_N
         )
         sql2, p2 = point_lookup_sql("chunks", db, probe_rids)
-        out["point_lookup_same"] = sample_timings(lambda: db.execute(sql2, p2), warmup=2, n=15)
+        out["point_lookup_same"] = sample_timings(
+            lambda: db.execute(sql2, p2), warmup=_POINT_WARMUP, n=POINT_N
+        )
         rsql, rp = recall_sql(db, "same", "chunks")
         out["recall_same"] = sample_timings(
             lambda: db.execute(rsql, rp), warmup=_RECALL_WARMUP, n=RECALL_N
@@ -451,7 +542,13 @@ def run_dialect(dialect: str, vectors: Any) -> tuple[dict[str, Any], list[dict]]
 
         # ---- Phase B：分表写入（INSERT——对称批量） ----
         out["write_sep"] = write_phase(db, "sep", vectors, all_rids)
-        rsql2, rp2 = recall_sql(db, "sep", "chunks")
+        # P2-1：分表向量路两种基表口径——宽 chunks（R1 口径·上界：基表仍带 10KB
+        # 向量行）与 chunks_narrow（真实分表布局的窄基表·干净口径）
+        rsql_w, rp_w = recall_sql(db, "sep", "chunks")
+        out["recall_sep_wide"] = sample_timings(
+            lambda: db.execute(rsql_w, rp_w), warmup=_RECALL_WARMUP, n=RECALL_N
+        )
+        rsql2, rp2 = recall_sql(db, "sep", "chunks_narrow")
         out["recall_sep"] = sample_timings(
             lambda: db.execute(rsql2, rp2), warmup=_RECALL_WARMUP, n=RECALL_N
         )
@@ -462,6 +559,11 @@ def run_dialect(dialect: str, vectors: Any) -> tuple[dict[str, Any], list[dict]]
                 f"WARN [{dialect}] 两布局 top-20 rid 集不一致——距离并列所致？"
                 f"same={sorted(out['recall_same_rows'])} sep={sorted(top_sep)}"
             )
+        # P3-6：分表侧点查补 chunk_vectors（此前只测 chunks/narrow 两对照）
+        sql3, p3 = point_lookup_sql("chunk_vectors", db, probe_rids)
+        out["point_lookup_chunk_vectors"] = sample_timings(
+            lambda: db.execute(sql3, p3), warmup=_POINT_WARMUP, n=POINT_N
+        )
 
         # ---- 蓝绿判据 ----
         bg: list[dict] = []
@@ -499,11 +601,20 @@ def main() -> None:
             rows.append([d, layout, w["wall_s"], w["throughput_rows_s"], w["wal_mb"], w["payload_mb"]])
     print(md_table(["后端", "布局", "写入耗时 s", "吞吐 行/s", "WAL MB", "载荷 MB"], rows))
 
+    print_header("P2-5 证据：PK(rid) 分表（不含 embed_model）新标签写入即唯一冲突")
+    for d in ("sqlite", "pg"):
+        probe = results[d]["pk_rid_conflict_probe"]
+        print(f"- {d}: {probe['result']}｜{probe.get('exception', '')}")
+
     print_header("查询形态：向量路精确扫描 top-20 / 元数据扫描 / 点查（P50/P95 ms）")
     rows = []
     for d in ("sqlite", "pg"):
         r = results[d]
-        for label, key in (("向量召回 top-20", "recall_same"), ("(分表 JOIN)", "recall_sep")):
+        for label, key in (
+            ("向量召回 top-20（同表）", "recall_same"),
+            ("向量召回 top-20（分表·宽基表=上界口径）", "recall_sep_wide"),
+            ("向量召回 top-20（分表·窄基表=干净口径）", "recall_sep"),
+        ):
             t = r[key]
             rows.append([d, label, t["p50_ms"], t["p95_ms"]])
         for label, key in (
@@ -514,8 +625,9 @@ def main() -> None:
             t = r[key]
             rows.append([d, label, t["p50_ms"], t["p95_ms"]])
         for label, key in (
-            ("点查×20(基线 NULL)", "point_lookup_base_同表(NULL向量)"),
-            ("点查×20(同表 10KB 行)", "point_lookup_same"),
+            ("点查×20(chunks 基线 NULL)", "point_lookup_base_同表(NULL向量)"),
+            ("点查×20(chunks 同表 10KB 行)", "point_lookup_same"),
+            ("点查×20(chunk_vectors 分表)", "point_lookup_chunk_vectors"),
         ):
             t = r[key]
             rows.append([d, label, t["p50_ms"], t["p95_ms"]])
@@ -537,11 +649,21 @@ def main() -> None:
                 )
     print(md_table(["后端", "布局", "库尺寸A MB", "WAL MB", "库尺寸B MB"], rows))
 
-    print_header("蓝绿判据实测（方案一 vs 方案二）")
+    print_header("蓝绿判据实测（方案一 vs 方案二；含共存期读路径 P2-4）")
     print(
         md_table(
-            ["后端", "相位", "耗时 s", "WAL MB", "说明"],
-            [[b["dialect"], b["phase"], b["wall_s"], b.get("wal_mb", ""), b["note"]] for b in bg_all],
+            ["后端", "相位", "耗时 s", "WAL MB", "P50/P95 ms", "说明"],
+            [
+                [
+                    b["dialect"],
+                    b["phase"],
+                    b["wall_s"],
+                    b.get("wal_mb", ""),
+                    f"{b['p50_ms']:.1f}/{b['p95_ms']:.1f}" if "p50_ms" in b else "",
+                    b["note"],
+                ]
+                for b in bg_all
+            ],
         )
     )
 

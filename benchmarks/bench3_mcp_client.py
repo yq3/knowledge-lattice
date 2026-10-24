@@ -3,11 +3,12 @@
 + 开发 JWT）经真实 HTTP（uvicorn 线程）驱动。
 
 版本耦合发现（2026-10-24 实测，报告 §实验3）：
-- 本项目 env 内 langchain-mcp-adapters（PyPI 全部版本 ≤0.3.2）import 即失败——
-  其依赖 mcp 1.x 的 `mcp.shared.context.RequestContext`，而 fastmcp 4.1.3 精确
-  钉死 mcp==2.3.0（fastmcp-slim==4.1.3），同进程共存不可能；
-- 故客户端跑在 uv 独立钉版 env（`--with langchain-mcp-adapters==0.3.1 --with 'mcp<2'`
-  ——解析得 mcp 1.30.0），服务端留在项目 env（fastmcp 4.1.3 / mcp 2.3.0）——
+- 本项目 env 内 langchain-mcp-adapters（PyPI 全部版本 ≤0.3.2）在真实入口
+  （`langchain_mcp_adapters.client`）import 即失败——其依赖 mcp 1.x 的
+  `mcp.shared.context.RequestContext`，而 fastmcp 4.1.3 经 fastmcp-slim==4.1.3
+  范围钉 mcp>=2.2,<3（uv.lock 解析值 2.3.0），两区间不相交——同进程共存不可能；
+- 故客户端跑在 uv 独立钉版 env（`--with langchain-mcp-adapters==0.3.1 --with mcp==1.30.0`
+  ——P3-13 钉精确版本防复跑漂移），服务端留在项目 env（fastmcp 4.1.3 / mcp 2.3.0）——
   顺带实证 mcp 1.x 客户端 ⇄ mcp 2.x/FastMCP4 服务端的线级协议兼容性；
 - 该依赖因此不进 pyproject（§7 最小引入——引入即坏的组合不留仓）。
 
@@ -159,11 +160,12 @@ def main() -> None:
     cfg_path.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
 
     driver = Path(__file__).resolve().parent / "bench3_client_driver.py"
+    # P3-13：钉精确版本（mcp 1.30.0 / pyjwt 2.15.1 与报告一致）——防复跑解析漂移
     cmd = [
         "uv", "run", "--no-project", "--quiet",
         "--with", "langchain-mcp-adapters==0.3.1",
-        "--with", "mcp<2",
-        "--with", "pyjwt>=2.15",
+        "--with", "mcp==1.30.0",
+        "--with", "pyjwt==2.15.1",
         "python", str(driver), "--config", str(cfg_path),
     ]
     print(f"服务端就绪：{url}（fastmcp 服务端 env：mcp 2.3.0 / fastmcp 4.1.3）")

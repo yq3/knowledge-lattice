@@ -1,7 +1,9 @@
-"""实验 3 客户端驱动（在 uv 独立钉版 env 运行：langchain-mcp-adapters 0.3.1 + mcp 1.x）。
+"""实验 3 客户端驱动（在 uv 独立钉版 env 运行：langchain-mcp-adapters 0.3.1 + mcp==1.30.0）。
 
-由 bench3_mcp_client.py spawn；勿直接在项目 env 运行（import 即失败——mcp 1.x 与
-fastmcp 4.1.3 钉死的 mcp 2.3.0 互斥，见编排文件头注与报告）。
+由 bench3_mcp_client.py spawn；勿直接在项目 env 运行（真实入口
+`langchain_mcp_adapters.client` import 即 ImportError——其依赖 mcp 1.x 的
+RequestContext，与 fastmcp-slim 4.1.3 范围钉的 mcp 2.x（lock 解析值 2.3.0）
+互斥，见编排文件头注与报告 §4.1）。
 
 三种客户端形态实测（形态定义与代码示意见报告 §实验3）：
 - 形态 A（每用户会话一个 client）：client.session() 建立并持有会话（headers 构造时
@@ -11,6 +13,10 @@ fastmcp 4.1.3 钉死的 mcp 2.3.0 互斥，见编排文件头注与报告）。
 - 形态 B（共享中继/每请求注入头）：每次调用新建 session、headers 按调用方 token
   现场构造——无用户态连接留存，token 每请求可换。
 
+计时口径（P3-8）：每相位 n=15、无显式预热（首几次调用即数据点——会话建立/调用
+本身轻量，冷热差异在 events 中可见）；P50=中位、P95=nearest-rank ceil 口径
+（_p95——与 bench_common.sample_timings 一致）。
+
 输出：stdout 每行一个 JSON 事件（编排器回收）。
 """
 
@@ -19,6 +25,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import resource
 import sys
@@ -52,6 +59,11 @@ def mint(url_secret: str, user: str, org: str, ttl_s: float) -> str:
         url_secret,
         algorithm="HS256",
     )
+
+
+def _p95(xs: list[float]) -> float:
+    """nearest-rank P95：ceil(0.95·n)-1 下标（与 bench_common.sample_timings 同口径——P3-8）。"""
+    return xs[max(0, math.ceil(0.95 * len(xs)) - 1)]
 
 
 def fd_count() -> int:
@@ -108,13 +120,14 @@ async def main_async(cfg: dict) -> None:
             xs.append((time.perf_counter() - t0) * 1000)
     xs.sort()
     emit("形态A", "会话建立(enter+initialize) p50", value_ms=xs[len(xs) // 2])
-    emit("形态A", "会话建立(enter+initialize) p95", value_ms=xs[max(0, int(0.95 * len(xs) + 0.5) - 1)])
+    emit("形态A", "会话建立(enter+initialize) p95", value_ms=_p95(xs))
 
-    # ---- 形态 A：持有会话热调用（连接复用） ----
+    # ---- 形态 A：持有会话热调用（连接复用；n=40——热调用便宜，提样本使 P95
+    # 脱离"=max"区，P3-7 口径） ----
     c = make_client(tokens[probe_user], url)
     async with c.session("lattice") as s:
         xs = []
-        for i in range(15):
+        for i in range(40):
             t0 = time.perf_counter()
             res = await asyncio.wait_for(
                 s.call_tool("search", {"query": query, "top_k": 5}), timeout=15
@@ -127,25 +140,25 @@ async def main_async(cfg: dict) -> None:
                 emit("形态A", "首调内容校验", value=f"text块 {n_hits}，isError={res.isError}")
         xs.sort()
         emit("形态A", "持有会话热调用 p50", value_ms=xs[len(xs) // 2])
-        emit("形态A", "持有会话热调用 p95", value_ms=xs[max(0, int(0.95 * len(xs) + 0.5) - 1)])
+        emit("形态A", "持有会话热调用 p95", value_ms=_p95(xs))
 
     # ---- 形态 A'：langchain tool 默认路径（每次 ainvoke 新建会话） ----
     c2 = make_client(tokens[probe_user], url)
     tools = await c2.get_tools()
     tool = next(t for t in tools if t.name == "search")
     xs = []
-    for _ in range(12):
+    for _ in range(15):
         t0 = time.perf_counter()
         out = await asyncio.wait_for(tool.ainvoke({"query": query, "top_k": 5}), timeout=15)
         xs.append((time.perf_counter() - t0) * 1000)
     xs.sort()
     emit("形态A'", "tool.ainvoke(每调用新建会话) p50", value_ms=xs[len(xs) // 2])
-    emit("形态A'", "tool.ainvoke(每调用新建会话) p95", value_ms=xs[max(0, int(0.95 * len(xs) + 0.5) - 1)])
+    emit("形态A'", "tool.ainvoke(每调用新建会话) p95", value_ms=_p95(xs))
     emit("形态A'", "返回形态", value=f"langchain tool 输出类型 {type(out).__name__}")
 
     # ---- 形态 B：每请求注入头（共享中继——每次调用按调用方 token 新建会话） ----
     xs = []
-    for i in range(12):
+    for i in range(15):
         tok = tokens[hold_users[i % len(hold_users)]]
         cb = make_client(tok, url)
         t0 = time.perf_counter()
@@ -156,7 +169,7 @@ async def main_async(cfg: dict) -> None:
         xs.append((time.perf_counter() - t0) * 1000)
     xs.sort()
     emit("形态B", "每请求建会话+调用 p50", value_ms=xs[len(xs) // 2])
-    emit("形态B", "每请求建会话+调用 p95", value_ms=xs[max(0, int(0.95 * len(xs) + 0.5) - 1)])
+    emit("形态B", "每请求建会话+调用 p95", value_ms=_p95(xs))
 
     # ---- 形态 A 规模化：10 用户会话并持（连接/FD/内存足迹） ----
     from contextlib import AsyncExitStack

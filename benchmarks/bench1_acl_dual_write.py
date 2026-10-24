@@ -39,7 +39,7 @@ from bench_common import (
     seed_corpus,
 )
 
-TIERS: tuple[tuple[int, int], ...] = ((10_000, 30), (50_000, 15))  # (块数, 采样数)
+TIERS: tuple[tuple[int, int], ...] = ((10_000, 30), (50_000, 20))  # (块数, 采样数)
 WARMUP = 3
 CHUNKS_PER_DOC = 10
 
@@ -146,10 +146,27 @@ def portability_check() -> dict[str, str]:
     }
 
 
+_LOOPS_RE = re.compile(r"loops=(\d+)")
+
+
+def _loops_by_kind(plan_text: str, kind: str) -> int:
+    """解析 EXPLAIN ANALYZE 文本中含指定节点类型（如 "Anti Join" / "CTE Scan"）
+    的行的 max loops——文档级谓词（Anti Join 分支）是按块还是按文档重复求值的
+    直接证据。"""
+    best = 0
+    for line in plan_text.splitlines():
+        if kind in line:
+            m = _LOOPS_RE.search(line)
+            if m:
+                best = max(best, int(m.group(1)))
+    return best
+
+
 def capture_plans() -> dict[str, str]:
-    """计划形态证据（报告引用）：u_broad 各写法双方言计划——sqlite 默认物化 CTE
-    （LIST SUBQUERY + REUSE）；pg inline 按块重复求值（loops=chunks）vs
-    MATERIALIZED 按文档一次物化。小规模（200 文档）足以呈现计划形态。"""
+    """计划形态证据（报告引用，P2-5 脚本化）：u_broad 各写法双方言计划——
+    sqlite 默认物化 CTE（LIST SUBQUERY + REUSE）；pg inline 按块重复求值
+    （文档级谓词反连接分支 loops=块数）vs MATERIALIZED 按文档一次物化
+    （CTE 段 loops=文档数）。小规模（200 文档 ×10 块）足以呈现计划形态。"""
     plans: dict[str, str] = {}
 
     def fill(sql: str, params: dict) -> str:
@@ -170,6 +187,8 @@ def capture_plans() -> dict[str, str]:
         )
     with open_bench_db("pg", tag="plan_pg") as db:
         seed_corpus(db, n_docs=200, chunks_per_doc=10)
+        n_docs = 200
+        n_chunks = n_docs * 10
         plan = db.compile_acl("u_broad", BENCH_ORG)
         vis_sql, vis_p = db.render_visible_docs_select(plan)
         per_sql, per_p = db.render_select(plan)
@@ -177,11 +196,37 @@ def capture_plans() -> dict[str, str]:
         plans["pg_json_each_explain"] = "\n".join(
             r[0] for r in db.execute("EXPLAIN (COSTS OFF) " + fill(per_sql, per_p))
         )
-        plans["pg_visible_docs_explain"] = "\n".join(
-            r[0] for r in db.execute("EXPLAIN (COSTS OFF) " + fill(vis_sql, vis_p))
+        # P2-5：ANALYZE 实测计划——文档级谓词按块（loops=块数 2000）还是按文档
+        # （CTE 段 loops=文档数 200）重复求值，逐行可从交付物复现
+        plans["pg_visible_docs_explain_analyze"] = "\n".join(
+            r[0] for r in db.execute(
+                "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) " + fill(vis_sql, vis_p)
+            )
         )
-        plans["pg_visible_docs_materialized_explain"] = "\n".join(
-            r[0] for r in db.execute("EXPLAIN (COSTS OFF) " + fill(mat_sql, vis_p))
+        plans["pg_visible_docs_materialized_explain_analyze"] = "\n".join(
+            r[0] for r in db.execute(
+                "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) " + fill(mat_sql, vis_p)
+            )
+        )
+        inline_anti_loops = _loops_by_kind(
+            plans["pg_visible_docs_explain_analyze"], "Anti Join"
+        )
+        mat_anti_loops = _loops_by_kind(
+            plans["pg_visible_docs_materialized_explain_analyze"], "Anti Join"
+        )
+        mat_cte_scan_loops = _loops_by_kind(
+            plans["pg_visible_docs_materialized_explain_analyze"], "CTE Scan"
+        )
+        verdict = (
+            "PASS"
+            if inline_anti_loops >= n_chunks and mat_anti_loops <= n_docs
+            else "FAIL（计划形态与结论不符——需上报）"
+        )
+        plans["pg_loops_verdict"] = (
+            f"{verdict}: inline 文档级谓词（Anti Join 分支）max loops={inline_anti_loops}"
+            f"（=块数 {n_chunks}：按块重复求值）；MATERIALIZED CTE 段 Anti Join max loops="
+            f"{mat_anti_loops}（=文档数 {n_docs}：按文档一次物化；外层 CTE Scan 对物化集"
+            f"按块探查 loops={mat_cte_scan_loops}——semi join 本分，与谓词重求值不同）"
         )
     return plans
 
@@ -241,6 +286,7 @@ def main() -> None:
         "- pg visible_docs+MATERIALIZED：CTE 强制一次物化——一词修复\n"
         "- 双写法 json_each：双方言均为块级扫描 + 函数展开（无文档级去重）"
     )
+    print(f"- **EXPLAIN ANALYZE loops 实测（P2-5 脚本化）：{plans['pg_loops_verdict']}**")
 
     path = save_result(
         "bench1",
