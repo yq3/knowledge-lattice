@@ -55,23 +55,39 @@ def _assert_public_free_of_audit_objects(pg_db) -> None:
 
 @pytest.fixture()
 def public_audit_guard(pg_db):
-    """R2-P3-4：public audit 对象**幂等自清理** fixture——先清历史残留（若上一次
-    运行/其他任务留下），yield 后再清一次（即便用例中途失败也不留痕迹）+ 断言
-    public 三面零对象。两个工厂用例改用本 fixture（原裸断言不自清理）。"""
+    """R2-P3-4（R2 P3-1/P3-2 收口）：public audit 对象**幂等自清理** fixture——
+    先清历史残留（若上一次运行/其他任务留下），yield 后再清一次（即便用例中途
+    失败也不留痕迹）+ 断言 public 三面（表/触发器/函数）零对象。
+
+    三面清理顺序（P3-1：R1 把函数名写成触发器名、lattice_audit_* 函数从未被清）：
+    ① 函数——按 pg_proc 实测清单（`lattice_audit%` 前缀）`DROP FUNCTION … CASCADE`
+    （连带触发器依赖，先于表清理执行）；② 表——`DROP TABLE audit_events CASCADE`
+    （级联清触发器）；③ 触发器——随前两步级联消灭，末尾断言兜底。
+
+    **破坏性动作边界（P3-2）**：本 fixture 会对 DSN 指向库的 public schema 无差别
+    DROP audit 对象——LATTICE_PG_DSN **必须指向专用测试库**（本仓约定
+    lattice 容器库），不得指向承载开发/演示审计数据的共享库。"""
     def _cleanup() -> None:
         import psycopg
 
         admin = psycopg.connect(pg_db.dsn, autocommit=True)
         try:
-            for obj in _public_audit_objects(pg_db)[1]:
-                admin.execute(f'DROP TRIGGER IF EXISTS {obj[0]} ON audit_events')
-            for name in ("audit_no_delete", "audit_no_update", "audit_no_truncate"):
-                admin.execute(f"DROP FUNCTION IF EXISTS {name}() CASCADE")
-            admin.execute("DROP TABLE IF EXISTS audit_events CASCADE")
+            # ① 函数面：按 pg_proc 实测清单（lattice_audit% 前缀）逐个 CASCADE
+            for (proname,) in _public_audit_objects(pg_db)[2]:
+                admin.execute(f'DROP FUNCTION IF EXISTS public."{proname}"() CASCADE')
+            # 兜底：函数已改名的存量形态也按真实函数名清（audit.py 当前三函数）
+            for legacy in (
+                "lattice_audit_append_only",
+                "lattice_audit_append_only_delete",
+                "lattice_audit_append_only_truncate",
+            ):
+                admin.execute(f'DROP FUNCTION IF EXISTS public."{legacy}"() CASCADE')
+            # ② 表面：级联清触发器
+            admin.execute("DROP TABLE IF EXISTS public.audit_events CASCADE")
         finally:
             admin.close()
 
-    _cleanup()  # 幂等：历史残留先清（DROP IF EXISTS）
+    _cleanup()  # 幂等：历史残留先清（全部 DROP IF EXISTS）
     yield pg_db
     _cleanup()
     _assert_public_free_of_audit_objects(pg_db)
@@ -585,43 +601,55 @@ def test_pg_concurrent_migrate_advisory_lock_clean_skip(pg_db, tmp_path: Path) -
 # ============ P3-6（M0b-1 移交，M0b-3 清偿）：schema_migrations 锁外竞态 ============
 
 
-def test_pg_ensure_schema_migrations_survives_duplicate_table_race(pg_db) -> None:
-    """P3-6：_ensure_schema_migrations 在 advisory lock 之外执行，并发 fresh 连接
-    同跑 CREATE TABLE IF NOT EXISTS 可抛 42P07 DuplicateTable（PG 该语句对并发建表
-    非原子）——确定性模拟：包装连接令首条 CREATE 语句抛 DuplicateTable 后表已在
-    场，恢复分支复核存在即干净继续（不重抛、不崩溃）。"""
+def test_pg_ensure_schema_migrations_survives_create_race(pg_db) -> None:
+    """P3-6（R2 P2-1 收口）：_ensure_schema_migrations 在 advisory lock 之外执行，
+    并发 fresh 连接同跑 CREATE TABLE IF NOT EXISTS 的**真实竞态是 pg_type 唯一键
+    冲突（UniqueViolation 23505）**，间或 DuplicateTable（42P07）——确定性注入
+    **两类异常各跑恢复/fail-closed 两分支**（R1 只注入 42P07 与生产失败模式
+    不同，属走过场测试；R2 双分支补齐）：
+    - 恢复分支：注入异常 + 表已在场（对端已建好）→ 复核存在 → 干净继续；
+    - fail-closed 分支：注入异常 + 表确实不在（DROP 后）→ 照抛（不静默吞）。"""
     from psycopg import errors as pg_errors
 
     from knowledge_lattice.store.postgres.migrate import _ensure_schema_migrations
 
     class _RaceConn:
-        """并发竞态模拟：CREATE TABLE IF NOT EXISTS schema_migrations 首次调用
-        抛 DuplicateTable（对端刚建好），其余语句透传真实连接。"""
+        """并发竞态模拟：CREATE TABLE IF NOT EXISTS schema_migrations 抛指定
+        异常类（对端刚建好），其余语句透传真实连接。"""
 
-        def __init__(self, real) -> None:
+        def __init__(self, real, exc_cls) -> None:
             self._real = real
+            self._exc_cls = exc_cls
 
         def execute(self, sql, params=None):
             if sql.strip().startswith("CREATE TABLE IF NOT EXISTS schema_migrations"):
-                raise pg_errors.DuplicateTable(
-                    'relation "schema_migrations" already exists'
+                if self._exc_cls is pg_errors.DuplicateTable:
+                    raise pg_errors.DuplicateTable(
+                        'relation "schema_migrations" already exists'
+                    )
+                raise pg_errors.UniqueViolation(
+                    "duplicate key value violates unique constraint"
+                    ' "pg_type_typname_nsp_index"'
                 )
             return self._real.execute(sql, params)
 
-    # ① 恢复分支：表已在场（对端已建好）→ 复核存在 → 干净返回、不重抛
-    _ensure_schema_migrations(_RaceConn(pg_db.raw))
-    assert pg_db.execute(
-        "SELECT count(*) FROM schema_migrations"
-    ).fetchone()[0] >= 1  # 表仍可用
+    # 两类真实竞态异常（23505 pg_type 唯一键为主形态——M0b-1 移交原文；42P07 间或）
+    for exc_cls in (pg_errors.UniqueViolation, pg_errors.DuplicateTable):
+        # ① 恢复分支：表已在场（对端已建好）→ 复核存在 → 干净返回、不重抛
+        _ensure_schema_migrations(_RaceConn(pg_db.raw, exc_cls))
+        assert pg_db.execute(
+            "SELECT to_regclass('schema_migrations') IS NOT NULL"
+        ).fetchone()[0]  # 表在场
 
-    # ② fail-closed：表确实不在（DROP 后）→ 同款 42P07 照抛（不静默吞）
-    pg_db.execute("DROP TABLE schema_migrations")
-    with pytest.raises(pg_errors.DuplicateTable):
-        _ensure_schema_migrations(_RaceConn(pg_db.raw))
-    # 真实路径恢复：无注入时正常重建（独立于上面两条断言面）
-    from knowledge_lattice.store.postgres.migrate import _ensure_schema_migrations as _ens
-
-    _ens(pg_db.raw)
+        # ② fail-closed：表确实不在（DROP 后）→ 同款异常照抛（不静默吞）
+        pg_db.execute("DROP TABLE schema_migrations")
+        with pytest.raises(exc_cls):
+            _ensure_schema_migrations(_RaceConn(pg_db.raw, exc_cls))
+        # 真实路径恢复：无注入时正常重建（下一轮循环的前置——重建后表在场）
+        _ensure_schema_migrations(pg_db.raw)
+        assert pg_db.execute(
+            "SELECT to_regclass('schema_migrations') IS NOT NULL"
+        ).fetchone()[0]
 
 
 # ============ 审计月库 → 按月分区表（§4 PG 映射） ============
@@ -713,7 +741,7 @@ def test_pg_invalue_rejects_non_identifier_param_prefix() -> None:
 def test_pg_malicious_dimension_key_constants_intact_and_no_cross_org_leak(pg_db) -> None:
     """恶意维度 key（库内数据）下 PG 渲染产物：外层常量齐全（org/版本/tombstone）、
     参数名全为合法标识符（渲染器自控 g<seq>_<i> 序列）、注释记号不出现在字面量外、
-    恶意 key 只以转义后的字面量出现（jsonb_extract_path 第二参）；双组织真实
+    恶意 key 只以转义后的字面量出现（v1.1 CTE：dim.key = '<key>'——Literal 渲染）；双组织真实
     执行无跨组织行（org:gl 文档绝不出现——含空维度放行文档）。"""
     from knowledge_lattice.core.docs.acl import compile_acl
 
@@ -774,7 +802,7 @@ def test_pg_malicious_dimension_key_constants_intact_and_no_cross_org_leak(pg_db
         assert _IDENTIFIER.fullmatch(name), f"非法参数名: {name!r}"
     stripped = _OUTSIDE_LITERALS.sub("''", sql)
     assert "--" not in stripped and "/*" not in stripped  # 注释记号不出现在字面量外
-    # 恶意 key 只以转义后的字面量出现（jsonb_extract_path 第二参——Literal 渲染）
+    # 恶意 key 只以转义后的字面量出现（v1.1 CTE：dim.key = '<key>'——Literal 渲染）
     assert f"'{_EVIL_KEY}'" in sql
     # 行为：真实执行 org 隔离成立——org:gl 文档（含空维度文档）绝不出现
     assert {r[2] for r in pg_db.execute(sql, params)} == {"d_tax"}

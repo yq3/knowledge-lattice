@@ -35,7 +35,7 @@ fi
 # R2-P3-7：PG_COLLECTED 范围扩为「参数化 [pg] 条目 + PG 专用文件（test_pg_*）
 # 收集条目」——防 PG 专用用例被删/没收集到的假绿；${...:-0} 防 set -u 空引用。
 PG_PARAM_COLLECTED="$(uv run pytest -m "not manual" --collect-only -q 2>/dev/null | grep -c '\[pg\]' || true)"
-PG_ONLY_COLLECTED="$(uv run pytest tests/test_pg_scaff.py tests/test_pg_backend.py -m "not manual" --collect-only -q 2>/dev/null | grep -c '::' || true)"
+PG_ONLY_COLLECTED="$(uv run pytest tests/test_pg_*.py -m "not manual" --collect-only -q 2>/dev/null | grep -c '::' || true)"
 PG_COLLECTED="$(( ${PG_PARAM_COLLECTED:-0} + ${PG_ONLY_COLLECTED:-0} ))"
 if [[ "$PG_COLLECTED" -eq 0 ]]; then
   echo "GATE FAIL: 收集期未发现任何 pg 臂用例（[pg] 参数化 ${PG_PARAM_COLLECTED:-0} + PG 专用 ${PG_ONLY_COLLECTED:-0}）——backend 参数化骨架失守（防「没收集到」的假绿）。" >&2

@@ -19,8 +19,22 @@
    （`mark_embedding_batch(doc, ver, "new:2560")` → 嵌入 → `write_embeddings`）——
    INSERT `chunk_vectors`，旧标签行零触碰、持续服务（功能零降级）。
    - 存量文档批量：管理面入口随 M2（M0b-3 手工形态=逐文档重摄取或批量任务脚本）。
-2. **覆盖率观测**：`SELECT embed_model, count(DISTINCT rid) FROM chunk_vectors GROUP BY embed_model`
-   ——`new:2560` 行数 = 在用块数（`chunks` 中 tombstone=0 且版本在用的 rid 数）即 100%。
+2. **覆盖率观测**（分子/分母口径闭合——都限定在用块）：
+   ```sql
+   -- 分子：新标签已回写的在用块数
+   SELECT count(*) FROM chunk_vectors cv
+   JOIN chunks c ON c.rid = cv.rid
+   WHERE cv.embed_model = 'new:2560'
+     AND c.tombstone = 0
+     AND c.version = (SELECT d.active_version FROM documents d WHERE d.id = c.doc_id);
+   -- 分母：在用块总数（同一限定口径）
+   SELECT count(*) FROM chunks c
+   WHERE c.tombstone = 0
+     AND c.version = (SELECT d.active_version FROM documents d WHERE d.id = c.doc_id);
+   ```
+   两值相等即覆盖率 100%（**不要**用裸 `SELECT embed_model, count(DISTINCT rid)
+   FROM chunk_vectors GROUP BY embed_model` 对比——分母含 tombstone/旧版本块，
+   会把覆盖率低估、误判未到 100%；重嵌入任务按 pending 维度认领，不含旧版本块）。
    - 共存窗口读代价（知情申报，报告 §3.3）：sqlite 零放大；pg 精确扫描需过双倍行页
      （P50 +6% / P95 +18% 量级，跑间波动带 -3%~+52%）。
 3. **原子切 current_model**：配置标签翻转（`LATTICE_EMBED_MODEL` / config）——
@@ -63,8 +77,11 @@ deploy 场景注意：
 - 双方言迁移框架：sqlite `user_version` / PG `schema_migrations`——版本只前进、
   幂等重放无副作用、失败整事务回滚（含 DDL）；乱序补入小编号迁移 fail-fast。
 - **PG 并发启动**：`schema_migrations` 建表在 advisory lock 之外，并发 fresh 连接
-  同跑由 DuplicateTable 恢复分支兜底（M0b-3 P3-6）；迁移应用本身经事务级
-  advisory lock 序列化——双进程并发迁移一者应用、另一者锁内重读后干净跳过。
+  同跑的 CREATE TABLE IF NOT EXISTS 非原子——**真实竞态为 pg_type 唯一键冲突
+  （UniqueViolation 23505，主形态）间或 DuplicateTable（42P07）**，由
+  DuplicateTable/UniqueViolation 双捕获 + 复核在场分支兜底（M0b-3 P3-6，R2 收口）；
+  迁移应用本身经事务级 advisory lock 序列化——双进程并发迁移一者应用、另一者
+  锁内重读后干净跳过。
 - **sqlite 迁移窗口**：`PRAGMA foreign_keys=OFF` + 事务末 `foreign_key_check`
   ——结束（含失败路径）恢复 `foreign_keys=ON`；**成功路径下恢复失败会记
   WARNING 日志**（`knowledge_lattice.store.sqlite.migrate` logger——连接已坏等

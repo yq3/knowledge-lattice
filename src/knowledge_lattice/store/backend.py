@@ -21,7 +21,8 @@ from typing import Protocol, runtime_checkable
 # 由编译器（core/docs/acl.py，M0a-2）产出，各后端 acl_render.py 渲染为目标 SQL。
 # 语义规则只在编译器实现一次（#34 必修 1/3——「无 IN ()」为 Plan 层不变式）：
 #   · 每个规则对应一个 active 维度，统一「有值则过滤（与授权集有交集）、空值放行
-#     （NOT EXISTS json_each …）」模板；required/enabled 不参与过滤；
+#     （该维无 document_dimensions 行）」模板（v1.1：visible_docs CTE 唯一路径——
+#     json_each 按块模板已删）；required/enabled 不参与过滤；
 #   · 空授权集（grants=()）→ 该维只渲染 NOT EXISTS 单条件节点——用户只见该维为空的
 #     文档（T22），禁止生成 `IN ()` 语法错误；
 #   · retired 维度不生成规则（唯一放宽路径——T20）；

@@ -36,11 +36,7 @@ from helpers import (
 )
 
 from knowledge_lattice.core.docs.acl import AclDeniedError, compile_acl
-from knowledge_lattice.store.acl_ast import (
-    ColumnRef,
-    InValue,
-    build_visible_docs_cte_where,
-)
+from knowledge_lattice.store.acl_ast import ColumnRef, InValue
 from knowledge_lattice.store.sqlite.acl_render import (
     build_where_ast,
     render_select,

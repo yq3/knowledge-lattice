@@ -21,8 +21,11 @@ CREATE TABLE chunk_vectors (            -- 分表（拍板 2）：向量载荷�
 );
 
 -- 存量搬运：v1 库已回写向量迁入分表（钉标签未回写的行不搬运——标签留在 chunks
--- 供断点续跑清点）；embedding IS NOT NULL AND embed_model IS NOT NULL 双守卫
--- （写路径恒成对写入；防御孤立向量行撞 NOT NULL/PK 使迁移失败）。
+-- 供断点续跑清点）；`embedding IS NOT NULL AND embed_model IS NOT NULL` 双守卫：
+-- 写路径恒成对写入，**embedding 非空而 embed_model NULL 的行属非法孤立态**
+-- （有向量无标签——无从归属模型），迁移中**显式丢弃**、不进 chunk_vectors
+-- （验收 #1 计数口径"原 embedding 非空行数"按合法成对行计——test_v11_schema
+-- 孤立行丢弃断言在案）。
 INSERT INTO chunk_vectors(rid, embed_model, embedding)
   SELECT rid, embed_model, embedding FROM chunks
   WHERE embedding IS NOT NULL AND embed_model IS NOT NULL;
@@ -34,6 +37,8 @@ ALTER TABLE chunks DROP COLUMN dims_json;    -- 拍板 1：投影删除（真相
 ALTER TABLE chunks DROP COLUMN embedding;    -- 拍板 2：载荷迁分表（宽行问题根源——报告 §3.2 sqlite 2.0× 拖慢）
 
 -- 待嵌清点替代索引：原部分索引（doc_id WHERE embedding IS NULL AND tombstone=0）
--- 随列删除失效；mark_embedding_batch(doc_id)/pending_embeddings(label) 的扫描面
--- 改为 (doc_id, embed_model) 前缀 + tombstone 过滤（钉标签后在处理块）
+-- 随列删除失效。真实查询面：mark_embedding_batch(doc_id, version, label) 走
+-- (doc_id, embed_model) 的 doc_id 前缀 + tombstone 过滤；pending_embeddings(label)
+-- 为 embed_model 等值 + NOT EXISTS chunk_vectors（不走本索引——label 清点为低频
+-- 断点续跑路径，当前数据量无需为其单建 (embed_model) 索引，M1 量级后再评估）
 CREATE INDEX idx_chunks_vec_pending ON chunks(doc_id, embed_model) WHERE tombstone = 0;

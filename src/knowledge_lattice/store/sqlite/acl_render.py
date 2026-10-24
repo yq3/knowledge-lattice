@@ -42,10 +42,6 @@ from knowledge_lattice.store.acl_ast import (  # noqa: F401  (re-export——既
     build_fts_where_ast as _build_fts_where_neutral,
     build_visible_docs_cte_where as _build_cte_where_neutral,
     build_visible_docs_outer_where as _build_outer_where_neutral,
-    filter_nodes as _filter_nodes_neutral,
-    org_eq as _org_eq,
-    tombstone_eq as _tombstone_eq,
-    version_eq as _version_eq,
 )
 from knowledge_lattice.store.backend import AclPlan
 from knowledge_lattice.store.sqlite.fts import BM25_WEIGHTS

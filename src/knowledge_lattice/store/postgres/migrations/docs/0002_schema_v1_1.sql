@@ -14,6 +14,8 @@ CREATE TABLE chunk_vectors (
   PRIMARY KEY (rid, embed_model)        -- 蓝绿并存物理前提（PK(rid) 即 IntegrityError）
 );
 
+-- 存量搬运：与 sqlite 同款双守卫——embedding 非空而 embed_model NULL 的行属
+-- 非法孤立态（有向量无标签），迁移中显式丢弃、不进 chunk_vectors。
 INSERT INTO chunk_vectors(rid, embed_model, embedding)
   SELECT rid, embed_model, embedding FROM chunks
   WHERE embedding IS NOT NULL AND embed_model IS NOT NULL;
@@ -21,4 +23,6 @@ INSERT INTO chunk_vectors(rid, embed_model, embedding)
 DROP INDEX idx_chunks_vec_pending;          -- PG 随列自动清理；显式删保持双方言语句序一致
 ALTER TABLE chunks DROP COLUMN dims_json;
 ALTER TABLE chunks DROP COLUMN embedding;
+-- 同 sqlite：mark_embedding_batch 走 doc_id 前缀；pending_embeddings(label) 为
+-- embed_model 等值 + NOT EXISTS（不走本索引，量级后再评估）
 CREATE INDEX idx_chunks_vec_pending ON chunks(doc_id, embed_model) WHERE tombstone = 0;

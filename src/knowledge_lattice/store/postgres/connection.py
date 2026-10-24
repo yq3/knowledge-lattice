@@ -74,6 +74,11 @@ def setup_connection(
 
     conn.adapters.register_dumper(str, StrDumperUnknown)
     conn.execute("SET TIME ZONE 'UTC'")
+    # 防御纵深（M0b-3 R2 P3-8）：Literal 转义（单引号加倍）的字面量安全性以
+    # standard_conforming_strings=on 为前提（off 时反斜杠在 PG 字符串字面量内
+    # 是转义字符——维度 key 等库内数据经 Literal 渲染时反斜杠+引号组合可破坏
+    # 字面量边界）。PG 默认 on，但目标环境若被改回 off，工厂显式钉死。
+    conn.execute("SET standard_conforming_strings = on")
     if search_path is not None:
         items = [s.strip() for s in search_path.split(",") if s.strip()]
         for item in items:

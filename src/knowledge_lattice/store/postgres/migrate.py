@@ -117,10 +117,12 @@ def applied_versions(conn: psycopg.Connection) -> list[int]:
 def _ensure_schema_migrations(conn: psycopg.Connection) -> None:
     """确保 schema_migrations 表在场（CREATE IF NOT EXISTS）。
 
-    P3-6（M0b-1 移交）：本调用发生在 advisory lock **之外**（migrate_db 入口与
-    applied_versions 查询面）——PG 的 CREATE TABLE IF NOT EXISTS 对并发建表并非
-    原子（两个 fresh 连接同跑可抛 42P07 DuplicateTable）。处置：捕获后复核表
-    已在场（并发对端已建好）即继续，其余异常照抛。
+    P3-6（M0b-1 移交，R2 P2-1 收口）：本调用发生在 advisory lock **之外**
+    （migrate_db 入口与 applied_versions 查询面）——PG 的 CREATE TABLE IF NOT
+    EXISTS 对并发建表并非原子，两个 fresh 连接同跑的**真实失败模式是 pg_type
+    唯一键冲突（UniqueViolation 23505）**，间或也有 DuplicateTable（42P07）。
+    处置：双捕获后按 search_path 复核表已在场（并发对端已建好）即继续，其余
+    异常照抛（fail-closed 不回退）。
     """
     from psycopg import errors as pg_errors
 
@@ -133,19 +135,18 @@ def _ensure_schema_migrations(conn: psycopg.Connection) -> None:
             "  applied_at TIMESTAMPTZ NOT NULL DEFAULT now()"
             ")"
         )
-    except pg_errors.DuplicateTable:
+    except (pg_errors.DuplicateTable, pg_errors.UniqueViolation):
+        # 42P07（表名冲突）/ 23505（pg_type 唯一键——并发建表真实竞态形态）
         if _schema_migrations_exists(conn):
             return  # 并发对端已建好（锁外竞态窗口）——干净继续
-        raise  # 真 42P07（表确实不在）——保留原异常
+        raise  # 表确实不在——保留原异常
 
 
 def _schema_migrations_exists(conn: psycopg.Connection) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM information_schema.tables"
-        " WHERE table_name = 'schema_migrations'"
-        "   AND table_schema = current_schema()"
-    ).fetchone()
-    return row is not None
+    """表在场复核（按 search_path 解析——P3-3：多 schema 时 current_schema()
+    只查首个 schema 会假阴性；to_regclass 覆盖 search_path 全部 schema）。"""
+    row = conn.execute("SELECT to_regclass('schema_migrations') IS NOT NULL").fetchone()
+    return bool(row[0])
 
 
 def _apply_one(conn: psycopg.Connection, m: Migration) -> bool:

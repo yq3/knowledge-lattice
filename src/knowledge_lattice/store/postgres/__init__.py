@@ -8,9 +8,11 @@ M0b-1 已落（PG spike）：
   序列化 + 原生约束即时校验〔违例整事务回滚〕+ dollar-quoting 感知切分）；
 - migrations/{docs,semantic}/：二维迁移目录（0001_schema_v1.sql = §4 文档侧全量
   DDL 的 PG 等价——tsvector 五列 GENERATED / vector 列 / 9 个 plpgsql 触发器；
-  semantic/ 空占位，M2-S1 落）；
-- acl_render.py：AclPlan PG 渲染器（同一方言无关 AST〔store/acl_ast.py〕，
-  json_each → jsonb 等价路径谓词；visible_docs 双写法同构；M0a-2 R2 安全纪律沿用）；
+  0002_schema_v1_1.sql = 三项拍板落库〔删 dims_json/embedding、chunk_vectors
+  分表 PK(rid, embed_model)〕；semantic/ 空占位，M2-S1 落）；
+- acl_render.py：AclPlan PG 渲染器（同一方言无关 AST〔store/acl_ast.py〕；
+  M0b-3 起 visible_docs CTE + AS MATERIALIZED **唯一路径**——jsonb 按块路径谓词
+  已随拍板 1 删除，向量谓词迁 chunk_vectors JOIN；M0a-2 R2 安全纪律沿用）；
 - backend.py：PgBackend（Acl/Ingest/Admin/Audit 实作 + Search 种子签名——完整
   检索管线随 M0b-2/M1）；
 - audit.py（审计按月分区表 + append-only 触发器）/ vec.py（pgvector 文本序列化）。

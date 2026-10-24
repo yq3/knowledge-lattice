@@ -13,7 +13,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import sqlite3
 import uuid
 from pathlib import Path
@@ -83,6 +82,11 @@ def test_sqlite_0002_migrates_legacy_vectors_and_drops_columns(tmp_path: Path) -
         insert_chunk(
             conn, doc_id="d1", seq=4, version=1, chunk_id="chk:raw", dims_json='{}'
         )
+        # 孤立行（embedding 非空、embed_model NULL——非法态）：迁移显式丢弃（P3-5）
+        insert_chunk(
+            conn, doc_id="d1", seq=5, version=1, chunk_id="chk:orphan", dims_json='{}',
+            embedding=pack_f32([9.0, 9.0]),
+        )
 
         applied = migrate_db(conn)  # 默认目录 → 0002
         assert applied == [2]
@@ -94,7 +98,7 @@ def test_sqlite_0002_migrates_legacy_vectors_and_drops_columns(tmp_path: Path) -
         assert "dims_json" not in cols and "embedding" not in cols
         assert "embed_model" in cols
 
-        # 存量搬运正确：chunk_vectors 行数 = 原 embedding 非空行数（2），载荷逐字节保真
+        # 存量搬运正确：chunk_vectors 行数 = 原合法成对行数（2），载荷逐字节保真
         rows = conn.execute(
             "SELECT c.id, cv.embed_model, cv.embedding FROM chunk_vectors cv"
             " JOIN chunks c ON c.rid = cv.rid ORDER BY c.seq"
@@ -102,6 +106,13 @@ def test_sqlite_0002_migrates_legacy_vectors_and_drops_columns(tmp_path: Path) -
         assert [(r[0], r[1]) for r in rows] == [("chk:a", "m:old"), ("chk:b", "m:old")]
         assert unpack_f32(rows[0][2]) == pytest.approx(vec_a)
         assert unpack_f32(rows[1][2]) == pytest.approx(vec_b)
+
+        # P3-5：孤立行（embedding 非空、embed_model NULL）被迁移丢弃——不进
+        # chunk_vectors（非法态无从归属模型；0002 双守关显式声明）
+        assert conn.execute(
+            "SELECT count(*) FROM chunk_vectors cv JOIN chunks c ON c.rid = cv.rid"
+            " WHERE c.id = 'chk:orphan'"
+        ).fetchone()[0] == 0
 
         # 待嵌行不搬运、标签保留（断点续跑清单仍可按标签清点）
         assert conn.execute(
@@ -252,7 +263,10 @@ def test_blue_green_dual_label_coexist_and_insertable(backend) -> None:
     ).fetchall()
     assert {r[0] for r in rows} == {"m:a", "m:b"}  # 并存可插
 
-    # 已回写标签零触碰（重写同 (rid,label) → PK 冲突吞掉、标签不符 → 0 行）
+    # 防护零触碰（P3-9 注释校准）：mark_embedding_batch("m:b") 已把 chunks.embed_model
+    # 改为 m:b——两条断言命中的都是**标签不符**分支（chunks.embed_model=:label 不匹配
+    # → INSERT..SELECT 选 0 行）；同 (rid,label) 的 PK 冲突吞掉路径由
+    # test_pg_backend.py::test_embedding_batch_roundtrip_and_exact_scan_distance 覆盖
     assert be.write_embeddings("m:a", [(rid, [0.5, 0.5])]) == 0
     assert be.write_embeddings("m:c", [(rid, [0.5, 0.5])]) == 0
     # 断点续跑清单：两标签均已回写 → 空；失败中断标签（钉标签未回写）→ 可清点
@@ -411,16 +425,28 @@ def test_plan_snapshot_stable_across_dimension_retire(matrix) -> None:
 
 
 def test_dataset_doc_filters_pushed_into_cte(matrix) -> None:
-    """⑥下推：dataset_ids/doc_ids 过滤同时出现在 CTE 与外层（语义等价、CTE 先收窄）。"""
+    """⑥下推（AST 结构断言——R2 P2-2 收口）：dataset/doc 过滤节点
+    `InValue(ColumnRef("d","dataset_id"))` / `InValue(ColumnRef("d","id"))`
+    分别出现在 CTE WHERE（build_visible_docs_cte_where.parts——下推）与外层
+    WHERE（build_visible_docs_outer_where.parts——双保险），**两处分开断言**
+    （R1 的 SQL 字符串切分分隔符不命中、cte_part 实为整段 SQL，断言恒真——
+    若实现移除下推测试仍绿，属空转）；行为半句：过滤收窄正确。"""
+    from knowledge_lattice.store.acl_ast import ColumnRef, InValue
+
     plan = matrix.compile_acl(
         "u_full", "org:tax", now=NOW_TS, dataset_ids=("ds:vat_lib",), doc_ids=("d_cn",)
     )
+    cte = matrix.build_cte_where(plan)
+    outer = matrix.build_outer_where(plan)
+    expected_ds = InValue(ColumnRef("d", "dataset_id"), "ds", ("ds:vat_lib",))
+    expected_doc = InValue(ColumnRef("d", "id"), "doc", ("d_cn",))
+    # CTE 下推：过滤节点在 CTE WHERE 的 parts 中（节点树级断言——移除下推即红）
+    assert expected_ds in cte.parts, "dataset 过滤未下推进 CTE"
+    assert expected_doc in cte.parts, "doc 过滤未下推进 CTE"
+    # 外层双保险：同条件（等值节点）在外层 WHERE 的 parts 中——分开断言
+    assert expected_ds in outer.parts and expected_doc in outer.parts
+    # 行为：过滤收窄正确
     sql, params = matrix.render_select(plan)
-    cte_part = sql.split("AS MATERIALIZED (", 1)[1].split(")\n SELECT", 1)[0]
-    cte_part = cte_part.rsplit(")", 1)[0]  # 去掉 CTE 收尾括号前的外层引用
-    assert "d.dataset_id IN" in cte_part and "d.id IN" in cte_part
-    outer_part = sql.split("visible_docs)", 1)[1]
-    assert "d.dataset_id IN" in outer_part and "d.id IN" in outer_part
     assert {r[2] for r in matrix.execute(sql, params)} == {"d_cn"}
 
 

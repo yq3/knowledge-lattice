@@ -602,8 +602,6 @@ def _guard_v10_schema() -> None:
     import tempfile
     from pathlib import Path
 
-    import sqlite3
-
     from knowledge_lattice.store.sqlite import connect, migrate_db
 
     with tempfile.TemporaryDirectory() as td:
