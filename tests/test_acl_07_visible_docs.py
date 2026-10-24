@@ -1,8 +1,9 @@
-"""TC-ACL-07 visible_docs 备选逐字等价【单测｜M0a→M0b 后按结论保留】。
+"""TC-ACL-07 visible_docs 备选逐字等价【单测｜M0a→M0b 双后端】。
 
-对同一用户/文档矩阵，「按块 json_each 模板」与「按文档 visible_docs CTE（基于
-document_dimensions）」结果集完全一致（T5/T6/T22 两写法都测——#34 必修 3）；M0b
-实验选定后保留其一为常规断言、另一删除（design §5.1 性能注）。
+对同一用户/文档矩阵，「按块模板」（sqlite=json_each / pg=jsonb 等价路径谓词）
+与「按文档 visible_docs CTE（基于 document_dimensions）」结果集完全一致
+（T5/T6/T22 两写法都测——#34 必修 3；CTE 为纯 JOIN/EXISTS，双方言同构渲染）；
+M0b 实验选定后保留其一为常规断言、另一删除（design §5.1 性能注）。
 """
 
 from __future__ import annotations
@@ -11,22 +12,15 @@ import pytest
 
 from helpers import NOW_TS, insert_chunk, seed_doc_dims, seed_document
 
-from knowledge_lattice.core.docs.acl import compile_acl
-from knowledge_lattice.store.sqlite.acl_render import (
-    render_select,
-    render_visible_docs_select,
-)
-from knowledge_lattice.store.sqlite.backend import SqliteBackend
-
 # 覆盖 T5 形态（u_cn：tax_type 零授权→空集单条件）、多值（d_multi）、空值
 # （d_empty_region）、全空授权（admin_tax）；u_os/u_cn_vat 为补充交叉
 _USERS = ["u_full", "u_cn", "u_cn_vat", "u_os", "admin_tax"]
 
 
 def _rows_both_writings(matrix, user_id: str) -> tuple[list, list]:
-    plan = compile_acl(SqliteBackend(matrix), user_id, "org:tax", now=NOW_TS)
-    by_chunk = sorted(matrix.execute(*render_select(plan)))
-    by_doc = sorted(matrix.execute(*render_visible_docs_select(plan)))
+    plan = matrix.compile_acl(user_id, "org:tax", now=NOW_TS)
+    by_chunk = sorted(matrix.execute(*matrix.render_select(plan)))
+    by_doc = sorted(matrix.execute(*matrix.render_visible_docs_select(plan)))
     return by_chunk, by_doc
 
 
@@ -39,11 +33,14 @@ def test_same_result_set_both_writings(matrix, user_id) -> None:
 
 
 def test_visible_docs_sql_shape(matrix) -> None:
-    """渲染器附带断言：CTE 基于 document_dimensions、组织限定在场、无 `IN ()`。"""
-    plan = compile_acl(SqliteBackend(matrix), "u_full", "org:tax", now=NOW_TS)
-    sql, params = render_visible_docs_select(plan)
+    """渲染器附带断言（双方言同构）：CTE 基于 document_dimensions、组织限定在场、
+    外层 `c.doc_id IN (SELECT doc_id FROM visible_docs)`、无 `IN ()`。"""
+    plan = matrix.compile_acl("u_full", "org:tax", now=NOW_TS)
+    sql, params = matrix.render_visible_docs_select(plan)
+    org_param = ":org" if matrix.is_sqlite else "%(org)s"
     assert sql.startswith(
-        "WITH visible_docs(doc_id) AS (SELECT d.id FROM documents d WHERE d.org_id = :org"
+        "WITH visible_docs(doc_id) AS (SELECT d.id FROM documents d"
+        f" WHERE d.org_id = {org_param}"
     )
     assert "document_dimensions" in sql
     assert "c.doc_id IN (SELECT doc_id FROM visible_docs)" in sql

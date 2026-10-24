@@ -1,7 +1,9 @@
-"""测试造数 helpers（TC-SCAF 组 + M0a-2 ACL 编译器组共享）。
+"""测试造数 helpers（TC-SCAF 组 + M0a-2 ACL 编译器组共享；M0b-1 起双后端共用）。
 
-时间造数纪律（TEST-CASES 口径段）：时间依赖一律直接写过去时间戳（UTC
-`YYYY-MM-DD HH:MM:SS` 字符串，与 SQLite CURRENT_TIMESTAMP 同格式），不推进系统时钟。
+`conn` 形参为**鸭子类型执行面**：sqlite3.Connection（直连）或 tests/dbwrap.py
+包装器（SqliteDb / PgDb——pg 臂把 qmark `?` 自动翻译为 `%s`，种子函数单一写法
+服务双臂）。时间造数纪律（TEST-CASES 口径段）：时间依赖一律直接写过去时间戳
+（UTC `YYYY-MM-DD HH:MM:SS` 字符串，与 CURRENT_TIMESTAMP 同格式），不推进系统时钟。
 """
 
 from __future__ import annotations

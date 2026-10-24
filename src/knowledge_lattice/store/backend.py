@@ -204,7 +204,33 @@ class AdminBackend(Protocol):
 
 @runtime_checkable
 class SemanticBackend(Protocol):
-    """M2-S：sync 分批 upsert / missing·retired 推进 / 构建产物与 sem_vec 读写 / L0 导出。"""
+    """M2-S：sync 分批 upsert / missing·retired 推进 / 构建产物与 sem_vec 读写 / L0 导出。
+
+    种子方法签名（P3-17——M0b-1 随 PG backend 实作补齐；实现随 M2-S1 经
+    store/<dialect>/migrations/semantic/ 落库，D23/§5.8）。
+    """
+
+    def upsert_entities_batch(self, org_id: str, rows: Sequence[dict]) -> int:
+        """同步分批 upsert（只写事实列 name/attrs_json/parent_id/status/synced_at，
+        分批 ≤1000 行/批——NFR-11 写锁治理）；返回本批 inserted/updated 计数。"""
+        ...
+
+    def advance_status(self, org_id: str, *, missing_before: str) -> dict:
+        """missing 宽限期推进（超期 missing → retired，关系一并 retired——T-S4）；
+        返回 {missing, retired} 计数。"""
+        ...
+
+    def save_build(self, org_id: str, dict_rev: str, stats_json: str) -> int:
+        """构建产物登记（sem_builds——dict_rev = f(active 快照, YAML commit, embed_model)）。"""
+        ...
+
+    def load_build(self, org_id: str, dict_rev: str) -> dict | None:
+        """按 (org, dict_rev) 读构建产物（AC 自动机/模糊索引/L0 懒加载入口）。"""
+        ...
+
+    def export_l0(self, org_id: str) -> str:
+        """L0 术语片段导出（1500 token 预算——§6.3/agent 中间件注入源）。"""
+        ...
 
 
 @runtime_checkable

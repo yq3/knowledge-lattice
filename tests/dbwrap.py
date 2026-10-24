@@ -1,0 +1,334 @@
+"""双后端测试包装器（M0b-1 conftest backend 参数化骨架）。
+
+SqliteDb / PgDb 把 sqlite3.Connection 与 psycopg.Connection 收口为同一测试面，
+使「同一测试代码参数化跑 sqlite + pg」成立（TC-SCAF-01~05 / T1~T5 / T20 / T22 /
+TC-ACL-01~07 / TC-EMB-02 双后端）：
+
+- execute(sql, params)：qmark（?）SQL 原样进 sqlite；pg 臂自动把 ? 翻译为 %s
+  （tests/helpers.py 种子函数单一写法服务双臂）；渲染器产物（sqlite=:name /
+  pg=%(name)s）为字典参数、原样透传；
+- 方言分派：compile_acl / render_select / render_visible_docs_select / build_* /
+  render_sql / dims_scan / dim_marker / doc_side_trigger_names / fts_word_count；
+- 断言口径：integrity_error（触发器 ABORT——sqlite=IntegrityError /
+  pg=psycopg RaiseException[plpgsql RAISE EXCEPTION]）；fk_error + fk_marker
+  （孤儿行外键违例——pg 另携 sqlstate 23503，TC-SCAF-01 后端行 v1.4）。
+
+分层注：测试包装器只做「同形执行 + 方言分派」，不承载业务断言逻辑。
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from typing import Any
+
+import psycopg
+from psycopg import errors as pg_errors
+
+# SQLite 文档侧防护触发器全集（design §4——TC-SCAF-04①；audit append-only 属月库不在内）
+SQLITE_DOC_SIDE_TRIGGERS = {
+    "trg_dimval_immutable",
+    "trg_membership_delete_cleanup",
+    "trg_membership_no_extend",
+    "trg_documents_org_immutable",
+    "trg_datasets_org_immutable",
+    "trg_dimensions_org_immutable",
+    "trg_documents_ds_org_check",
+    "trg_documents_ds_immutable",
+    "trg_docdims_consistency",
+    "chunks_ai",
+    "chunks_ad",
+    "chunks_au",
+}
+
+# PG 文档侧等价触发器（§4 PG 映射）：chunks_ai/ad/au 由 tsvector 五列 GENERATED
+# 取代（无触发器形态——GENERATED 自动随行同步），其余 9 个为 plpgsql 等价物
+PG_DOC_SIDE_TRIGGERS = SQLITE_DOC_SIDE_TRIGGERS - {"chunks_ai", "chunks_ad", "chunks_au"}
+
+
+class Rows:
+    """统一结果集（fetchone/fetchall/迭代/索引——两种连接的公共面）。"""
+
+    __slots__ = ("_rows",)
+
+    def __init__(self, rows: list[tuple]) -> None:
+        self._rows = rows
+
+    def fetchone(self) -> tuple | None:
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self) -> list[tuple]:
+        return list(self._rows)
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    def __getitem__(self, index: int):
+        return self._rows[index]
+
+
+def _quote_literal(value: str) -> str:
+    """SQL 字符串字面量转义（单引号加倍——结构常量渲染口径）。"""
+    return "'" + value.replace("'", "''") + "'"
+
+
+class SqliteDb:
+    """sqlite 臂包装器（持有真实 sqlite3.Connection）。"""
+
+    name = "sqlite"
+    is_sqlite = True
+    is_pg = False
+    integrity_error = (sqlite3.IntegrityError,)  # 触发器 ABORT / 约束违例（单类即全覆盖）
+    fk_error = sqlite3.IntegrityError
+    fk_marker = "FOREIGN KEY"
+    fk_sqlstate: str | None = None  # sqlite 无 SQLSTATE 概念
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    @property
+    def raw(self) -> sqlite3.Connection:
+        return self._conn
+
+    # ---- 语句执行（qmark 原样） ----
+
+    def execute(self, sql: str, params: Any = ()) -> Rows:
+        return Rows(self._conn.execute(sql, params).fetchall())
+
+    def commit(self) -> None:
+        self._conn.commit()  # isolation_level=None（自动提交）下为幂等 no-op
+
+    def close(self) -> None:
+        self._conn.close()
+
+    # ---- 方言分派：backend / 编译 / 渲染 ----
+
+    def make_backend(self):
+        from knowledge_lattice.store.sqlite.backend import SqliteBackend
+
+        return SqliteBackend(self._conn)
+
+    def compile_acl(self, user_id: str, org_id: str, **kw: Any):
+        from knowledge_lattice.core.docs.acl import compile_acl
+
+        return compile_acl(self.make_backend(), user_id, org_id, **kw)
+
+    def render_select(self, plan):
+        from knowledge_lattice.store.sqlite.acl_render import render_select
+
+        return render_select(plan)
+
+    def render_visible_docs_select(self, plan):
+        from knowledge_lattice.store.sqlite.acl_render import render_visible_docs_select
+
+        return render_visible_docs_select(plan)
+
+    def render_sql(self, expr):
+        from knowledge_lattice.store.sqlite.acl_render import render_sql
+
+        return render_sql(expr)
+
+    def build_dimension_rule_ast(self, rule):
+        from knowledge_lattice.store.sqlite.acl_render import build_dimension_rule_ast
+
+        return build_dimension_rule_ast(rule)
+
+    def build_acl_ast(self, plan):
+        from knowledge_lattice.store.sqlite.acl_render import build_acl_ast
+
+        return build_acl_ast(plan)
+
+    def build_where_ast(self, plan, *, vector: bool = False):
+        from knowledge_lattice.store.sqlite.acl_render import build_where_ast
+
+        return build_where_ast(plan, vector=vector)
+
+    def build_fts_where_ast(self, plan, *, query: str):
+        """FTS 路 WHERE（sqlite-only——PG FTS 路随 M0b-2/M1，TC-ACL-06 口径）。"""
+        from knowledge_lattice.store.sqlite.acl_render import build_fts_where_ast
+
+        return build_fts_where_ast(plan, query=query)
+
+    # ---- 断言口径 ----
+
+    def dim_marker(self, key: str) -> str:
+        """维度条件在渲染 SQL 中的在场标记（逐字断言用——T20④/TC-ACL-04②）。"""
+        return f"'$.{key}'"
+
+    def dims_scan(self, key: str):
+        """按块维度扫描节点（json_each——方言结构断言，TC-ACL-02）。"""
+        from knowledge_lattice.store.acl_ast import ColumnRef, Func, Literal
+
+        return Func("json_each", (ColumnRef("c", "dims_json"), Literal(f"$.{key}")))
+
+    def doc_side_trigger_names(self) -> set[str]:
+        return set(SQLITE_DOC_SIDE_TRIGGERS)
+
+    def trigger_names(self) -> set[str]:
+        return {
+            r[0]
+            for r in self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger'"
+            )
+        }
+
+    def table_names(self) -> set[str]:
+        return {
+            r[0]
+            for r in self._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+
+    def fts_word_count(self, word: str) -> int:
+        """五列全文索引中含该词的行数（chunks_ai/ad/au 同步断言——TC-SCAF-04）。"""
+        from knowledge_lattice.store.sqlite.fts import escape_token
+
+        return (
+            self.execute(
+                "SELECT count(*) FROM chunks_fts WHERE chunks_fts MATCH ?",
+                (escape_token(word),),
+            )
+            .fetchone()[0]
+        )
+
+
+class PgDb:
+    """pg 臂包装器（持有 psycopg.Connection + 独立测试 schema）。"""
+
+    name = "pg"
+    is_sqlite = False
+    is_pg = True
+    # 触发器 ABORT（plpgsql RAISE EXCEPTION——P0001）+ 类 23 约束违例（unique/check 等）
+    integrity_error = (pg_errors.RaiseException, pg_errors.IntegrityError)
+    fk_error = pg_errors.ForeignKeyViolation
+    fk_marker = "violates foreign key constraint"
+    fk_sqlstate = "23503"  # TC-SCAF-01 后端行 v1.4：psycopg 外键错误码
+
+    def __init__(self, conn: psycopg.Connection, schema: str, dsn: str) -> None:
+        self._conn = conn
+        self.schema = schema
+        self.dsn = dsn
+
+    @property
+    def raw(self) -> psycopg.Connection:
+        return self._conn
+
+    # ---- 语句执行（qmark → %s；字典参数为渲染器产物、原样透传） ----
+
+    def execute(self, sql: str, params: Any = ()) -> Rows:
+        if not isinstance(params, dict):
+            sql = sql.replace("?", "%s")
+        cur = self._conn.execute(sql, params)
+        if cur.description is None:  # INSERT/UPDATE/DDL 等无结果语句
+            return Rows([])
+        return Rows(cur.fetchall())
+
+    def commit(self) -> None:
+        self._conn.commit()  # autocommit 模式下为幂等 no-op
+
+    def close(self) -> None:
+        self._conn.close()
+
+    # ---- 方言分派：backend / 编译 / 渲染（store/postgres/） ----
+
+    def make_backend(self):
+        from knowledge_lattice.store.postgres.backend import PgBackend
+
+        return PgBackend(self._conn)
+
+    def compile_acl(self, user_id: str, org_id: str, **kw: Any):
+        from knowledge_lattice.core.docs.acl import compile_acl
+
+        return compile_acl(self.make_backend(), user_id, org_id, **kw)
+
+    def render_select(self, plan):
+        from knowledge_lattice.store.postgres.acl_render import render_select
+
+        return render_select(plan)
+
+    def render_visible_docs_select(self, plan):
+        from knowledge_lattice.store.postgres.acl_render import render_visible_docs_select
+
+        return render_visible_docs_select(plan)
+
+    def render_sql(self, expr):
+        from knowledge_lattice.store.postgres.acl_render import render_sql
+
+        return render_sql(expr)
+
+    def build_dimension_rule_ast(self, rule):
+        from knowledge_lattice.store.postgres.acl_render import build_dimension_rule_ast
+
+        return build_dimension_rule_ast(rule)
+
+    def build_acl_ast(self, plan):
+        from knowledge_lattice.store.postgres.acl_render import build_acl_ast
+
+        return build_acl_ast(plan)
+
+    def build_where_ast(self, plan, *, vector: bool = False):
+        from knowledge_lattice.store.postgres.acl_render import build_where_ast
+
+        return build_where_ast(plan, vector=vector)
+
+    def build_fts_where_ast(self, plan, *, query: str):  # pragma: no cover - 形态对齐
+        raise NotImplementedError("PG FTS 路（to_tsquery/ts_rank 加权）随 M0b-2/M1")
+
+    # ---- 断言口径 ----
+
+    def dim_marker(self, key: str) -> str:
+        return f"jsonb_extract_path(c.dims_json, {_quote_literal(key)})"
+
+    def dims_scan(self, key: str):
+        """按块维度扫描节点（jsonb 等价路径谓词——§4 PG 映射）。"""
+        from knowledge_lattice.store.acl_ast import ColumnRef, Func, Literal
+
+        return Func(
+            "jsonb_array_elements_text",
+            (Func("jsonb_extract_path", (ColumnRef("c", "dims_json"), Literal(key))),),
+        )
+
+    def doc_side_trigger_names(self) -> set[str]:
+        return set(PG_DOC_SIDE_TRIGGERS)
+
+    def trigger_names(self) -> set[str]:
+        rows = self._conn.execute(
+            "SELECT t.tgname FROM pg_trigger t"
+            " JOIN pg_class c ON c.oid = t.tgrelid"
+            " JOIN pg_namespace n ON n.oid = c.relnamespace"
+            " WHERE NOT t.tgisinternal AND n.nspname = current_schema()"
+        ).fetchall()
+        return {r[0] for r in rows}
+
+    def table_names(self) -> set[str]:
+        rows = self._conn.execute(
+            "SELECT tablename FROM pg_tables WHERE schemaname = current_schema()"
+        ).fetchall()
+        return {r[0] for r in rows}
+
+    def fts_word_count(self, word: str) -> int:
+        """五列 tsvector GENERATED 中含该词的行数（ai/ad/au 的 GENERATED 等价断言）。"""
+        match = "to_tsquery('simple', %(w)s)"
+        return (
+            self.execute(
+                "SELECT count(*) FROM chunks"
+                f" WHERE title_tsv @@ {match} OR content_tsv @@ {match}"
+                f" OR keywords_tsv @@ {match} OR llm_keywords_tsv @@ {match}"
+                f" OR tags_tsv @@ {match}",
+                {"w": word},
+            )
+            .fetchone()[0]
+        )
+
+    def cosine_distance(self, rid: int, vector: list[float]) -> float:
+        """pgvector 余弦距离（<=> 精确扫描——G-6 起步口径）。"""
+        from knowledge_lattice.store.postgres.vec import format_vector
+
+        return (
+            self.execute(
+                "SELECT embedding <=> %(v)s::vector FROM chunks WHERE rid = %(rid)s",
+                {"v": format_vector(vector), "rid": rid},
+            )
+            .fetchone()[0]
+        )

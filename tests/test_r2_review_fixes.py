@@ -74,13 +74,13 @@ def test_invalue_rejects_non_identifier_param_prefix() -> None:
 # ============ P1-1②：恶意维度 key 下常量齐全、参数名全为合法标识符 ============
 
 
-def test_malicious_dimension_key_cannot_strip_constants(matrix) -> None:
+def test_malicious_dimension_key_cannot_strip_constants(sqlite_matrix) -> None:
     """维度 key 是库内数据（DDL 无字符集约束）：造 x + 恶意 key + zzz 三维度并授权
     （Committer 攻击配方：先有 x 绑定 :g_x_0，再以恶意 key 截断参数名注入注释），
     渲染产物必须仍含全部外层常量、参数名全为合法标识符、注释记号不出现在字面量外。"""
     for key in ("x", _EVIL_KEY, "zzz"):
-        _seed_granted_dimension(matrix, key)
-    plan = compile_acl(SqliteBackend(matrix), "u_full", "org:tax", now=NOW_TS)
+        _seed_granted_dimension(sqlite_matrix, key)
+    plan = compile_acl(SqliteBackend(sqlite_matrix), "u_full", "org:tax", now=NOW_TS)
     rules = {r.key: r for r in plan.dimension_rules}
     assert rules[_EVIL_KEY].grants == ("A",)  # 授权展开照常——key 作为数据正常参与
 
@@ -96,7 +96,7 @@ def test_malicious_dimension_key_cannot_strip_constants(matrix) -> None:
     # 恶意 key 只以转义后的 JSON path 字面量出现
     assert f"'$.{_EVIL_KEY}'" in sql
     # 行为照常：恶意/新增维度空值放行，u_full 可见集不变
-    assert {r[2] for r in matrix.execute(sql, params)} == {
+    assert {r[2] for r in sqlite_matrix.execute(sql, params)} == {
         "d_cn", "d_multi", "d_empty_region", "d_os",
     }
 
@@ -145,21 +145,21 @@ def test_malicious_key_dual_org_execution_no_cross_org_leak(conn) -> None:
 # ============ P2-1：畸形授权行（FK 合法、dimension/value 不匹配）不计入任何维度 ============
 
 
-def test_malformed_grant_not_counted_in_any_dimension(matrix) -> None:
+def test_malformed_grant_not_counted_in_any_dimension(sqlite_matrix) -> None:
     """region 维度挂 tax_type 的 VAT 取值（FK 合法、归属不匹配）：read_grants 不把
     该行计入任何维度——修复前会展开成 region=("CN","OS","VAT") 造成跨维度取值越权。"""
-    matrix.execute(
+    sqlite_matrix.execute(
         "INSERT INTO user_dimension_grants(user_id, dimension_id, value_id)"
         " VALUES('u_full', ?, ?)",
         (dim_id_for("org:tax", "region"), val_id_for("org:tax", "tax_type", "VAT")),
     )
-    backend = SqliteBackend(matrix)
+    backend = SqliteBackend(sqlite_matrix)
     grants = backend.read_grants("u_full", "org:tax", now=NOW_TS)
     assert grants["region"] == ("CN", "OS")  # 畸形行不计入 region
     assert grants["tax_type"] == ("VAT",)    # 也不计入 tax_type
     # 行为：可见集不变（无越权放宽）
     sql, params = render_select(compile_acl(backend, "u_full", "org:tax", now=NOW_TS))
-    assert {r[2] for r in matrix.execute(sql, params)} == {
+    assert {r[2] for r in sqlite_matrix.execute(sql, params)} == {
         "d_cn", "d_multi", "d_empty_region", "d_os",
     }
 
@@ -167,64 +167,64 @@ def test_malformed_grant_not_counted_in_any_dimension(matrix) -> None:
 # ============ P3-3：覆盖盲区轻量断言（5 条） ============
 
 
-def test_now_none_uses_db_clock(matrix) -> None:
+def test_now_none_uses_db_clock(sqlite_matrix) -> None:
     """now=None → 库时钟（CURRENT_TIMESTAMP）：过期/有效判定与显式 now 一致
     （PAST_TS=2020 / FUTURE_TS=2099 与真实时钟的关系确定）。"""
-    backend = SqliteBackend(matrix)
+    backend = SqliteBackend(sqlite_matrix)
     assert backend.read_grants("u_expired_grant", "org:tax")["region"] == ()  # 过期授权即失效
     assert backend.read_grants("u_full", "org:tax")["region"] == ("CN", "OS")
     with pytest.raises(AclDeniedError):
         compile_acl(backend, "u_expired_member", "org:tax")  # 成员过期（库时钟）
     sql, params = render_select(compile_acl(backend, "u_full", "org:tax"))
-    assert {r[2] for r in matrix.execute(sql, params)} == {
+    assert {r[2] for r in sqlite_matrix.execute(sql, params)} == {
         "d_cn", "d_multi", "d_empty_region", "d_os",
     }
 
 
-def test_empty_dataset_or_doc_filter_matches_nothing(matrix) -> None:
+def test_empty_dataset_or_doc_filter_matches_nothing(sqlite_matrix) -> None:
     """dataset_ids=()/doc_ids=() 空序列 → 恒假（1 = 0）而非 `IN ()`；非空序列照常下推。"""
-    backend = SqliteBackend(matrix)
+    backend = SqliteBackend(sqlite_matrix)
     for kwargs in ({"dataset_ids": ()}, {"doc_ids": ()}):
         plan = compile_acl(backend, "u_full", "org:tax", now=NOW_TS, **kwargs)
         sql, params = render_select(plan)
         assert "1 = 0" in sql and "IN ()" not in sql
-        assert matrix.execute(sql, params).fetchall() == []
+        assert sqlite_matrix.execute(sql, params).fetchall() == []
     # 正向对照：非空过滤照常下推
     sql, params = render_select(
         compile_acl(backend, "u_full", "org:tax", now=NOW_TS, dataset_ids=("ds:vat_lib",))
     )
-    assert {r[2] for r in matrix.execute(sql, params)} == {"d_cn", "d_multi", "d_empty_region", "d_os"}
+    assert {r[2] for r in sqlite_matrix.execute(sql, params)} == {"d_cn", "d_multi", "d_empty_region", "d_os"}
     sql, params = render_select(
         compile_acl(backend, "u_full", "org:tax", now=NOW_TS, doc_ids=("d_cn",))
     )
-    assert {r[2] for r in matrix.execute(sql, params)} == {"d_cn"}
+    assert {r[2] for r in sqlite_matrix.execute(sql, params)} == {"d_cn"}
 
 
-def test_vector_true_without_embed_model_raises(matrix) -> None:
+def test_vector_true_without_embed_model_raises(sqlite_matrix) -> None:
     """vector=True 缺 embed_model → ValueError（谓词需要 model:dim 标签——D12）；
     基础路渲染不受影响。"""
-    plan = compile_acl(SqliteBackend(matrix), "u_full", "org:tax", now=NOW_TS)
+    plan = compile_acl(SqliteBackend(sqlite_matrix), "u_full", "org:tax", now=NOW_TS)
     with pytest.raises(ValueError, match="embed_model"):
         build_where_ast(plan, vector=True)
     assert "embed_model" not in render_sql(build_where_ast(plan))[0]
 
 
-def test_all_retired_dimensions_empty_plan(matrix) -> None:
+def test_all_retired_dimensions_empty_plan(sqlite_matrix) -> None:
     """全部维度 retired → 空 Plan（dimension_rules==()）：渲染只剩外层常量、org 内
     全可见（唯一放宽路径的端点形态）；双写法一致。"""
-    matrix.execute("UPDATE dimensions SET status = 'retired' WHERE org_id = 'org:tax'")
-    plan = compile_acl(SqliteBackend(matrix), "u_cn", "org:tax", now=NOW_TS)
+    sqlite_matrix.execute("UPDATE dimensions SET status = 'retired' WHERE org_id = 'org:tax'")
+    plan = compile_acl(SqliteBackend(sqlite_matrix), "u_cn", "org:tax", now=NOW_TS)
     assert plan.dimension_rules == ()
     all_docs = {"d_cn", "d_multi", "d_empty_region", "d_cit", "d_os"}
-    assert {r[2] for r in matrix.execute(*render_select(plan))} == all_docs
-    assert {r[2] for r in matrix.execute(*render_visible_docs_select(plan))} == all_docs
+    assert {r[2] for r in sqlite_matrix.execute(*render_select(plan))} == all_docs
+    assert {r[2] for r in sqlite_matrix.execute(*render_visible_docs_select(plan))} == all_docs
 
 
-def test_dimension_without_values_not_exists_single(matrix) -> None:
+def test_dimension_without_values_not_exists_single(sqlite_matrix) -> None:
     """零取值维度（无任何 dimension_values 行）：授权集恒空 → NotExists 单条件，
     存量文档零消失。"""
-    seed_dimension(matrix, "org:tax", "novalue_dim")
-    backend = SqliteBackend(matrix)
+    seed_dimension(sqlite_matrix, "org:tax", "novalue_dim")
+    backend = SqliteBackend(sqlite_matrix)
     plan = compile_acl(backend, "u_full", "org:tax", now=NOW_TS)
     rules = {r.key: r for r in plan.dimension_rules}
     assert rules["novalue_dim"].is_empty
@@ -232,6 +232,6 @@ def test_dimension_without_values_not_exists_single(matrix) -> None:
         "NOT EXISTS (SELECT 1 FROM json_each(c.dims_json, '$.novalue_dim'))"
     )
     sql, params = render_select(plan)
-    assert {r[2] for r in matrix.execute(sql, params)} == {
+    assert {r[2] for r in sqlite_matrix.execute(sql, params)} == {
         "d_cn", "d_multi", "d_empty_region", "d_os",
     }

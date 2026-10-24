@@ -42,25 +42,25 @@ def test_expr_special_query_tokens_dropped_punct_only() -> None:
         'a"b AND c',
     ],
 )
-def test_no_malformed_on_special_queries(matrix, query) -> None:
+def test_no_malformed_on_special_queries(sqlite_matrix, query) -> None:
     """特殊字符 query 经 jieba 切分拼串后执行 MATCH 不抛 malformed（零命中也合法）。"""
     from knowledge_lattice.store.sqlite.backend import SqliteBackend
 
-    seed_document(matrix, doc_id="d_q", dataset_id="ds:vat_lib", owner_user_id="u_full")
-    insert_chunk(matrix, doc_id="d_q", seq=1, content_seg="普通内容")
+    seed_document(sqlite_matrix, doc_id="d_q", dataset_id="ds:vat_lib", owner_user_id="u_full")
+    insert_chunk(sqlite_matrix, doc_id="d_q", seq=1, content_seg="普通内容")
     tokens = tokenizer.segment_query(query)
     expr = build_match_expr(tokens)
     for tok in tokens:
         assert f'"{tok.replace(chr(34), chr(34) * 2)}"' in expr or not tok.strip()
-    rows = list(matrix.execute("SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?", (expr,)))
+    rows = list(sqlite_matrix.execute("SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?", (expr,)))
     assert isinstance(rows, list)  # 无 sqlite3.OperationalError 即未 malformed
 
 
-def test_operators_as_literals_match(matrix) -> None:
+def test_operators_as_literals_match(sqlite_matrix) -> None:
     """AND / NEAR 作为字面量可命中含该字面量的块（不被激活为操作符）。"""
-    seed_document(matrix, doc_id="d_op", dataset_id="ds:vat_lib", owner_user_id="u_full")
+    seed_document(sqlite_matrix, doc_id="d_op", dataset_id="ds:vat_lib", owner_user_id="u_full")
     insert_chunk(
-        matrix,
+        sqlite_matrix,
         doc_id="d_op",
         seq=1,
         content_seg="条件 AND 逻辑 NEAR 邻近 增值税 留抵",
@@ -68,16 +68,16 @@ def test_operators_as_literals_match(matrix) -> None:
     )
     expr = build_match_expr(tokenizer.segment_query("AND NEAR"))
     assert '"AND" OR "NEAR"' == expr
-    rows = list(matrix.execute("SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?", (expr,)))
+    rows = list(sqlite_matrix.execute("SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?", (expr,)))
     assert rows, "操作符字面量应命中含该字面量的块"
 
 
-def test_fullwidth_and_space_query_hits(matrix) -> None:
+def test_fullwidth_and_space_query_hits(sqlite_matrix) -> None:
     """空格/全角混排 query 正常召回（jieba 切分后 OR 语义）。"""
-    seed_document(matrix, doc_id="d_fw", dataset_id="ds:vat_lib", owner_user_id="u_full")
+    seed_document(sqlite_matrix, doc_id="d_fw", dataset_id="ds:vat_lib", owner_user_id="u_full")
     insert_chunk(
-        matrix, doc_id="d_fw", seq=1, content_seg="留抵 退税 申请 条件", content="留抵退税申请条件"
+        sqlite_matrix, doc_id="d_fw", seq=1, content_seg="留抵 退税 申请 条件", content="留抵退税申请条件"
     )
     expr = build_match_expr(tokenizer.segment_query("留抵退税（申请）"))
-    rows = list(matrix.execute("SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?", (expr,)))
+    rows = list(sqlite_matrix.execute("SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?", (expr,)))
     assert rows

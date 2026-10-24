@@ -8,6 +8,13 @@
   `channel` 维度由 T20/TC-ACL-04 用例内创建（建维度时库内已有存量文档——零回填前提）。
   时间一律造数：PAST_TS/NOW_TS/FUTURE_TS（UTC `YYYY-MM-DD HH:MM:SS`，与
   CURRENT_TIMESTAMP 同格式——v1.4 钉死）。
+- **backend 参数化骨架（M0b-1，M0a-1 R1 边界拍板选项 A 的激活项）**：
+  `backend`——sqlite 臂实跑（tmp lattice.db）+ pg 臂有 `LATTICE_PG_DSN` 实跑
+  （每用例独立 schema `lattice_test_<hex>`：CREATE SCHEMA → SET search_path →
+  迁移 → 用例 → DROP SCHEMA CASCADE），无 DSN `pytest.skip`（门禁脚本将 skip
+  视为失败——scripts/test_gate.sh）；`matrix` 随 backend 参数化（同一测试代码
+  双后端）；`sqlite_matrix` 保留旧 sqlite 直连形态（sqlite 渲染器文本回归等
+  sqlite-only 用例）；`pg_db` 供 PG 专用断言（连接池/迁移框架/审计分区/六域种子）。
 
 docling 模型环境（TC-ING-01 PDF 样例）：权重经 HF hub 下载；本机网络 huggingface.co
 不可达——统一走 hf-mirror 镜像 + 禁用 xet 协议（镜像不支持）；权重已入本地缓存
@@ -17,6 +24,7 @@ docling 模型环境（TC-ING-01 PDF 样例）：权重经 HF hub 下载；本�
 from __future__ import annotations
 
 import os
+import uuid
 from pathlib import Path
 
 
@@ -37,10 +45,13 @@ def _tune_hf_env() -> None:
 _tune_hf_env()
 
 import sqlite3  # noqa: E402  (env 先于任何 docling/huggingface 导入)
+import contextlib  # noqa: E402
 from collections.abc import Iterator  # noqa: E402
 
+import psycopg  # noqa: E402
 import pytest  # noqa: E402
 
+from dbwrap import PgDb, SqliteDb  # noqa: E402
 from fake_providers import FakeEmbedder  # noqa: E402
 from helpers import (  # noqa: E402
     PAST_TS,
@@ -60,6 +71,8 @@ ORG = "org:tax"
 ORG_GL = "org:gl"
 DATASET = "ds:vat_lib"
 
+PG_DSN_ENV = "LATTICE_PG_DSN"
+
 
 @pytest.fixture()
 def db_path(tmp_path: Path) -> Path:
@@ -76,27 +89,94 @@ def conn(db_path: Path) -> Iterator[sqlite3.Connection]:
     c.close()
 
 
+# ============ backend 参数化骨架（M0b-1：sqlite 实跑 + pg 有 DSN 实跑 / 无 DSN skip） ============
+
+
+@pytest.fixture(params=["sqlite", "pg"])
+def backend(request, tmp_path: Path):
+    """双后臂测试包装器（tests/dbwrap.py）——同一测试代码的方言分派面。"""
+    if request.param == "sqlite":
+        from knowledge_lattice.store.sqlite import connect, migrate_db
+
+        c = connect(tmp_path / "lattice.db")
+        try:  # P3-9：migrate 抛错同样关闭连接（与 pg 分支同款纪律，不泄漏）
+            migrate_db(c)
+            yield SqliteDb(c)
+        finally:
+            c.close()
+        return
+
+    dsn = os.environ.get(PG_DSN_ENV)
+    if not dsn:
+        pytest.skip(
+            f"{PG_DSN_ENV} 未设置——pg 臂跳过（docker start lattice-pg 后 "
+            "export LATTICE_PG_DSN=postgresql://postgres:lattice@localhost:5432/lattice 重跑；"
+            "本地门禁 scripts/test_gate.sh 将 skip 视为失败）"
+        )
+    with _pg_db(dsn) as db:
+        yield db
+
+
+@contextlib.contextmanager
+def _pg_db(dsn: str):
+    """pg 臂库的规范上下文：独立 schema 生命周期（CREATE → search_path → 工厂纪律
+    （dumper/版本/pgvector 断言 + 审计分区滚动）→ 迁移 → yield → DROP CASCADE）。"""
+    from knowledge_lattice.store.postgres import migrate_db, setup_connection
+
+    schema = f"lattice_test_{uuid.uuid4().hex[:12]}"
+    raw = psycopg.connect(dsn, autocommit=True)
+    try:
+        raw.execute(f'CREATE SCHEMA "{schema}"')
+        raw.execute(f'SET search_path TO "{schema}", public')
+        setup_connection(raw)
+        migrate_db(raw)
+        yield PgDb(raw, schema, dsn)
+    finally:
+        try:
+            raw.execute("SET search_path TO public")
+            raw.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        except psycopg.Error:
+            pass  # teardown 失败不得覆盖用例原始异常
+        finally:
+            raw.close()
+
+
 @pytest.fixture()
-def matrix(conn: sqlite3.Connection) -> sqlite3.Connection:
-    """标准矩阵造数（返回已造数的连接——编译器用例在其上编译并直接执行产物 SQL）。"""
-    seed_org(conn, ORG)
-    seed_org(conn, ORG_GL, "隔离组织")
-    seed_dataset(conn, ORG, DATASET)
+def pg_db():
+    """PG 专用断言用库（连接池 / 迁移框架 / 审计分区 / 六域种子——M0b-1 PG spike）。
+
+    无 LATTICE_PG_DSN 时 skip——门禁脚本（scripts/test_gate.sh）将 skip 视为失败。
+    """
+    dsn = os.environ.get(PG_DSN_ENV)
+    if not dsn:
+        pytest.skip(
+            f"{PG_DSN_ENV} 未设置——pg 臂跳过（docker start lattice-pg 后 "
+            f"export {PG_DSN_ENV}=postgresql://postgres:lattice@localhost:5432/lattice 重跑）"
+        )
+    with _pg_db(dsn) as db:
+        yield db
+
+
+def _seed_standard_matrix(db) -> None:
+    """标准矩阵造数（方言无关——db 为 tests/dbwrap.py 包装器或 sqlite 直连）。"""
+    seed_org(db, ORG)
+    seed_org(db, ORG_GL, "隔离组织")
+    seed_dataset(db, ORG, DATASET)
 
     # 维度：region required=1 active（CN/OS）；tax_type required=0 active（VAT/CIT）
-    seed_dimension(conn, ORG, "region")
-    seed_dim_value(conn, dim_id_for(ORG, "region"), "CN")
-    seed_dim_value(conn, dim_id_for(ORG, "region"), "OS")
-    seed_dimension(conn, ORG, "tax_type")
-    conn.execute(
-        "UPDATE dimensions SET required = 0 WHERE org_id = ? AND key = 'tax_type'", (ORG,)
+    seed_dimension(db, ORG, "region")
+    seed_dim_value(db, dim_id_for(ORG, "region"), "CN")
+    seed_dim_value(db, dim_id_for(ORG, "region"), "OS")
+    seed_dimension(db, ORG, "tax_type")
+    db.execute(
+        "UPDATE dimensions SET required = 0 WHERE org_id = ? AND key = ?", (ORG, "tax_type")
     )
-    seed_dim_value(conn, dim_id_for(ORG, "tax_type"), "VAT")
-    seed_dim_value(conn, dim_id_for(ORG, "tax_type"), "CIT")
+    seed_dim_value(db, dim_id_for(ORG, "tax_type"), "VAT")
+    seed_dim_value(db, dim_id_for(ORG, "tax_type"), "CIT")
 
     def grant(user_id: str, key: str, value: str, *, expires_at: str | None = None) -> None:
         seed_grant(
-            conn,
+            db,
             user_id=user_id,
             dim_id=dim_id_for(ORG, key),
             val_id=val_id_for(ORG, key, value),
@@ -108,19 +188,19 @@ def matrix(conn: sqlite3.Connection) -> sqlite3.Connection:
         "u_full", "u_cn", "u_cn_vat", "u_os", "u_expired_grant", "u_expired_member",
         "u_owner", "admin_tax", "admin_full", "sysadmin", "u_gl", "u_multi",
     ):
-        seed_user(conn, uid)
-    conn.execute("UPDATE users SET is_system_admin = 1 WHERE id = 'sysadmin'")
+        seed_user(db, uid)
+    db.execute("UPDATE users SET is_system_admin = 1 WHERE id = ?", ("sysadmin",))
 
     # 成员关系（org:tax；u_expired_member 过期造数；sysadmin 无行——TC-ACL-05）
     for uid in (
         "u_full", "u_cn", "u_cn_vat", "u_os", "u_expired_grant", "u_owner", "u_multi",
     ):
-        seed_membership(conn, uid, ORG)
-    seed_membership(conn, "u_expired_member", ORG, expires_at=PAST_TS)
-    seed_membership(conn, "admin_tax", ORG, role="org_admin")
-    seed_membership(conn, "admin_full", ORG, role="org_admin")
-    seed_membership(conn, "u_gl", ORG_GL, role="org_admin")
-    seed_membership(conn, "u_multi", ORG_GL)
+        seed_membership(db, uid, ORG)
+    seed_membership(db, "u_expired_member", ORG, expires_at=PAST_TS)
+    seed_membership(db, "admin_tax", ORG, role="org_admin")
+    seed_membership(db, "admin_full", ORG, role="org_admin")
+    seed_membership(db, "u_gl", ORG_GL, role="org_admin")
+    seed_membership(db, "u_multi", ORG_GL)
 
     # 授权（§三口径段清单；admin_tax 无维度授权）
     for value in ("CN", "OS"):
@@ -141,11 +221,24 @@ def matrix(conn: sqlite3.Connection) -> sqlite3.Connection:
     grant("admin_full", "tax_type", "VAT")
 
     # 文档（org:tax / ds:vat_lib；owner=u_owner；单 chunk v1 在用）
-    seed_searchable_doc(conn, "d_cn", dims={"region": ["CN"], "tax_type": ["VAT"]})
-    seed_searchable_doc(conn, "d_multi", dims={"region": ["CN", "OS"]})
-    seed_searchable_doc(conn, "d_empty_region")
-    seed_searchable_doc(conn, "d_cit", dims={"tax_type": ["CIT"]})
-    seed_searchable_doc(conn, "d_os", dims={"region": ["OS"]})
+    seed_searchable_doc(db, "d_cn", dims={"region": ["CN"], "tax_type": ["VAT"]})
+    seed_searchable_doc(db, "d_multi", dims={"region": ["CN", "OS"]})
+    seed_searchable_doc(db, "d_empty_region")
+    seed_searchable_doc(db, "d_cit", dims={"tax_type": ["CIT"]})
+    seed_searchable_doc(db, "d_os", dims={"region": ["OS"]})
+
+
+@pytest.fixture()
+def matrix(backend):
+    """标准矩阵（随 backend 参数化——同一测试代码双后端，M0b-1）。"""
+    _seed_standard_matrix(backend)
+    return backend
+
+
+@pytest.fixture()
+def sqlite_matrix(conn: sqlite3.Connection) -> sqlite3.Connection:
+    """旧 sqlite 直连矩阵（sqlite 渲染器文本回归等 sqlite-only 用例——r2 安全回归）。"""
+    _seed_standard_matrix(conn)
     return conn
 
 
