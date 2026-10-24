@@ -27,6 +27,10 @@ class EmbeddingDimensionError(Exception):
     """返回维度 ≠ config.embed_dim——写入前校验拦截（不写库，TC-EMB-01）。"""
 
 
+class EmbeddingResponseError(Exception):
+    """返回条数与请求不符——防 zip 静默丢块（P3-8，写入前拦截）。"""
+
+
 class EmbeddingProbeRejected(Exception):
     """指纹探针拒绝档：拒绝以同 embed_model 标签写入（embed 阶段失败可重试——TC-EMB-03）。"""
 
@@ -124,6 +128,10 @@ class FingerprintProbe:
     def probe(self, *, now: str | None = None) -> ProbeResult:
         label = self._embedder.model_label
         vectors = self._embedder.embed(SENTINELS)
+        if len(vectors) != len(SENTINELS):  # P3-8：哨兵条数守卫
+            raise EmbeddingResponseError(
+                f"probe response count mismatch: got {len(vectors)} != {len(SENTINELS)}"
+            )
         validate_dim(vectors, expected=self._settings.embed_dim)
         baseline_json = self._backend.read_fingerprint(label)
         stamped = now or datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")

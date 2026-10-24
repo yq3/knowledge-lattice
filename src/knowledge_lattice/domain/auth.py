@@ -74,34 +74,43 @@ def hash_token(token: str) -> str:
 def authenticate(backend, settings: Settings, token: str) -> AuthContext:
     """Bearer token → AuthContext（用户须存在且未禁用）。
 
-    - 非 JWT 形态 → 按 sha256 查 users.token_hash（生产环境拒绝——D18 静态 token
-      仅开发/测试与 CI）；
-    - JWT 验签失败 → 401。
+    - dev/test：开发 JWT 验签优先（P2-5：prod **不进入该分支**——dev secret 默认值
+      是仓库公开常量，prod 下验签等于允许伪造任意身份；生产认证待 M2 SSO/委托
+      token，prod 下一切本分支 token 一律 401）；
+    - 非 JWT 形态 → 按 sha256 查 users.token_hash（静态 token 同样仅 dev/test，
+      生产拒绝——D18）；
+    - 验签失败/未知用户/禁用 → 401。
     """
-    try:
-        claims = decode_jwt(settings, token)
-    except AuthError:
-        if settings.environment == "prod":
-            raise AuthError("static token auth disabled in production (D18)")
-        user = backend.find_user_by_token_hash(hash_token(token))
+    claims: dict | None = None
+    if settings.environment != "prod":  # P2-5：prod 不验 dev JWT（公开默认密钥可伪造）
+        try:
+            claims = decode_jwt(settings, token)
+        except AuthError:
+            claims = None
+    if claims is not None:
+        user_id = claims.get("sub")
+        if not user_id:
+            raise AuthError("token missing sub claim")
+        user = backend.get_user_auth(user_id)
         if user is None:
-            raise AuthError("invalid token")
+            raise AuthError(f"unknown user: {user_id}")
+        if user["disabled_at"] is not None:
+            raise AuthError(f"user disabled: {user_id}")
         return AuthContext(
-            user_id=user["id"], org_claim=None, via="static",
+            user_id=user_id,
+            org_claim=claims.get("org"),
+            via="jwt",
             is_system_admin=user["is_system_admin"],
         )
-    user_id = claims.get("sub")
-    if not user_id:
-        raise AuthError("token missing sub claim")
-    user = backend.get_user_auth(user_id)
+    if settings.environment == "prod":
+        raise AuthError(
+            "production requires SSO/delegated token (M2)——dev JWT 与静态 token 均停用（P2-5）"
+        )
+    user = backend.find_user_by_token_hash(hash_token(token))
     if user is None:
-        raise AuthError(f"unknown user: {user_id}")
-    if user["disabled_at"] is not None:
-        raise AuthError(f"user disabled: {user_id}")
+        raise AuthError("invalid token")
     return AuthContext(
-        user_id=user_id,
-        org_claim=claims.get("org"),
-        via="jwt",
+        user_id=user["id"], org_claim=None, via="static",
         is_system_admin=user["is_system_admin"],
     )
 

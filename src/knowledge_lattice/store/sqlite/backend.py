@@ -165,23 +165,38 @@ class SqliteBackend:
                 {"doc": doc_id, "v": version},
             )
             # pending_dims_json → document_dimensions（切换事务内容——首次上传随本事务生效）
+            # P3-7：逐值解析须逐行命中——upload 后维度/取值被停用/删除的竞态会令
+            # INSERT..SELECT 零行，若不校验即留下「无维度行」文档（空值放行=可见面
+            # 扩大）；不符 raise → 整事务回滚（pending_dims_json 保留供重试）
             dims_json = conn.execute(
                 "SELECT pending_dims_json FROM documents WHERE id = :doc", {"doc": doc_id}
             ).fetchone()[0]
             if dims_json:
+                expected = {
+                    (key, value)
+                    for key, values in json.loads(dims_json).items()
+                    for value in values
+                }
+                inserted = 0
                 conn.execute(
                     "DELETE FROM document_dimensions WHERE doc_id = :doc", {"doc": doc_id}
                 )
-                for dim_key, values in json.loads(dims_json).items():
-                    for value in values:
-                        conn.execute(
-                            "INSERT INTO document_dimensions(doc_id, dimension_id, value_id)"
-                            " SELECT :doc, dim.id, v.id FROM dimensions dim"
-                            " JOIN dimension_values v ON v.dimension_id = dim.id AND v.value = :value"
-                            " WHERE dim.org_id = (SELECT org_id FROM documents WHERE id = :doc)"
-                            "   AND dim.key = :key",
-                            {"doc": doc_id, "key": dim_key, "value": value},
-                        )
+                for dim_key, value in expected:
+                    cur = conn.execute(
+                        "INSERT INTO document_dimensions(doc_id, dimension_id, value_id)"
+                        " SELECT :doc, dim.id, v.id FROM dimensions dim"
+                        " JOIN dimension_values v ON v.dimension_id = dim.id AND v.value = :value"
+                        " WHERE dim.org_id = (SELECT org_id FROM documents WHERE id = :doc)"
+                        "   AND dim.key = :key",
+                        {"doc": doc_id, "key": dim_key, "value": value},
+                    )
+                    inserted += cur.rowcount
+                if inserted != len(expected):
+                    raise RuntimeError(
+                        f"pending_dims resolution mismatch: inserted {inserted}"
+                        f" != expected {len(expected)}（维度/取值已被停用或删除？）"
+                        "——事务回滚、pending_dims_json 保留"
+                    )
                 conn.execute(
                     "UPDATE documents SET pending_dims_json = NULL WHERE id = :doc",
                     {"doc": doc_id},
@@ -217,19 +232,22 @@ class SqliteBackend:
         ).fetchall()
         return [{"rid": r[0], "content": r[1]} for r in rows]
 
-    def write_embeddings(self, batch_label: str, rows: list[tuple[int, bytes]]) -> int:
+    def write_embeddings(
+        self, batch_label: str, rows: list[tuple[int, list[float]]]
+    ) -> int:
         """逐批回写 embedding（防护：rid + tombstone=0 + embedding IS NULL + 标签匹配）。
 
+        P2-3：接收浮点向量、vec_f32 BLOB 序列化收口本方言侧（core 不碰方言）。
         M0a 基础版：版本 IN (:active,:pending) 防护随 M1 版本切换全链（TC-VER-06）——
         首次上传场景 tombstone 防护已足够（无并发切换）。
         """
         written = 0
-        for rid, blob in rows:
+        for rid, vector in rows:
             cur = self._conn.execute(
                 "UPDATE chunks SET embedding = :vec, embed_model = :label"
                 " WHERE rid = :rid AND tombstone = 0 AND embedding IS NULL"
                 "   AND embed_model = :label",
-                {"vec": blob, "label": batch_label, "rid": rid},
+                {"vec": pack_f32(vector), "label": batch_label, "rid": rid},
             )
             written += cur.rowcount
         self._conn.commit()

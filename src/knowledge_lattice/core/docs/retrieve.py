@@ -72,8 +72,10 @@ def search(
             {
                 "chunk_id": r["chunk_id"],
                 "doc_id": r["doc_id"],
-                "dataset": r.get("dataset_id"),
-                "dataset_name": r.get("dataset_name"),
+                # P3-3：`dataset`＝知识库**名称**（MCP 契约 §6.1 示例为名称）；
+                # id 另出 `dataset_id` 字段
+                "dataset": r.get("dataset_name"),
+                "dataset_id": r.get("dataset_id"),
                 "title": r.get("title"),
                 "page_no": r.get("page_no"),
                 "sheet_name": r.get("sheet_name"),
@@ -86,7 +88,9 @@ def search(
         )
     return {
         "results": results,
-        "notice": {"vector_pending": False, "degraded": degraded},  # M0a BM25 单路
+        # P3-4：M0a 口径——无向量路（M1 落地），vector_pending 恒 False（＝本里程碑
+        # 无「本结果缺向量路」语义；M1 起按块级 embedding 状态置位——TC-RET-02）
+        "notice": {"vector_pending": False, "degraded": degraded},
     }
 
 

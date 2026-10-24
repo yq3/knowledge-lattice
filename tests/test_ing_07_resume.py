@@ -71,6 +71,7 @@ def test_resume_from_embed_after_interrupt(ingest_env) -> None:
     svc, doc_id, task_id = _create(ingest_env)
 
     svc.run_task(task_id, stop_after="index_fts")  # 中断（进程重启模拟）
+    assert backend.get_task(task_id)["status"] == "running"  # 中断缝不写 done（P3-1）
     ids_before = _chunk_ids(conn, doc_id)
     assert ids_before  # 块已入库
 

@@ -133,6 +133,7 @@ def test_notice_degraded_contains_probe_reject(ingest_env) -> None:
     M0a 检索本就 BM25 单路——向量路开闭行为断言随 M1（TC-EMB-07），此处断言
     notice.degraded 标注口径。
     """
+    from knowledge_lattice.adapters.embedder import ProbeResult
     from knowledge_lattice.core.docs.retrieve import search
 
     backend = ingest_env["backend"]
@@ -144,13 +145,13 @@ def test_notice_degraded_contains_probe_reject(ingest_env) -> None:
     )
     svc.run_task(task_id)
 
-    ingest_env["gate"]._status = "reject"  # 拒绝档状态（探针已判定的运行态）
+    ingest_env["gate"].update(ProbeResult(status="reject", min_cosine=None))  # 公共入口
     resp = search(backend, ingest_env["settings"], gate=ingest_env["gate"], user_id="u_full",
                   org_id="org:tax", query="留抵退税")
     assert "probe_reject" in resp["notice"]["degraded"]  # 不 500、标注降级
     assert resp["results"]  # BM25 单路照常返回命中
 
-    ingest_env["gate"]._status = "ok"
+    ingest_env["gate"].update(ProbeResult(status="ok", min_cosine=None))
     resp2 = search(backend, ingest_env["settings"], gate=ingest_env["gate"], user_id="u_full",
                    org_id="org:tax", query="留抵退税")
     assert "probe_reject" not in resp2["notice"]["degraded"]

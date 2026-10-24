@@ -6,8 +6,8 @@ TC-E2E-07 覆盖（两视图 + i18n 资产 + 双字典 + localStorage 机制代�
 
 ==================== 手动走查步骤（交付说明同款） ====================
 
-前置：`cd knowledge-lattice && uv run uvicorn knowledge_lattice.app:create_app_or_none --factory ...`
-（或测试壳）；页面 http://127.0.0.1:8000/ 。无后端时也可直接开
+前置：`cd knowledge-lattice && LATTICE_DATA_DIR=/tmp/lattice-data uv run uvicorn "knowledge_lattice.app:create_app" --factory --port 8000`
+→ 打开 http://127.0.0.1:8000/ 。无后端时也可直接开
 src/knowledge_lattice/web/index.html（i18n 机制不依赖 API——静态字典在前端）。
 
 ① 默认中文（清 localStorage 后打开）：

@@ -74,7 +74,7 @@ def test_mcp_unauthenticated_401(app_env) -> None:
 
 
 def test_mcp_acl_denied_403(app_env) -> None:
-    """u_cn（region=[CN]）检索 region=[OS] 文档 → 零命中；无成员关系 → 403。"""
+    """u_cn（region=[CN]）检索 region=[OS] 文档 → 零命中；无成员关系用户 → 403（实测）。"""
     html = (
         "<html><body><h1>海外转让定价手册</h1><p>关联交易定价遵循独立交易原则。</p></body></html>"
     ).encode()
@@ -95,6 +95,21 @@ def test_mcp_acl_denied_403(app_env) -> None:
 
     payload = asyncio.run(flow())
     assert payload["results"] == []  # OS 文档对 u_cn（仅 CN）不可见
+
+    # 无成员关系用户（u_guest 非 org:tax 成员——TC-ACL-05 第 0 步语义）→ 403
+    from helpers import seed_membership, seed_user
+
+    seed_user(app_env["conn"], "u_guest")
+    app_env["conn"].commit()
+    token_guest = app_env["jwt"]("u_guest", org="org:tax")
+
+    async def flow_guest():
+        async with _client(app_env["app"], {"Authorization": f"Bearer {token_guest}"}) as client:
+            await client.call_tool("search", {"query": "转让定价"})
+
+    with pytest.raises(ToolError) as exc_info:
+        asyncio.run(flow_guest())
+    assert "403" in str(exc_info.value) and "membership" in str(exc_info.value)
 
 
 def test_mcp_timeout_middleware_no_hang(tmp_path) -> None:

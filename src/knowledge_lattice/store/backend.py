@@ -90,8 +90,12 @@ class IngestBackend(Protocol):
         （pending_status→searchable_lexical + 首次上传 D20 切换）。"""
         ...
 
-    def write_embeddings(self, batch_label: str, rows: Sequence[tuple[int, bytes]]) -> int:
-        """逐批回写 embedding/embed_model（带 tombstone/embedding IS NULL/标签防护——M0a 基础版）。"""
+    def write_embeddings(
+        self, batch_label: str, rows: Sequence[tuple[int, Sequence[float]]]
+    ) -> int:
+        """逐批回写 embedding/embed_model——rows=(rid, float 向量)；**方向序列化收口
+        实现侧**（SQLite=vec_f32 BLOB / PG=vector 列——core 不碰方言，P2-3/D24）；
+        带 tombstone/embedding IS NULL/标签防护（M0a 基础版）。"""
         ...
 
     def delete_by_doc(self, doc_id: str, version: int) -> int:

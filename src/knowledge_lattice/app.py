@@ -79,7 +79,10 @@ def create_app(
         while True:
             await asyncio.sleep(settings.probe_interval_s)
             try:
-                gate.update(FingerprintProbe(backend, embedder, settings).probe())
+                probe = FingerprintProbe(backend, embedder, settings)
+                # P2-6：探针内为同步 httpx（30s 超时）+SQLite 读写——to_thread 下放
+                # 线程池执行，绝不阻塞事件循环（§2；ThreadLocalBackend 线程本地连接兼容）
+                gate.update(await asyncio.to_thread(probe.probe))
             except Exception:  # noqa: BLE001 —— 周期探针失败不杀任务
                 logger.exception("periodic fingerprint probe failed")
 
@@ -87,8 +90,9 @@ def create_app(
     async def lifespan(app: FastAPI):
         probe_task: asyncio.Task | None = None
         if run_startup_probe:
-            try:  # 启动探针（首部署建档放行 / 两档判定——TC-EMB-03）
-                result = FingerprintProbe(backend, embedder, settings).probe()
+            try:  # 启动探针（首部署建档放行 / 两档判定——TC-EMB-03）；to_thread 防阻塞
+                probe = FingerprintProbe(backend, embedder, settings)
+                result = await asyncio.to_thread(probe.probe)
                 gate.update(result)
                 logger.info("startup fingerprint probe: %s", result)
             except Exception:  # noqa: BLE001 —— 网关不可达等：不阻断启动（降级语义随 M1）
@@ -124,8 +128,9 @@ def create_app(
     app.include_router(documents.router)
     app.include_router(tasks.router)
     app.include_router(search.router)
-    if settings.environment in ("dev", "test"):  # dev token 仅 dev/test（生产 404——D18）
-        app.include_router(admin.router)
+    app.include_router(admin.router)  # dimensions/datasets 等普通端点——不受环境门控（P2-4）
+    if settings.environment in ("dev", "test"):  # dev token 仅 dev/test（生产 404——D18/P2-4）
+        app.include_router(admin.dev_token_router)
 
     if WEB_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")

@@ -99,7 +99,7 @@ function togglePick(key, value, chip) {
 /* ---------- 上传 ---------- */
 async function upload() {
   const file = $("#upFile").files[0];
-  if (!file) { $("#upMsg").textContent = "file?"; return; }
+  if (!file) { $("#upMsg").textContent = t("upload.file.required"); return; }
   const fd = new FormData();
   fd.append("file", file);
   fd.append("dataset", $("#upDataset").value);
@@ -130,7 +130,7 @@ async function refreshStatus() {
     [t("status.doc"), esc(state.docId)],
     [t("status.active"), `v${doc.active_version ?? "-"} · ${esc(doc.active_status ?? "-")}${doc.active_error ? " · " + esc(doc.active_error) : ""}`],
     [t("status.pending"), doc.pending_version ? `v${doc.pending_version} · ${esc(doc.pending_status)}` : "—"],
-    [t("status.task"), `${esc(task.status ?? "-")}（attempts ${task.attempts ?? 0}）${task.error ? " · " + esc(task.error) : ""}`],
+    [t("status.task"), `${esc(task.status ?? "-")}（${t("status.attempts")} ${task.attempts ?? 0}）${task.error ? " · " + esc(task.error) : ""}`],
   ].map(([k, v]) => `<dt>${k}</dt><dd class="mono">${v}</dd>`).join("");
 }
 
@@ -154,7 +154,7 @@ async function doSearch() {
   const rows = body.results || [];
   $("#searchMsg").textContent = `${rows.length} ${t("search.results")}` +
     ((body.notice && body.notice.degraded && body.notice.degraded.length)
-      ? ` · degraded: ${body.notice.degraded.join(",")}` : "");
+      ? ` · ${t("search.degraded")}: ${body.notice.degraded.join(",")}` : "");
   $("#hitsTable").hidden = rows.length === 0;
   $("#hitsEmpty").hidden = rows.length > 0;
   $("#hitsBody").innerHTML = rows.map((r) => `<tr>

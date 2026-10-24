@@ -81,7 +81,7 @@ def test_table_block_atomic() -> None:
 def test_tail_chunk_below_min_allowed() -> None:
     """末尾余量 < 256 允许成小块（不为凑数硬并）。"""
     blocks = [
-        ParsedBlock(kind="text", content=_para("甲", 250)),  # ≈500 token，近上限
+        ParsedBlock(kind="text", content=_para("甲", 170)),  # ≈510 token，近上限
         ParsedBlock(kind="text", content="结尾短段。"),
     ]
     chunks = chunk_blocks(blocks, doc_title="尾块文档")

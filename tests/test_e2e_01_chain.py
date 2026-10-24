@@ -98,13 +98,8 @@ def test_full_chain_lexical_then_full(app_env) -> None:
     ).json()
     assert by_doc["results"] and all(r["doc_id"] == doc_id for r in by_doc["results"])
 
-    # --- top_k 服务端硬上限 20（传 100 → ≤20）---
-    capped = client.post(
-        "/api/search",
-        json={"query": "增值税", "top_k": 100},
-        headers={**_auth(app_env), "X-Org-Id": "org:tax"},
-    ).json()
-    assert len(capped["results"]) <= 20
+    # --- top_k 服务端硬上限 20：真实断言见 test_r2_review_fixes.py
+    # （P3-15：本处样例块数少，`<= 20` 恒真属空转断言，已移除）---
 
 
 def test_upload_validation_dims_out_of_grants(app_env) -> None:

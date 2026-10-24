@@ -44,8 +44,26 @@ def _title_seg(doc_title: str, heading_path: tuple[str, ...]) -> str:
     return tokenizer.join_seg(" ".join((doc_title, *heading_path)).strip())
 
 
+def _hard_split(sentence: str, max_tokens: int) -> list[str]:
+    """单句超限 → 按原文字符区间在 token 边界硬切（jieba.tokenize 带位置——
+    P3-5：不经 segment+join，防英文被拼成 `Ageneraltaxpayer`）。"""
+    import jieba
+
+    parts: list[str] = []
+    buf_start = 0
+    count = 0
+    for _word, start, _end in jieba.tokenize(sentence):
+        if count >= max_tokens:  # 下一 token 将超限 → 在其起点切
+            parts.append(sentence[buf_start:start])
+            buf_start = start
+            count = 0
+        count += 1
+    parts.append(sentence[buf_start:])
+    return parts
+
+
 def _split_oversized(content: str, max_tokens: int) -> list[str]:
-    """超长段落递归拆分：句边界优先，句内仍超按 token 硬切。"""
+    """超长段落递归拆分：句边界优先，句内仍超按原文字符区间硬切。"""
     parts: list[str] = []
     buf: list[str] = []
     buf_tokens = 0
@@ -53,21 +71,17 @@ def _split_oversized(content: str, max_tokens: int) -> list[str]:
         if not sentence:
             continue
         n = tokenizer.token_count(sentence)
-        if n > max_tokens:  # 单句超限 → token 硬切
+        if n > max_tokens:  # 单句超限 → token 边界硬切
             if buf:
                 parts.append("".join(buf))
                 buf, buf_tokens = [], 0
-            toks = tokenizer.segment(sentence)
-            cur: list[str] = []
-            cur_n = 0
-            for tok in toks:
-                if cur_n + 1 > max_tokens and cur:
-                    parts.append("".join(cur))
-                    cur, cur_n = [], 0
-                cur.append(tok)
-                cur_n += 1
-            if cur:
-                buf, buf_tokens = cur, cur_n
+            for part in _hard_split(sentence, max_tokens):
+                pn = tokenizer.token_count(part)
+                if buf_tokens + pn > max_tokens and buf:
+                    parts.append("".join(buf))
+                    buf, buf_tokens = [], 0
+                buf.append(part)
+                buf_tokens += pn
             continue
         if buf_tokens + n > max_tokens and buf:
             parts.append("".join(buf))
@@ -156,8 +170,12 @@ def chunk_blocks(
             _flush()
             for part in _split_oversized(block.content, max_tokens):
                 pn = tokenizer.token_count(part)
-                if buf_tokens + pn > max_tokens and buf and buf_tokens >= min_tokens:
+                # P2-2：溢出即 flush（无 min_tokens 前置）——否则 100+450 并入成 550
+                # 非末块，违反 TC-ING-02 的 256–512 上限（欠 min 的碎块由结构边界
+                # 自然合并，硬上限不破）
+                if buf_tokens + pn > max_tokens and buf:
                     _flush()
+                    buf_path = block.heading_path
                 buf.append(
                     ParsedBlock(
                         kind="text", content=part, heading_path=block.heading_path,
@@ -167,7 +185,8 @@ def chunk_blocks(
                 buf_tokens += pn
             continue
 
-        if buf_tokens + n > max_tokens and buf and buf_tokens >= min_tokens:
+        # P2-2：同上——溢出即 flush，去掉 buf_tokens >= min_tokens 前置
+        if buf_tokens + n > max_tokens and buf:
             _flush()
             buf_path = block.heading_path
         if not buf:

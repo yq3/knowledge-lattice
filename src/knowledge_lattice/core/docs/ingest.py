@@ -24,6 +24,7 @@ import ulid as _ulid
 
 from knowledge_lattice.adapters.embedder import (
     EmbeddingGate,
+    EmbeddingResponseError,
     Embedder,
     validate_dim,
 )
@@ -85,6 +86,10 @@ class IngestService:
         if dataset_id not in datasets:
             raise UploadValidationError(f"dataset not found in org: {dataset_id!r}")
 
+        # P3-12：维度值去重（document_dimensions 主键 (doc,dim,value)——重复值会导致
+        # index_fts 事务 IntegrityError 且重试永久失败）
+        dims = {key: list(dict.fromkeys(values)) for key, values in dims.items()}
+
         dims_meta = {d["key"]: d for d in self._backend.list_dimensions(org_id)}
         grants = self._backend.read_grants(owner_user_id, org_id)
         for key, values in dims.items():
@@ -129,8 +134,9 @@ class IngestService:
     def run_task(self, task_id: str, *, stop_after: str | None = None) -> None:
         """执行摄取任务（阶段幂等：重跑从上一完成阶段续——TC-ING-07）。
 
-        stop_after：测试/中断缝（'parse'|'chunk'|'index_fts'|'embed' 后返回，
-        模拟进程中断；任务留在 running 态由重跑续上）。
+        stop_after：测试/中断缝（'parse'|'chunk'|'index_fts' 后返回，模拟进程中断；
+        任务留在 running 态、**不写 done**——由重跑续上，P3-1）。异常统一落
+        failed+error 并写文档失败态（P2-1：按 id 重读文档后落 active_error/pending）。
         """
         task = self._backend.get_task(task_id)
         if task is None:
@@ -142,7 +148,9 @@ class IngestService:
         self._backend.update_task(task_id, status="leased")
         self._backend.update_task(task_id, status="running")
         try:
-            self._run_stages(doc, stop_after=stop_after)
+            interrupted = self._run_stages(doc, stop_after=stop_after)
+            if interrupted:
+                return  # 模拟中断：任务留 running，不写 done（P3-1）
             self._backend.update_task(task_id, status="done")
         except Exception as exc:  # noqa: BLE001 —— 任务级失败统一落 failed+error
             logger.exception("ingest task failed: %s", task_id)
@@ -151,7 +159,15 @@ class IngestService:
             raise
 
     def _record_doc_error(self, doc: dict, exc: Exception) -> None:
-        """失败写文档侧：首次上传已切换 → active_error；否则 pending_error（不 500）。"""
+        """失败写文档侧：首次上传已切换 → active_error；否则 pending_status=failed（不 500）。
+
+        P2-1：同次执行内 index_fts 的 D20 切换已改写 DB（pending 清空、active_version=1），
+        调用方传入的 doc 快照是切换前的——按 id 重读后再判定落点，否则 UPDATE 零行、
+        失败态整体丢失。
+        """
+        fresh = self._backend.get_document(doc["id"])
+        if fresh is not None:
+            doc = fresh
         version = doc.get("pending_version") or doc.get("active_version")
         if doc.get("active_version") and doc["active_version"] == version:
             self._backend.set_doc_active_error(doc["id"], version, str(exc))
@@ -161,7 +177,8 @@ class IngestService:
     def _effective_version(self, doc: dict) -> int:
         return doc.get("pending_version") or doc["active_version"]
 
-    def _run_stages(self, doc: dict, *, stop_after: str | None) -> None:
+    def _run_stages(self, doc: dict, *, stop_after: str | None) -> bool:
+        """返回是否在 stop_after 处提前返回（中断缝——True 时调用方不写 done）。"""
         doc_id = doc["id"]
         # 阶段判定（幂等续跑）：在用版本已切（D20 首次上传在 searchable_lexical 即切）→
         # parse/chunk/index_fts 已提交，从 embed 续；searchable_full → 幂等 no-op
@@ -172,17 +189,18 @@ class IngestService:
         if not switched:
             parsed = self._parse_stage(doc)
             if stop_after == "parse":
-                return
+                return True
             drafts = self._chunk_stage(doc, parsed)
             if stop_after == "chunk":
-                return
+                return True
             self._index_fts_stage(doc, drafts)
             if stop_after == "index_fts":
-                return
+                return True
             doc = self._backend.get_document(doc_id)  # 切换后字段已变（active_*）
         if doc.get("active_status") == "searchable_full":
-            return  # 幂等 no-op（重跑 done 任务）
+            return False  # 幂等 no-op（重跑 done 任务）
         self._embed_stage(doc)
+        return False
 
     # ---- 阶段实现（各自幂等/可重入） ----
 
@@ -228,10 +246,14 @@ class IngestService:
         for start in range(0, len(pending), batch_size):
             batch = pending[start : start + batch_size]
             vectors = self._embedder.embed([row["content"] for row in batch])
+            if len(vectors) != len(batch):  # P3-8：返回条数不符——防 zip 静默丢块
+                raise EmbeddingResponseError(
+                    f"embedding response count mismatch: got {len(vectors)}"
+                    f" != requested {len(batch)}——拒绝写入（防半批静默丢失）"
+                )
             validate_dim(vectors, expected=self._settings.embed_dim)  # 不符 raise、不写库
-            from knowledge_lattice.store.sqlite.vec import pack_f32
-
+            # P2-3：core 只传浮点向量——vec_f32 BLOB 序列化收口 store 方言侧
             self._backend.write_embeddings(
-                label, [(row["rid"], pack_f32(v)) for row, v in zip(batch, vectors)]
+                label, [(row["rid"], v) for row, v in zip(batch, vectors)]
             )
         self._backend.set_doc_active_status(doc_id, version, "searchable_full")

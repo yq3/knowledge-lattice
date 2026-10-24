@@ -1,8 +1,9 @@
 """管理端点（design §6.2——M0a 最小集）：
 
-- POST /api/dev/token：签发开发 JWT——**仅 dev/test 配置注册路由，生产 404**
-  （TC-AUTH-01④）；只能给自己签或系统管理员签发（403 语义）；
-- GET /api/orgs/{org}/dimensions · /datasets：只读清单（页壳上传/检索表单所需）。
+- POST /api/dev/token（`dev_token_router`）：签发开发 JWT——**仅 dev/test 配置注册
+  路由，生产 404**（TC-AUTH-01④）；只能给自己签或系统管理员签发（403 语义）；
+- GET /api/orgs/{org}/dimensions · /datasets（`router`）：只读清单（页壳上传/检索
+  表单所需）——普通组织作用域端点，**不受环境门控**（P2-4）。
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from knowledge_lattice.domain.auth import AuthContext, issue_dev_jwt
 from .upload import get_auth, get_service, org_scoped
 
 router = APIRouter()
+dev_token_router = APIRouter()  # 仅 dev/test 注册（app.py 门控——生产 404）
 
 
 class DevTokenRequest(BaseModel):
@@ -22,7 +24,7 @@ class DevTokenRequest(BaseModel):
     org: str | None = None  # 嵌入 token 的 org claim（单值——按组织签发）
 
 
-@router.post("/api/dev/token")
+@dev_token_router.post("/api/dev/token")
 async def issue_dev_token(
     request: Request, auth: AuthContext = Depends(get_auth), body: DevTokenRequest | None = None
 ) -> dict:
