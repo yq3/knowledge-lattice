@@ -5,7 +5,7 @@ target: knowledge-lattice
 coderTaskId: ses_e930327d1ffe9fSAg1I6rY9j0m
 testerTaskId: ses_e92d1941cffeWpc7n5BksVKcM6
 committerTaskId: ses_e92baec26ffei96IVlqwCSR700
-status: approved
+status: done
 round: 2
 maxRounds: 3
 testVerdict: PASS
@@ -16,7 +16,7 @@ reviewedSha: 53acea6a77227554fd39d087b4748dbc920ef79d
 filesChanged: ["R1（37 files）：knowledge-lattice/src/knowledge_lattice/store/acl_ast.py（新增：方言无关 AST 上提，双方言共享）", "R1：knowledge-lattice/src/knowledge_lattice/store/postgres/（新增方言包：connection.py psycopg3 工厂 / migrate.py schema_migrations+advisory lock / migrations/docs/0001_schema_v1.sql PG 版全量 DDL / audit.py 按月分区表 / acl_render.py jsonb 渲染器 / backend.py PgBackend 六域 / vec.py 文本序列化 / __init__.py）", "R1：knowledge-lattice/src/knowledge_lattice/store/sqlite/acl_render.py（AST 引用改自 acl_ast 并 re-export，渲染产物不变）", "R1：knowledge-lattice/src/knowledge_lattice/store/backend.py（P3-17：SemanticBackend 5 种子方法签名）", "R1：knowledge-lattice/pyproject.toml + uv.lock（psycopg[binary,pool]>=3.2）", "R1：knowledge-lattice/tests/（新增 dbwrap.py 双后端包装器 / test_pg_scaff.py / test_pg_backend.py；修改 conftest.py backend 参数化骨架、test_scaf_01/04/05、test_matrix_t1_t5、test_matrix_t20_t22、test_acl_01~07、test_emb_02_predicate 参数化改写，test_fts_01~03 与 test_r2_review_fixes 切 sqlite_matrix、helpers.py docstring）", "R1：knowledge-lattice/scripts/test_gate.sh（新增：本地门禁——无 DSN 报错非零退出、任何 skipped 非零退出）", "R1：knowledge-lattice/.gitignore（.env 忽略条目随 commit 入库——supervised-coding 开工前防护）", "R2（8 files，+495/−38）：store/postgres/connection.py（P2-1 SET TIME ZONE 'UTC' 单连接+pool configure 同入口）", "R2：store/postgres/migrate.py（P2-3 MAX(applied) 水位 fail-fast+锁内复核）", "R2：store/postgres/audit.py（P2-4 BEFORE TRUNCATE 触发器父表+分区双落——PG 16 父表 statement 触发器不克隆不拦分区直 TRUNCATE，分区须显式落、已注记）", "R2：tests/test_pg_scaff.py（P2-1 回归×4 含 ALTER DATABASE 造非 UTC 库对照+P2-2 search_path 补齐+public 三面零残留断言+P2-3 乱序拒绝回归+P2-4 TRUNCATE 父表/分区回归+P3-3 恶意 key 安全回归×2）", "R2：tests/test_pg_backend.py（P3-1 弱断言收紧 len==2+rid 集合）", "R2：tests/test_scaf_04_triggers.py（P3-2 双臂版本切换五列全清→重算→零命中）", "R2：tests/conftest.py（P3-9 sqlite 分支 try/finally）", "R2：scripts/test_gate.sh（P3-8 mktemp GNU/BSD 通用+summary 完整匹配+无 summary 拦截+pg 臂收集>0 断言；顺修 bash 3.2 unbound 变量坑）"]
 endReason: null
 createdAt: 2026-10-24T15:53:30+0800
-updatedAt: 2026-10-24T19:43:26+0800
+updatedAt: 2026-10-24T19:55:46+0800
 ---
 
 # task-knowledge-lattice-m0b-1: M0b-1 PG 后端 spike——store/postgres 方言包 + 双后端测试基建 + 本地测试门禁
@@ -81,6 +81,17 @@ updatedAt: 2026-10-24T19:43:26+0800
 - [ ] **口径确认（2026-10-24 supervised-coding 裁定，R2-P3-3 关闭）**：TRUNCATE 异常消息"同源"口径=**同源词根**（含 `append-only`；测试 match="append-only" 已锁核心语义）——不要求逐字同文案，SQLite DELETE 版的 retention 后缀属 SQLite 月库机制描述、PG 分区机制不同不必复制；随勘误批次一并登记
 - [ ] **supervised-coding 交付动作（非移交）**：TEST-CASES TC-SCAF-02~05 后端行回写 both+断言落点 test_pg_scaff.py 注记（收口落笔）；M0a-1/2/3 检查点 backend 参数化骨架移交项勾选（验收 6）；勘误批次登记（PG 分区表 PK、TC-SCAF PG 断言落点、.env.example 留 P3-11、TRUNCATE 消息口径、分区触发器不克隆）
 - [ ] 无其他
+
+## 交付记录（2026-10-24）
+
+- 收口落笔（supervised-coding edit，随 docs commit 入库）：TEST-CASES **v1.5.1**（TC-SCAF-02~05 后端行 sqlite-only→both + 断言落点 test_pg_scaff.py 注记 + 版本段 + §六 M0a 行）；M0a-1/2/3 检查点 backend 参数化骨架与 P3-17 移交项勾选清偿
+- PR：https://github.com/yq3/lab/pull/47（base=develop，head=develop_opencode；commits=329a099[R1] + 53acea6[R2] + 9cdac5b[docs]；45 unique files，+6201/−800）
+- push：`236ff92..9cdac5b develop_opencode -> develop_opencode`（用户已确认授权，SSH）
+- docs commit `9cdac5b`（8 files，+531/−10，零代码路径）：TEST-CASES v1.5.1 + M0a 三检查点勾选 + M0b-1 检查点归档 + agent 三提示词门禁纪律
+- 评审留痕：committer `gh pr review --comment`（review id PRR_kwDOTsiHgs8AAAABUA8wZQ——作者自审平台限制同 M0a，COMMENTED 完整留痕复审结论/双 SHA=代码 53acea6+head 9cdac5b docs-only/测试证据/manifest 核对；PR mergeable=MERGEABLE、mergeStateStatus=CLEAN）
+- evidence manifest：已写入 PR description 末尾 `## Evidence Manifest` 小节（head=9cdac5b、codeTestedReviewedSha/testedSha/reviewedSha=53acea6、PASS/APPROVED、gate_commands=[scripts/test_gate.sh 双后端双模式]、stale=false、docsCommitNote 在场）
+- 状态：approved→交付完成（合入待用户确认后执行，不自动合入）
+- **合入完成（2026-10-24 19:52 用户确认）**：PR #47 state=MERGED，mergeCommit=`aa74e7c617da7e5099d083028bff0a51cc9065da`；origin/develop 前进 `f1beed5..aa74e7c`（merge commit 保留 R1+R2+docs 完整历史）；develop_opencode 远端分支按 D30 约定保留，M0b-2 继续在此分支开发——**M0b-1 正式完成（done），M0b-2 五实验待开工（开工前 supervised-coding 落笔用例口径修订：压测取消 + TC-PERF-01 档位 1万/5万）**
 
 ## 轮次记录
 
