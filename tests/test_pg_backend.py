@@ -134,10 +134,10 @@ def test_embedding_batch_roundtrip_and_exact_scan_distance(pg_env) -> None:
     backend.insert("doc:3", 1, [_chunk("chk:3:1", 1), _chunk("chk:3:2", 2)])
 
     claimed = backend.mark_embedding_batch("doc:3", 1, "m:8")
-    assert [c["seq"] if "seq" in c else c for c in claimed] or len(claimed) == 2
-    rids = [c["rid"] for c in claimed]
+    assert len(claimed) == 2  # 两块全部认领（P3-1：原「or」弱断言收紧）
+    rids = sorted(c["rid"] for c in claimed)
     pending = backend.pending_embeddings("m:8")
-    assert [p["rid"] for p in pending] == sorted(rids)
+    assert [p["rid"] for p in pending] == rids
 
     vec_a, vec_b = [1.0, 0.0], [0.0, 1.0]
     written = backend.write_embeddings("m:8", [(rids[0], vec_a), (rids[1], vec_b)])

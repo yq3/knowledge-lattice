@@ -3,15 +3,20 @@
 - TC-SCAF-02 PG 等价：连接池参数（min/max）+ pgvector `<=>` 距离函数可用 +
   连接工厂版本断言（server_version ≥ 16——G-6 收窄口径）；
 - TC-SCAF-03 PG 等价：`schema_migrations` 表 + 约束校验（违例整事务回滚——
-  PG 原生约束即时校验，无外键窗口）+ 幂等重放 + 并发 advisory lock 干净跳过；
+  PG 原生约束即时校验，无外键窗口）+ 幂等重放 + 并发 advisory lock 干净跳过
+  + **版本只前进**（乱序补入小编号迁移 fail-fast——R2 P2-3）；
 - 审计月库 → 按月分区表（§4 PG 映射）：分区滚动幂等、按月建新分区、append-only
-  触发器在分区父表生效、写入落对应分区（接口 roll_monthly 不变）。
+  触发器在分区父表生效、写入落对应分区（接口 roll_monthly 不变）+
+  **TRUNCATE 防护**（statement 级触发器覆盖父表与分区直接 TRUNCATE——R2 P2-4）；
+- **时区契约钉 UTC**（R2 P2-1，用户拍板选项 A）：连接工厂统一 `SET TIME ZONE
+  'UTC'`、存储 UTC（SQLite 既有语义对齐）；展示分工=后端吐 UTC、前端本地化渲染。
 """
 
 from __future__ import annotations
 
+import re
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -19,11 +24,40 @@ import pytest
 # ============ TC-SCAF-02 PG 等价：连接池参数 + pgvector 距离函数 ============
 
 
+def _assert_public_free_of_audit_objects(pg_db) -> None:
+    """P2-2：工厂调用不得把 audit 对象泄漏到 public（schema 生命周期外）。"""
+    tables = pg_db.execute(
+        "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+        " AND tablename LIKE 'audit%%'"
+    ).fetchall()
+    triggers = pg_db.execute(
+        "SELECT t.tgname FROM pg_trigger t"
+        " JOIN pg_class c ON c.oid = t.tgrelid"
+        " JOIN pg_namespace n ON n.oid = c.relnamespace"
+        " WHERE n.nspname = 'public' AND t.tgname LIKE 'audit%%'"
+    ).fetchall()
+    funcs = pg_db.execute(
+        "SELECT p.proname FROM pg_proc p"
+        " JOIN pg_namespace n ON n.oid = p.pronamespace"
+        " WHERE n.nspname = 'public' AND p.proname LIKE 'lattice_audit%%'"
+    ).fetchall()
+    assert not (tables or triggers or funcs), (
+        f"public 被 audit 对象污染（越出 lattice_test schema 生命周期）: "
+        f"tables={tables} triggers={triggers} funcs={funcs}"
+    )
+
+
 def test_pg_connect_pool_params_and_probe(pg_db) -> None:
-    """连接池 min/max 参数生效 + 池连接可执行 + `<=>` 余弦距离可用（同向量距离 0）。"""
+    """连接池 min/max 参数生效 + 池连接可执行 + `<=>` 余弦距离可用（同向量距离 0）。
+
+    P2-2：池连接走 search_path=pg_db.schema（audit 对象留在测试 schema 内，
+    随 DROP SCHEMA CASCADE 清理——不逃逸到 public）。"""
     from knowledge_lattice.store.postgres import connect_pool
 
-    pool = connect_pool(pg_db.dsn, min_size=1, max_size=2, name="scaf02-pool")
+    pool = connect_pool(
+        pg_db.dsn, min_size=1, max_size=2, name="scaf02-pool",
+        search_path=f"{pg_db.schema},public",
+    )
     try:
         assert pool.min_size == 1  # 连接池参数断言（TC-SCAF-02 后端行 v1.4）
         assert pool.max_size == 2
@@ -33,15 +67,22 @@ def test_pg_connect_pool_params_and_probe(pg_db) -> None:
                 "SELECT '[1.0, 2.0]'::vector <=> '[1.0, 2.0]'::vector"
             ).fetchone()[0]
             assert dist is not None and abs(float(dist)) < 1e-6  # 同向量余弦距离为 0
+            # 池连接的 audit 对象落在测试 schema（非 public）
+            assert conn.execute(
+                "SELECT current_schema()"
+            ).fetchone()[0] == pg_db.schema
     finally:
         pool.close()
+    _assert_public_free_of_audit_objects(pg_db)
 
 
 def test_pg_connect_factory_server_version_assert(pg_db) -> None:
-    """连接工厂版本断言（≥16——G-6）：setup 后连接可查版本；16.15 实测通过。"""
+    """连接工厂版本断言（≥16——G-6）：setup 后连接可查版本；16.15 实测通过。
+
+    P2-2：单连接工厂调用同样走 search_path=pg_db.schema——public 无 audit 对象。"""
     from knowledge_lattice.store.postgres import connect
 
-    conn = connect(pg_db.dsn)
+    conn = connect(pg_db.dsn, search_path=f"{pg_db.schema},public")
     try:
         version_num = int(
             conn.execute("SELECT current_setting('server_version_num')").fetchone()[0]
@@ -51,8 +92,180 @@ def test_pg_connect_factory_server_version_assert(pg_db) -> None:
             "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
         ).fetchone()
         assert ext is not None and ext[0].startswith("0.8")  # pgvector 0.8.x（G-6）
+        assert conn.execute("SELECT current_schema()").fetchone()[0] == pg_db.schema
     finally:
         conn.close()
+    _assert_public_free_of_audit_objects(pg_db)
+
+
+# ============ R2 P2-1：时区契约钉 UTC（连接工厂统一 SET TIME ZONE 'UTC'） ============
+
+
+def test_pg_factory_pins_utc_timezone(pg_db) -> None:
+    """工厂后 session TimeZone == UTC（选项 A）。装置有效性：session 可改为非 UTC
+    （模拟目标环境 Asia/Shanghai，墙上钟偏移 +8h 实测在场），setup_connection
+    重入后必须回到 UTC——证明是工厂的 SET 在起作用，而非容器默认恰好为 UTC。"""
+    from knowledge_lattice.store.postgres import setup_connection
+
+    assert pg_db.execute("SHOW TimeZone").fetchone()[0] == "UTC"
+
+    conn = pg_db.raw
+    conn.execute("SET TIME ZONE 'Asia/Shanghai'")  # 模拟非 UTC 目标环境
+    assert pg_db.execute("SHOW TimeZone").fetchone()[0] == "Asia/Shanghai"
+    # 装置有效性：北京墙上钟（now()::timestamp）≠ UTC 墙上钟——偏移真实存在
+    assert pg_db.execute(
+        "SELECT now()::timestamp <> (now() AT TIME ZONE 'utc')::timestamp"
+    ).fetchone()[0]
+
+    setup_connection(conn)  # 工厂入口重入：SET TIME ZONE 'UTC'
+    assert pg_db.execute("SHOW TimeZone").fetchone()[0] == "UTC"
+    # 钉 UTC 后 CURRENT_TIMESTAMP::timestamp 即 UTC 墙上钟（DEFAULT 写入语义）
+    assert pg_db.execute(
+        "SELECT now()::timestamp = (now() AT TIME ZONE 'utc')::timestamp"
+    ).fetchone()[0]
+
+
+def test_pg_timezone_audit_default_now_writes_utc(pg_db) -> None:
+    """审计 DEFAULT CURRENT_TIMESTAMP 写入 UTC 值（P2-1 效果断言）：钉 UTC 后
+    created_at 与 UTC 墙上钟一致（分钟级）；未钉时（Asia/Shanghai 对照）墙上钟
+    +8h——跨月界（UTC 月末 16:00~24:00 = 北京次月 0:00~8:00）会写错月、
+    落不到已建分区（审计丢窗口）。"""
+    from knowledge_lattice.store.postgres import setup_connection
+
+    pg_db.execute(
+        "INSERT INTO audit_events(id, org_id, actor, action, outcome)"
+        " VALUES('evt:tznow', 'org:tax', 'user:u1', 'search', 'accepted')"
+    )  # created_at 走 DEFAULT CURRENT_TIMESTAMP
+    row_ts = pg_db.execute(
+        "SELECT created_at FROM audit_events WHERE id = 'evt:tznow'"
+    ).fetchone()[0]
+    utc_wall = pg_db.execute(
+        "SELECT (now() AT TIME ZONE 'utc')::timestamp"
+    ).fetchone()[0]
+    assert abs(row_ts - utc_wall) < timedelta(minutes=2)  # DEFAULT 写的是 UTC 墙上钟
+
+    # 对照：未钉 UTC 的 session（Asia/Shanghai）墙上钟 +8h——若 DEFAULT 用它写入，
+    # UTC 月末 16:30Z 的事件会写成次月值（分区路由错月）
+    conn = pg_db.raw
+    conn.execute("SET TIME ZONE 'Asia/Shanghai'")
+    shanghai_wall = pg_db.execute("SELECT now()::timestamp").fetchone()[0]
+    assert timedelta(hours=7, minutes=55) < (shanghai_wall - utc_wall) < timedelta(hours=8, minutes=5)
+    setup_connection(conn)  # 恢复工厂纪律（UTC）——不留脏 session
+
+
+def test_pg_timezone_grant_expiry_comparison_uses_utc(pg_db) -> None:
+    """过期/有效授权对照判定（P2-1）：`expires_at > CURRENT_TIMESTAMP` 比较中
+    timestamp 列按 session TimeZone 提升解释——钉 UTC 后 = SQLite 语义（UTC vs
+    UTC）。对照：Asia/Shanghai session 下 UTC-1h 的已过期授权被误判为有效。"""
+    from knowledge_lattice.store.postgres import setup_connection
+
+    from helpers import (
+        dim_id_for,
+        seed_dim_value,
+        seed_dimension,
+        seed_grant,
+        seed_membership,
+        seed_org,
+        seed_user,
+        val_id_for,
+    )
+
+    now_utc = datetime.now(UTC)
+    seed_org(pg_db)
+    seed_dimension(pg_db, "org:tax", "region")
+    seed_dim_value(pg_db, dim_id_for("org:tax", "region"), "CN")
+    seed_dim_value(pg_db, dim_id_for("org:tax", "region"), "OS")
+    seed_user(pg_db, "u_tz")
+    seed_membership(pg_db, "u_tz", "org:tax")
+    # 已过期授权（UTC 语义：expires_at = 当前 UTC 时刻 - 1h；取 CN）
+    seed_grant(
+        pg_db, user_id="u_tz", dim_id=dim_id_for("org:tax", "region"),
+        val_id=val_id_for("org:tax", "region", "CN"),
+        expires_at=(now_utc - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S"),
+    )
+    # 有效授权对照（+1h；取 OS——PK 不同行）
+    seed_grant(
+        pg_db, user_id="u_tz", dim_id=dim_id_for("org:tax", "region"),
+        val_id=val_id_for("org:tax", "region", "OS"),
+        expires_at=(now_utc + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S"),
+    )
+
+    backend = pg_db.make_backend()
+    grants = backend.read_grants("u_tz", "org:tax")  # now=None：库时钟（CURRENT_TIMESTAMP）
+    assert grants["region"] == ("OS",)  # -1h 过期被滤、+1h 保留——UTC vs UTC（SQLite 语义）
+
+    # 对照：Asia/Shanghai session（未钉 UTC）——naive expires_at 被按北京墙钟解释
+    # （= 绝对时刻提前 8h）→ +1h 的**有效**授权被误判过期（提前失效——P2-1 偏移实证）
+    conn = pg_db.raw
+    conn.execute("SET TIME ZONE 'Asia/Shanghai'")
+    try:
+        grants_shifted = backend.read_grants("u_tz", "org:tax")
+        assert grants_shifted["region"] == ()  # 有效授权被提前 8h 误杀
+    finally:
+        setup_connection(conn)  # 恢复工厂纪律（UTC）
+
+
+def test_pg_pool_connections_pinned_utc_against_non_utc_db_default(pg_db) -> None:
+    """非 UTC 数据库默认（ALTER DATABASE timezone='Asia/Shanghai'——模拟公司
+    内网 PG）下，**新建**工厂连接（池 configure / 单连接 setup）仍被钉 UTC：
+    P2-1 的目标环境级对冲（容器默认恰为 UTC 时其余时区用例无区分力，本用例
+    构造非 UTC 默认补齐）。"""
+    import psycopg
+
+    from knowledge_lattice.store.postgres import connect, connect_pool
+
+    admin = psycopg.connect(pg_db.dsn, autocommit=True)
+    admin.execute("ALTER DATABASE lattice SET timezone TO 'Asia/Shanghai'")
+    pool = None
+    conn = None
+    try:
+        # 默认（未钉）行为的装置有效性：raw 新连接拿到的即 Asia/Shanghai
+        probe = psycopg.connect(pg_db.dsn, autocommit=True)
+        assert probe.execute("SHOW TimeZone").fetchone()[0] == "Asia/Shanghai"
+        probe.close()
+
+        pool = connect_pool(
+            pg_db.dsn, min_size=1, max_size=1, name="tz-pool",
+            search_path=f"{pg_db.schema},public",
+        )
+        with pool.connection() as pc:
+            assert pc.execute("SHOW TimeZone").fetchone()[0] == "UTC"  # 池连接被钉 UTC
+        conn = connect(pg_db.dsn, search_path=f"{pg_db.schema},public")
+        assert conn.execute("SHOW TimeZone").fetchone()[0] == "UTC"  # 单连接同纪律
+    finally:
+        admin.execute("ALTER DATABASE lattice RESET timezone")  # 还原库级默认
+        admin.close()
+        if pool is not None:
+            pool.close()
+        if conn is not None:
+            conn.close()
+
+
+# ============ R2 P2-4：TRUNCATE 防护（statement 级触发器——父表 + 分区） ============
+
+
+def test_pg_audit_truncate_blocked_parent_and_partition(pg_db) -> None:
+    """TRUNCATE 不触发行级触发器（SQLite 无 TRUNCATE 无此缺口——#33 P2-10 等价
+    要求）：父表与分区直接 TRUNCATE 均被 statement 级 BEFORE TRUNCATE 触发器
+    拦截（消息同源 append-only 文案），审计行完好。"""
+    from knowledge_lattice.store.postgres.audit import ensure_month_partition
+
+    ensure_month_partition(pg_db.raw, when=datetime(2026, 10, 15, tzinfo=UTC))
+    pg_db.execute(
+        "INSERT INTO audit_events(id, org_id, actor, action, outcome, created_at)"
+        " VALUES('evt:tr', 'org:tax', 'user:u1', 'search', 'accepted', '2026-10-05 00:00:00')"
+    )
+    assert pg_db.execute(
+        "SELECT count(*) FROM audit_events_202610 WHERE id = 'evt:tr'"
+    ).fetchone()[0] == 1
+
+    with pytest.raises(pg_db.integrity_error, match="append-only"):
+        pg_db.execute("TRUNCATE audit_events")  # 父表形态
+    with pytest.raises(pg_db.integrity_error, match="append-only"):
+        pg_db.execute("TRUNCATE audit_events_202610")  # 分区直接 TRUNCATE 形态
+    assert pg_db.execute(
+        "SELECT count(*) FROM audit_events_202610 WHERE id = 'evt:tr'"
+    ).fetchone()[0] == 1  # 审计行完好
 
 
 # ============ TC-SCAF-03 PG 等价：schema_migrations + 约束校验 + 幂等/并发 ============
@@ -166,6 +379,52 @@ def test_pg_migration_applies_and_tracks_schema_migrations(pg_db, tmp_path: Path
     assert pg_db.execute("SELECT key FROM dimensions").fetchone()[0] == "region"
     # 幂等重放：再跑无新版本
     assert migrate_db(pg_db.raw, dirs=dirs) == []
+
+
+def test_pg_migration_out_of_order_rejected(pg_db, tmp_path: Path) -> None:
+    """R2 P2-3 版本只前进：先应用 0003、后补入 0002 → 未应用且 ≤ 已应用水位
+    （MAX）→ MigrationError fail-fast，绝不乱序应用（SQLite user_version 单调
+    语义等价）；0003 已应用不重放、库态不被乱序 DDL 触碰。"""
+    from knowledge_lattice.store.postgres import migrate_db
+    from knowledge_lattice.store.postgres.migrate import BUILTIN_DIRS, MigrationError
+
+    d3 = tmp_path / "only_v3"
+    d3.mkdir()
+    (d3 / "0003_test_add_col3.sql").write_text(
+        "-- 0003 测试迁移：dimensions 加 col3 列\nALTER TABLE dimensions ADD COLUMN col3 TEXT;\n",
+        encoding="utf-8",
+    )
+    d23 = tmp_path / "v2_and_v3"
+    d23.mkdir()
+    (d23 / "0002_test_backfill.sql").write_text(
+        "-- 0002 补入迁移（乱序场景：水位已到 3）\nALTER TABLE dimensions ADD COLUMN col2 TEXT;\n",
+        encoding="utf-8",
+    )
+    (d23 / "0003_test_add_col3.sql").write_text(
+        "-- 0003 测试迁移：dimensions 加 col3 列\nALTER TABLE dimensions ADD COLUMN col3 TEXT;\n",
+        encoding="utf-8",
+    )
+
+    # 先应用 0003（跳过 0002 —— 目录里本来就没有）
+    assert migrate_db(pg_db.raw, dirs=[BUILTIN_DIRS["docs"], d3]) == [3]
+
+    # 后补入 0002：未应用且 2 <= MAX(applied)=3 → fail-fast
+    with pytest.raises(MigrationError, match="0002|只前进|out-of-order"):
+        migrate_db(pg_db.raw, dirs=[BUILTIN_DIRS["docs"], d23])
+
+    # 库态：0002 的 DDL 绝未执行、0003 不重放、版本水位不动
+    cols = {
+        r[0]
+        for r in pg_db.execute(
+            "SELECT column_name FROM information_schema.columns"
+            " WHERE table_schema = current_schema() AND table_name = 'dimensions'"
+        )
+    }
+    assert "col2" not in cols
+    assert "col3" in cols
+    assert pg_db.execute(
+        "SELECT version FROM schema_migrations ORDER BY version"
+    ).fetchall() == [(1,), (3,)]
 
 
 def test_pg_migration_violation_rolls_back_atomically(pg_db, tmp_path: Path) -> None:
@@ -310,3 +569,91 @@ def test_pg_factory_rolls_current_month_partition(pg_db) -> None:
     # roll_monthly 接口不变（AuditBackend 协议——月库/分区差异在包内吸收）
     backend = pg_db.make_backend()
     assert backend.roll_monthly(datetime(2026, 5, 1, tzinfo=UTC)) == "audit_events_202605"
+
+
+# ============ R2 P3-3：PG 渲染器恶意 key 安全回归（M0a-2 R2 纪律双后端锁死） ============
+
+_EVIL_KEY = "x_0) OR 1=1)) --"  # 与 sqlite 侧 test_r2_review_fixes 同款攻击配方
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_OUTSIDE_LITERALS = re.compile(r"'(?:[^']|'')*'")
+
+
+def test_pg_invalue_rejects_non_identifier_param_prefix() -> None:
+    """param_prefix 白名单 fail-closed（约束在共享 acl_ast.InValue——双方言同受）：
+    恶意前缀构造即拒；合法标识符照常接受（trace 标签，不进入 SQL）。"""
+    from knowledge_lattice.store.acl_ast import ColumnRef, InValue
+
+    for evil in (_EVIL_KEY, "ds; DROP TABLE chunks;--", "a b", "1abc", ""):
+        with pytest.raises(ValueError, match="InValue.param_prefix"):
+            InValue(expr=ColumnRef("je", "value"), param_prefix=evil, values=("A",))
+    InValue(expr=ColumnRef("je", "value"), param_prefix="dim0", values=("A",))
+
+
+def test_pg_malicious_dimension_key_constants_intact_and_no_cross_org_leak(pg_db) -> None:
+    """恶意维度 key（库内数据）下 PG 渲染产物：外层常量齐全（org/版本/tombstone）、
+    参数名全为合法标识符（渲染器自控 g<seq>_<i> 序列）、注释记号不出现在字面量外、
+    恶意 key 只以转义后的字面量出现（jsonb_extract_path 第二参）；双组织真实
+    执行无跨组织行（org:gl 文档绝不出现——含空维度放行文档）。"""
+    from knowledge_lattice.core.docs.acl import compile_acl
+
+    from helpers import (
+        dim_id_for,
+        grant_by_key,
+        seed_dataset,
+        seed_dim_value,
+        seed_dimension,
+        seed_grant,
+        seed_membership,
+        seed_org,
+        seed_searchable_doc,
+        seed_user,
+    )
+
+    for org in ("org:tax", "org:gl"):
+        seed_org(pg_db, org)
+        seed_dataset(pg_db, org, f"ds:{org}")
+        seed_dimension(pg_db, org, "region")
+        seed_dim_value(pg_db, dim_id_for(org, "region"), "CN")
+        seed_dim_value(pg_db, dim_id_for(org, "region"), "OS")
+    seed_user(pg_db, "u_tax")
+    seed_membership(pg_db, "u_tax", "org:tax")
+    grant_by_key(pg_db, "u_tax", key="region", value="CN")
+    # 攻击配方：先有维度 x（绑定 g0_0），再以恶意 key 维度试图截断参数名注入注释
+    for key in ("x", _EVIL_KEY):
+        dim_id = seed_dimension(pg_db, "org:tax", key)
+        val_id = seed_dim_value(pg_db, dim_id, "A")
+        seed_grant(pg_db, user_id="u_tax", dim_id=dim_id, val_id=val_id)
+    seed_user(pg_db, "u_gl_owner")
+    seed_membership(pg_db, "u_gl_owner", "org:gl")
+    seed_searchable_doc(
+        pg_db, "d_tax", org_id="org:tax", dataset_id="ds:org:tax",
+        dims={"region": ["CN"]}, owner_user_id="u_tax",
+    )
+    seed_searchable_doc(
+        pg_db, "d_gl", org_id="org:gl", dataset_id="ds:org:gl",
+        dims={"region": ["OS"]}, owner_user_id="u_gl_owner",
+    )
+    seed_searchable_doc(  # 空维度文档——org 常量被注释时的越权出口
+        pg_db, "d_gl_empty", org_id="org:gl", dataset_id="ds:org:gl",
+        owner_user_id="u_gl_owner",
+    )
+
+    backend = pg_db.make_backend()
+    plan = compile_acl(backend, "u_tax", "org:tax", now="2026-06-01 12:00:00")
+    rules = {r.key: r for r in plan.dimension_rules}
+    assert rules[_EVIL_KEY].grants == ("A",)  # 授权展开照常——key 作为数据参与
+
+    sql, params = pg_db.render_select(plan)
+    for fragment in (
+        "d.org_id = %(org)s", "c.version = d.active_version", "c.tombstone = 0",
+    ):
+        assert fragment in sql, fragment  # 外层常量未被截断/注释
+    assert params["org"] == "org:tax"
+    for name in params:
+        assert _IDENTIFIER.fullmatch(name), f"非法参数名: {name!r}"
+    stripped = _OUTSIDE_LITERALS.sub("''", sql)
+    assert "--" not in stripped and "/*" not in stripped  # 注释记号不出现在字面量外
+    # 恶意 key 只以转义后的字面量出现（jsonb_extract_path 第二参——Literal 渲染）
+    assert f"'{_EVIL_KEY}'" in sql
+    # 行为：真实执行 org 隔离成立——org:gl 文档（含空维度文档）绝不出现
+    assert {r[2] for r in pg_db.execute(sql, params)} == {"d_tax"}

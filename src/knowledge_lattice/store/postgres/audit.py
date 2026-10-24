@@ -63,9 +63,32 @@ CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit_events
   FOR EACH ROW EXECUTE FUNCTION lattice_audit_append_only_delete()
 """
 
+# R2 P2-4（用户拍板选项 A）：PG TRUNCATE 不触发行级 UPDATE/DELETE 触发器
+# （SQLite 无 TRUNCATE、DELETE 均被拦——无此缺口），须 statement 级 BEFORE
+# TRUNCATE 触发器补齐 append-only 等价（#33 P2-10 / FR-6），消息同源。
+# 注：父表上的 TRUNCATE 触发器只拦「TRUNCATE 父表」、既不克隆到分区也不拦
+# 「直接 TRUNCATE 分区」（PG 16 实测）——ensure_month_partition 对每个分区
+# 显式落同款触发器补齐分区直 TRUNCATE 形态。
+APPEND_ONLY_TRUNCATE_FN_DDL = """\
+CREATE OR REPLACE FUNCTION lattice_audit_append_only_truncate() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'audit_events is append-only; TRUNCATE is forbidden';
+  RETURN NULL;
+END
+$$
+"""
+
+APPEND_ONLY_TRUNCATE_TRIGGER_DDL = """\
+DROP TRIGGER IF EXISTS audit_no_truncate ON {target};
+CREATE TRIGGER audit_no_truncate BEFORE TRUNCATE ON {target}
+  FOR EACH STATEMENT EXECUTE FUNCTION lattice_audit_append_only_truncate()
+"""
+
 
 def month_bounds(month: str) -> tuple[str, str]:
-    """'YYYYMM' → [当月首日 0 点, 次月首日 0 点)（RANGE 分区边界）。"""
+    """'YYYYMM' → [当月首日 0 点, 次月首日 0 点)（RANGE 分区边界，UTC 月界——
+    session TimeZone 已由连接工厂钉 UTC，P2-1）。"""
     year, mon = int(month[:4]), int(month[4:6])
     start = f"{year:04d}-{mon:02d}-01"
     ny, nm = (year + 1, 1) if mon == 12 else (year, mon + 1)
@@ -78,7 +101,11 @@ def partition_name(month: str) -> str:
 
 
 def ensure_month_partition(conn: psycopg.Connection, when: datetime | None = None) -> str:
-    """确保指定月的分区存在（幂等），返回分区名——月库文件的 PG 等价滚动动作。"""
+    """确保指定月的分区存在（幂等），返回分区名——月库文件的 PG 等价滚动动作。
+
+    分区自身同步落 audit_no_truncate 触发器（幂等 DROP/CREATE）：分区是独立
+    表，父表 statement 级触发器覆盖不到「直接 TRUNCATE 分区」形态（P2-4）。
+    """
     month = (when or datetime.now(UTC)).strftime("%Y%m")
     name = partition_name(month)
     start, end = month_bounds(month)
@@ -86,13 +113,17 @@ def ensure_month_partition(conn: psycopg.Connection, when: datetime | None = Non
         f"CREATE TABLE IF NOT EXISTS {name} PARTITION OF audit_events"
         f" FOR VALUES FROM ('{start}') TO ('{end}')"
     )
+    conn.execute(APPEND_ONLY_TRUNCATE_TRIGGER_DDL.format(target=name))
     return name
 
 
 def ensure_audit(conn: psycopg.Connection, when: datetime | None = None) -> None:
-    """确保分区父表 + append-only 触发器 + 当月分区就绪（连接工厂滚动入口，幂等）。"""
+    """确保分区父表 + append-only 触发器（行级 + TRUNCATE statement 级）+
+    当月分区就绪（连接工厂滚动入口，幂等）。"""
     conn.execute(AUDIT_PARENT_DDL)
     conn.execute(APPEND_ONLY_FN_DDL)
     conn.execute(APPEND_ONLY_DELETE_FN_DDL)
+    conn.execute(APPEND_ONLY_TRUNCATE_FN_DDL)
     conn.execute(APPEND_ONLY_TRIGGERS_DDL)
+    conn.execute(APPEND_ONLY_TRUNCATE_TRIGGER_DDL.format(target="audit_events"))
     ensure_month_partition(conn, when)

@@ -3,7 +3,10 @@
 与 sqlite/migrate.py 的语义对照（§4 PG 映射）：
 
 - `user_version` → **`schema_migrations` 表**（version/name/domain/applied_at），
-  版本号只前进、重复运行幂等（已应用版本不重放）；
+  版本号只前进、重复运行幂等（已应用版本不重放）；**乱序防护（R2 P2-3）**：
+  未应用且 version ≤ MAX(applied) 水位的迁移（如已应用 0003 后补入 0002）
+  直接 `MigrationError` fail-fast——绝不乱序应用（SQLite `user_version` 单调
+  语义等价；锁内复核同款校验防并发推进后的竞态）；
 - `BEGIN IMMEDIATE` → 普通事务 + **事务级 advisory lock**（`pg_advisory_xact_lock`）
   序列化并发迁移——取锁后在锁内重读已应用版本，并发连接已应用同一迁移时干净
   跳过（绝不重放 DDL 撞 "already exists"）；
@@ -74,16 +77,34 @@ def _parse(path: Path, *, domain: str) -> Migration:
 
 
 def migrate_db(conn: psycopg.Connection, dirs: Iterable[Path] | None = None) -> list[int]:
-    """应用全部 pending 迁移，返回**本次实际应用**的版本号列表（幂等：已应用不重放）。"""
+    """应用全部 pending 迁移，返回**本次实际应用**的版本号列表（幂等：已应用不重放）。
+
+    版本只前进（R2 P2-3）：未应用且 ≤ MAX(applied) 水位 → MigrationError
+    fail-fast（乱序补入小编号迁移属部署错误，绝不静默乱序应用）。
+    """
     _ensure_schema_migrations(conn)
-    current = {row[0] for row in conn.execute("SELECT version FROM schema_migrations")}
-    applied: list[int] = []
+    applied = {row[0] for row in conn.execute("SELECT version FROM schema_migrations")}
+    watermark = max(applied, default=0)
+    applied_now: list[int] = []
     for m in discover(dirs):
-        if m.version in current:
-            continue  # 快速路径：版本只前进
+        if m.version in applied:
+            continue  # 快速路径：版本只前进，已应用的不重放
+        _assert_forward_only(m, watermark, applied)
         if _apply_one(conn, m):
-            applied.append(m.version)
-    return applied
+            applied_now.append(m.version)
+            applied.add(m.version)
+            watermark = m.version
+    return applied_now
+
+
+def _assert_forward_only(m: Migration, watermark: int, applied: set[int]) -> None:
+    """未应用且 ≤ 水位 → 乱序/回补迁移，fail-fast（user_version 单调语义等价）。"""
+    if m.version <= watermark and m.version not in applied:
+        raise MigrationError(
+            f"migration {m.version:04d} ({m.name}) 未应用且 ≤ 已应用水位 "
+            f"{watermark:04d}——版本只前进（乱序补入小编号迁移拒绝执行；"
+            "SQLite user_version 单调语义等价，R2 P2-3）"
+        )
 
 
 def applied_versions(conn: psycopg.Connection) -> list[int]:
@@ -111,14 +132,14 @@ def _apply_one(conn: psycopg.Connection, m: Migration) -> bool:
     conn.execute("BEGIN")
     try:
         # 并发序列化（BEGIN IMMEDIATE 的 MVCC 等价）：事务级 advisory lock +
-        # 锁内重读已应用版本
+        # 锁内重读已应用集合与水位（并发推进后同款校验——R2 P2-3 锁内复核）
         conn.execute("SELECT pg_advisory_xact_lock(%(k)s)", {"k": MIGRATION_LOCK_KEY})
-        locked = conn.execute(
-            "SELECT 1 FROM schema_migrations WHERE version = %(v)s", {"v": m.version}
-        ).fetchone()
-        if locked is not None:
+        rows = conn.execute("SELECT version FROM schema_migrations").fetchall()
+        locked_applied = {r[0] for r in rows}
+        if m.version in locked_applied:
             conn.execute("COMMIT")
             return False
+        _assert_forward_only(m, max(locked_applied, default=0), locked_applied)
         for stmt in statements:
             conn.execute(stmt)
         conn.execute(

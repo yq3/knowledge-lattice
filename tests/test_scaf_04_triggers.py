@@ -212,6 +212,34 @@ def test_chunk_fts_columns_sync(backend) -> None:
     assert backend.fts_word_count("进项税额") == 0
 
 
+def test_version_switch_clear_all_five_columns_zero_hits(backend) -> None:
+    """R2 P3-2：版本切换「五列全清 → 索引重算 → 零命中」完整形态（design §5.3
+    切换事务清五列；sqlite=au 触发器重写 FTS 行 / pg=GENERATED 重算为空 tsvector）
+    ——双臂同一断言（sqlite 侧 TC-FTS-03 形态在 PG 臂补齐）。"""
+    seed_org(backend, "org:tax")
+    ds_id = seed_dataset(backend)
+    seed_user(backend, "u1")
+    doc_id = seed_document(backend)
+    insert_chunk(
+        backend, doc_id, seq=1, version=1,
+        content_seg="留抵 退税 申请", title_seg="留抵退税 指南",
+        keywords="留抵退税", llm_keywords="退税", tags="税",
+    )
+    # 五列均有词 → 全部可命中
+    for word in ("留抵", "留抵退税", "退税", "税"):
+        assert backend.fts_word_count(word) >= 1, word
+    # 版本切换语义：旧版本块五列全清（tombstone=1 + embedding/五列置空）
+    backend.execute(
+        "UPDATE chunks SET tombstone = 1, embedding = NULL,"
+        " title_seg = '', content_seg = '', keywords = '', llm_keywords = '', tags = ''"
+        " WHERE doc_id = ? AND version = 1",
+        (doc_id,),
+    )
+    # 五列全清后：任一列词零命中（sqlite=FTS 行被 au 重写为空 / pg=GENERATED 空 tsvector）
+    for word in ("留抵", "留抵退税", "退税", "税"):
+        assert backend.fts_word_count(word) == 0, word
+
+
 # ============ sqlite-only：主库触发器清单（sqlite_master 形态断言） ============
 
 

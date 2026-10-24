@@ -61,6 +61,12 @@ def setup_connection(
     """对已打开连接施加工厂纪律（连接池 configure 回调同用此入口）。
 
     - str → unknown OID dumper（时间戳/JSONB 字符串直写，方言差异收口本包）；
+    - **session TimeZone 钉 UTC**（R2 P2-1，用户拍板选项 A）：`CURRENT_TIMESTAMP`
+      与 TIMESTAMP 列的比较/DEFAULT 写入统一按 UTC 解释——与 SQLite
+      `CURRENT_TIMESTAMP`（恒 UTC）语义对齐；展示分工=后端吐 UTC ISO 8601、
+      前端按浏览器时区渲染（FR-8 同构）。未钉时非 UTC 目标环境（如
+      Asia/Shanghai）授权过期比较偏移 8h、审计月界 00:00–08:00 写入落不到
+      当月分区（丢窗口）；
     - search_path 设置（逐项标识符校验——代码内控值，非数据拼接）；
     - 版本与 pgvector 断言（显式 RuntimeError，非 assert——`python -O` 剥离）；
     - 审计月分区滚动（幂等）。
@@ -68,6 +74,7 @@ def setup_connection(
     from psycopg.types.string import StrDumperUnknown
 
     conn.adapters.register_dumper(str, StrDumperUnknown)
+    conn.execute("SET TIME ZONE 'UTC'")
     if search_path is not None:
         items = [s.strip() for s in search_path.split(",") if s.strip()]
         for item in items:

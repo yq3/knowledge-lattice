@@ -99,10 +99,11 @@ def backend(request, tmp_path: Path):
         from knowledge_lattice.store.sqlite import connect, migrate_db
 
         c = connect(tmp_path / "lattice.db")
-        migrate_db(c)
-        db = SqliteDb(c)
-        yield db
-        c.close()
+        try:  # P3-9：migrate 抛错同样关闭连接（与 pg 分支同款纪律，不泄漏）
+            migrate_db(c)
+            yield SqliteDb(c)
+        finally:
+            c.close()
         return
 
     dsn = os.environ.get(PG_DSN_ENV)

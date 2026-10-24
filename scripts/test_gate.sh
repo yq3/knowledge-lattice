@@ -5,10 +5,15 @@
 #
 # 语义：
 #   1. 未设置 LATTICE_PG_DSN → 立即非零退出并提示启动容器（绝不静默绿）；
-#   2. 双模式全量 pytest（常规 + python -O）——`-m "not manual"` 排除常驻 manual
+#   2. pg 臂用例收集数 > 0（`[pg]` 参数化条目——防「参数化被删/没收集到」的假绿）；
+#   3. 双模式全量 pytest（常规 + python -O）——`-m "not manual"` 排除常驻 manual
 #      走查标记（TC-UI 组口径：浏览器人工执行、不进门禁）；
-#   3. 任何 failed **或任何 skipped**（含 pg 臂因环境缺失而 skip）→ 非零退出
+#   4. 任何 failed **或任何 skipped**（含 pg 臂因环境缺失而 skip）→ 非零退出
 #      （skip=失败——本地无 CI 兜底，防静默绿灯）。
+#
+# 可移植性（R2 P3-8）：mktemp 用「模板以 X 结尾」形态（GNU/BSD 通用——公司内网
+# Linux 的 GNU mktemp 不接受 BSD `-t` 形态与带后缀模板）；skip 检测匹配 pytest
+# 完整 summary 行（不依赖 tail 行数假设）。
 #
 # 用法：
 #   LATTICE_PG_DSN=postgresql://postgres:lattice@localhost:5432/lattice scripts/test_gate.sh
@@ -26,25 +31,42 @@ if [[ -z "$PG_DSN" ]]; then
   exit 1
 fi
 
+# ---- pg 臂在场断言：收集期 [pg] 参数化条目 > 0（收集不执行 fixture、无需容器）----
+PG_COLLECTED="$(uv run pytest -m "not manual" --collect-only -q 2>/dev/null | grep -c '\[pg\]' || true)"
+if [[ "$PG_COLLECTED" -eq 0 ]]; then
+  echo "GATE FAIL: 收集期未发现任何 [pg] 参数化用例——backend 参数化骨架失守（防「没收集到」的假绿）。" >&2
+  exit 1
+fi
+echo "pg 臂参数化用例收集数：${PG_COLLECTED}（> 0 ✓）"
+
+# 单模式门禁：跑全量 → 退出码拦截 failed → summary 行拦截 skipped
 run_mode() {
   local label="$1"
   shift
   local log
-  log="$(mktemp -t lattice-gate-${label}).log"
+  log="$(mktemp "${TMPDIR:-/tmp}/lattice-gate-${label}.XXXXXX")"  # 模板以 X 结尾（GNU/BSD 通用）
   echo "==== [$label] $* -m 'not manual' -q ===="
   if ! "$@" -m "not manual" -q 2>&1 | tee "$log"; then
     echo "GATE FAIL: [$label] 存在 failed 用例（详见 $log）" >&2
     exit 1
   fi
-  if tail -5 "$log" | grep -Eq '[0-9]+ skipped'; then
-    echo "GATE FAIL: [$label] 出现 skipped 用例（门禁口径：skip=失败——逐个核对环境或申报理由）" >&2
-    tail -5 "$log" >&2
+  # 完整 summary 行（最后一个 passed/failed/error 汇总行）上的 skipped 检测
+  local summary
+  summary="$(grep -E '[0-9]+ (passed|failed|error)' "$log" | tail -1)"
+  if grep -Eq '[0-9]+ skipped' <<<"$summary"; then
+    echo "GATE FAIL: [$label] summary 含 skipped（门禁口径：skip=失败——逐个核对环境或申报理由）" >&2
+    echo "  summary: $summary" >&2
     exit 1
   fi
-  echo "[$label] OK：$(tail -1 "$log")"
+  if [[ -z "$summary" ]]; then
+    echo "GATE FAIL: [$label] 未解析到 pytest summary 行（详见 $log）——门禁拒绝无凭据绿灯。" >&2
+    exit 1
+  fi
+  echo "[$label] OK：$summary"
+  rm -f "$log"
 }
 
 run_mode "pytest" uv run pytest
 run_mode "pytest-O" uv run python -O -m pytest
 
-echo "GATE PASS: sqlite+pg 双后端、双模式（常规/python -O）全绿，0 skipped"
+echo "GATE PASS: sqlite+pg 双后端、双模式（常规/python -O）全绿，0 skipped（pg 臂 $PG_COLLECTED 组参数化全实跑）"
