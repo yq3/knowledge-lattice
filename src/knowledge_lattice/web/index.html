@@ -1,0 +1,113 @@
+<!doctype html>
+<!-- 静态页壳（design §5.7 / 原型 v0.5 信息结构基准——上传/检索两视图最小闭环）。
+     i18n：data-i18n + web/i18n.js 字典；默认中文、localStorage 持久化（FR-8）。 -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>知识库薄壳</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">格</span>
+        <div>
+          <div class="brand-name" data-i18n="app.title">知识库薄壳</div>
+          <div class="brand-sub" data-i18n="app.subtitle">上传 / 检索最小闭环 · API 契约先行</div>
+        </div>
+      </div>
+      <!-- 语言切换：中 | EN（TC-UI-01——切换即时生效、localStorage 持久化） -->
+      <div class="lang-switch" id="langSwitch">
+        <button type="button" data-lang="zh">中</button><span class="sep">|</span><button type="button" data-lang="en">EN</button>
+      </div>
+    </header>
+
+    <div class="body">
+      <nav class="rail">
+        <button class="nav-item on" data-view="upload"><span data-i18n="nav.upload">文档上传</span></button>
+        <button class="nav-item" data-view="search"><span data-i18n="nav.search">检索测试</span></button>
+        <div class="rail-note" data-i18n="nav.hint">M0a 页壳：两视图</div>
+        <div class="conn">
+          <div class="conn-h" data-i18n="settings.title">连接设置</div>
+          <input id="cfgToken" type="text" data-i18n-ph="settings.token.ph" placeholder="开发 JWT">
+          <input id="cfgOrg" type="text" data-i18n-ph="settings.org.ph" placeholder="如 org:tax">
+          <button class="btn" id="cfgSave" data-i18n="settings.save">保存</button>
+        </div>
+      </nav>
+
+      <main class="main">
+        <!-- ============ 上传视图 ============ -->
+        <section class="view" id="view-upload">
+          <header class="head">
+            <h1 data-i18n="upload.title">文档上传</h1>
+            <p class="lede" data-i18n="upload.lede">multipart 直传：维度值须在你的授权内。</p>
+          </header>
+          <div class="form">
+            <div class="row">
+              <label data-i18n="upload.dataset">知识库</label>
+              <select id="upDataset"><option data-i18n="upload.dataset.none">（先加载知识库）</option></select>
+            </div>
+            <div class="row">
+              <label data-i18n="upload.file">文件</label>
+              <input id="upFile" type="file" accept=".docx,.xlsx,.pptx,.html,.htm,.pdf">
+            </div>
+            <div class="row">
+              <label data-i18n="upload.dims">文档维度</label>
+              <div id="upDims" class="chips"><span class="muted" data-i18n="upload.dims.hint">必选维度必须选值；非必选维度可空（空值对所有人放行）</span></div>
+            </div>
+            <div class="row actions">
+              <button class="btn primary" id="upSubmit" data-i18n="upload.submit">上传</button>
+              <span id="upMsg" class="msg"></span>
+            </div>
+          </div>
+          <section class="status" id="upStatus" hidden>
+            <h3 data-i18n="status.title">任务与文档状态</h3>
+            <dl class="kv" id="upStatusKv"></dl>
+            <button class="btn ghost" id="upRefresh" data-i18n="status.refresh">刷新</button>
+          </section>
+        </section>
+
+        <!-- ============ 检索视图 ============ -->
+        <section class="view" id="view-search" hidden>
+          <header class="head">
+            <h1 data-i18n="search.title">检索测试</h1>
+            <p class="lede" data-i18n="search.lede">BM25 单路（M0a）。</p>
+          </header>
+          <div class="qbar">
+            <input id="qInput" type="text" data-i18n-ph="search.q.ph" placeholder="问一个业务问题……">
+            <button class="btn primary" id="qGo" data-i18n="search.go">检索</button>
+          </div>
+          <div class="qopts">
+            <label><span data-i18n="search.dataset">知识库</span>
+              <select id="qDataset"><option value="" data-i18n="search.all">全部可见</option></select>
+            </label>
+          </div>
+          <div id="searchMsg" class="msg"></div>
+          <div class="hits-wrap">
+            <table class="ledger" id="hitsTable" hidden>
+              <thead><tr>
+                <th data-i18n="search.col.rank">#</th>
+                <th data-i18n="search.col.chunk">chunk_id</th>
+                <th data-i18n="search.col.doc">文档</th>
+                <th data-i18n="search.col.page">页/sheet</th>
+                <th data-i18n="search.col.score">score</th>
+                <th data-i18n="search.col.dims">维度</th>
+                <th data-i18n="search.col.source">来源</th>
+              </tr></thead>
+              <tbody id="hitsBody"></tbody>
+            </table>
+            <div id="hitsEmpty" class="empty" hidden>
+              <h3 data-i18n="search.empty">没有可见结果</h3>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <footer class="foot" data-i18n="footer.note">服务端不感知语言；语言仅为前端状态（localStorage）。</footer>
+  </div>
+  <script src="/static/i18n.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

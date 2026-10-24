@@ -6,6 +6,13 @@ readme = "README.md"
 # G-11：requires-python 钉 >=3.11（docling/FastMCP 硬性下限），部署钉 uv 托管 CPython 3.12（开发=部署同版本）
 requires-python = ">=3.11"
 dependencies = [
+    "docling>=2.142.1",
+    "fastapi[standard]>=0.161.1",
+    "fastmcp>=4.1.3",
+    "httpx>=0.28.1",
+    "jieba>=0.42.1",
+    "pyjwt>=2.15.1",
+    "python-ulid>=4.0.1",
     "sqlite-vec>=0.1.6",
 ]
 
@@ -23,3 +30,7 @@ packages = ["src/knowledge_lattice"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "pdf_models: 需要 docling layout 模型权重的用例（首次运行联网下载，之后走本地缓存）",
+  "manual: 手动走查用例（浏览器人工执行、不进 CI——TC-UI 组口径）",
+]

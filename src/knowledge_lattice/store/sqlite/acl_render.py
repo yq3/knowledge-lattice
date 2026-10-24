@@ -23,6 +23,7 @@ import re
 from dataclasses import dataclass
 
 from knowledge_lattice.store.backend import AclDimensionRule, AclPlan
+from knowledge_lattice.store.sqlite.fts import BM25_WEIGHTS
 
 # 参数名 trace 标签白名单（fail-closed——构造即拒；渲染参数名另由渲染器序列生成）
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -366,6 +367,34 @@ def render_fts_select(plan: AclPlan, *, query: str) -> tuple[str, dict[str, obje
         " JOIN chunks c ON c.rid = f.rowid"
         " JOIN documents d ON d.id = c.doc_id AND c.version = d.active_version"
         f" WHERE {where_sql}"
+    )
+    return sql, params
+
+
+def render_fts_recall_select(
+    plan: AclPlan, match_expr: str, *, top_k: int
+) -> tuple[str, dict[str, object]]:
+    """M0a-3 BM25 召回（检索链实装形态，TC-FTS-02/TC-E2E-01）：
+
+    - 溯源列一次取齐（chunk_id/doc_id/title/page_no/dims/source/dataset/sheet/content/snippet 原文）；
+    - 五列加权 `bm25(chunks_fts, 3.0, 1.0, 5.0, 0.5, 8.0)`（结构常量，参数同列序）——
+      越小越相关，ORDER BY ASC；LIMIT :top_k 经绑定参数；
+    - match_expr 为 fts.build_match_expr 产物（token 转义后的字面量 OR 串），经 :q 绑定；
+      WHERE 与 render_fts_select 同一 builder（build_fts_where_ast——三路同构 TC-ACL-06）。
+    """
+    where_sql, params = render_sql(build_fts_where_ast(plan, query=match_expr))
+    params["top_k"] = top_k
+    sql = (
+        "SELECT c.id AS chunk_id, c.doc_id, d.title, c.page_no, c.sheet_name, c.dims_json,"
+        " d.source_uri, d.dataset_id, ds.name AS dataset_name, c.content,"
+        f" bm25(chunks_fts, {BM25_WEIGHTS}) AS score_raw"
+        " FROM chunks_fts f"
+        " JOIN chunks c ON c.rid = f.rowid"
+        " JOIN documents d ON d.id = c.doc_id AND c.version = d.active_version"
+        " JOIN datasets ds ON ds.id = d.dataset_id"
+        f" WHERE {where_sql}"
+        " ORDER BY score_raw ASC"
+        " LIMIT :top_k"
     )
     return sql, params
 
