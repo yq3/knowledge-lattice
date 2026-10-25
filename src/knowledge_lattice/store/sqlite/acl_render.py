@@ -175,6 +175,18 @@ def render_select(plan: AclPlan) -> tuple[str, dict[str, object]]:
     return sql, renderer.params
 
 
+def render_visible_doc_ids(plan: AclPlan) -> tuple[str, dict[str, object]]:
+    """文档级可见集 SQL（M1-2 fetch 替代提示的文档可见性判定）：同一 CTE 主体、
+    SELECT doc_id FROM visible_docs——与三路召回共用同一 visible_docs 构造
+    （TC-ACL-06 同构口径的文档级形态）。"""
+    renderer = _Renderer()
+    sql = (
+        f"{_CTE_PREFIX}{renderer.expr(_build_cte_where_neutral(plan))})"
+        " SELECT doc_id FROM visible_docs"
+    )
+    return sql, renderer.params
+
+
 def render_fts_select(plan: AclPlan, *, query: str) -> tuple[str, dict[str, object]]:
     """FTS 路召回 SQL：visible_docs CTE + chunks_fts MATCH + 版本条件在 JOIN 上（T9）。"""
     renderer = _Renderer()

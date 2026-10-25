@@ -260,7 +260,14 @@ def search(
         degraded.append("probe_reject")  # 探针拒绝档：跨底模距离无意义（拍板2）——不发嵌入
     vec_rows: list[dict] = []
     query_vec: list[float] | None = None
-    embed_breaker_open = not _breaker_allows(breakers, "embed")
+    # P2-新（m1-1 committer 修复）：熔断探测（allow）只在**确实会发起调用**时进行
+    # （embedder 非空且探针未拒绝）——否则「探针拒绝 + 熔断半开」叠加时半开探测
+    # 令牌被消耗且无 success/failure 回写，_probing 永不复位（向量路不自愈需重启）。
+    embed_breaker_open = (
+        not _breaker_allows(breakers, "embed")
+        if embedder is not None and not (gate is not None and gate.rejected)
+        else False
+    )
     vec_skipped = (
         embedder is None
         or (gate is not None and gate.rejected)
@@ -332,15 +339,15 @@ def search(
     # ---- rerank（top-candidates（32 / 降级 16）；content 原文；降级链）----
     candidates = candidates[: settings.rerank_candidates]
     rank_scores: dict[int, float] | None = None
-    rerank_breaker_open = not _breaker_allows(breakers, "rerank")
-    if rerank_breaker_open and reranker is not None and settings.reranker != "none":
+    # P2-新（rerank 侧同款）：none 档/无 reranker（不发起调用）不消耗熔断探测令牌
+    rerank_active = reranker is not None and settings.reranker != "none"
+    rerank_breaker_open = (
+        not _breaker_allows(breakers, "rerank") if rerank_active else False
+    )
+    if rerank_breaker_open:
         # 熔断开路=已确认不可达的降级态——标注 + 审计（P1-2；none 配置态不标）
         degraded.append("rerank_skipped")
-    if (
-        settings.reranker != "none"
-        and reranker is not None
-        and not rerank_breaker_open
-    ):
+    if rerank_active and not rerank_breaker_open:
         rank_scores = _run_rerank(
             settings, reranker, breakers, query, candidates, degraded
         )

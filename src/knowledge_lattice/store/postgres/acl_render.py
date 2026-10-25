@@ -165,6 +165,17 @@ def render_select(plan: AclPlan) -> tuple[str, dict[str, object]]:
     return sql, renderer.params
 
 
+def render_visible_doc_ids(plan: AclPlan) -> tuple[str, dict[str, object]]:
+    """文档级可见集 SQL（M1-2 fetch 替代提示判定）：同一 CTE 主体（MATERIALIZED）、
+    SELECT doc_id FROM visible_docs——与 sqlite 渲染同构（TC-ACL-06 文档级形态）。"""
+    renderer = _Renderer()
+    sql = (
+        f"{_CTE_PREFIX}{renderer.expr(_build_cte_where_neutral(plan))})"
+        " SELECT doc_id FROM visible_docs"
+    )
+    return sql, renderer.params
+
+
 def render_vec_recall_select(
     plan: AclPlan, query_vec: str, *, top_k: int
 ) -> tuple[str, dict[str, object]]:

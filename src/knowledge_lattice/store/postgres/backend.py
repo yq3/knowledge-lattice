@@ -29,7 +29,7 @@ import uuid
 
 import psycopg
 
-from knowledge_lattice.store.backend import AclPlan
+from knowledge_lattice.store.backend import AclPlan, VersionConflictError
 from knowledge_lattice.store.postgres.audit import ensure_month_partition
 from knowledge_lattice.store.postgres.vec import format_vector
 
@@ -255,42 +255,14 @@ class PgBackend:
                 " WHERE id = %(doc)s AND pending_version = %(v)s",
                 {"doc": doc_id, "v": version},
             )
-            # pending_dims_json → document_dimensions（P3-7 逐值命中校验——同 sqlite）
-            row = conn.execute(
-                "SELECT pending_dims_json FROM documents WHERE id = %(doc)s", {"doc": doc_id}
+            # pending_dims_json → document_dimensions：**仅首次上传**（本次事务
+            # 随 D20 切换一并生效）；覆盖上传不在此解析——P0-2.1/T6，落地收口
+            # switch_active_version 切换事务（与 sqlite 同构）
+            active_row = conn.execute(
+                "SELECT active_version FROM documents WHERE id = %(doc)s", {"doc": doc_id}
             ).fetchone()
-            dims_json = row[0] if row else None
-            if dims_json:
-                expected = {
-                    (key, value)
-                    for key, values in json.loads(dims_json).items()
-                    for value in values
-                }
-                inserted = 0
-                conn.execute(
-                    "DELETE FROM document_dimensions WHERE doc_id = %(doc)s", {"doc": doc_id}
-                )
-                for dim_key, value in expected:
-                    cur = conn.execute(
-                        "INSERT INTO document_dimensions(doc_id, dimension_id, value_id)"
-                        " SELECT %(doc)s, dim.id, v.id FROM dimensions dim"
-                        " JOIN dimension_values v ON v.dimension_id = dim.id"
-                        "   AND v.value = %(value)s"
-                        " WHERE dim.org_id = (SELECT org_id FROM documents WHERE id = %(doc)s)"
-                        "   AND dim.key = %(key)s",
-                        {"doc": doc_id, "key": dim_key, "value": value},
-                    )
-                    inserted += cur.rowcount
-                if inserted != len(expected):
-                    raise RuntimeError(
-                        f"pending_dims resolution mismatch: inserted {inserted}"
-                        f" != expected {len(expected)}（维度/取值已被停用或删除？）"
-                        "——事务回滚、pending_dims_json 保留"
-                    )
-                conn.execute(
-                    "UPDATE documents SET pending_dims_json = NULL WHERE id = %(doc)s",
-                    {"doc": doc_id},
-                )
+            if active_row is not None and active_row[0] == 0:
+                self._resolve_pending_dims(conn, doc_id)
             # D20 首次上传切换：active_version=0 → 在 searchable_lexical 即刻切在用
             conn.execute(
                 "UPDATE documents SET"
@@ -312,6 +284,46 @@ class PgBackend:
             except psycopg.Error:
                 pass
             raise
+
+    @staticmethod
+    def _resolve_pending_dims(conn, doc_id: str) -> None:
+        """pending_dims_json → document_dimensions（同事务；与 SqliteBackend 逐条同源）。"""
+        row = conn.execute(
+            "SELECT pending_dims_json FROM documents WHERE id = %(doc)s", {"doc": doc_id}
+        ).fetchone()
+        dims_json = row[0] if row else None
+        if not dims_json:
+            return
+        expected = {
+            (key, value)
+            for key, values in json.loads(dims_json).items()
+            for value in values
+        }
+        inserted = 0
+        conn.execute(
+            "DELETE FROM document_dimensions WHERE doc_id = %(doc)s", {"doc": doc_id}
+        )
+        for dim_key, value in expected:
+            cur = conn.execute(
+                "INSERT INTO document_dimensions(doc_id, dimension_id, value_id)"
+                " SELECT %(doc)s, dim.id, v.id FROM dimensions dim"
+                " JOIN dimension_values v ON v.dimension_id = dim.id"
+                "   AND v.value = %(value)s"
+                " WHERE dim.org_id = (SELECT org_id FROM documents WHERE id = %(doc)s)"
+                "   AND dim.key = %(key)s",
+                {"doc": doc_id, "key": dim_key, "value": value},
+            )
+            inserted += cur.rowcount
+        if inserted != len(expected):
+            raise RuntimeError(
+                f"pending_dims resolution mismatch: inserted {inserted}"
+                f" != expected {len(expected)}（维度/取值已被停用或删除？）"
+                "——事务回滚、pending_dims_json 保留"
+            )
+        conn.execute(
+            "UPDATE documents SET pending_dims_json = NULL WHERE id = %(doc)s",
+            {"doc": doc_id},
+        )
 
     def mark_embedding_batch(self, doc_id: str, version: int, batch_label: str) -> list[dict]:
         """批次启动时钉死标签（§5.3）——认领在处理块且 chunk_vectors 无该 (rid, label)
@@ -367,8 +379,218 @@ class PgBackend:
         return cur.rowcount
 
     def switch_active_version(self, doc_id: str, expected_pending: int) -> None:
-        """覆盖上传切换单事务——M1 实装（M0a 首次上传切换在 insert 事务内）。"""
-        raise NotImplementedError("覆盖上传版本切换随 M1（TC-VER-04）")
+        """覆盖上传切换单事务（design §5.3 切换 SQL 逐项——与 SqliteBackend 同构，
+        普通 BEGIN/COMMIT（MVCC）+ 行级乐观校验）。"""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            row = conn.execute(
+                "SELECT active_version FROM documents"
+                " WHERE id = %(doc)s AND pending_version = %(expected)s"
+                " FOR UPDATE",
+                {"doc": doc_id, "expected": expected_pending},
+            ).fetchone()
+            if row is None:
+                raise VersionConflictError(
+                    f"switch rejected: doc={doc_id!r} pending_version"
+                    f" != {expected_pending}（并发切换/取消？——乐观校验，P0-2.3）"
+                )
+            old_version = row[0]
+            conn.execute(
+                "DELETE FROM chunk_vectors"
+                " WHERE rid IN (SELECT rid FROM chunks"
+                "                WHERE doc_id = %(doc)s AND version = %(old)s)",
+                {"doc": doc_id, "old": old_version},
+            )
+            conn.execute(
+                "UPDATE chunks SET tombstone = 1,"
+                " title_seg = '', content_seg = '', keywords = '',"
+                " llm_keywords = '', tags = ''"
+                " WHERE doc_id = %(doc)s AND version = %(old)s",
+                {"doc": doc_id, "old": old_version},
+            )
+            cur = conn.execute(
+                "UPDATE documents SET"
+                " active_version = pending_version, active_status = pending_status,"
+                " pending_version = NULL, pending_status = NULL, pending_error = NULL,"
+                " updated_at = CURRENT_TIMESTAMP"
+                " WHERE id = %(doc)s AND pending_version = %(expected)s",
+                {"doc": doc_id, "expected": expected_pending},
+            )
+            if cur.rowcount == 0:
+                raise VersionConflictError(
+                    f"switch rejected: doc={doc_id!r} pending_version changed"
+                    " mid-transaction（乐观校验零行）"
+                )
+            self._resolve_pending_dims(conn, doc_id)
+            conn.execute("COMMIT")
+        except BaseException:
+            try:
+                conn.execute("ROLLBACK")
+            except psycopg.Error:
+                pass
+            raise
+
+    def max_document_version(self, doc_id: str) -> int:
+        """历史最大版本号（active/pending/chunks 三源 max——与 sqlite 同构）。"""
+        row = self._conn.execute(
+            "SELECT MAX(m) FROM ("
+            "  SELECT active_version AS m FROM documents WHERE id = %(doc)s"
+            "  UNION ALL SELECT pending_version FROM documents WHERE id = %(doc)s"
+            "  UNION ALL SELECT MAX(version) FROM chunks WHERE doc_id = %(doc)s)"
+            " AS v(m)",
+            {"doc": doc_id},
+        ).fetchone()
+        return row[0] or 0
+
+    def start_overwrite(
+        self,
+        *,
+        doc_id: str,
+        pending_version: int,
+        content_hash: str,
+        mime_type: str,
+        raw_object_key: str,
+        pending_dims_json: str | None,
+    ) -> None:
+        """覆盖上传开新 pending 版本（写入级防并发——同 sqlite 口径）。"""
+        cur = self._conn.execute(
+            "UPDATE documents SET"
+            " pending_version = %(v)s, pending_status = 'parsing', pending_error = NULL,"
+            " pending_dims_json = %(dims)s, content_hash = %(hash)s, mime_type = %(mime)s,"
+            " raw_object_key = %(obj)s, updated_at = CURRENT_TIMESTAMP"
+            " WHERE id = %(doc)s"
+            "   AND (pending_version IS NULL OR pending_status = 'failed')",
+            {
+                "doc": doc_id, "v": pending_version, "dims": pending_dims_json,
+                "hash": content_hash, "mime": mime_type, "obj": raw_object_key,
+            },
+        )
+        if cur.rowcount == 0:
+            raise VersionConflictError(
+                f"overwrite rejected: doc={doc_id!r} 已有进行中 pending 版本"
+                "（同一时刻只有一个 pending——P0-2.3/T7）"
+            )
+
+    def set_doc_pending_failed(self, doc_id: str, version: int, error: str) -> None:
+        """pending 版本失败：failed + pending_error + 立即物理删块——同一事务。"""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "UPDATE documents SET pending_status = 'failed', pending_error = %(err)s,"
+                " updated_at = CURRENT_TIMESTAMP"
+                " WHERE id = %(doc)s AND pending_version = %(v)s",
+                {"err": error, "doc": doc_id, "v": version},
+            )
+            conn.execute(
+                "DELETE FROM chunks WHERE doc_id = %(doc)s AND version = %(v)s",
+                {"doc": doc_id, "v": version},
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            try:
+                conn.execute("ROLLBACK")
+            except psycopg.Error:
+                pass
+            raise
+
+    def delete_document(self, doc_id: str) -> None:
+        """删除文档（同事务：非终态任务取消 → 级联删文档——TC-VER-07/T19①）。"""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "UPDATE tasks SET status = 'failed',"
+                " error = 'cancelled: document deleted', updated_at = CURRENT_TIMESTAMP"
+                " WHERE doc_id = %(doc)s AND status IN ('pending', 'leased', 'running')",
+                {"doc": doc_id},
+            )
+            conn.execute("DELETE FROM documents WHERE id = %(doc)s", {"doc": doc_id})
+            conn.execute("COMMIT")
+        except BaseException:
+            try:
+                conn.execute("ROLLBACK")
+            except psycopg.Error:
+                pass
+            raise
+
+    def get_document_dims(self, doc_id: str) -> dict[str, list[str]]:
+        rows = self._conn.execute(
+            "SELECT dim.key, v.value FROM document_dimensions dd"
+            " JOIN dimensions dim ON dim.id = dd.dimension_id"
+            " JOIN dimension_values v ON v.id = dd.value_id"
+            " WHERE dd.doc_id = %(doc)s ORDER BY dim.key, v.value",
+            {"doc": doc_id},
+        ).fetchall()
+        dims: dict[str, list[str]] = {}
+        for key, value in rows:
+            dims.setdefault(key, []).append(value)
+        return dims
+
+    def set_document_dims(self, doc_id: str, dims: dict[str, list[str]]) -> None:
+        """按 key 全量替换文档维度行（PATCH 落点——与 sqlite 同构）。"""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            for dim_key, values in dims.items():
+                conn.execute(
+                    "DELETE FROM document_dimensions WHERE doc_id = %(doc)s"
+                    "   AND dimension_id IN (SELECT id FROM dimensions"
+                    "       WHERE org_id = (SELECT org_id FROM documents WHERE id = %(doc)s)"
+                    "         AND key = %(key)s)",
+                    {"doc": doc_id, "key": dim_key},
+                )
+                for value in values:
+                    cur = conn.execute(
+                        "INSERT INTO document_dimensions(doc_id, dimension_id, value_id)"
+                        " SELECT %(doc)s, dim.id, v.id FROM dimensions dim"
+                        " JOIN dimension_values v ON v.dimension_id = dim.id"
+                        "   AND v.value = %(value)s"
+                        " WHERE dim.org_id = (SELECT org_id FROM documents WHERE id = %(doc)s)"
+                        "   AND dim.key = %(key)s",
+                        {"doc": doc_id, "key": dim_key, "value": value},
+                    )
+                    if cur.rowcount != 1:
+                        raise RuntimeError(
+                            f"document dims resolution failed: ({dim_key!r}, {value!r})"
+                            "（维度/取值不存在？）——事务回滚"
+                        )
+            conn.execute("COMMIT")
+        except BaseException:
+            try:
+                conn.execute("ROLLBACK")
+            except psycopg.Error:
+                pass
+            raise
+
+    def get_chunk(self, chunk_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT rid, id, doc_id, seq, version, tombstone FROM chunks WHERE id = %(id)s",
+            {"id": chunk_id},
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(zip(("rid", "id", "doc_id", "seq", "version", "tombstone"), row))
+
+    def fetch_window(self, doc_id: str, version: int, seq_lo: int, seq_hi: int) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT id, seq, content, page_no FROM chunks"
+            " WHERE doc_id = %(doc)s AND version = %(v)s AND tombstone = 0"
+            "   AND seq BETWEEN %(lo)s AND %(hi)s ORDER BY seq",
+            {"doc": doc_id, "v": version, "lo": seq_lo, "hi": seq_hi},
+        ).fetchall()
+        return [
+            {"chunk_id": r[0], "seq": r[1], "content": r[2], "page_no": r[3]} for r in rows
+        ]
+
+    def visible_doc_ids(self, plan: AclPlan, doc_ids: list[str]) -> set[str]:
+        """文档级可见集（visible_docs CTE MATERIALIZED——与 sqlite 同构）。"""
+        from knowledge_lattice.store.postgres.acl_render import render_visible_doc_ids
+
+        sql, params = render_visible_doc_ids(plan)
+        visible = {r[0] for r in self._conn.execute(sql, params)}
+        return visible & set(doc_ids)
 
     # ============ Admin 域（任务状态机 / 文档状态 / 指纹 / 只读维度取值） ============
 

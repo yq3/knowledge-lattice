@@ -1,8 +1,11 @@
-"""REST 端点：上传入口（design §6.2——M0a multipart 直传；凭证三步随 M1）。
+"""REST 端点：上传入口（design §6.2——M0a multipart 直传；凭证三步随 M1-3）。
 
 POST /api/orgs/{org}/documents：multipart 上传 → 校验（api 只做协议转换，业务校验
 在 core 摄取入口——v0.8.3）→ 建文档+任务（pending）→ 后台执行摄取管线（M0a 进程内
 执行器）→ 202 {doc_id, task_id, status: queued}。
+
+M1-2：`doc_id` Form 字段显式携带 = 覆盖上传（文档更新——§5.3）：操作权限
+（owner/org_admin）+ pending 409（T7）+ 新版本号 max+1；pending_version 随响应。
 """
 
 from __future__ import annotations
@@ -15,6 +18,8 @@ from fastapi.responses import JSONResponse
 
 from knowledge_lattice.core.docs.acl import AclDeniedError
 from knowledge_lattice.core.docs.ingest import (
+    UploadConflictError,
+    UploadNotFoundError,
     UploadPermissionError,
     UploadValidationError,
 )
@@ -66,6 +71,7 @@ async def upload_document(
     dataset: str = Form(...),
     title: str | None = Form(None),
     dims: str = Form(""),
+    doc_id: str | None = Form(None),  # 覆盖更新显式携带（文档身份——§6.2）
     auth: AuthContext = Depends(get_auth),
 ) -> JSONResponse:
     service = get_service(request)
@@ -83,7 +89,7 @@ async def upload_document(
 
     file_bytes = await file.read()
     try:
-        doc_id, task_id = service.ingest.create_document(
+        new_doc_id, task_id = service.ingest.create_document(
             org_id=org,
             dataset_id=dataset,
             title=title or "",
@@ -92,11 +98,18 @@ async def upload_document(
             file_bytes=file_bytes,
             mime_type=file.content_type or "application/octet-stream",
             filename=file.filename or "upload.bin",
+            doc_id=doc_id,
         )
     except UploadValidationError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     except UploadPermissionError as exc:
         return JSONResponse({"error": str(exc)}, status_code=403)
+    except UploadConflictError as exc:  # T7：pending 期间只有一个处理中版本
+        return JSONResponse({"error": str(exc)}, status_code=409)
+    except UploadNotFoundError as exc:  # 覆盖目标不存在/跨组织（存在性敏感）
+        return JSONResponse({"error": str(exc)}, status_code=404)
+
+    pending_version = service.backend.get_document(new_doc_id)["pending_version"]
 
     def _run() -> None:  # 后台执行摄取（任务级失败已落 failed+error——不冒泡响应）
         try:
@@ -106,6 +119,11 @@ async def upload_document(
 
     background.add_task(_run)
     return JSONResponse(
-        {"doc_id": doc_id, "task_id": task_id, "status": "queued", "pending_version": 1},
+        {
+            "doc_id": new_doc_id,
+            "task_id": task_id,
+            "status": "queued",
+            "pending_version": pending_version,
+        },
         status_code=202,
     )

@@ -16,6 +16,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+
+class VersionConflictError(Exception):
+    """版本切换乐观校验失败（WHERE pending_version=:expected 零行——并发切换/取消
+    竞态；409 语义，P0-2.3/T7）。"""
+
 # ============ AclPlan：方言无关的维度 ACL 编译产物（D24） ============
 #
 # 由编译器（core/docs/acl.py，M0a-2）产出，各后端 acl_render.py 渲染为目标 SQL。
@@ -132,7 +137,65 @@ class IngestBackend(Protocol):
         ...
 
     def switch_active_version(self, doc_id: str, expected_pending: int) -> None:
-        """版本切换单事务（乐观校验——M1 实装；M0a 仅首次上传切换，在 insert 事务内）。"""
+        """版本切换单事务（design §5.3 切换 SQL——M1-2 实装）：
+
+        事务内逐项：旧块 tombstone=1 + 五列 FTS 清空 + chunk_vectors 旧行 DELETE
+        （v1.1 拍板②）+ documents 五字段更新（WHERE pending_version=:expected
+        乐观校验——不符 raise VersionConflictError）+ pending_dims_json 落
+        document_dimensions。中途失败全回滚。
+        """
+        ...
+
+    def max_document_version(self, doc_id: str) -> int:
+        """文档历史最大版本号（active/pending/chunks 三源 max——失败版本号不复用，
+        pending_version = max(历史)+1，P0-2.3/TC-VER-03）。"""
+        ...
+
+    def start_overwrite(
+        self,
+        *,
+        doc_id: str,
+        pending_version: int,
+        content_hash: str,
+        mime_type: str,
+        raw_object_key: str,
+        pending_dims_json: str | None,
+    ) -> None:
+        """覆盖上传的文档行更新：开新 pending 版本（parsing）——不动 active_* 五字段
+        （v1 继续服务到 searchable_full 切换，D20）。"""
+        ...
+
+    def set_doc_pending_failed(self, doc_id: str, version: int, error: str) -> None:
+        """pending 版本失败：pending_status='failed' + pending_error + **立即物理删除
+        该版本全部块**（ad 触发器移出 FTS——失败不留检索残留，T8）——同一事务。"""
+        ...
+
+    def delete_document(self, doc_id: str) -> None:
+        """删除文档（同事务：非终态任务置 failed(error='cancelled: document deleted')
+        ——任务取消联动 TC-VER-07；级联 chunks/document_dimensions/chunk_vectors；
+        tasks.doc_id ON DELETE SET NULL 保留历史）。"""
+        ...
+
+    def get_document_dims(self, doc_id: str) -> dict[str, list[str]]:
+        """文档当前维度（document_dimensions 按 key 聚合——PATCH 旧值校验数据源）。"""
+        ...
+
+    def set_document_dims(self, doc_id: str, dims: dict[str, list[str]]) -> None:
+        """按 key 全量替换文档维度行（PATCH /dimensions 落点——D6 刷维度不重嵌；
+        解析 (key,value)→(dimension_id,value_id) 同 pending_dims 逻辑）。"""
+        ...
+
+    def get_chunk(self, chunk_id: str) -> dict | None:
+        """块定位（fetch 入口）：id/doc_id/seq/version/tombstone。"""
+        ...
+
+    def fetch_window(self, doc_id: str, version: int, seq_lo: int, seq_hi: int) -> list[dict]:
+        """fetch 内容窗口：同文档同版本、tombstone=0、seq∈[lo,hi]（§6.1 fetch）。"""
+        ...
+
+    def visible_doc_ids(self, plan: AclPlan, doc_ids: Sequence[str]) -> set[str]:
+        """文档级可见集（visible_docs CTE——fetch 替代提示的文档可见性判定：
+        文档可见 ⇔ 在 CTE 内；块可 fetch ⇔ 文档可见 + version=active + tombstone=0）。"""
         ...
 
     def pending_embeddings(self, batch_label: str) -> list[dict]:
