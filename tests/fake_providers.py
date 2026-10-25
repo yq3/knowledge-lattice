@@ -5,6 +5,10 @@ Embedder 假实现统一形态：
 ② 可注入延迟与失败（超时 / 不可达）；
 ③ 换底模模式（`drift`：哨兵文本返回偏移向量——探针用例专用，TC-EMB-03）；
 （Reranker none 实现在 adapters/reranker.NoopReranker。）
+
+M1-1 扩：FakeReranker（分数覆写 / 失败 / 延迟 / 并发观测——TC-RET-04/TC-ACL-08）+
+FakeEnhancer（词条 / 失败 / 延迟——TC-RET-05）+ 固定向量 Embedder（FixedVecEmbedder
+——RRF 手算造数，TC-RET-01）。
 """
 
 from __future__ import annotations
@@ -90,3 +94,90 @@ class FakeEmbedder:
                 for t in texts
             ]
         return [self._vector(t) for t in texts]
+
+
+class FixedVecEmbedder:
+    """固定向量 Embedder：任意文本返回同一向量（RRF 手算造数——TC-RET-01）。"""
+
+    def __init__(self, vector: Sequence[float], *, model_name: str = "fake-embed") -> None:
+        self.vector = list(vector)
+        self.model_name = model_name
+
+    @property
+    def model_label(self) -> str:
+        return f"{self.model_name}:{len(self.vector)}"
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        return [list(self.vector) for _ in texts]
+
+
+class FakeReranker:
+    """可注入 fake 重排器：分数覆写 / 失败 / 延迟 / 并发峰值观测。
+
+    - scores: {index: relevance_score} 覆写缺省分（缺省 1.0 - 0.1*i，保持输入序降分）；
+    - fail: raise ConnectionError（rerank 端点不可达——TC-EMB-04）；
+    - track_concurrency: 记录并发峰值（rerank 信号量断言——TC-RET-04）。
+    """
+
+    def __init__(
+        self,
+        *,
+        scores: dict[int, float] | None = None,
+        fail: bool = False,
+        delay_s: float = 0.0,
+        track_concurrency: bool = False,
+    ) -> None:
+        self.scores = scores or {}
+        self.fail = fail
+        self.delay_s = delay_s
+        self.track_concurrency = track_concurrency
+        self.calls: list[tuple[str, list[str]]] = []
+        self._active = 0
+        self.concurrency_peak = 0
+
+    def rerank(
+        self, query: str, documents: Sequence[str], *, top_n: int | None = None
+    ):
+        from knowledge_lattice.adapters.reranker import RankedDocument
+
+        self.calls.append((query, list(documents)))
+        if self.track_concurrency:
+            self._active += 1
+            self.concurrency_peak = max(self.concurrency_peak, self._active)
+        try:
+            if self.delay_s:
+                time.sleep(self.delay_s)
+            if self.fail:
+                raise ConnectionError("rerank endpoint unreachable (fake)")
+            n = len(documents) if top_n is None else min(top_n, len(documents))
+            return [
+                RankedDocument(index=i, relevance_score=self.scores.get(i, 1.0 - 0.1 * i))
+                for i in range(n)
+            ]
+        finally:
+            if self.track_concurrency:
+                self._active -= 1
+
+
+class FakeEnhancer:
+    """可注入 fake 增强器：固定词条 / 失败 / 延迟（800ms 窗口造数——TC-RET-05）。"""
+
+    def __init__(
+        self,
+        *,
+        terms: Sequence[str] = (),
+        fail: bool = False,
+        delay_s: float = 0.0,
+    ) -> None:
+        self.terms = list(terms)
+        self.fail = fail
+        self.delay_s = delay_s
+        self.calls: list[str] = []
+
+    def enhance(self, query: str) -> list[str]:
+        self.calls.append(query)
+        if self.delay_s:
+            time.sleep(self.delay_s)
+        if self.fail:
+            raise ConnectionError("enhance endpoint unreachable (fake)")
+        return list(self.terms)

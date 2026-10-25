@@ -303,14 +303,17 @@ def test_blue_green_new_label_predicate_hits_only_new(backend) -> None:
         sql, params = render_vec_recall_select(plan, format_vector([0.0, 1.0]), top_k=5)
         rows = backend.execute(sql, params).fetchall()
         assert len(rows) == 1 and rows[0][1] == "chk:bg"
-        assert abs(rows[0][3]) < 1e-6  # 新标签向量 → 距离 0（谓词只命中 m:b 行）
+        # dist 列位随 M1-1 溯源列扩展后移（SELECT 见 render_vec_recall_select：
+        # rid, chunk_id, doc_id, title, page_no, sheet_name, source_uri, dataset_id,
+        # dataset_name, content, dist——索引 10）
+        assert abs(rows[0][10]) < 1e-6  # 新标签向量 → 距离 0（谓词只命中 m:b 行）
         # 换查旧标签向量（正交）→ 同块但距离 1：谓词确实切到了 m:a 行
         sql_a, params_a = render_vec_recall_select(
             backend.compile_acl("u0", "org:tax", now=NOW_TS, embed_model="m:a"),
             format_vector([0.0, 1.0]), top_k=5,
         )
         rows_a = backend.execute(sql_a, params_a).fetchall()
-        assert len(rows_a) == 1 and abs(rows_a[0][3] - 1.0) < 1e-6
+        assert len(rows_a) == 1 and abs(rows_a[0][10] - 1.0) < 1e-6
 
 
 def test_chunk_delete_cascades_chunk_vectors(backend) -> None:

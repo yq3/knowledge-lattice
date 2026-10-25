@@ -96,21 +96,97 @@ class PgBackend:
                 bucket.add(value)
         return {key: tuple(sorted(values)) for key, values in grants.items()}
 
-    # ============ Search 域（种子签名——完整管线随 M0b-2/M1） ============
+    # ============ Search 域（M1-1 实装：FTS/向量召回 + 名次协议 + 双断言源） ============
 
     def recall_fts(
         self, tokens: list[str], plan: AclPlan, *, top_k: int = 20
     ) -> list[dict]:
-        raise NotImplementedError(
-            "PG recall_fts（tsvector 五列 GENERATED + to_tsquery 转义 + 加权 ts_rank "
-            "求和）随 M0b-2/M1——本段为 DDL/渲染器/可见性产物 spike（design §8 M0b.5）"
-        )
+        """FTS 召回（M1-1）：tokens → to_tsquery 'simple'（`&` 连接、引号字面量）
+        + 五列 tsvector GENERATED @@ 匹配 + 加权 ts_rank 求和（§4 PG 映射）。
 
-    def recall_vec(self, query_vec: bytes, plan: AclPlan, *, top_k: int = 20) -> list[dict]:
-        raise NotImplementedError(
-            "PG 向量路检索随 M1（G-6：`<=>` 精确扫描起步已由 DDL/距离断言覆盖；"
-            "render_vec_recall_select 供 M0b-2 实验起步）"
-        )
+        ts_rank 越大越相关（DESC）——方向差异在本层吸收为名次：行含 rank（1 起，
+        M1-1 名次协议 #42 P1-8）；score_raw 仅供观察（不跨后端比对——A-17/G-6）。
+        空查询串（tokens 全滤）返回 []。dims 聚合回填与 sqlite 同源（D22）。
+        """
+        from knowledge_lattice.store.postgres.acl_render import render_fts_recall_select
+        from knowledge_lattice.store.postgres.fts import build_tsquery
+
+        tsquery = build_tsquery(tokens)
+        if not tsquery:
+            return []
+        sql, params = render_fts_recall_select(plan, tsquery, top_k=top_k)
+        cursor = self._conn.execute(sql, params)
+        cols = [d[0] for d in cursor.description]
+        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+        self._attach_dims(rows)
+        for rank, row in enumerate(rows, start=1):
+            row["rank"] = rank
+        return rows
+
+    def recall_vec(
+        self, query_vec: list[float], plan: AclPlan, *, top_k: int = 20
+    ) -> list[dict]:
+        """向量召回（M1-1）：先 ACL 过滤后距离——`<=>` 精确扫描起步（G-6：2560 维
+        超 vector 索引 2000 上限，halfvec/表达式索引评估留 M1-4 TC-PERF）；
+        JOIN chunk_vectors cv（cv.embed_model = plan.embed_model 谓词——TC-EMB-02/07）。
+        序列化收口本方言侧（pgvector 文本形态 ::vector——core 传浮点向量，P2-3）。
+        """
+        from knowledge_lattice.store.postgres.acl_render import render_vec_recall_select
+
+        sql, params = render_vec_recall_select(plan, format_vector(query_vec), top_k=top_k)
+        cursor = self._conn.execute(sql, params)
+        cols = [d[0] for d in cursor.description]
+        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+        self._attach_dims(rows)
+        for rank, row in enumerate(rows, start=1):
+            row["rank"] = rank
+        return rows
+
+    def visible_chunk_ids(self, plan: AclPlan) -> set[int]:
+        """可见块 rid 集合（基础路 SQL——rerank 前/返回前 ACL 双断言数据源，TC-ACL-08）。"""
+        from knowledge_lattice.store.postgres.acl_render import render_select
+
+        sql, params = render_select(plan)
+        return {r[0] for r in self._conn.execute(sql, params)}
+
+    def rids_without_vector(
+        self, rids: list[int], embed_model: str
+    ) -> set[int]:
+        """给定 rid 中无 (rid, embed_model) cv 行的子集（vector_pending 块级判定）。"""
+        if not rids:
+            return set()
+        marks = ", ".join(f"%(r{i})s" for i in range(len(rids)))
+        params: dict[str, object] = {f"r{i}": rid for i, rid in enumerate(rids)}
+        params["label"] = embed_model
+        rows = self._conn.execute(
+            "SELECT c.rid FROM chunks c"
+            f" WHERE c.rid IN ({marks})"
+            "   AND NOT EXISTS (SELECT 1 FROM chunk_vectors cv"
+            "     WHERE cv.rid = c.rid AND cv.embed_model = %(label)s)",
+            params,
+        ).fetchall()
+        return {r[0] for r in rows}
+
+    def _attach_dims(self, rows: list[dict]) -> None:
+        """按 doc_id 聚合 document_dimensions → rows[i]["dims"]（与 sqlite 同源，D22）。"""
+        doc_ids = sorted({r["doc_id"] for r in rows})
+        if not doc_ids:
+            return
+        marks = ", ".join(f"%(d{i})s" for i in range(len(doc_ids)))
+        params = {f"d{i}": doc for i, doc in enumerate(doc_ids)}
+        dims: dict[str, dict[str, list[str]]] = {doc: {} for doc in doc_ids}
+        for doc_id, key, value in self._conn.execute(
+            "SELECT dd.doc_id, dim.key, v.value"
+            " FROM document_dimensions dd"
+            " JOIN dimensions dim ON dim.id = dd.dimension_id"
+            " JOIN dimension_values v ON v.id = dd.value_id"
+            f" WHERE dd.doc_id IN ({marks})"
+            " ORDER BY dim.key, v.value",
+            params,
+        ):
+            dims[doc_id].setdefault(key, []).append(value)
+        for r in rows:
+            r["dims"] = dims.get(r["doc_id"], {})
 
     def recall_by_entities(self, entity_ids, plan: AclPlan, *, top_k: int = 30) -> list[dict]:
         raise NotImplementedError("实体召回路随 M2-S3（D23 §5.10）")

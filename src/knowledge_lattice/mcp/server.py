@@ -1,8 +1,10 @@
-"""FastMCP 单一 server（design §3 mcp/server.py + §6.1 docs 组——M0a 落 search 工具）。
+"""FastMCP 单一 server（design §3 mcp/server.py + §6.1 docs 组——search 已落）。
 
-- `search` 工具：M0a = BM25 单路（core/docs/retrieve）；工具描述「写给 LLM 看」纪律
-  （§6.1）；`top_k ≤ 20` 服务端硬上限；检索参数（权重/阈值）不暴露；
-  返回块带 chunk_id 溯源 + source（agent 代传可识别）；
+- `search` 工具：M1-1 完整配方（core/docs/retrieve——双路 + RRF + rerank + 增强
+  + 归一）；工具描述「写给 LLM 看」纪律（§6.1）；`top_k ≤ 20` 服务端硬上限；
+  检索参数（权重/阈值/召回窗口）不暴露；返回块带 chunk_id 溯源 + source
+  （agent 代传可识别）；sync 工具由 FastMCP 线程池承接（模型 HTTP 调用不上
+  事件循环——NFR-8）；
 - 组织上下文（D18/TC-AUTH-02）：token org claim 优先 / 运行时注入 X-Org-Id 头兜底；
   并存且不一致 → 400（ToolError）；缺失 → 400；**工具参数 org 一律忽略并记审计**；
 - 60s 超时中间件（ragflow 纪律——超时请求不悬挂，TC-E2E-06）；超时值随
@@ -107,6 +109,10 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
                 datasets=datasets,
                 doc_filter=doc_filter,
                 gate=service.gate,
+                embedder=getattr(service, "embedder", None),
+                reranker=getattr(service, "reranker", None),
+                enhancer=getattr(service, "enhancer", None),
+                breakers=getattr(service, "breakers", None),
             )
         except AclDeniedError as exc:
             raise ToolError(f"403: {exc}") from exc

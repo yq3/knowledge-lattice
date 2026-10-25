@@ -66,12 +66,37 @@ class SearchBackend(Protocol):
         self, tokens: Sequence[str], plan: AclPlan, *, top_k: int = 20
     ) -> list[dict]:
         """FTS/BM25 召回（收 AclPlan——引擎内下推；tokens 为 jieba 切分产物，
-        方言转义在本层完成——SQLite 双引号包裹 / PG to_tsquery，D24）。"""
+        方言转义在本层完成——SQLite 双引号包裹 / PG to_tsquery `&` 连接，D24）。
+
+        **名次协议（M1-1，v0.8 #42 P1-8）**：评分方向差异（SQLite bm25 越小越
+        相关 / PG ts_rank 越大越相关）在 backend 内吸收——行含 `rank`（1 起，
+        越小越相关）；score_raw/dist 仅供观察，RRF 与归一不消费。
+        """
         ...
 
-    def recall_vec(self, query_vec: bytes, plan: AclPlan, *, top_k: int = 20) -> list[dict]:
+    def recall_vec(
+        self, query_vec: Sequence[float], plan: AclPlan, *, top_k: int = 20
+    ) -> list[dict]:
         """向量召回：先过滤后距离（v1.1 谓词迁 `JOIN chunk_vectors cv ON cv.rid = c.rid
-        AND cv.embed_model = plan.embed_model`——cv 无行即未嵌入，TC-EMB-02）。"""
+        AND cv.embed_model = plan.embed_model`——cv 无行即未嵌入，TC-EMB-02）。
+        序列化收口方言侧（sqlite=vec_f32 BLOB / pg=vector 文本——core 传浮点
+        向量，P2-3 同款纪律）；行含 `rank`（1 起）与 `dist`（升序）。"""
+        ...
+
+    def visible_chunk_ids(self, plan: AclPlan) -> set[int]:
+        """可见块 rid 集合（rerank 前 / 返回前 ACL 双断言数据源——TC-ACL-08）。
+
+        走基础路 SQL（visible_docs CTE + 外层常量）——与 FTS/向量召回路不同
+        SQL 路径的防御纵深；plan 由 retrieve 内部独立重编译（同一编译器、
+        不同调用实例）。
+        """
+        ...
+
+    def rids_without_vector(
+        self, rids: Sequence[int], embed_model: str
+    ) -> set[int]:
+        """给定 rid 中无 (rid, embed_model) cv 行的子集——notice.vector_pending
+        的块级判定（TC-RET-02：本结果缺向量路＝未就绪或降级）。"""
         ...
 
     def recall_by_entities(self, entity_ids: Sequence[int], plan: AclPlan, *, top_k: int = 30) -> list[dict]:

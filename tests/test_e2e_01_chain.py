@@ -65,7 +65,7 @@ def test_full_chain_lexical_then_full(app_env) -> None:
     assert row["source"] == "user:u_full"
     assert 0.0 <= row["score"] <= 1.0
 
-    # --- searchable_full 时点：嵌入恢复 → 重试任务 → full（BM25 照常命中）---
+    # --- searchable_full 时点：嵌入恢复 → 重试任务 → full（双路+rerank 命中——M1 全配方）---
     embedder.fail = False
     # 任务重试：直接再跑同任务（阶段幂等从 embed 续）——经内部 runner 触发
     app_env["app"].state.service.ingest.run_task(task_id)
@@ -77,6 +77,11 @@ def test_full_chain_lexical_then_full(app_env) -> None:
         headers={**_auth(app_env), "X-Org-Id": "org:tax"},
     ).json()
     assert hits2["results"]
+    # M1 全配方断言：full 时点双路可开（向量行已回写）+ 无降级标注 + 块级 vector_pending=False
+    assert hits2["notice"]["degraded"] == [], "嵌入/rerank 均可用——无降级（rerank=none 为配置态）"
+    assert hits2["notice"]["vector_pending"] is False, "结果块已全部嵌入（searchable_full）"
+    full_hit_docs = {r["doc_id"] for r in hits2["results"]}
+    assert doc_id in full_hit_docs
 
     # --- datasets 过滤 / doc_filter 收窄 ---
     narrowed = client.post(
@@ -98,8 +103,10 @@ def test_full_chain_lexical_then_full(app_env) -> None:
     ).json()
     assert by_doc["results"] and all(r["doc_id"] == doc_id for r in by_doc["results"])
 
-    # --- top_k 服务端硬上限 20：真实断言见 test_r2_review_fixes.py
-    # （P3-15：本处样例块数少，`<= 20` 恒真属空转断言，已移除）---
+    # --- top_k 服务端硬上限 20：真实断言见 test_r2_committer_fixes.py
+    # （P3-15：本处样例块数少，`<= 20` 恒真属空转断言，已移除；
+    #   P3-R2-1 修正：注释原指 test_r2_review_fixes.py——top_k 断言实在
+    #   test_r2_committer_fixes.py::test_p3_x_top_k_hard_limit）---
 
 
 def test_upload_validation_dims_out_of_grants(app_env) -> None:

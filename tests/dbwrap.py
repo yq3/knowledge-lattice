@@ -190,6 +190,16 @@ class SqliteDb:
             .fetchone()[0]
         )
 
+    def insert_vector(self, rid: int, label: str, vector: list[float]) -> None:
+        """测试直插 chunk_vectors 行（绕过 backend 写路径防护——旧标签/手算距离造数）；
+        sqlite 序列化 = vec_f32 BLOB（pack_f32）。"""
+        from knowledge_lattice.store.sqlite.vec import pack_f32
+
+        self.execute(
+            "INSERT INTO chunk_vectors(rid, embed_model, embedding) VALUES(?, ?, ?)",
+            (rid, label, pack_f32(vector)),
+        )
+
 
 class PgDb:
     """pg 臂包装器（持有 psycopg.Connection + 独立测试 schema）。"""
@@ -324,3 +334,21 @@ class PgDb:
             )
             .fetchone()[0]
         )
+
+    def insert_vector(self, rid: int, label: str, vector: list[float]) -> None:
+        """测试直插 chunk_vectors 行（绕过 backend 写路径防护——旧标签/竞态造数）；
+        序列化按方言分派（sqlite=vec_f32 BLOB / pg=pgvector 文本）。"""
+        from knowledge_lattice.store.sqlite.vec import pack_f32
+        from knowledge_lattice.store.postgres.vec import format_vector
+
+        if self.is_sqlite:
+            self.execute(
+                "INSERT INTO chunk_vectors(rid, embed_model, embedding) VALUES(?, ?, ?)",
+                (rid, label, pack_f32(vector)),
+            )
+        else:
+            self.execute(
+                "INSERT INTO chunk_vectors(rid, embed_model, embedding)"
+                " VALUES(?, ?, ?::vector)",
+                (rid, label, format_vector(vector)),
+            )

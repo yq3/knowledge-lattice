@@ -43,3 +43,44 @@ def join_seg(text: str) -> str:
 def token_count(text: str) -> int:
     """token 数（结构感知切分 256–512 的计量单位——TC-ING-02）。"""
     return len(segment(text))
+
+
+# ============ 中文分词效果判据 + 词表/trigram 兜底判定（M1-1——TC-FTS-05） ============
+#
+# design §10「jieba 中英混排：tokenizer 独立模块（可换 trigram/自定义词表）；M1
+# 真实 query 标注集是判据」；调研沉淀（research/enterprise-rag/blog/04:91、
+# blog/10:87）：应用层 jieba 预分词是既有路线，不达标时兜底两路——自定义词表
+# （运营可修：业务术语 add_word 后对齐恢复）与 FTS trigram 索引（子串召回，
+# schema 变更）。黄金集全量校准留 M1-4（TC-EVAL）；本组函数为判据落点。
+
+
+def token_alignment(query: str, content: str) -> float:
+    """效果判据：query 与语料经同一分词器切分后的 token 对齐率。
+
+    对齐率 = |query tokens ∩ content tokens| / |query tokens|（去重集合比）。
+    <1.0 即错位——错位则该 query 在语料上 BM25 召回为空（预分词列只含切出的
+    token，MATCH 不命中交集外的词）。
+    """
+    q_tokens = {t for t in segment_query(query) if t.strip()}
+    if not q_tokens:
+        return 1.0  # 空查询无对齐语义（调用方本就不发起 BM25 路）
+    c_tokens = set(segment(content))
+    return len(q_tokens & c_tokens) / len(q_tokens)
+
+
+def cjk_fallback_verdict(
+    query: str, content: str, *, dict_terms: tuple[str, ...] | list[str] = ()
+) -> str:
+    """兜底判定：不达标时启用什么（词表优先——轻量、运营可修；trigram 其次）。
+
+    - "ok"：对齐率 1.0（jieba 预分词路线达标，无需兜底）；
+    - "dict"：错位但 query 为已登记业务术语（dict_terms）——add_word 后对齐
+      恢复（词表兜底路径，实测有效见 TC-FTS-05）；
+    - "trigram"：词表不可修（未登记 / 仅子串关系可召回）——需 FTS trigram
+      索引/列兜底（schema 变更，M1-4 黄金集校准后按需启用）。
+    """
+    if token_alignment(query, content) == 1.0:
+        return "ok"
+    if query in dict_terms:
+        return "dict"
+    return "trigram"
