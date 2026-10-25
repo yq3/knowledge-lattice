@@ -42,16 +42,27 @@ class AuthContext:
     org_claim: str | None  # token org claim（单值——按组织签发）
     via: str  # jwt | static
     is_system_admin: bool
+    act: str | None = None  # 服务身份 claim（委托 token act 字段——M1-3 凭证三要素；
+    #  开发 JWT 同名 claim 承载；静态 token 无服务身份 → None=直连）
 
 
 # ============ 开发 JWT（dev/test 签发与验签） ============
 
 
-def issue_dev_jwt(settings: Settings, *, user_id: str, org: str | None = None) -> str:
+def issue_dev_jwt(
+    settings: Settings,
+    *,
+    user_id: str,
+    org: str | None = None,
+    act: str | None = None,
+) -> str:
+    """开发 JWT 签发（sub/org/act——act 为服务身份，M1-3 委托 token act claim 的开发形态）。"""
     now = time.time()
     payload: dict[str, object] = {"sub": user_id, "iat": now, "exp": now + settings.jwt_ttl_s}
     if org:
         payload["org"] = org
+    if act is not None:
+        payload["act"] = act
     return pyjwt.encode(payload, settings.dev_jwt_secret, algorithm=JWT_ALGORITHM)
 
 
@@ -91,6 +102,9 @@ def authenticate(backend, settings: Settings, token: str) -> AuthContext:
         user_id = claims.get("sub")
         if not user_id:
             raise AuthError("token missing sub claim")
+        act = claims.get("act")
+        if act is not None and not isinstance(act, str):
+            raise AuthError("token act claim must be a string")
         user = backend.get_user_auth(user_id)
         if user is None:
             raise AuthError(f"unknown user: {user_id}")
@@ -101,17 +115,19 @@ def authenticate(backend, settings: Settings, token: str) -> AuthContext:
             org_claim=claims.get("org"),
             via="jwt",
             is_system_admin=user["is_system_admin"],
+            act=act,
         )
     if settings.environment == "prod":
+        # P3-R2-3：对外文案不带内部审查号——语义（prod 停用 dev JWT/静态 token）不变
         raise AuthError(
-            "production requires SSO/delegated token (M2)——dev JWT 与静态 token 均停用（P2-5）"
+            "production requires SSO/delegated token (M2)——dev JWT 与静态 token 均停用"
         )
     user = backend.find_user_by_token_hash(hash_token(token))
     if user is None:
         raise AuthError("invalid token")
     return AuthContext(
         user_id=user["id"], org_claim=None, via="static",
-        is_system_admin=user["is_system_admin"],
+        is_system_admin=user["is_system_admin"], act=None,
     )
 
 

@@ -29,6 +29,7 @@ from knowledge_lattice.adapters.embedder import (
 )
 from knowledge_lattice.config import Settings, get_settings
 from knowledge_lattice.core.docs.acl import AclDeniedError
+from knowledge_lattice.core.docs.credentials import CredentialError, CredentialService
 from knowledge_lattice.core.docs.ingest import IngestService
 from knowledge_lattice.domain.auth import AuthError, OrgContextError
 from knowledge_lattice.mcp.server import build_mcp_server
@@ -41,7 +42,7 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 
 
 class ServiceContext:
-    """依赖容器（backend/settings/gate/ingest/embedder/reranker/enhancer/breakers）。"""
+    """依赖容器（backend/settings/gate/ingest/credentials/embedder/reranker/enhancer/breakers）。"""
 
     def __init__(
         self,
@@ -50,6 +51,7 @@ class ServiceContext:
         backend,
         gate,
         ingest,
+        credentials,
         embedder,
         reranker=None,
         enhancer=None,
@@ -59,6 +61,7 @@ class ServiceContext:
         self.backend = backend
         self.gate = gate
         self.ingest = ingest
+        self.credentials = credentials
         self.embedder = embedder
         self.reranker = reranker
         self.enhancer = enhancer
@@ -110,8 +113,10 @@ def create_app(
         ),
     }
     ingest = IngestService(backend, embedder, settings, gate, settings.data_dir / "objects")
+    credentials = CredentialService(backend, settings, settings.data_dir / "objects")
     service = ServiceContext(
-        settings=settings, backend=backend, gate=gate, ingest=ingest, embedder=embedder,
+        settings=settings, backend=backend, gate=gate, ingest=ingest,
+        credentials=credentials, embedder=embedder,
         reranker=reranker, enhancer=enhancer, breakers=breakers,
     )
 
@@ -129,9 +134,32 @@ def create_app(
             except Exception:  # noqa: BLE001 —— 周期探针失败不杀任务
                 logger.exception("periodic fingerprint probe failed")
 
+    # ---- 内嵌调度器：周期投递 maintenance 任务（design §3 v0.8.3——M1-3 落
+    #      「未消费凭证回收」一项；子进程 worker 随 M2，当前主进程内执行） ----
+
+    def _run_maintenance_once() -> None:
+        task_id = backend.create_task(None, task_type="maintenance")
+        try:
+            backend.update_task(task_id, status="running")
+            stats = credentials.purge_expired()
+            backend.update_task(task_id, status="done")
+            logger.info("maintenance done: %s", stats)
+        except Exception as exc:  # noqa: BLE001 —— 任务级失败落 failed+error
+            backend.update_task(task_id, status="failed", error=str(exc))
+            raise
+
+    async def _periodic_maintenance() -> None:
+        while True:
+            await asyncio.sleep(settings.maintenance_interval_s)
+            try:
+                await asyncio.to_thread(_run_maintenance_once)
+            except Exception:  # noqa: BLE001 —— 周期任务失败不杀循环
+                logger.exception("periodic maintenance failed")
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         probe_task: asyncio.Task | None = None
+        maintenance_task: asyncio.Task | None = None
         if run_startup_probe:
             try:  # 启动探针（首部署建档放行 / 两档判定——TC-EMB-03）；to_thread 防阻塞
                 probe = FingerprintProbe(backend, embedder, settings)
@@ -142,12 +170,15 @@ def create_app(
                 logger.exception("startup fingerprint probe failed")
         if settings.probe_interval_s > 0:
             probe_task = asyncio.create_task(_periodic_probe())
+        if settings.maintenance_interval_s > 0:
+            maintenance_task = asyncio.create_task(_periodic_maintenance())
         try:
             async with mcp_app.lifespan(mcp_app):  # MCP session manager 交给父 app
                 yield
         finally:
-            if probe_task is not None:
-                probe_task.cancel()
+            for task in (probe_task, maintenance_task):
+                if task is not None:
+                    task.cancel()
 
     app = FastAPI(title="knowledge-lattice", lifespan=lifespan)
     app.state.service = service
@@ -164,6 +195,12 @@ def create_app(
     @app.exception_handler(OrgContextError)
     async def _org_error(_: Request, exc: OrgContextError):
         return JSONResponse({"error": str(exc)}, status_code=400)
+
+    @app.exception_handler(CredentialError)  # M1-3：凭证链错误码映射（T12 明确错误码）
+    async def _credential_error(_: Request, exc: CredentialError):
+        return JSONResponse(
+            {"error": str(exc), "code": exc.code}, status_code=exc.http_status
+        )
 
     from knowledge_lattice.api import admin, documents, search, tasks, upload
 

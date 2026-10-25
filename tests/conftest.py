@@ -437,6 +437,41 @@ def app_env(tmp_path):
             "gate": gate,
             "embedder": embedder,
             "static": static,
-            "jwt": lambda uid, org=None: issue_dev_jwt(settings, user_id=uid, org=org),
+            # act＝服务身份 claim（M1-3 凭证三要素——委托 token act 字段的开发形态）
+            "jwt": lambda uid, org=None, act=None: issue_dev_jwt(
+                settings, user_id=uid, org=org, act=act
+            ),
         }
     conn.close()
+
+
+# ============ M1-3 上传凭证 fixtures ============
+
+
+@pytest.fixture()
+def cred_env(matrix, tmp_path):
+    """M1-3 凭证链共享栈（TC-CRED-02/03 服务层 + T11/T12 双后端参数化）：
+    matrix 造数 + 真 backend + CredentialService + IngestService（fake-embed——
+    consume 只入队不嵌入，FakeEmbedder 仅为 IngestService 构造依赖）。
+    """
+    from knowledge_lattice.adapters.embedder import EmbeddingGate
+    from knowledge_lattice.config import Settings
+    from knowledge_lattice.core.docs.credentials import CredentialService
+    from knowledge_lattice.core.docs.ingest import IngestService
+    from fake_providers import FakeEmbedder
+
+    backend = matrix.make_backend()
+    settings = Settings(environment="test", data_dir=tmp_path, embed_dim=8)
+    embedder = FakeEmbedder(dim=8, model_name="fake-embed")
+    gate = EmbeddingGate()
+    objects_dir = tmp_path / "objects"
+    return {
+        "db": matrix,
+        "backend": backend,
+        "settings": settings,
+        "gate": gate,
+        "embedder": embedder,
+        "objects_dir": objects_dir,
+        "ingest": IngestService(backend, embedder, settings, gate, objects_dir),
+        "creds": CredentialService(backend, settings, objects_dir),
+    }
