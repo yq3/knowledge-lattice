@@ -126,7 +126,10 @@ def test_pg_connect_pool_params_and_probe(pg_db, public_audit_guard) -> None:
 def test_pg_connect_factory_server_version_assert(pg_db, public_audit_guard) -> None:
     """连接工厂版本断言（≥16——G-6）：setup 后连接可查版本；16.15 实测通过。
 
-    P2-2：单连接工厂调用同样走 search_path=pg_db.schema——public 无 audit 对象。"""
+    P2-2：单连接工厂调用同样走 search_path=pg_db.schema——public 无 audit 对象。
+    TC-SCAF-02 v1.6：standard_conforming_strings=on 断言（R2 P3-8 防御纵深的
+    测试闭环——Literal 单引号加倍转义以此为前提；池 configure 共用 setup_connection
+    同入口，不另设断言）。"""
     from knowledge_lattice.store.postgres import connect
 
     conn = connect(pg_db.dsn, search_path=f"{pg_db.schema},public")
@@ -139,6 +142,11 @@ def test_pg_connect_factory_server_version_assert(pg_db, public_audit_guard) -> 
             "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
         ).fetchone()
         assert ext is not None and ext[0].startswith("0.8")  # pgvector 0.8.x（G-6）
+        # 工厂钉死标准引号语义（P3-8：off 时反斜杠在字面量内是转义字符——
+        # 恶意维度 key 经 Literal 渲染可破坏字面量边界；PG 默认 on，工厂显式钉）
+        assert conn.execute(
+            "SHOW standard_conforming_strings"
+        ).fetchone()[0] == "on"
         assert conn.execute("SELECT current_schema()").fetchone()[0] == pg_db.schema
     finally:
         conn.close()
