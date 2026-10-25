@@ -249,15 +249,13 @@ def test_append_outbox(pg_env) -> None:
 
 
 def test_search_seed_methods_present_and_explicitly_deferred(pg_env) -> None:
-    """Search 种子方法签名在场（协议面齐备）且完整管线显式 NotImplementedError
-    ——recall_fts/ts_rank 加权与向量路属 M0b-2/M1（design §8 M0b.5 边界）。"""
+    """Search 方法面齐备：recall_fts/recall_vec 已随 M1-1 实装（此前显式
+    NotImplementedError 的延迟边界兑现——design §8 M1.1 PG 追平全矩阵）；
+    实体路/关系展开仍显式延迟（M2-S3/M2-S1——D23）。"""
     backend = pg_env.make_backend()
-    for name in ("recall_fts", "recall_vec", "recall_by_entities", "expand_relations"):
+    for name in ("recall_fts", "recall_vec", "recall_by_entities", "expand_relations",
+                 "visible_chunk_ids", "rids_without_vector"):
         assert callable(getattr(backend, name))
-    with pytest.raises(NotImplementedError, match="M0b-2/M1"):
-        backend.recall_fts(["增值税"], None)
-    with pytest.raises(NotImplementedError, match="M1"):
-        backend.recall_vec(b"", None)
     with pytest.raises(NotImplementedError, match="M2-S3"):
         backend.recall_by_entities([1], None)
     with pytest.raises(NotImplementedError, match="M2-S1"):

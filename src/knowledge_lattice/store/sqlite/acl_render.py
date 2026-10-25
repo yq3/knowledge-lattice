@@ -40,6 +40,7 @@ from knowledge_lattice.store.acl_ast import (  # noqa: F401  (re-export——既
     Select1,
     TableRef,
     build_fts_where_ast as _build_fts_where_neutral,
+    build_vec_parts as _build_vec_parts_neutral,
     build_visible_docs_cte_where as _build_cte_where_neutral,
     build_visible_docs_outer_where as _build_outer_where_neutral,
 )
@@ -51,7 +52,7 @@ __all__ = [
     "InValue", "Join", "Literal", "Match", "NotExists", "Or", "Select1", "TableRef",
     "build_acl_ast", "build_where_ast", "build_fts_where_ast",
     "render_sql", "render_select", "render_fts_select",
-    "render_fts_recall_select",
+    "render_fts_recall_select", "render_vec_recall_select",
 ]
 
 # CTE 前缀（结构常量——MATERIALIZED 双方言统一；sqlite ≥3.35 同语法，默认物化）
@@ -204,7 +205,7 @@ def render_fts_recall_select(
     renderer = _Renderer()
     sql = (
         f"{_CTE_PREFIX}{renderer.expr(_build_cte_where_neutral(plan))})"
-        " SELECT c.id AS chunk_id, c.doc_id, d.title, c.page_no, c.sheet_name,"
+        " SELECT c.rid, c.id AS chunk_id, c.doc_id, d.title, c.page_no, c.sheet_name,"
         " d.source_uri, d.dataset_id, ds.name AS dataset_name, c.content,"
         f" bm25(chunks_fts, {BM25_WEIGHTS}) AS score_raw"
         " FROM chunks_fts f"
@@ -215,5 +216,37 @@ def render_fts_recall_select(
         " ORDER BY score_raw ASC"
         " LIMIT :top_k"
     )
+    renderer.params["top_k"] = top_k
+    return sql, renderer.params
+
+
+def render_vec_recall_select(
+    plan: AclPlan, query_vec: bytes, *, top_k: int
+) -> tuple[str, dict[str, object]]:
+    """M1-1 向量路召回 SQL（先过滤后距离——§5.2；与 PG 版 render_vec_recall_select 同构）：
+
+    - 与 FTS/基础路共用同一 visible_docs CTE（TC-ACL-06 三路同构）；
+    - `JOIN chunk_vectors cv ON cv.rid = c.rid AND cv.embed_model = :current_model`
+      （v1.1 拍板 2——非当前标签行不进距离计算，TC-EMB-02/07）；cv 无行即未嵌入；
+    - 距离 `vec_distance_cosine(cv.embedding, :q_vec)`（sqlite-vec BLOB——q_vec
+      为 pack_f32 产物，经绑定参数绝不拼接进 SQL 文本）；ORDER BY dist ASC；
+    - 溯源列与 render_fts_recall_select 对齐（rank 协议输出面）。
+    """
+    cte_where, cv_join, outer = _build_vec_parts_neutral(plan)
+    renderer = _Renderer()
+    sql = (
+        f"{_CTE_PREFIX}{renderer.expr(cte_where)})"
+        " SELECT c.rid, c.id AS chunk_id, c.doc_id, d.title, c.page_no, c.sheet_name,"
+        " d.source_uri, d.dataset_id, ds.name AS dataset_name, c.content,"
+        " vec_distance_cosine(cv.embedding, :q_vec) AS dist"
+        " FROM chunks c"
+        " JOIN documents d ON d.id = c.doc_id"
+        " JOIN datasets ds ON ds.id = d.dataset_id"
+        f"{renderer.expr(cv_join)}"
+        f" WHERE {renderer.expr(outer)}"
+        " ORDER BY dist"
+        " LIMIT :top_k"
+    )
+    renderer.params["q_vec"] = query_vec
     renderer.params["top_k"] = top_k
     return sql, renderer.params

@@ -120,8 +120,9 @@ class InSubquery:
 
 @dataclass(frozen=True)
 class Match:
-    """FTS5 全文匹配谓词：`<别名>.<虚表名> MATCH :<param>`（sqlite 方言节点——
-    查询串经绑定参数；PG FTS 路（to_tsquery/ts_rank 加权）随 M1）。"""
+    """FTS 全文匹配谓词：`<别名>.<虚表名> MATCH :<param>`（sqlite 方言节点——
+    查询串经绑定参数；PG 渲染器把同一节点渲染为五列 tsvector `@@` OR——
+    M1-1 起双方言可用，语义规则仍只在此实现一次）。"""
 
     source: str
     fts_name: str

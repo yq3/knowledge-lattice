@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import inspect
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -192,19 +193,24 @@ def test_p2_6_probe_calls_go_through_to_thread() -> None:
 
 
 def test_p2_6_probe_in_thread_via_gate(tmp_path) -> None:
-    """启动探针经 to_thread：慢探针（0.3s）不阻塞 lifespan 内并发定时器。"""
+    """启动探针经 to_thread：慢探针（0.3s）不阻塞 lifespan 内并发定时器。
+
+    P3-R2-2 修正：改时间断言——原 `len(ticks) == 6` 为恒真计数（await task 会等
+    ticker 跑满，阻塞场景下计数同样为 6、不构成实证）；现断言相邻 tick 间隔
+    （正常 ≈60ms；若探针同步上事件循环，会产生 ≥300ms 的间隙）。
+    """
     import asyncio
 
     settings = Settings(environment="test", data_dir=tmp_path, probe_interval_s=0)
     slow = FakeEmbedder(dim=2560, delay_s=0.3)
     gate = EmbeddingGate()
     app = create_app(settings, embedder=slow, gate=gate, run_startup_probe=True)
-    ticks = []
+    ticks: list[float] = []
 
     async def main():
         async def ticker():
-            for _ in range(6):  # 60ms 周期——若探针阻塞循环则 ticks 停更
-                ticks.append(len(ticks))
+            for _ in range(6):  # 60ms 周期——若探针阻塞循环则 tick 间隙拉大
+                ticks.append(time.monotonic())
                 await asyncio.sleep(0.06)
 
         task = asyncio.create_task(ticker())
@@ -214,7 +220,13 @@ def test_p2_6_probe_in_thread_via_gate(tmp_path) -> None:
 
     asyncio.run(main())
     assert gate.status == "ok"  # 探针完成（建档放行）
-    assert len(ticks) == 6  # ticker 未被探针阻塞（to_thread 下放）
+    assert len(ticks) == 6
+    gaps = [b - a for a, b in zip(ticks, ticks[1:])]
+    max_gap = max(gaps)
+    assert max_gap < 0.2, (
+        f"ticker 相邻 tick 最大间隙 {max_gap:.3f}s（正常 ≈0.06s；探针若同步阻塞"
+        "事件循环会产生 ≥0.3s 间隙——时间断言实证 to_thread 下放）"
+    )
 
 
 # ============ P3-1：stop_after 中断 → 任务留 running ============
@@ -233,17 +245,20 @@ def test_p3_1_stop_after_leaves_task_running(ingest_env) -> None:
 
 
 def test_p3_3_dataset_name_and_id_contract(ingest_env) -> None:
-    svc, doc_id, task_id = _upload_doc(ingest_env, embedder=FakeEmbedder(dim=2560))
+    embedder = FakeEmbedder(dim=2560)
+    svc, doc_id, task_id = _upload_doc(ingest_env, embedder=embedder)
     svc.run_task(task_id)
     resp = search(
         ingest_env["backend"], ingest_env["settings"],
         user_id="u_full", org_id="org:tax", query="留抵退税",
+        embedder=embedder,  # M1 完整配方：provider 注入后向量路开启
     )
     assert resp["results"]
     top = resp["results"][0]
     assert top["dataset"] == "库 ds:vat_lib", "dataset＝知识库名称（MCP 契约 §6.1）"
     assert top["dataset_id"] == "ds:vat_lib"
-    # P3-4：M0a 无向量路——vector_pending 恒 False（口径断言，M1 起按块级状态置位）
+    # P3-4：M1 起块级语义——vector_pending=结果块是否缺当前标签向量（TC-RET-02）；
+    # 本用例块已全量嵌入（run_task 完成 embed 阶段）→ False
     assert resp["notice"]["vector_pending"] is False
 
 

@@ -37,6 +37,32 @@ class Settings:
     probe_interval_s: float = 600.0  # 周期探测（运行中换底模可发现）
     # 重排：none＝显式降级路径（网关 Cohere 风格 /rerank——待决-5 已关闭、G-7 闭环）
     reranker: str = "none"
+    # rerank 配方参数（NFR-8：候选 32 / 输入截断 256 token / 超时 1000ms 硬上限；
+    # 截断开关缺省关（None）——P95 超时降级档才开 256（TC-RET-06 双降级开关）
+    rerank_candidates: int = 32
+    rerank_truncate_tokens: int | None = None
+    rerank_timeout_s: float = 1.0
+    rerank_max_concurrency: int = 4  # rerank API 并发信号量上限（§5.2；数值申报 M1-4 标定）
+    rerank_api_base: str = "http://127.0.0.1:11434/v1"
+    rerank_api_key: str = "local-dev"
+    rerank_model: str = "qwen3-reranker-8b"
+    # 查询侧嵌入超时（NFR-8 v0.8：query 嵌入超时 500ms——单次请求硬上限，
+    # 摄取侧 embed_timeout_s=30s 不受影响）
+    query_embed_timeout_s: float = 0.5
+    # LLM 关键词增强（§5.2：800ms 硬预算并行；none＝不用增强路）
+    enhancer: str = "none"
+    enhance_budget_s: float = 0.8
+    enhance_api_base: str = "http://127.0.0.1:11434/v1"
+    enhance_api_key: str = "local-dev"
+    enhance_model: str = "qwen3-llm"
+    # 融合与召回窗口（design §5.2：RRF k=60；NFR-8 参考口径 knn 1024 / rerank 候选 32）
+    rrf_k: int = 60
+    recall_window: int = 1024
+    # 归一后分数阈值（§5.2「阈值只作用于归一后的最终分」；0=不过滤——数值 M1-4 黄金集校准）
+    score_threshold: float = 0.0
+    # 熔断（NFR-8 v0.8：连续 3 次失败断开 60s、半开探测恢复）
+    breaker_failures: int = 3
+    breaker_cooldown_s: float = 60.0
 
     # 服务壳（M0a-3）
     dev_jwt_secret: str = "dev-only-insecure-secret-0123456789ab"  # 仅 dev/test 签发（生产另配，D18）
@@ -77,6 +103,15 @@ def get_settings() -> Settings:
         probe_warn_threshold=float(_num("LATTICE_PROBE_WARN", 0.99)),
         probe_reject_threshold=float(_num("LATTICE_PROBE_REJECT", 0.95)),
         probe_interval_s=float(_num("LATTICE_PROBE_INTERVAL_S", 600.0)),
+        reranker=_f("LATTICE_RERANKER", "none"),
+        rerank_candidates=int(_num("LATTICE_RERANK_CANDIDATES", 32)),
+        rerank_timeout_s=float(_num("LATTICE_RERANK_TIMEOUT_S", 1.0)),
+        rerank_max_concurrency=int(_num("LATTICE_RERANK_MAX_CONCURRENCY", 4)),
+        query_embed_timeout_s=float(_num("LATTICE_QUERY_EMBED_TIMEOUT_S", 0.5)),
+        enhancer=_f("LATTICE_ENHANCER", "none"),
+        enhance_budget_s=float(_num("LATTICE_ENHANCE_BUDGET_S", 0.8)),
+        rrf_k=int(_num("LATTICE_RRF_K", 60)),
+        score_threshold=float(_num("LATTICE_SCORE_THRESHOLD", 0.0)),
         dev_jwt_secret=_f("LATTICE_DEV_JWT_SECRET", "dev-only-insecure-secret-0123456789ab"),
         mcp_timeout_s=float(_num("LATTICE_MCP_TIMEOUT_S", 60.0)),
         log_level=env("LATTICE_LOG_LEVEL", "INFO"),

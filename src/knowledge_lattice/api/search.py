@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
@@ -45,7 +47,10 @@ async def search(body: SearchRequest, request: Request) -> dict:
     org = resolve_org(
         org_claim=auth.org_claim, org_header=request.headers.get("x-org-id")
     )
-    return run_search(
+    # 完整配方同步管线经 to_thread 下放（模型 HTTP 调用绝不阻塞事件循环——
+    # NFR-8/TC-RET-04；MCP sync 工具由 FastMCP 线程池同款承接）
+    return await asyncio.to_thread(
+        run_search,
         service.backend,
         service.settings,
         user_id=auth.user_id,
@@ -55,4 +60,8 @@ async def search(body: SearchRequest, request: Request) -> dict:
         datasets=body.datasets,
         doc_filter=body.doc_filter,
         gate=service.gate,
+        embedder=service.embedder,
+        reranker=service.reranker,
+        enhancer=service.enhancer,
+        breakers=service.breakers,
     )

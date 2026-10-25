@@ -93,14 +93,15 @@ class SqliteBackend:
                 bucket.add(value)
         return {key: tuple(sorted(values)) for key, values in grants.items()}
 
-    # ============ Search 域（M0a-3：BM25 单路召回） ============
+    # ============ Search 域（M0a-3：BM25 单路召回；M1-1：向量路 + 名次协议 + 双断言源） ============
 
     def recall_fts(
         self, tokens: list[str], plan: AclPlan, *, top_k: int = 20
     ) -> list[dict]:
         """BM25 召回：tokens → 方言转义（双引号包裹 + 内部转义 + OR）→ MATCH + 完整 ACL 下推。
 
-        bm25(chunks_fts, 3.0, 1.0, 5.0, 0.5, 8.0) 越小越相关（ASC）；溯源列一次取齐。
+        bm25(chunks_fts, 3.0, 1.0, 5.0, 0.5, 8.0) 越小越相关（ASC）——方向差异在
+        本层吸收为名次：行含 rank（1 起，M1-1 名次协议）；score_raw 仅供观察。
         空表达式（tokens 全被过滤）返回 []（空短语部分版本 malformed——TC-FTS-01）。
         dims 溯源字段（§6.1 契约）：v1.1 起 chunks 无 dims_json 投影——召回后按
         doc_id 从 document_dimensions 聚合回填（拍板 3，D22 真相源；SQL 收口本层）。
@@ -115,7 +116,65 @@ class SqliteBackend:
         cols = [d[0] for d in cursor.description]
         rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
         self._attach_dims(rows)
+        for rank, row in enumerate(rows, start=1):
+            row["rank"] = rank  # 名次协议（v0.8 #42 P1-8）——RRF/归一只消费名次
         return rows
+
+    def recall_vec(
+        self, query_vec: list[float], plan: AclPlan, *, top_k: int = 20
+    ) -> list[dict]:
+        """向量召回（M1-1）：先 ACL 过滤后距离——JOIN chunk_vectors cv（v1.1 谓词：
+        cv.embed_model = plan.embed_model，非当前标签行不进距离计算 TC-EMB-02/07）；
+        距离 vec_distance_cosine 升序，行含 rank（1 起）与 dist。
+
+        序列化收口本方言侧（pack_f32 BLOB——core 传浮点向量，P2-3 同款纪律）。
+        """
+        from knowledge_lattice.store.sqlite.acl_render import render_vec_recall_select
+
+        sql, params = render_vec_recall_select(plan, pack_f32(query_vec), top_k=top_k)
+        cursor = self._conn.execute(sql, params)
+        cols = [d[0] for d in cursor.description]
+        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+        self._attach_dims(rows)
+        for rank, row in enumerate(rows, start=1):
+            row["rank"] = rank
+        return rows
+
+    def visible_chunk_ids(
+        self, plan: AclPlan, rids: list[int] | None = None
+    ) -> set[int]:
+        """可见块 rid 集合（基础路 SQL——rerank 前/返回前 ACL 双断言数据源，TC-ACL-08）。
+
+        rids 非 None 时按给定块集收窄（AND c.rid IN (…)——双断言传候选/top-k 集，
+        防宽权限全量扫描；独立 SQL 路径性质不变）。
+        """
+        from knowledge_lattice.store.sqlite.acl_render import render_select
+
+        sql, params = render_select(plan)
+        if rids:
+            marks = ", ".join(f":vr{i}" for i in range(len(rids)))
+            sql += f" AND c.rid IN ({marks})"
+            params.update({f"vr{i}": rid for i, rid in enumerate(rids)})
+        return {r[0] for r in self._conn.execute(sql, params)}
+
+    def rids_without_vector(
+        self, rids: list[int], embed_model: str
+    ) -> set[int]:
+        """给定 rid 中无 (rid, embed_model) cv 行的子集（vector_pending 块级判定——
+        TC-RET-02「本结果缺向量路＝未就绪或降级」）。空集输入返回空集。"""
+        if not rids:
+            return set()
+        marks = ", ".join(f":r{i}" for i in range(len(rids)))
+        params: dict[str, object] = {f"r{i}": rid for i, rid in enumerate(rids)}
+        params["label"] = embed_model
+        rows = self._conn.execute(
+            "SELECT c.rid FROM chunks c"
+            f" WHERE c.rid IN ({marks})"
+            "   AND NOT EXISTS (SELECT 1 FROM chunk_vectors cv"
+            "     WHERE cv.rid = c.rid AND cv.embed_model = :label)",
+            params,
+        ).fetchall()
+        return {r[0] for r in rows}
 
     def _attach_dims(self, rows: list[dict]) -> None:
         """按 doc_id 聚合 document_dimensions → rows[i]["dims"]（dict[key, list[value]]）。

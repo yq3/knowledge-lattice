@@ -12,12 +12,14 @@ M0b-1 已落（PG spike）：
   分表 PK(rid, embed_model)〕；semantic/ 空占位，M2-S1 落）；
 - acl_render.py：AclPlan PG 渲染器（同一方言无关 AST〔store/acl_ast.py〕；
   M0b-3 起 visible_docs CTE + AS MATERIALIZED **唯一路径**——jsonb 按块路径谓词
-  已随拍板 1 删除，向量谓词迁 chunk_vectors JOIN；M0a-2 R2 安全纪律沿用）；
-- backend.py：PgBackend（Acl/Ingest/Admin/Audit 实作 + Search 种子签名——完整
-  检索管线随 M0b-2/M1）；
-- audit.py（审计按月分区表 + append-only 触发器）/ vec.py（pgvector 文本序列化）。
+  已随拍板 1 删除，向量谓词迁 chunk_vectors JOIN；M1-1 起含 FTS 路——Match
+  节点渲染五列 @@ OR + 加权 ts_rank 求和；M0a-2 R2 安全纪律沿用）；
+- backend.py：PgBackend（Acl/Ingest/Admin/Audit 实作 + Search 域——M1-1 起
+  recall_fts/recall_vec 实装、检索配方双后端等价）；
+- audit.py（审计按月分区表 + append-only 触发器）/ vec.py（pgvector 文本序列化）/
+  fts.py（to_tsquery 构造 + 五列 ts_rank 权重——M1-1 落）。
 
-随 M0b-2/M1 再落：fts.py（to_tsquery 转义 + 加权 ts_rank）、backup.py（pg_dump）。
+随 M1-2+/M2 再落：backup.py（pg_dump runbook——M2 备份演练）。
 """
 
 from .connection import connect, connect_pool, setup_connection

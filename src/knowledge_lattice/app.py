@@ -3,6 +3,8 @@
 组装：
 - backend：连接工厂 + 迁移（引导连接跑一次）→ ThreadLocalBackend（每线程一连接，§2）；
 - embedder：OpenAI 兼容客户端（测试可注入 fake）；gate：探针结果进程内状态；
+- reranker/enhancer/breakers（M1-1 检索配方）：按 config 档位构造（none=显式
+  降级路径）+ 查询侧熔断共享态（NFR-8）；
 - MCP：FastMCP 单一 server（docs 组 search），http_app 挂载在根（/mcp 路径）、
   lifespan 由本 app 接管（StreamableHTTPSessionManager 初始化——fastmcp ASGI 集成）；
 - 静态页壳：GET / 返回 index.html、/static/* 托管 web/（无构建工具——§5.7）；
@@ -39,14 +41,28 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 
 
 class ServiceContext:
-    """依赖容器（backend/settings/gate/ingest——路由与 MCP 工具共用）。"""
+    """依赖容器（backend/settings/gate/ingest/embedder/reranker/enhancer/breakers）。"""
 
-    def __init__(self, *, settings, backend, gate, ingest, embedder) -> None:
+    def __init__(
+        self,
+        *,
+        settings,
+        backend,
+        gate,
+        ingest,
+        embedder,
+        reranker=None,
+        enhancer=None,
+        breakers=None,
+    ) -> None:
         self.settings = settings
         self.backend = backend
         self.gate = gate
         self.ingest = ingest
         self.embedder = embedder
+        self.reranker = reranker
+        self.enhancer = enhancer
+        self.breakers = breakers
 
 
 def create_app(
@@ -54,9 +70,11 @@ def create_app(
     *,
     embedder=None,
     gate: EmbeddingGate | None = None,
+    reranker=None,
+    enhancer=None,
     run_startup_probe: bool = True,
 ) -> FastAPI:
-    """构建 FastAPI 应用（测试可注入 embedder/gate、跳过启动探针）。"""
+    """构建 FastAPI 应用（测试可注入 embedder/gate/reranker/enhancer、跳过启动探针）。"""
     settings = settings or get_settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -67,9 +85,34 @@ def create_app(
 
     gate = gate or EmbeddingGate()
     embedder = embedder or OpenAICompatEmbedder(settings)
+    # 检索配方 providers（M1-1）：reranker/enhancer 按 config 档位构造（none=降级
+    # 路径）；查询侧熔断器共享态（NFR-8：连续 3 失败断开 60s、半开恢复）
+    from knowledge_lattice.adapters.breaker import CircuitBreaker
+    from knowledge_lattice.adapters.enhancer import NoopEnhancer, OpenAICompatEnhancer
+    from knowledge_lattice.adapters.reranker import CohereCompatReranker, NoopReranker
+
+    if reranker is None:
+        reranker = (
+            NoopReranker() if settings.reranker == "none"
+            else CohereCompatReranker(settings)
+        )
+    if enhancer is None:
+        enhancer = (
+            NoopEnhancer() if settings.enhancer == "none"
+            else OpenAICompatEnhancer(settings)
+        )
+    breakers = {
+        "embed": CircuitBreaker(
+            failures=settings.breaker_failures, cooldown_s=settings.breaker_cooldown_s
+        ),
+        "rerank": CircuitBreaker(
+            failures=settings.breaker_failures, cooldown_s=settings.breaker_cooldown_s
+        ),
+    }
     ingest = IngestService(backend, embedder, settings, gate, settings.data_dir / "objects")
     service = ServiceContext(
-        settings=settings, backend=backend, gate=gate, ingest=ingest, embedder=embedder
+        settings=settings, backend=backend, gate=gate, ingest=ingest, embedder=embedder,
+        reranker=reranker, enhancer=enhancer, breakers=breakers,
     )
 
     mcp_server = build_mcp_server(service, settings)

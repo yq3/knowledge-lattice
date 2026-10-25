@@ -12,8 +12,9 @@
 - 向量路（render_vec_recall_select）：可见集 CTE + `JOIN chunk_vectors cv ON
   cv.rid = c.rid AND cv.embed_model = %(current_model)s`（TC-EMB-02 谓词迁分表
   ——Plan 层不动、渲染层迁移；`<=>` 精确扫描起步，G-6）；
-- 本段不含 FTS 路（Match 节点渲染显式拒绝——PG to_tsquery/ts_rank 加权随
-  M1，design §5.2 PG 渲染注）。
+- FTS 路（render_fts_recall_select + Match 节点渲染，M1-1）：五列 tsvector
+  GENERATED @@ to_tsquery('simple', …) + 加权 ts_rank 求和（§4 PG 映射）——
+  与 sqlite 路共用同一棵 AST（评分方向差异在 backend 层吸收为名次，A-17/G-6）。
 """
 
 from __future__ import annotations
@@ -43,7 +44,7 @@ from knowledge_lattice.store.backend import AclPlan
 
 __all__ = [
     "render_sql", "render_select", "render_vec_recall_select",
-    "build_acl_ast", "build_where_ast",
+    "render_fts_recall_select", "build_acl_ast", "build_where_ast",
 ]
 
 # CTE 前缀（MATERIALIZED——PG 计划病理一词修复；与 sqlite 渲染统一加注）
@@ -93,10 +94,13 @@ class _Renderer:
         if isinstance(node, InSubquery):
             return f"{self.expr(node.expr)} IN ({node.subquery})"
         if isinstance(node, Match):
-            raise NotImplementedError(
-                "PG FTS 路（to_tsquery 转义 + 加权 ts_rank 求和）随 M1——"
-                "本段仅可见性产物与向量列断言（design §5.2 PG 渲染注）"
-            )
+            # PG FTS 路（M1-1）：Match 语义 = 任一列命中（五列 tsvector GENERATED，
+            # regconfig 双参 to_tsvector 产物——§4 PG 映射）；查询串经绑定参数，
+            # 'simple' regconfig 与列名为结构常量（标识符位不变式）
+            from knowledge_lattice.store.postgres.fts import TS_MATCH_ANY
+
+            self.params[node.param.name] = node.param.value
+            return "(" + TS_MATCH_ANY.replace("{q}", f"%({node.param.name})s") + ")"
         if isinstance(node, Func):
             args = ", ".join(self.expr(a) for a in node.args)
             return f"{node.name}({args})"
@@ -164,24 +168,67 @@ def render_select(plan: AclPlan) -> tuple[str, dict[str, object]]:
 def render_vec_recall_select(
     plan: AclPlan, query_vec: str, *, top_k: int
 ) -> tuple[str, dict[str, object]]:
-    """向量路召回 SQL（`<=>` 精确扫描——G-6 起步口径；先过滤后距离，§5.2）。
+    """向量路召回 SQL（M1-1 实装形态——`<=>` 精确扫描起步，G-6；先过滤后距离，§5.2）。
 
     M0b-3 拍板 2：谓词迁 `chunk_vectors`——`JOIN cv ON cv.rid = c.rid AND
     cv.embed_model = %(current_model)s`（TC-EMB-02 节点语义保持）；cv 无行即未
     嵌入（无 IS NOT NULL 谓词）；距离列 `cv.embedding <=> %(q_vec)s::vector`。
     query_vec 为 pgvector 文本形态（vec.format_vector 产物），经绑定参数 +
-    ::vector 显式转型，绝不拼接进 SQL 文本。
+    ::vector 显式转型，绝不拼接进 SQL 文本。溯源列与 FTS 路对齐（rank 协议）。
     """
     cte_where, cv_join, outer = _build_vec_parts_neutral(plan)
     renderer = _Renderer()
     sql = (
         f"{_CTE_PREFIX}{renderer.expr(cte_where)})"
-        " SELECT c.rid, c.id, c.doc_id, cv.embedding <=> %(q_vec)s::vector AS dist"
-        " FROM chunks c JOIN documents d ON d.id = c.doc_id"
+        " SELECT c.rid, c.id AS chunk_id, c.doc_id, d.title, c.page_no, c.sheet_name,"
+        " d.source_uri, d.dataset_id, ds.name AS dataset_name, c.content,"
+        " cv.embedding <=> %(q_vec)s::vector AS dist"
+        " FROM chunks c"
+        " JOIN documents d ON d.id = c.doc_id"
+        " JOIN datasets ds ON ds.id = d.dataset_id"
         f"{renderer.expr(cv_join)}"
         f" WHERE {renderer.expr(outer)}"
-        " ORDER BY dist LIMIT %(top_k)s"
+        " ORDER BY dist"
+        " LIMIT %(top_k)s"
     )
     renderer.params["q_vec"] = query_vec
+    renderer.params["top_k"] = top_k
+    return sql, renderer.params
+
+
+def render_fts_recall_select(
+    plan: AclPlan, tsquery: str, *, top_k: int
+) -> tuple[str, dict[str, object]]:
+    """FTS 路召回 SQL（M1-1——加权 ts_rank 求和，§4 PG 映射 / §5.2）。
+
+    - 与 sqlite 版 render_fts_recall_select 同构（同一 build_fts_where_ast 的
+      AST——Match 节点在 PG 渲染为五列 @@ OR；TC-ACL-06 三路同构口径）；
+      **版本条件在 chunks/documents JOIN 上**（`AND c.version = d.active_version`
+      ——T9 机制前提：只召回在用版本，与 sqlite 逐字同构；WHERE 内不重复该条件）；
+    - 评分 = 五列 ts_rank 加权和（与 bm25 五列参数同值——方向差异：ts_rank
+      越大越相关，ORDER BY DESC；backend 层吸收为名次 rank，A-17/G-6）；
+    - tsquery 为 fts.build_tsquery 产物（`"a" & "b"` 字面量串），经 %(q)s 绑定
+      （Match 节点 WHERE 内五处内联求值）；CROSS JOIN tq 单次求值供 ORDER BY
+      加权和引用（WHERE 与 ORDER BY 各自求值、不共用同一表达式实例）；
+    - 空串（tokens 全滤）由调用方跳过（不发 SQL）。
+    """
+    from knowledge_lattice.store.acl_ast import build_fts_where_ast
+    from knowledge_lattice.store.postgres.fts import TS_RANK_SUM
+
+    renderer = _Renderer()
+    sql = (
+        f"{_CTE_PREFIX}{renderer.expr(_build_cte_where_neutral(plan))})"
+        " SELECT c.rid, c.id AS chunk_id, c.doc_id, d.title, c.page_no, c.sheet_name,"
+        " d.source_uri, d.dataset_id, ds.name AS dataset_name, c.content,"
+        f" ({TS_RANK_SUM}) AS score_raw"
+        " FROM chunks c"
+        " JOIN documents d ON d.id = c.doc_id AND c.version = d.active_version"
+        " JOIN datasets ds ON ds.id = d.dataset_id"
+        " CROSS JOIN (SELECT to_tsquery('simple', %(q_rank)s) AS query) tq"
+        f" WHERE {renderer.expr(build_fts_where_ast(plan, query=tsquery))}"
+        " ORDER BY score_raw DESC"
+        " LIMIT %(top_k)s"
+    )
+    renderer.params["q_rank"] = tsquery
     renderer.params["top_k"] = top_k
     return sql, renderer.params

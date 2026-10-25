@@ -299,6 +299,35 @@ def ingest_env(tmp_path):
     conn.close()
 
 
+# ============ M1-1 检索配方 fixtures ============
+
+
+@pytest.fixture()
+def ret_stack(matrix, tmp_path):
+    """M1-1 检索配方共享栈（TC-RET/TC-EMB-04/05/07/TC-ACL-08 双后端参数化）：
+    matrix 造数 + 真 backend + Settings(embed_dim=8, fake-embed) + FakeEmbedder。
+
+    向量造数两条路：backend.mark_embedding_batch → write_embeddings（走写路径防护）；
+    db.insert_vector（直插——旧标签/竞态造数，序列化按方言分派）。块原文列
+    （content/title_seg 等）由用例经 helpers.insert_chunk overrides 显式控制。
+    """
+    from knowledge_lattice.config import Settings
+    from fake_providers import FakeEmbedder
+
+    backend = matrix.make_backend()
+    settings = Settings(
+        environment="test", data_dir=tmp_path, embed_dim=8, embed_model="fake-embed",
+    )
+    embedder = FakeEmbedder(dim=8, model_name="fake-embed")
+    return {
+        "db": matrix,
+        "backend": backend,
+        "settings": settings,
+        "embedder": embedder,
+        "label": settings.embed_model_label,
+    }
+
+
 @pytest.fixture()
 def app_env(tmp_path):
     """服务壳测试环境：create_app（fake Embedder 注入、跳过启动探针、无周期任务）+

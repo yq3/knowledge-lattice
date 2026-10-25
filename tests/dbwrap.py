@@ -9,7 +9,7 @@ TC-ACL-01~07 / TC-EMB-02 双后端）：
   pg=%(name)s）为字典参数、原样透传；
 - 方言分派（v1.1 起 visible_docs CTE 唯一路径）：compile_acl / render_select /
   build_rule_ast / build_cte_where / build_outer_where / build_vec_parts /
-  build_fts_where_ast（sqlite-only）/ render_sql / dim_marker /
+  build_fts_where_ast（M1-1 起双方言）/ render_sql / dim_marker /
   doc_side_trigger_names / fts_word_count；
 - 断言口径：integrity_error（触发器 ABORT——sqlite=IntegrityError /
   pg=psycopg RaiseException[plpgsql RAISE EXCEPTION]）；fk_error + fk_marker
@@ -149,7 +149,7 @@ class SqliteDb:
         return build_vec_parts(plan)
 
     def build_fts_where_ast(self, plan, *, query: str):
-        """FTS 路 WHERE（sqlite-only——PG FTS 路随 M1，TC-ACL-06 口径）。"""
+        """FTS 路 WHERE（M1-1 起双方言——PG 渲染 Match 节点为五列 @@ OR）。"""
         from knowledge_lattice.store.acl_ast import build_fts_where_ast
 
         return build_fts_where_ast(plan, query=query)
@@ -188,6 +188,16 @@ class SqliteDb:
                 (escape_token(word),),
             )
             .fetchone()[0]
+        )
+
+    def insert_vector(self, rid: int, label: str, vector: list[float]) -> None:
+        """测试直插 chunk_vectors 行（绕过 backend 写路径防护——旧标签/手算距离造数）；
+        sqlite 序列化 = vec_f32 BLOB（pack_f32）。"""
+        from knowledge_lattice.store.sqlite.vec import pack_f32
+
+        self.execute(
+            "INSERT INTO chunk_vectors(rid, embed_model, embedding) VALUES(?, ?, ?)",
+            (rid, label, pack_f32(vector)),
         )
 
 
@@ -271,8 +281,12 @@ class PgDb:
 
         return build_vec_parts(plan)
 
-    def build_fts_where_ast(self, plan, *, query: str):  # pragma: no cover - 形态对齐
-        raise NotImplementedError("PG FTS 路（to_tsquery/ts_rank 加权）随 M1")
+    def build_fts_where_ast(self, plan, *, query: str):
+        """FTS 路 WHERE（M1-1 起双方言可用——PG 渲染器把 Match 节点渲染为五列
+        tsvector @@ OR，AST 与 sqlite 同构）。"""
+        from knowledge_lattice.store.acl_ast import build_fts_where_ast
+
+        return build_fts_where_ast(plan, query=query)
 
     # ---- 断言口径 ----
 
@@ -324,3 +338,21 @@ class PgDb:
             )
             .fetchone()[0]
         )
+
+    def insert_vector(self, rid: int, label: str, vector: list[float]) -> None:
+        """测试直插 chunk_vectors 行（绕过 backend 写路径防护——旧标签/竞态造数）；
+        序列化按方言分派（sqlite=vec_f32 BLOB / pg=pgvector 文本）。"""
+        from knowledge_lattice.store.sqlite.vec import pack_f32
+        from knowledge_lattice.store.postgres.vec import format_vector
+
+        if self.is_sqlite:
+            self.execute(
+                "INSERT INTO chunk_vectors(rid, embed_model, embedding) VALUES(?, ?, ?)",
+                (rid, label, pack_f32(vector)),
+            )
+        else:
+            self.execute(
+                "INSERT INTO chunk_vectors(rid, embed_model, embedding)"
+                " VALUES(?, ?, ?::vector)",
+                (rid, label, format_vector(vector)),
+            )
