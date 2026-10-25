@@ -85,6 +85,22 @@ def test_e2e_04_membership_expiry_immediate(ret_stack) -> None:
 
 
 def test_e2e_04_compile_now_snapshot(ret_stack) -> None:
-    """:now 造数锚点半句：编译期过期判定按 :now 快照（NOW_TS 锚——PAST/FUTURE）。"""
-    plan = ret_stack["db"].compile_acl("u_full", "org:tax", now=NOW_TS)
-    assert plan.org_id == "org:tax" and plan.dimension_rules
+    """:now 造数锚点真断言（P3-7——原空转测试改实断言）：编译期过期判定按
+    :now 快照——同一过期授权行，锚点在过期前=仍有效（进 grants）、锚点在
+    过期后=已失效（不进 grants）；DB 时钟无关（纯 :now 参数化语义）。
+    载体=tax_type 补授临时 CIT（既有 VAT 无过期——不干扰收紧断言）。"""
+    from helpers import FUTURE_TS, grant_by_key
+
+    db = ret_stack["db"]
+    grant_by_key(
+        db, "u_full", org_id="org:tax", key="tax_type", value="CIT",
+        expires_at="2026-12-31 00:00:00",  # 晚于 NOW_TS(2026-06-01)、早于 FUTURE_TS
+    )
+    # 锚点 NOW_TS（2026-06-01）：临时授权未过期 → 进 grants（tax_type 两值）
+    plan_now = db.compile_acl("u_full", "org:tax", now=NOW_TS)
+    tax_rule = next(r for r in plan_now.dimension_rules if r.key == "tax_type")
+    assert set(tax_rule.grants) == {"VAT", "CIT"}
+    # 锚点 FUTURE_TS（2099）：临时授权已过期 → 收紧为仅 VAT（过期即失效，不等清理）
+    plan_future = db.compile_acl("u_full", "org:tax", now=FUTURE_TS)
+    tax_rule_f = next(r for r in plan_future.dimension_rules if r.key == "tax_type")
+    assert set(tax_rule_f.grants) == {"VAT"}, "编译期 :now 快照——过期授权不进规则集（T1）"

@@ -58,8 +58,10 @@ def token_alignment(query: str, content: str) -> float:
     """效果判据：query 与语料经同一分词器切分后的 token 对齐率。
 
     对齐率 = |query tokens ∩ content tokens| / |query tokens|（去重集合比）。
-    <1.0 即错位——错位则该 query 在语料上 BM25 召回为空（预分词列只含切出的
-    token，MATCH 不命中交集外的词）。
+    **零交集（=0.0）⇒ BM25 召回为空**（预分词列只含切出的 token，MATCH/
+    tsquery 均无命中）；部分对齐 (0,1) 在 SQLite（OR 拼接）语义下**仍可召回**
+    （任一 token 命中即进候选）、在 PG（`&` 全 token AND）语义下不召回——
+    后端差异口径（design §5.2 / A-17），黄金集校准须分后端评估。
     """
     q_tokens = {t for t in segment_query(query) if t.strip()}
     if not q_tokens:
@@ -71,16 +73,21 @@ def token_alignment(query: str, content: str) -> float:
 def cjk_fallback_verdict(
     query: str, content: str, *, dict_terms: tuple[str, ...] | list[str] = ()
 ) -> str:
-    """兜底判定：不达标时启用什么（词表优先——轻量、运营可修；trigram 其次）。
+    """兜底判定：按「交集是否为空」定 zero-recall，(0,1) 单列部分对齐档。
 
-    - "ok"：对齐率 1.0（jieba 预分词路线达标，无需兜底）；
-    - "dict"：错位但 query 为已登记业务术语（dict_terms）——add_word 后对齐
+    - "ok"：对齐率 1.0（全 token 对齐——无需兜底）；
+    - "partial"：部分对齐 (0,1)——SQLite OR 语义下仍可召回（不触发兜底）；
+      PG `&` 语义下不召回，黄金集分后端评估（M1-4）；
+    - "dict"：零交集且 query 为已登记业务术语（dict_terms）——add_word 后对齐
       恢复（词表兜底路径，实测有效见 TC-FTS-05）；
-    - "trigram"：词表不可修（未登记 / 仅子串关系可召回）——需 FTS trigram
-      索引/列兜底（schema 变更，M1-4 黄金集校准后按需启用）。
+    - "trigram"：零交集且词表不可修（未登记 / 仅子串关系可召回）——需 FTS
+      trigram 索引/列兜底（schema 变更，M1-4 黄金集校准后按需启用）。
     """
-    if token_alignment(query, content) == 1.0:
+    rate = token_alignment(query, content)
+    if rate == 1.0:
         return "ok"
+    if rate > 0.0:
+        return "partial"
     if query in dict_terms:
         return "dict"
     return "trigram"

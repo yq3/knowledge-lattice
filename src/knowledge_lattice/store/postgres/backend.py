@@ -12,9 +12,10 @@
 - **Admin**：任务状态机 / 文档状态 / 指纹基线 / 维度取值与库只读 / 静态 token；
 - **Audit**：append_outbox + roll_monthly（按月分区滚动——接口与 sqlite 月库
   滚动不变，design §4 PG 映射）；
-- **Search**：种子方法签名补齐（P3-17），完整检索管线（PG 版 recall_fts/ts_rank
-  加权、向量路）**不属本段**——M0b-2 按实验需要补、M1 追平全矩阵（design §8
-  M0b.5）；render_vec_recall_select 供向量列 `<=>` 断言与实验起步；
+- **Search**：recall_fts（五列 tsvector 加权 ts_rank 求和）+ recall_vec（`<=>`
+  精确扫描起步——G-6）+ visible_chunk_ids / rids_without_vector（ACL 双断言源
+  与 vector_pending 判定）——**M1-1 实装**，检索配方双后端等价（design §8 M1.1）；
+  render_vec_recall_select 供向量列 `<=>` 断言与实验起步；
 - **Semantic**：协议种子签名见 store/backend.py（M2-S1 实装）。
 
 连接模型：持有单个 psycopg Connection（autocommit——显式 BEGIN/COMMIT 由写路径
@@ -142,11 +143,20 @@ class PgBackend:
             row["rank"] = rank
         return rows
 
-    def visible_chunk_ids(self, plan: AclPlan) -> set[int]:
-        """可见块 rid 集合（基础路 SQL——rerank 前/返回前 ACL 双断言数据源，TC-ACL-08）。"""
+    def visible_chunk_ids(
+        self, plan: AclPlan, rids: list[int] | None = None
+    ) -> set[int]:
+        """可见块 rid 集合（基础路 SQL——rerank 前/返回前 ACL 双断言数据源，TC-ACL-08）。
+
+        rids 非 None 时按给定块集收窄（AND c.rid IN (…)——同 sqlite 口径）。
+        """
         from knowledge_lattice.store.postgres.acl_render import render_select
 
         sql, params = render_select(plan)
+        if rids:
+            marks = ", ".join(f"%(vr{i})s" for i in range(len(rids)))
+            sql += f" AND c.rid IN ({marks})"
+            params.update({f"vr{i}": rid for i, rid in enumerate(rids)})
         return {r[0] for r in self._conn.execute(sql, params)}
 
     def rids_without_vector(

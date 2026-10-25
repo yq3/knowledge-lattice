@@ -69,6 +69,34 @@ def test_emb_04_embed_unreachable_degrades_to_bm25(ret_stack) -> None:
     assert events and "embed_unreachable" in events[-1], "降级须记 search.degraded 审计事件"
 
 
+def test_emb_04_embed_failure_pending_true_even_with_vectors(ret_stack) -> None:
+    """P1-1「降级」面：块**已有**当前标签向量 + 本次嵌入失败 → vector_pending=True。
+
+    （R1 用例只测了「块没向量」的未就绪面——嵌入运行时失败时 vec_closed 曾误
+    False；§6.1 契约「未就绪**或降级**」两面俱全的降级半句。）"""
+    db, backend, settings, embedder = (
+        ret_stack["db"], ret_stack["backend"], ret_stack["settings"], ret_stack["embedder"],
+    )
+    _seed_two_blocks(db, vec_doc="d_emb_a", plain_doc="d_emb_b")
+    # 两块都写当前标签向量（结果块不缺向量行——排除「未就绪」面）
+    for doc in ("d_emb_a", "d_emb_b"):
+        rows = backend.mark_embedding_batch(doc, 1, settings.embed_model_label)
+        backend.write_embeddings(
+            settings.embed_model_label,
+            [(r["rid"], embedder.embed([r["content"]])[0]) for r in rows],
+        )
+    resp = _search(
+        ret_stack, query="增值税", settings_kw={"reranker": "none"},
+        embedder=FakeEmbedder(dim=8, model_name="fake-embed", fail=True),
+        reranker=None, enhancer=None,
+    )
+    assert resp["results"], "BM25 单路照常返回"
+    assert "embed_unreachable" in resp["notice"]["degraded"]
+    assert resp["notice"]["vector_pending"] is True, (
+        "嵌入失败=向量路降级——即便块已全量嵌入，本结果仍缺向量路（P1-1）"
+    )
+
+
 def test_emb_04_rerank_unreachable_returns_rrf_order(ret_stack) -> None:
     """② rerank 端点不可达：跳过重排按 RRF 序返回、记审计。"""
     _seed_two_blocks(ret_stack["db"])
@@ -226,17 +254,25 @@ def test_breaker_opens_after_three_failures_and_half_opens() -> None:
     from knowledge_lattice.adapters.breaker import CircuitBreaker
 
     br = CircuitBreaker(failures=3, cooldown_s=60.0)
+    assert br.state(now=100.0) == "closed"  # state 接受注入时钟（P3-5——与 allow 一致）
     assert br.allow(now=100.0)  # closed 正常放行
     br.record_failure(now=100.0)
     br.record_failure(now=100.5)
     assert br.allow(now=101.0), "2 次失败未达阈值仍放行（熔断=连续 3 次）"
     br.record_failure(now=101.5)
+    assert br.state(now=102.0) == "open"
     assert not br.allow(now=102.0), "连续 3 次失败 → 断开（期间直接降级不等超时）"
+    assert br.state(now=160.0) == "open"
     assert not br.allow(now=160.0), "60s 冷却窗口内保持断开（101.5+60=161.5 前）"
+    assert br.state(now=161.6) == "half_open"
     assert br.allow(now=161.6), "冷却后半开放行（探测恢复）"
+    assert not br.allow(now=161.7), "半开单次探测——探测在途不再放行（P3-5）"
     br.record_failure(now=161.6)
     assert not br.allow(now=162.0), "半开探测失败 → 重新断开"
+    assert br.state(now=162.0) == "open"
     assert br.allow(now=161.6 + 60.5), "再次冷却后恢复半开"
+    br.record_success()
+    assert br.state(now=161.6 + 61.0) == "closed", "半开探测成功 → 回 closed"
 
 
 def test_breaker_success_resets_streak() -> None:
@@ -249,3 +285,80 @@ def test_breaker_success_resets_streak() -> None:
     br.record_failure(now=3.0)
     br.record_failure(now=4.0)
     assert br.allow(now=5.0), "非连续 3 次失败不断开（成功重置计数）"
+
+
+def test_emb_04_embed_breaker_open_degrades_with_audit(ret_stack) -> None:
+    """P1-2 集成（embed 面）：3 次失败开熔断 → 后续 search 直接降级（provider
+    零调用）+ degraded 含 embed_unreachable + search.degraded 审计。"""
+    from knowledge_lattice.adapters.breaker import CircuitBreaker
+    from knowledge_lattice.core.docs.retrieve import search
+
+    db, backend, settings = ret_stack["db"], ret_stack["backend"], ret_stack["settings"]
+    _seed_two_blocks(db)
+    breaker = CircuitBreaker(failures=3, cooldown_s=600.0)  # 测试窗口内不半开
+    breakers = {"embed": breaker, "rerank": CircuitBreaker(failures=3, cooldown_s=600.0)}
+    failing = FakeEmbedder(dim=8, model_name="fake-embed", fail=True)
+    # 连续 3 次失败（经真实 search 路径——每次 embed 失败都 record_failure）
+    for _ in range(3):
+        resp = search(
+            backend, settings, user_id="u_full", org_id="org:tax", query="增值税",
+            embedder=failing, reranker=None, enhancer=None, breakers=breakers,
+        )
+        assert resp["results"], "降级期间 BM25 单路照常"
+    assert not breaker.allow(), "3 次连续失败后熔断开路"
+    calls_before = len(failing.calls)
+
+    resp_open = search(
+        backend, settings, user_id="u_full", org_id="org:tax", query="增值税",
+        embedder=failing, reranker=None, enhancer=None, breakers=breakers,
+    )
+    assert len(failing.calls) == calls_before, "熔断开路期 provider 零调用（不等超时）"
+    assert "embed_unreachable" in resp_open["notice"]["degraded"], (
+        "熔断开路=已确认不可达的降级态——须标注（P1-2；区别于 none 配置态）"
+    )
+    assert resp_open["notice"]["vector_pending"] is True
+    events = _outbox_events(db, "search.degraded")
+    assert events and "embed_unreachable" in events[-1], "熔断降级同样发 search.degraded 审计"
+
+
+def test_emb_04_rerank_breaker_open_degrades_with_audit(ret_stack) -> None:
+    """P1-2 集成（rerank 面）：3 次 rerank 失败开熔断 → 跳过重排零调用 +
+    rerank_skipped 标注 + 审计。"""
+    from knowledge_lattice.adapters.breaker import CircuitBreaker
+    from knowledge_lattice.core.docs.retrieve import search
+
+    db, backend, settings = ret_stack["db"], ret_stack["backend"], ret_stack["settings"]
+    _seed_two_blocks(db)
+    # 两块写当前标签向量（vector_pending 语义干净：向量路全开）
+    for doc in ("d_mix_a", "d_mix_b"):
+        rows = backend.mark_embedding_batch(doc, 1, settings.embed_model_label)
+        backend.write_embeddings(
+            settings.embed_model_label,
+            [(r["rid"], ret_stack["embedder"].embed([r["content"]])[0]) for r in rows],
+        )
+    import dataclasses
+
+    settings = dataclasses.replace(settings, reranker="cohere")
+    breakers = {"embed": CircuitBreaker(), "rerank": CircuitBreaker(failures=3, cooldown_s=600.0)}
+    failing_reranker = FakeReranker(fail=True)
+    for _ in range(3):
+        resp = search(
+            backend, settings, user_id="u_full", org_id="org:tax", query="增值税",
+            embedder=ret_stack["embedder"], reranker=failing_reranker,
+            enhancer=None, breakers=breakers,
+        )
+        assert resp["results"], "rerank 降级用 RRF 序照常返回"
+    assert not breakers["rerank"].allow()
+
+    resp_open = search(
+        backend, settings, user_id="u_full", org_id="org:tax", query="增值税",
+        embedder=ret_stack["embedder"], reranker=failing_reranker,
+        enhancer=None, breakers=breakers,
+    )
+    assert resp_open["results"]
+    assert resp_open["notice"]["degraded"] == ["rerank_skipped"], (
+        "熔断开路期静默跳过是 R1 缺陷（P1-2）——须标注"
+    )
+    assert resp_open["notice"]["vector_pending"] is False, "向量路正常不受 rerank 熔断影响"
+    events = _outbox_events(db, "search.degraded")
+    assert events and "rerank_skipped" in events[-1]

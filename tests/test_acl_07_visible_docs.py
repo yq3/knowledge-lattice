@@ -99,3 +99,19 @@ def test_version_pair_scenario(matrix) -> None:
             # u_cn（tax_type 零授权）：d_cn 整体不可见（T22 维度过滤照常叠加）
             assert "d_cn" not in doc_ids
             assert not any(cid.startswith("chk:d_cn") for cid in chunk_ids)
+
+    # P0-1 召回层断言（M1-1 R2 补——双后端）：BM25 路只召回在用版本块。
+    # pending v2 块与 tombstone v1 块不得出现在 recall_fts 结果——**直接断言
+    # 召回层**而非 search() 最终结果（后者有 ACL 兜底断言、会掩盖召回层缺陷——
+    # R1 的 PG 臂 117 全绿仍漏掉该缺陷的原因）。
+    backend = matrix.make_backend()
+    plan = matrix.compile_acl("u_full", "org:tax", now=NOW_TS)
+    fts_rows = backend.recall_fts(["common"], plan, top_k=50)
+    hit_ids = {r["chunk_id"] for r in fts_rows}
+    assert "chk:d_cn:v1:1" in hit_ids and "chk:d_tomb:v2:1" in hit_ids, (
+        "在用版本块应正常召回（断言前提）"
+    )
+    assert "chk:d_cn:v2:1" not in hit_ids, "pending v2 块不得进 BM25 路（P0-1）"
+    assert "chk:d_tomb:v1:1" not in hit_ids, "tombstone 块不得进 BM25 路（T9）"
+    # 名次协议在场（rank 1 起连续——断言前提自检）
+    assert [r["rank"] for r in fts_rows] == list(range(1, len(fts_rows) + 1))

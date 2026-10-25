@@ -279,8 +279,9 @@ def test_blue_green_dual_label_coexist_and_insertable(backend) -> None:
 
 def test_blue_green_new_label_predicate_hits_only_new(backend) -> None:
     """新标签谓词只命中新标签：cv JOIN 按 embed_model 过滤（TC-EMB-02 迁移后
-    语义——PG 走 render_vec_recall_select 真实执行；sqlite 侧谓词路径随 M1，
-    本用例断言 cv 表数据面）。"""
+    语义——PG 走 render_vec_recall_select 真实执行；sqlite 侧谓词路径已随
+    M1-1 实装（recall_vec/render_vec_recall_select），本用例双臂断言 cv 表数据面
+    + PG 真实执行）。"""
     import os
 
     be, rid = _seed_one_doc(backend)

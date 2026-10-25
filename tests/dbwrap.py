@@ -9,7 +9,7 @@ TC-ACL-01~07 / TC-EMB-02 双后端）：
   pg=%(name)s）为字典参数、原样透传；
 - 方言分派（v1.1 起 visible_docs CTE 唯一路径）：compile_acl / render_select /
   build_rule_ast / build_cte_where / build_outer_where / build_vec_parts /
-  build_fts_where_ast（sqlite-only）/ render_sql / dim_marker /
+  build_fts_where_ast（M1-1 起双方言）/ render_sql / dim_marker /
   doc_side_trigger_names / fts_word_count；
 - 断言口径：integrity_error（触发器 ABORT——sqlite=IntegrityError /
   pg=psycopg RaiseException[plpgsql RAISE EXCEPTION]）；fk_error + fk_marker
@@ -149,7 +149,7 @@ class SqliteDb:
         return build_vec_parts(plan)
 
     def build_fts_where_ast(self, plan, *, query: str):
-        """FTS 路 WHERE（sqlite-only——PG FTS 路随 M1，TC-ACL-06 口径）。"""
+        """FTS 路 WHERE（M1-1 起双方言——PG 渲染 Match 节点为五列 @@ OR）。"""
         from knowledge_lattice.store.acl_ast import build_fts_where_ast
 
         return build_fts_where_ast(plan, query=query)
@@ -281,8 +281,12 @@ class PgDb:
 
         return build_vec_parts(plan)
 
-    def build_fts_where_ast(self, plan, *, query: str):  # pragma: no cover - 形态对齐
-        raise NotImplementedError("PG FTS 路（to_tsquery/ts_rank 加权）随 M1")
+    def build_fts_where_ast(self, plan, *, query: str):
+        """FTS 路 WHERE（M1-1 起双方言可用——PG 渲染器把 Match 节点渲染为五列
+        tsvector @@ OR，AST 与 sqlite 同构）。"""
+        from knowledge_lattice.store.acl_ast import build_fts_where_ast
+
+        return build_fts_where_ast(plan, query=query)
 
     # ---- 断言口径 ----
 

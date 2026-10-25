@@ -46,7 +46,10 @@ TOP_K_HARD_LIMIT = 20  # 服务端硬上限（§5.2 / TC-RET-07①）
 
 # 模型调用线程池（query 嵌入 / rerank / LLM 增强——绝不阻塞事件循环，NFR-8；
 # 增强与原始召回并行窗口的事实载体）。进程级共享（单进程低 QPS 形态）。
+# rerank 专用池（P2-2）：调用线程先取信号量再提交——等待者在调用线程排队、
+# 不占池内 worker，池内永不排队 → 超时预算≈实际调用时长（排队时间不计入）。
 _MODEL_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="lattice-model")
+_RERANK_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="lattice-rerank")
 
 # rerank 并发信号量（§5.2：并发上限信号量保护——按配置值缓存实例）
 _RERANK_SEMS: dict[int, threading.Semaphore] = {}
@@ -55,6 +58,9 @@ _SEMS_LOCK = threading.Lock()
 # 归一离群判定系数（clamp 分支：Q1-1.5·IQR / Q3+1.5·IQR——ragflow 模式双分支
 # 实现择型：集中分布 min-max、含离群 clamp 后 min-max；系数申报 M1-4 校准）
 _IQR_K = 1.5
+
+# rerank 响应缺项的排序键（P3-4：显式垫底——负分网关下仍低于全部有分项）
+_NEG_INF = float("-inf")
 
 
 def _rerank_sem(limit: int) -> threading.Semaphore:
@@ -72,6 +78,8 @@ def rrf_fuse(
 ) -> list[tuple[int, float]]:
     """倒数排名融合：score(d) = Σ_route 1/(k + rank_route(d))——rank 1 起。
 
+    各路 rid 序列须按名次升序（调用方经 _rids_by_rank 显式排序——名次协议
+    P3-2：rank 字段是唯一消费面，不依赖后端返回的物理顺序）。
     并列（融合分完全相等）按 rid 升序 tie-break（确定性——双后端名次集等价
     断言基础，A-17）；单路 chunk 按该路 RRF 分自然保留（退化兼容，TC-RET-01）。
     """
@@ -80,6 +88,11 @@ def rrf_fuse(
         for rank, rid in enumerate(rids, start=1):
             scores[rid] = scores.get(rid, 0.0) + 1.0 / (k + rank)
     return sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
+def _rids_by_rank(rows: Sequence[dict]) -> list[int]:
+    """召回行按 rank 升序取 rid（名次协议防御——后端乱序返回不静默错序）。"""
+    return [r["rid"] for r in sorted(rows, key=lambda r: r["rank"])]
 
 
 def _quantile(sorted_values: Sequence[float], p: float) -> float:
@@ -246,24 +259,34 @@ def search(
     if gate is not None and gate.rejected:
         degraded.append("probe_reject")  # 探针拒绝档：跨底模距离无意义（拍板2）——不发嵌入
     vec_rows: list[dict] = []
+    query_vec: list[float] | None = None
+    embed_breaker_open = not _breaker_allows(breakers, "embed")
     vec_skipped = (
         embedder is None
         or (gate is not None and gate.rejected)
-        or not _breaker_allows(breakers, "embed")
+        or embed_breaker_open
     )
+    if embed_breaker_open and embedder is not None:
+        # 熔断开路=「已确认不可达」的降级态（连续失败断开期间直接降级不等超时——
+        # NFR-8）；与 none 配置态不同，须标注 + 审计（P1-2）
+        degraded.append("embed_unreachable")
     if not vec_skipped:
         query_vec = _embed_query(settings, embedder, query, breakers, degraded)
         if query_vec is not None:
             vec_rows = backend.recall_vec(
                 query_vec, vec_plan, top_k=settings.recall_window
             )
+    # 向量路整体关闭（P1-1）：静态跳过（无 embedder/探针拒绝/熔断开）**或本次嵌入
+    # 失败/超时**——「未就绪或降级」两面俱全（§6.1 vector_pending 契约）
+    vec_closed = vec_skipped or (embedder is not None and query_vec is None)
     t_recall = time.monotonic() - started
 
     # ---- RRF 融合（双路 → 增强词到位则并入第三路 BM25——不重做向量召回）----
+    # 名次协议防御（P3-2）：各路 rid 序显式按 rank 升序取——不依赖后端返回顺序
     merged: dict[int, dict] = {r["rid"]: r for r in fts_rows}
-    routes: list[tuple[str, list[int]]] = [("fts", [r["rid"] for r in fts_rows])]
+    routes: list[tuple[str, list[int]]] = [("fts", _rids_by_rank(fts_rows))]
     if vec_rows:
-        routes.append(("vec", [r["rid"] for r in vec_rows]))
+        routes.append(("vec", _rids_by_rank(vec_rows)))
         merged.update({r["rid"]: r for r in vec_rows})
     if enhance_future is not None:
         extra_terms = _await_enhancement(
@@ -274,7 +297,7 @@ def search(
                 extra_terms, plan, top_k=settings.recall_window
             )
             if enhanced_rows:
-                routes.append(("enhanced", [r["rid"] for r in enhanced_rows]))
+                routes.append(("enhanced", _rids_by_rank(enhanced_rows)))
                 for r in enhanced_rows:  # 溯源信息合并（第三路新块补位）
                     merged.setdefault(r["rid"], r)
     fused = rrf_fuse(routes, k=settings.rrf_k)
@@ -284,21 +307,24 @@ def search(
     if not candidates:
         return _finalize(
             backend, settings, ctx, degraded, [], top_k,
-            vec_closed=vec_skipped, has_results=False, vec_label=vec_label,
+            vec_closed=vec_closed, has_results=False, vec_label=vec_label,
             timings=(t_fts, t_recall, t_fuse, time.monotonic() - started),
             routes=len(routes),
         )
 
     # ---- ACL 兜底断言（rerank 前——独立重编译可见集，TC-ACL-08）----
+    # 独立性来自 SQL 路径（基础路 render_select vs FTS/向量召回路）而非编译次数
+    # （P3-15 注记：guard_plan 复用 plan 与否留后续优化——语义等价，省 2 次库读）
     guard_plan = compile_acl(
         backend, user_id, org_id, dataset_ids=datasets, doc_ids=doc_filter
     )
-    visible = backend.visible_chunk_ids(guard_plan)
+    # P2-3：断言数据源按候选集收窄扫描（防宽权限全量 O(N)×2；独立 SQL 路径不变）
+    visible = backend.visible_chunk_ids(guard_plan, [c["rid"] for c in candidates])
     candidates, _blocked = _drop_invisible_pre_rerank(candidates, visible, backend, ctx)
     if not candidates:
         return _finalize(
             backend, settings, ctx, degraded, [], top_k,
-            vec_closed=vec_skipped, has_results=False, vec_label=vec_label,
+            vec_closed=vec_closed, has_results=False, vec_label=vec_label,
             timings=(t_fts, t_recall, t_fuse, time.monotonic() - started),
             routes=len(routes),
         )
@@ -306,10 +332,14 @@ def search(
     # ---- rerank（top-candidates（32 / 降级 16）；content 原文；降级链）----
     candidates = candidates[: settings.rerank_candidates]
     rank_scores: dict[int, float] | None = None
+    rerank_breaker_open = not _breaker_allows(breakers, "rerank")
+    if rerank_breaker_open and reranker is not None and settings.reranker != "none":
+        # 熔断开路=已确认不可达的降级态——标注 + 审计（P1-2；none 配置态不标）
+        degraded.append("rerank_skipped")
     if (
         settings.reranker != "none"
         and reranker is not None
-        and _breaker_allows(breakers, "rerank")
+        and not rerank_breaker_open
     ):
         rank_scores = _run_rerank(
             settings, reranker, breakers, query, candidates, degraded
@@ -318,21 +348,34 @@ def search(
 
     # ---- 最终序（rerank 分降序、tie 用 RRF 序；无 rerank 分 = RRF 序）+ 归一 ----
     if rank_scores is not None:
+        # P3-4：响应缺项以 -inf 排序键显式垫底（负分网关下仍低于全部有分项），
+        # 归一只消费有分项、缺项归一分 0.0（顶底语义稳定）
         ordered = sorted(
             candidates,
-            key=lambda c: (-rank_scores.get(c["rid"], 0.0), -c["rrf_score"]),
+            key=lambda c: (-rank_scores.get(c["rid"], _NEG_INF), -c["rrf_score"]),
         )
-        raw_scores = [rank_scores.get(c["rid"], 0.0) for c in ordered]
+        present = [rank_scores[c["rid"]] for c in ordered if c["rid"] in rank_scores]
+        normalized_present, _branch = normalize_scores(present)
+        score_by_rid = {
+            c["rid"]: s
+            for c, s in zip(
+                [c for c in ordered if c["rid"] in rank_scores], normalized_present
+            )
+        }
+        for row in ordered:
+            row["final_score"] = score_by_rid.get(row["rid"], 0.0)
     else:
         ordered = sorted(candidates, key=lambda c: -c["rrf_score"])
         raw_scores = [c["rrf_score"] for c in ordered]
-    normalized, _branch = normalize_scores(raw_scores)  # 无 rerank 分→RRF 归一（TC-EMB-05）
-    for row, score in zip(ordered, normalized):
-        row["final_score"] = score
+        normalized, _branch = normalize_scores(raw_scores)  # 无 rerank 分→RRF 归一（TC-EMB-05）
+        for row, score in zip(ordered, normalized):
+            row["final_score"] = score
 
-    # ---- 返回前二次 ACL 断言（独立重取可见集——纵深不共用前断言快照，TC-ACL-08）→
-    #      阈值（只作用于归一后分数）→ top-k ----
-    visible_final = backend.visible_chunk_ids(guard_plan)
+    # ---- 返回前二次 ACL 断言（独立重取可见集——纵深不共用前断言快照，TC-ACL-08；
+    #      P2-3 按 top-k 候选集收窄）→ 阈值（只作用于归一后分数）→ top-k ----
+    visible_final = backend.visible_chunk_ids(
+        guard_plan, [c["rid"] for c in ordered]
+    )
     ordered = _drop_invisible_final(ordered, visible_final, backend, ctx)
     if settings.score_threshold > 0.0:
         ordered = [c for c in ordered if c["final_score"] >= settings.score_threshold]
@@ -340,7 +383,7 @@ def search(
 
     return _finalize(
         backend, settings, ctx, degraded, ordered, top_k,
-        vec_closed=vec_skipped, has_results=bool(fts_rows or vec_rows),
+        vec_closed=vec_closed, has_results=bool(fts_rows or vec_rows),
         vec_label=vec_label,
         timings=(t_fts, t_recall, t_fuse, t_rerank),
         routes=len(routes),
@@ -444,45 +487,65 @@ def _run_rerank(
     candidates: list[dict],
     degraded: list[str],
 ) -> dict[int, float] | None:
-    """rerank 调用：content 原文（可按 token 截断——TC-RET-06 开关）、信号量内、
-    超时 1000ms 硬上限（NFR-8）；失败/超时 → rerank_skipped 降级（返回 None，
-    调用方用 RRF 序）+ 熔断计数。返回 {rid: relevance_score}（越界 index 防御丢弃）。"""
+    """rerank 调用：content 原文（可按 token 截断——TC-RET-06 开关）、超时 1000ms
+    硬上限（NFR-8）；失败/超时/**空响应** → rerank_skipped 降级（返回 None，
+    调用方用 RRF 序）+ 熔断计数。返回 {rid: relevance_score}。
+
+    P2-2：并发信号量在**调用线程** acquire（管线已在线程池——阻塞安全；等待者
+    不占 _RERANK_POOL worker）→ 提交后池内不排队，超时预算≈实际调用时长
+    （排队时间不计入单次调用超时——与熔断的「慢 vs 不可达」分工一致）。
+    P3-3：响应空列表/全部 index 越界（防御丢弃后 scores 空）＝无效响应，视同
+    失败走 rerank_skipped（空响应不得伪装「全相关」顶格 1.0）。
+    """
     documents = [_truncate_content(c.get("content") or "", settings) for c in candidates]
     breaker = (breakers or {}).get("rerank")
     sem = _rerank_sem(settings.rerank_max_concurrency)
-
-    def _call():
-        with sem:
-            return reranker.rerank(query, documents, top_n=len(documents))
-
-    future = _MODEL_POOL.submit(_call)
+    sem.acquire()  # 调用线程等待（不占池——排队不计入调用超时）
     try:
-        ranked = future.result(timeout=settings.rerank_timeout_s)
-        scores: dict[int, float] = {}
-        for item in ranked:
-            if 0 <= item.index < len(candidates):
-                scores[candidates[item.index]["rid"]] = float(item.relevance_score)
-        if breaker is not None:
-            breaker.record_success()
-        return scores
-    except (FutureTimeoutError, Exception) as exc:  # noqa: BLE001
+        future = _RERANK_POOL.submit(
+            reranker.rerank, query, documents, top_n=len(documents)
+        )
+        try:
+            ranked = future.result(timeout=settings.rerank_timeout_s)
+        except (FutureTimeoutError, Exception) as exc:  # noqa: BLE001
+            degraded.append("rerank_skipped")
+            if breaker is not None:
+                breaker.record_failure()
+            logger.warning("rerank degraded: %s", exc)
+            return None
+    finally:
+        sem.release()
+
+    scores: dict[int, float] = {}
+    for item in ranked:
+        if 0 <= item.index < len(candidates):  # 越界 index 防御丢弃（响应注入面）
+            scores[candidates[item.index]["rid"]] = float(item.relevance_score)
+    if not scores:  # P3-3：空响应/全越界＝无效响应——视同失败降级
         degraded.append("rerank_skipped")
         if breaker is not None:
             breaker.record_failure()
-        logger.warning("rerank degraded: %s", exc)
+        logger.warning("rerank degraded: empty/invalid response (%d items)", len(ranked))
         return None
+    if breaker is not None:
+        breaker.record_success()
+    return scores
 
 
 def _truncate_content(content: str, settings: Settings) -> str:
     """rerank 输入截断（降级开关：rerank_truncate_tokens=None 不截；256=按 jieba
-    token 边界截断——NFR-8「rerank 输入截断 256 token」）。"""
+    token 边界截断——NFR-8「rerank 输入截断 256 token」）。
+
+    P2-1：token 间以空格连接——英文/中英混排原文的词间空白不被吞（`"".join`
+    会把 `hello world` 改写成 `helloworld`）；中文多出的空格对 cross-encoder
+    无语义影响。截断本就是有损降级档，保词边界优先于保逐字原文。
+    """
     limit = settings.rerank_truncate_tokens
     if limit is None or not content:
         return content
     tokens = tokenizer.segment(content)
     if len(tokens) <= limit:
         return content
-    return "".join(tokens[:limit])  # token 边界拼接（中文无空格、保留原文字面）
+    return " ".join(tokens[:limit])  # 空格保词边界（英文安全、中文无语义损失）
 
 
 def _await_enhancement(future: Future, remaining_s: float) -> list[str] | None:

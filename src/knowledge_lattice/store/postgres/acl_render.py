@@ -203,10 +203,13 @@ def render_fts_recall_select(
 
     - 与 sqlite 版 render_fts_recall_select 同构（同一 build_fts_where_ast 的
       AST——Match 节点在 PG 渲染为五列 @@ OR；TC-ACL-06 三路同构口径）；
+      **版本条件在 chunks/documents JOIN 上**（`AND c.version = d.active_version`
+      ——T9 机制前提：只召回在用版本，与 sqlite 逐字同构；WHERE 内不重复该条件）；
     - 评分 = 五列 ts_rank 加权和（与 bm25 五列参数同值——方向差异：ts_rank
       越大越相关，ORDER BY DESC；backend 层吸收为名次 rank，A-17/G-6）；
-    - tsquery 为 fts.build_tsquery 产物（`"a" & "b"` 字面量串），经 %(q)s 绑定；
-      CROSS JOIN 单次求值 to_tsquery（WHERE 五处与 ORDER BY 加权和共用）；
+    - tsquery 为 fts.build_tsquery 产物（`"a" & "b"` 字面量串），经 %(q)s 绑定
+      （Match 节点 WHERE 内五处内联求值）；CROSS JOIN tq 单次求值供 ORDER BY
+      加权和引用（WHERE 与 ORDER BY 各自求值、不共用同一表达式实例）；
     - 空串（tokens 全滤）由调用方跳过（不发 SQL）。
     """
     from knowledge_lattice.store.acl_ast import build_fts_where_ast
@@ -219,7 +222,7 @@ def render_fts_recall_select(
         " d.source_uri, d.dataset_id, ds.name AS dataset_name, c.content,"
         f" ({TS_RANK_SUM}) AS score_raw"
         " FROM chunks c"
-        " JOIN documents d ON d.id = c.doc_id"
+        " JOIN documents d ON d.id = c.doc_id AND c.version = d.active_version"
         " JOIN datasets ds ON ds.id = d.dataset_id"
         " CROSS JOIN (SELECT to_tsquery('simple', %(q_rank)s) AS query) tq"
         f" WHERE {renderer.expr(build_fts_where_ast(plan, query=tsquery))}"

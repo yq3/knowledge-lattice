@@ -140,11 +140,21 @@ class SqliteBackend:
             row["rank"] = rank
         return rows
 
-    def visible_chunk_ids(self, plan: AclPlan) -> set[int]:
-        """可见块 rid 集合（基础路 SQL——rerank 前/返回前 ACL 双断言数据源，TC-ACL-08）。"""
+    def visible_chunk_ids(
+        self, plan: AclPlan, rids: list[int] | None = None
+    ) -> set[int]:
+        """可见块 rid 集合（基础路 SQL——rerank 前/返回前 ACL 双断言数据源，TC-ACL-08）。
+
+        rids 非 None 时按给定块集收窄（AND c.rid IN (…)——双断言传候选/top-k 集，
+        防宽权限全量扫描；独立 SQL 路径性质不变）。
+        """
         from knowledge_lattice.store.sqlite.acl_render import render_select
 
         sql, params = render_select(plan)
+        if rids:
+            marks = ", ".join(f":vr{i}" for i in range(len(rids)))
+            sql += f" AND c.rid IN ({marks})"
+            params.update({f"vr{i}": rid for i, rid in enumerate(rids)})
         return {r[0] for r in self._conn.execute(sql, params)}
 
     def rids_without_vector(

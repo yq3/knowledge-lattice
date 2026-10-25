@@ -118,8 +118,8 @@ def test_acl_08_final_guard_intercepts_rerank_response(ret_stack, monkeypatch) -
     """② rerank 后可见性收紧（前断言后、返回前窗口）：二次断言拦下，top-k 无越权块。
 
     注入形式：backend.visible_chunk_ids 两阶段——首次（rerank 前断言）放行全集、
-    二次（返回前）真集收紧（模拟前断言被绕过/权限中途变化 + rerank 响应把越权
-    块排到首位——InjectingReranker 越界 index 指向候选外越权 rid）。
+    二次（返回前）真集收紧（模拟前断言被绕过/权限中途变化：越权块经召回混入候选
+    且穿过前断言，返回前真集兜底拦截）。
     """
     db, backend = ret_stack["db"], ret_stack["backend"]
     docs = _seed_acl_case(db)
@@ -146,7 +146,7 @@ def test_acl_08_final_guard_intercepts_rerank_response(ret_stack, monkeypatch) -
             }
         ] + rows
 
-    def two_phase_visible(plan):
+    def two_phase_visible(plan, rids=None):
         calls["n"] += 1
         true_set = real_visible(plan)
         if calls["n"] == 1:
@@ -230,3 +230,34 @@ def test_acl_08_normal_path_zero_intercepts(ret_stack) -> None:
         "SELECT payload_json FROM audit_outbox WHERE event_type = 'search.acl_intercept'"
     ).fetchall()
     assert events == [], "正常路径零剔除零审计"
+
+
+def test_acl_08_rerank_response_with_out_of_range_index_degrades(ret_stack) -> None:
+    """P3-9：rerank 响应 index 越界（响应注入面）——防御丢弃；全越界=无效响应
+    视同失败走 rerank_skipped 降级（P3-3 联动），不伪装成功。"""
+    db, backend = ret_stack["db"], ret_stack["backend"]
+    docs = _seed_acl_case(db)
+
+    class OutOfRangeReranker(FakeReranker):
+        def rerank(self, query, documents, *, top_n=None):
+            from knowledge_lattice.adapters.reranker import RankedDocument
+
+            self.calls.append((query, list(documents)))
+            return [
+                RankedDocument(index=len(documents) + 5, relevance_score=0.99),
+                RankedDocument(index=-1, relevance_score=0.98),
+            ]  # 全部越界（负 index 同样非法）
+
+    reranker = OutOfRangeReranker()
+    resp = _search(ret_stack, reranker=reranker, enhancer=None)
+    assert reranker.calls, "rerank 正常发起"
+    assert "rerank_skipped" in resp["notice"]["degraded"], (
+        "全越界响应＝无效响应——视同失败降级（P3-3），不得按「无有效项」伪装成功"
+    )
+    assert resp["results"] and all(r["doc_id"] == "d_ok" for r in resp["results"]), (
+        "降级用 RRF 序返回——最终输出仍干净"
+    )
+    events = db.execute(
+        "SELECT payload_json FROM audit_outbox WHERE event_type = 'search.degraded'"
+    ).fetchall()
+    assert events and "rerank_skipped" in events[-1][0]

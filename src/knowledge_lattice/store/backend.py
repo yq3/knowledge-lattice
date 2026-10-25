@@ -83,12 +83,14 @@ class SearchBackend(Protocol):
         向量，P2-3 同款纪律）；行含 `rank`（1 起）与 `dist`（升序）。"""
         ...
 
-    def visible_chunk_ids(self, plan: AclPlan) -> set[int]:
+    def visible_chunk_ids(self, plan: AclPlan, rids: Sequence[int] | None = None) -> set[int]:
         """可见块 rid 集合（rerank 前 / 返回前 ACL 双断言数据源——TC-ACL-08）。
 
         走基础路 SQL（visible_docs CTE + 外层常量）——与 FTS/向量召回路不同
         SQL 路径的防御纵深；plan 由 retrieve 内部独立重编译（同一编译器、
-        不同调用实例）。
+        不同调用实例）。rids 非 None 时按给定块集收窄扫描（`AND c.rid IN (…)`）
+        ——双断言分别传候选集 / top-k 集，防 10 万块宽权限的全量 O(N) 扫描；
+        「独立 SQL 路径」性质不变（同 CTE + 基础路形态，仅范围收窄）。
         """
         ...
 

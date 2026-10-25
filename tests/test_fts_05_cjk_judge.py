@@ -61,15 +61,49 @@ def test_fts_05_mismatch_means_bm25_miss(ret_stack) -> None:
 
 
 def test_fts_05_verdict_routes_fallback() -> None:
-    """判据③（兜底路由）：ok / dict（词表可修）/ trigram（词表不可修）。"""
+    """判据③（兜底路由，P2-4 修正）：ok / partial（部分对齐——SQLite OR 仍可
+    召回）/ dict（零交集+词表可修）/ trigram（零交集+词表不可修）。"""
     assert cjk_fallback_verdict("出口退税申报", "出口退税申报流程说明") == "ok"
-    # 错位 + query 为已知业务术语 → 词表兜底
+    # 部分对齐：query 多 token、语料命中其一（"增值税 申报" vs 语料只有"申报"）
+    # —— SQLite OR 语义下仍可召回（不触发兜底）；PG & 语义不召回（分后端评估）
+    assert token_alignment("增值税 申报", "出口退税申报流程说明") == 0.5
+    assert cjk_fallback_verdict("增值税 申报", "出口退税申报流程说明") == "partial"
+    # 零交集 + query 为已知业务术语 → 词表兜底
     assert cjk_fallback_verdict(_QUERY, _CONTENT, dict_terms=["留抵退税"]) == "dict"
-    # 错位 + 词表不可修（子串关系）→ trigram 兜底
+    # 零交集 + 词表不可修（子串关系）→ trigram 兜底
     assert cjk_fallback_verdict(_SUBSTR_QUERY, "一般纳税人") == "trigram"
     assert cjk_fallback_verdict(_QUERY, _CONTENT) == "trigram", (
         "未登记词表时按 trigram 兜底判定（词表是运营前置输入）"
     )
+
+
+def test_fts_05_partial_alignment_still_recalls_on_sqlite(ret_stack) -> None:
+    """P2-4 实证：部分对齐 (0,1) 在 SQLite OR 语义下仍可召回（不触发兜底）——
+    「对齐率<1 ⇒ 召回为空」的误判形态（R1 判据缺陷）的反证；PG `&` 语义下
+    同场景不召回（后端差异——档位注明、黄金集分后端评估 M1-4）。"""
+    from helpers import insert_chunk, seed_doc_dims, seed_document
+    from knowledge_lattice.store.backend import AclPlan
+
+    db, backend = ret_stack["db"], ret_stack["backend"]
+    seed_document(db, doc_id="d_partial", dataset_id="ds:vat_lib", owner_user_id="u_owner")
+    seed_doc_dims(db, "d_partial", {"region": ["CN"]})
+    insert_chunk(
+        db, doc_id="d_partial", seq=1, content="出口退税申报流程",
+        content_seg="出口 退税 申报 流程", title_seg="",
+        keywords="", llm_keywords="", tags="",
+    )
+    db.execute("UPDATE documents SET active_version = 1 WHERE id = 'd_partial'")
+    db.commit()
+
+    rate = token_alignment("增值税 申报", "出口退税申报流程")  # {增值税,申报} ∩ 语料={申报}
+    assert 0.0 < rate < 1.0
+    tokens = segment_query("增值税 申报")
+    if db.is_sqlite:
+        rows = backend.recall_fts(tokens, AclPlan(org_id="org:tax"), top_k=10)
+        assert rows, "SQLite OR 语义：部分对齐（申报命中）仍可召回——partial 档不触发兜底"
+    else:
+        rows = backend.recall_fts(tokens, AclPlan(org_id="org:tax"), top_k=10)
+        assert rows == [], "PG & 语义：全 token AND——部分对齐不召回（后端差异已登记）"
 
 
 def test_fts_05_dict_fallback_actually_restores_alignment() -> None:
