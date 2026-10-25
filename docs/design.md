@@ -648,7 +648,7 @@ CREATE TABLE sem_sync_runs (
 
 ### 5.1 维度 ACL 编译器（core/docs/acl.py）
 
-输入：`user_id` + 组织上下文（REST=`X-Org-Id` 头 / MCP=token org claim 优先、运行时注入头兜底——D18 统一规则）；输出：可下推进召回 SQL 的 WHERE 片段（**结构化 builder 生成 AST 再渲染 SQL，禁止字符串拼接**）。逻辑（v0.4：**全部状态字段进入计算——P0-1**）：
+输入：`user_id` + 组织上下文（无 org 路径 REST=MCP token org claim 优先、`X-Org-Id` 头兜底 / org 路径段 REST=路径 + 头一致性——D18 统一规则，v0.9.4 按实现细化）；输出：可下推进召回 SQL 的 WHERE 片段（**结构化 builder 生成 AST 再渲染 SQL，禁止字符串拼接**）。逻辑（v0.4：**全部状态字段进入计算——P0-1**）：
 
 1. **成员关系校验**（第 0 步，含过期）：`(SELECT role FROM user_org_memberships WHERE user_id=:uid AND org_id=:org AND (expires_at IS NULL OR expires_at > :now))`——无有效行即拒绝（系统管理员豁免仅限管理端点，D22）。**读路径只过滤、不删除**（避免检索请求抢 WAL 写锁并连带写 outbox——#34 4.2）；过期行的物理删除交**定时任务**（触发 cleanup 级联清授权 + 审计）。**续期禁令由触发器从机制上保证**（T2/T23）：
 
@@ -803,7 +803,7 @@ COMMIT;
 - **登录：企业 SSO（D16）**——token 验签（OIDC 优先，协议待需求待决-2 确认）→ 解析全局用户；**首次登录 JIT 建档**（`users` 表自动落库：id/username/display_name），管理员不建账号只配授权。
 - **agent 代人检索（D18）**：**委托 token（Token Exchange）**——`aud=knowledge-lattice`、短 TTL、`sub`=用户、`act`=agent 标识进审计；**拒绝 token 原样透传**（MCP 规范明令）；**请求体权限字段一律忽略并记审计、请求正常处理**（对齐 requirements FR-4/D18——v0.6.1 措辞对齐，#38 P1-9/#39）。**降级（v0.3）**：IdP 不支持时走**可信子系统**——agent 服务自身凭证（mTLS/服务 token）须在服务白名单，请求头 `X-On-Behalf-Of: <user_id>` 声明用户，知识库校验白名单后按声明用户计权、双身份（服务+用户）进审计；数据模型与 D18 一致（弱化 act/sub）。静态 token 仅开发/测试（含 CI）。
 - **M0b 实测项（issue #32 P1-6）——✅ 已完成（M0b-2，PR #48）**：`langchain-mcp-adapters` 按用户切换委托 token 的客户端形态（每用户会话一个 client vs 自定义 transport 每请求注入头）、连接开销与 token 过期刷新——**结论**：会话建立 ~10ms/持有会话热调用 ~2.2ms，adapters 默认 tool 路径每调用 ~15.6ms（7× 热调用），两形态均可行、推荐按形态 B（transport 注入）做长会话低成本刷新；**依赖互斥发现**：adapters（mcp 1.x）与 fastmcp 4.1.3（mcp 2.x）同进程不共存——实验客户端走独立 env，服务端依赖清单零引入（§7 口径）；token 过期=认证在工具层（会话不断、调用 401），形态 A 刷新=弃会话重建。详见 benchmarks/report-m0b-2.md §4。
-- **组织上下文统一规则（v0.4，D18）**：REST 用 `X-Org-Id` 请求头；MCP 以委托 token 的 `org` claim 优先（按组织签发、单值）、无 claim 时读运行时在连接/传输层注入的 `X-Org-Id` 头；两者并存且不一致 → 400；**工具参数中的 org 一律忽略并记审计**；缺失即 400，无隐式默认。逐请求按 §5.1 第 0 步（含过期）校验成员关系。
+- **组织上下文统一规则（v0.4，D18；v0.9.4 按实现细化）**：REST 无 org 路径段端点=token org claim 优先、`X-Org-Id` 请求头兜底（org 路径段端点由路径 + 头一致性承载）；MCP 以委托 token 的 `org` claim 优先（按组织签发、单值）、无 claim 时读运行时在连接/传输层注入的 `X-Org-Id` 头；两者并存且不一致 → 400；**工具参数中的 org 一律忽略并记审计**；缺失即 400，无隐式默认。逐请求按 §5.1 第 0 步（含过期）校验成员关系。
 - **可信子系统降级三条约束（v0.4，#33 P1-5）**：①白名单条目带 `allowed_orgs` + 按服务限流；②**用户在场证据**——请求附用户 SSO id_token/短期断言，校验 `sub` 与 `X-On-Behalf-Of` 一致（防服务凭证冒充离线用户）；③`X-Org-Id` 由运行时按用户会话注入。**有期限：上生产前必须切 Token Exchange 或落实②**（D18）。
 - MCP server 挂 60s 超时中间件（ragflow 同款纪律）。
 
@@ -1105,9 +1105,9 @@ SELECT e.id, e.type, e.key, e.name, MIN(w.depth) AS depth, GROUP_CONCAT(DISTINCT
 
 纪律：检索参数（权重/阈值/召回窗口）服务端固定，不暴露给 LLM（ragflow 反面教训）；`top_k ≤ 20` 服务端硬上限；工具描述动态注入的库/维度概况与一切统计**按调用者权限计算**（不可见文档的存在与数量不泄露）；`search` 返回块带 `source` 字段（agent 代传内容可识别——prompt injection 防御前置）。
 
-### 6.2 REST 端点（api/，v0.4 路径统一：**组织作用域资源一律 `/api/orgs/{org}/...`**；`X-Org-Id` 头仅 MCP 用——REST 端点（含检索）自 v0.9.4 起按实现统一为 resolve_org 规则（见下），路径与头并存且不一致 → 400——#33 P1-7）
+### 6.2 REST 端点（api/，v0.4 路径统一：**组织作用域资源一律 `/api/orgs/{org}/...`**；`X-Org-Id` 头用于 MCP 与无 org 路径 REST 的兜底（v0.9.4 按实现登记——见下方 resolve_org 块）；org 路径段 REST 由路径 + 头一致性判定；不一致 → 400——#33 P1-7）
 
-> **非 `/api/orgs/{org}` 路径的组织上下文（v0.9.4 澄清，M1-3 实现口径）**：**全部无 org 路径段的 REST 端点**（`/api/uploads`、`/api/search` 等）走 resolve_org 统一规则——token claim 优先、`X-Org-Id` 头兜底、两者并存不一致 → 400、缺失 → 400，随后按所解析组织校验成员关系（无有效行 403）——与 D18/X-Org-Id「仅 MCP 用」的字面差异就此澄清（`/api/search` 原「X-Org-Id 例外」为 v0.4 表述，实现自 M1-1 起即 claim 优先/头兜底，v0.9.4 按实现登记）。org 路径段端点由路径承载组织，无路径段端点由 claim/头承载。
+> **非 `/api/orgs/{org}` 路径的组织上下文（v0.9.4 澄清，M1-3 实现口径）**：**全部无 org 路径段的 REST 端点**（`/api/uploads`、`/api/search` 等）走 resolve_org 统一规则——token claim 优先、`X-Org-Id` 头兜底、两者并存不一致 → 400、缺失 → 400，随后按所解析组织校验成员关系（无有效行 403）——D18 v0.4 的「REST=`X-Org-Id` 头」字面在无 org 路径端点按实现细化为 claim 优先/头兜底（`/api/search` 原「X-Org-Id 例外」为 v0.4 表述，实现自 M1-1 起即此形态，v0.9.4 按实现登记）；org 路径段端点仍由路径 + 头一致性承载。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
