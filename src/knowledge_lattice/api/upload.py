@@ -130,7 +130,9 @@ async def put_upload_bytes(
     try:
         content_length = request.headers.get("content-length")
         if content_length is not None:
-            sink.precheck(int(content_length))  # 大流量快速失败（不落盘即拒）
+            # 大流量快速失败：预检先于流读取（staging 句柄已开但未写入任何
+            # 字节，预检拒绝后 except 分支 abort 清理——不留写入）
+            sink.precheck(int(content_length))
         async for chunk in request.stream():
             sink.write(chunk)
         result = sink.finalize()

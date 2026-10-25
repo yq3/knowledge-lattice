@@ -201,6 +201,8 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
             )
         except CredentialError as exc:  # T11/T12：凭证绑定/状态/校验专属错误码
             raise ToolError(f"{exc.http_status}: {exc}（code={exc.code}）") from exc
+        except AclDeniedError as exc:  # P1-1：逐请求成员关系校验（§5.5/FR-4）
+            raise ToolError(f"403: {exc}") from exc
         except UploadValidationError as exc:
             raise ToolError(f"400: {exc}") from exc
         except UploadPermissionError as exc:

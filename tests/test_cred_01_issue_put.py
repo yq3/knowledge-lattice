@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 
 from helpers import seed_user
 
@@ -26,8 +27,9 @@ SHA_HEX = hashlib.sha256(PAYLOAD).hexdigest()
 ISO_Z_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 
-def _issue(client, token, *, filename="doc.html", size=None, sha=None,
-           content_type="text/html", org_header=None):
+def _issue(client, token, *, filename: str = "doc.html", size: int | None = None,
+           sha: str | None = None, content_type: str = "text/html",
+           org_header: str | None = None):
     body = {
         "filename": filename,
         "size": len(PAYLOAD) if size is None else size,
@@ -40,7 +42,7 @@ def _issue(client, token, *, filename="doc.html", size=None, sha=None,
     return client.post("/api/uploads", json=body, headers=headers)
 
 
-def _put(client, token, upload_id, body: bytes, *, org_header=None):
+def _put(client, token, upload_id: str, body: bytes, *, org_header: str | None = None):
     headers = {"Authorization": f"Bearer {token}"}
     if org_header is not None:
         headers["X-Org-Id"] = org_header
@@ -54,7 +56,7 @@ def _staging_files(app_env) -> list[str]:
     return sorted(p.name for p in staging.iterdir())
 
 
-def _row(app_env, upload_id):
+def _row(app_env, upload_id: str):
     return app_env["conn"].execute(
         "SELECT id, org_id, user_id, service_id, filename, size, sha256, status,"
         " object_key, doc_id, task_id, expires_at FROM uploads WHERE id = ?",
@@ -90,9 +92,7 @@ def test_cred_01_issue_returns_credential_bound_to_three_factors(app_env) -> Non
     assert row[8] is None and row[9] is None and row[10] is None
     # expires_at 生效：库内存储（UTC 秒级）与响应（ISO Z）同一时点、且在未来
     stored = row[11]
-    assert stored is not None and stored > __import__("time").strftime(
-        "%Y-%m-%d %H:%M:%S", __import__("time").gmtime()
-    )
+    assert stored is not None and stored > time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
     assert body["expires_at"] == stored.replace(" ", "T") + "Z"
 
 
@@ -328,3 +328,35 @@ def test_cred_02_put_repeat_allowed_until_consumed(app_env) -> None:
     second = _put(env["client"], token, upload_id, PAYLOAD)  # 同字节重传
     assert first.status_code == 200 and second.status_code == 200
     assert _row(env, upload_id)[7] == "uploaded"
+
+
+# ============ R2 顺手：P3-2 PUT 不足声明 size（size_mismatch——对称面） ============
+
+
+def test_cred_02_put_under_declared_size_mismatch_then_full_ok(app_env) -> None:
+    """P3-2：声明 100、PUT 50 → 400 code=size_mismatch（不完整上传拒绝）；凭证
+    保持 issued、staging 清理；全量 PUT 100 → 200 uploaded。"""
+    env = app_env
+    token = env["jwt"]("u_full", org="org:tax", act="agent-copilot")
+    payload = b"z" * 100
+    resp = env["client"].post(
+        "/api/uploads",
+        json={
+            "filename": "a.bin", "size": 100,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "content_type": "application/octet-stream",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 201, resp.text
+    upload_id = resp.json()["upload_id"]
+
+    partial = _put(env["client"], token, upload_id, payload[:50])
+    assert partial.status_code == 400, partial.text
+    assert partial.json()["code"] == "size_mismatch"
+    assert _row(env, upload_id)[7] == "issued"  # 未消费、无对象
+    assert _staging_files(env) == []  # 失败路径补偿清理
+
+    full = _put(env["client"], token, upload_id, payload)
+    assert full.status_code == 200
+    assert full.json()["status"] == "uploaded"

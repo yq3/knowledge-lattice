@@ -25,6 +25,7 @@ import httpx
 import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
+from fastmcp.exceptions import ToolError
 
 from knowledge_lattice.adapters.embedder import EmbeddingGate
 from knowledge_lattice.config import Settings
@@ -239,7 +240,7 @@ def test_deepagents_end_to_end_upload_once(agent_env) -> None:
                 },
             )
 
-    with pytest.raises(Exception, match="409"):
+    with pytest.raises(ToolError, match="409"):
         asyncio.run(conflict())
 
     patch = env["client"].patch(

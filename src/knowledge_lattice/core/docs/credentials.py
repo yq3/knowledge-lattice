@@ -39,12 +39,14 @@ from pathlib import Path
 import ulid as _ulid
 
 from knowledge_lattice.config import Settings
+from knowledge_lattice.core.docs.acl import AclDeniedError
 
 logger = logging.getLogger(__name__)
 
 # 不透明凭证 id：upl_ + 26 位小写 ULID——路径/URL/异形一律拒绝（TC-CRED-04）
-UPLOAD_ID_RE = re.compile(r"^upl_[0-9a-z]{26}$")
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+# （\Z 锚定——`$` 会放过尾部换行符）
+UPLOAD_ID_RE = re.compile(r"^upl_[0-9a-z]{26}\Z")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}\Z")
 
 
 # ============ 异常（code＝对外错误码——T12「全部带明确错误码」） ============
@@ -131,7 +133,7 @@ def validate_upload_id(upload_id: str) -> None:
     if not isinstance(upload_id, str) or not UPLOAD_ID_RE.match(upload_id):
         raise InvalidUploadIdError(
             f"upload_id 只收不透明凭证 id（upl_<ulid>）：{upload_id!r}"
-            "——路径/URL/异形一律拒绝（NFR-6 三防线）"
+            "——路径/URL/异形一律拒绝"
         )
 
 
@@ -157,19 +159,20 @@ class PutSink:
         self._done = False
 
     def precheck(self, content_length: int) -> None:
-        """Content-Length 预检（大流量快速失败——不落盘即拒）。"""
+        """Content-Length 预检（大流量快速失败——先于流读取即拒，staging 尚未
+        写入任何字节；句柄已开、预检拒绝后由调用方 abort 清理）。"""
         self._check_size(self._total + content_length)
 
     def _check_size(self, total: int) -> None:
         if total > self._service._settings.upload_max_bytes:
             raise SizeOverLimitError(
                 f"PUT 字节数超全局上限（{self._service._settings.upload_max_bytes}"
-                f" 字节，P3-13）——已收 {total}"
+                f" 字节）——已收 {total}"
             )
         if total > self._declared:
             raise SizeExceededError(
                 f"PUT 字节数超声明 size（declared={self._declared}，got≥{total}）"
-                "——拒绝且不静默截断（附录 A-13）"
+                "——拒绝且不静默截断"
             )
 
     def write(self, chunk: bytes) -> None:
@@ -183,7 +186,13 @@ class PutSink:
         self._total += len(chunk)
 
     def finalize(self) -> dict:
-        """收尾：字节数与声明一致 + sha256 复核 → 原子转正 + 状态推进。"""
+        """收尾：字节数与声明一致 + sha256 复核 → **转正前重读凭证**（P2-1：
+        传输途中过期/被清理任务回收 → 410 语义拒绝，不先转正后 409——不产生
+        孤儿对象；被并发消费 → 409）→ 原子转正 + 状态推进。
+
+        mark_upload_uploaded 零行（并发消费竞态）→ 先清理刚转正的 final 对象
+        再抛（P3-8：防孤儿）。
+        """
         assert self._fh is not None
         self._fh.close()
         self._fh = None
@@ -197,7 +206,23 @@ class PutSink:
             if actual != self._cred["sha256"]:
                 raise HashMismatchError(
                     f"sha256 不符（declared={self._cred['sha256'][:12]}…，"
-                    f"actual={actual[:12]}…）——拒绝且凭证不标记已用（T12）"
+                    f"actual={actual[:12]}…）——拒绝且凭证不标记已用（可修正重传）"
+                )
+            # P2-1：转正前重读——begin_put 校验后、长 PUT 期间凭证可能已过期/被
+            # 清理任务回收/被并发消费；按各自语义拒绝（staging 经 abort 清理）
+            fresh = self._service._backend.get_upload_credential(self._cred["id"])
+            if fresh is None:
+                raise CredentialExpiredError(
+                    f"凭证 {self._cred['id']} 已过期回收——PUT 拒绝"
+                )
+            if fresh["status"] == "consumed":
+                raise CredentialConsumedError(
+                    f"凭证 {self._cred['id']} 已被消费——PUT 拒绝（单次使用）"
+                )
+            if fresh["expires_at"] <= utc_now_ts():
+                raise CredentialExpiredError(
+                    f"凭证 {self._cred['id']} 已过期（expires_at={fresh['expires_at']}）"
+                    "——PUT 拒绝"
                 )
             final_key = f"uploads/{self._cred['id']}"
             final_path = self._service._objects_dir / final_key
@@ -207,8 +232,12 @@ class PutSink:
             if not self._service._backend.mark_upload_uploaded(
                 self._cred["id"], object_key=final_key
             ):
+                try:  # P3-8：并发消费竞态零行 → 清理刚转正的对象（防孤儿）
+                    final_path.unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("final object cleanup failed: %s", final_path)
                 raise CredentialConsumedError(
-                    f"凭证 {self._cred['id']} 已被消费——PUT 拒绝（单次使用）"
+                    f"凭证 {self._cred['id']} 已被消费——PUT 拒绝（并发竞态，单次使用）"
                 )
             return {"upload_id": self._cred["id"], "received": self._total,
                     "status": "uploaded"}
@@ -264,7 +293,7 @@ class CredentialService:
             raise InvalidRequestError("sha256 必须为 64 位小写 hex")
         if size > self._settings.upload_max_bytes:
             raise SizeOverLimitError(
-                f"声明 size 超全局上限（{self._settings.upload_max_bytes} 字节，P3-13）"
+                f"声明 size 超全局上限（{self._settings.upload_max_bytes} 字节）"
             )
         upload_id = f"upl_{str(_ulid.ULID()).lower()}"
         expires_at = time.strftime(
@@ -295,8 +324,10 @@ class CredentialService:
 
     def _require_usable(self, upload_id: str, *, org_id: str, user_id: str,
                         service_id: str | None) -> dict:
-        """PUT/消费共用前置：形态 → 在场 → **三一致绑定**（T11）→ 已消费（409）
-        → 过期（410）——绑定校验先于状态语义（跨身份请求测不到状态分支）。"""
+        """PUT/消费共用前置：形态 → 在场 → **三一致绑定**（T11）→ **逐请求成员
+        关系校验**（P1-1，§5.5/FR-4——凭证 TTL 内成员过期不放宽；系统管理员不
+        豁免，D22）→ 已消费（409）→ 过期（410）——绑定校验先于状态语义（跨身份
+        请求测不到状态分支）。"""
         validate_upload_id(upload_id)
         cred = self._backend.get_upload_credential(upload_id)
         if cred is None:
@@ -305,13 +336,20 @@ class CredentialService:
             org_id, user_id, service_id,
         ):
             raise CredentialBindingError(
-                f"凭证绑定不匹配（T11：upload_id 绑定 sub+org+服务身份三一致）——"
+                f"凭证绑定不匹配（upload_id 绑定 sub+org+服务身份三一致）——"
                 f"凭证=({cred['user_id']!r}@{cred['org_id']!r}/{cred['service_id']!r})"
                 f" 请求=({user_id!r}@{org_id!r}/{service_id!r})"
             )
+        # P1-1：凭证链逐请求成员关系校验（过期成员含过期即拒——403 语义，
+        # AclDeniedError 与检索/REST 面同款异常；不进 create_document 通用路径）
+        if self._backend.read_membership(user_id, org_id) is None:
+            raise AclDeniedError(
+                f"no active membership: user={user_id!r} org={org_id!r}"
+                "（凭证消费/PUT 需有效成员关系——FR-4）"
+            )
         if cred["status"] == "consumed":
             raise CredentialConsumedError(
-                f"凭证 {upload_id} 已消费（摄取成功入队即用掉——v1.4 口径）"
+                f"凭证 {upload_id} 已消费（摄取成功入队即用掉——单次使用）"
             )
         if cred["expires_at"] <= utc_now_ts():
             raise CredentialExpiredError(f"凭证 {upload_id} 已过期（expires_at={cred['expires_at']}）")
@@ -383,10 +421,10 @@ class CredentialService:
             raise UploadNotReadyError(f"凭证对象缺失：{cred['object_key']!r}")
         data = obj_path.read_bytes()
         if len(data) > self._settings.upload_max_bytes:
-            raise SizeOverLimitError("凭证对象超全局上限（P3-13）")
+            raise SizeOverLimitError("凭证对象超全局上限")
         if hashlib.sha256(data).hexdigest() != cred["sha256"]:
             raise HashMismatchError(
-                f"消费时哈希复验不符（T12/TOCTOU 防线）——declared={cred['sha256'][:12]}…"
+                f"消费时哈希复验不符（落盘对象与声明哈希不一致）——declared={cred['sha256'][:12]}…"
             )
 
         source_uri = f"agent:{service_id}" if service_id else None  # agent 代传标来源（§6.1）
@@ -434,22 +472,38 @@ class CredentialService:
 
     def purge_expired(self) -> dict:
         """回收过期未消费凭证（含对象目录暂存文件同清——design §6.3）；
-        已消费凭证（含过期）保留——凭证与文档/任务关联可追溯（M1-3 A6）。"""
+        已消费凭证（含过期）保留——凭证与文档/任务关联可追溯（M1-3 A6）。
+
+        staging 清扫带年龄阈值（P2-1）：只清 mtime 早于
+        `max(upload_credential_ttl_s, 2×maintenance_interval_s)` 的 .part——
+        进行中 PUT（新鲜 .part）绝不误删；阈值取 TTL 与两个清扫周期的较大者，
+        覆盖「凭证仍有效但 .part 异常滞留」的窗口。
+        """
         expired = self._backend.list_expired_upload_credentials(now=utc_now_ts())
         reclaimed: list[str] = []
         for row in expired:
             if row["object_key"]:
-                try:
-                    (self._objects_dir / row["object_key"]).unlink(missing_ok=True)
+                try:  # P3-12：对象 unlink 与消费侧同款 realpath/前缀校验纵深
+                    self._resolve_object(row).unlink(missing_ok=True)
+                except ObjectRefError:
+                    logger.warning(
+                        "reclaim skipped invalid object_key: %r", row["object_key"]
+                    )
                 except OSError:
                     logger.warning("reclaim object cleanup failed: %s", row["object_key"])
             self._backend.delete_upload_credential(row["id"])
             reclaimed.append(row["id"])
-        # staging 残留（失败 PUT 未及清理的 .part——P3-21 兜底）
+        # staging 残留（失败 PUT 未及清理的陈旧 .part——P2-1/P3-21 兜底）
         if self.staging_dir.is_dir():
+            threshold_s = max(
+                self._settings.upload_credential_ttl_s,
+                2 * self._settings.maintenance_interval_s,
+            )
+            cutoff = time.time() - threshold_s
             for part in self.staging_dir.iterdir():
                 try:
-                    part.unlink()
+                    if part.is_file() and part.stat().st_mtime < cutoff:
+                        part.unlink()
                 except OSError:
                     logger.warning("staging purge failed: %s", part)
         if reclaimed:

@@ -97,15 +97,15 @@ def test_fresh_migrate_applies_schema_v1(db_path: Path) -> None:
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 3  # v1.2（0001+0002+0003 uploads——M1-3）
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
-    # 文档侧 §4 全量表落库 + v1.1 分表 chunk_vectors（M0b-3）；sem_* 不在（M2-S1）；
-    # audit_events 不在主库（属月库）
+    # 文档侧 §4 全量表落库 + v1.1 分表 chunk_vectors（M0b-3）+ v1.2 uploads
+    # （M1-3 凭证表）；sem_* 不在（M2-S1）；audit_events 不在主库（属月库）
     names = table_names(conn)
     expected = {
         "orgs", "datasets", "dimensions", "dimension_values", "users",
         "user_org_memberships", "user_dimension_grants", "documents",
         "document_dimensions", "acl_entries", "chunks", "chunks_fts",
         "chunk_vectors", "quality_flags", "tasks", "embedding_fingerprints",
-        "audit_outbox",
+        "audit_outbox", "uploads",
     }
     assert expected <= names, f"missing tables: {expected - names}"
     assert not {n for n in names if n.startswith("sem_")}

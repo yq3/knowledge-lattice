@@ -357,7 +357,7 @@ def test_pg_audit_truncate_blocked_parent_and_partition(pg_db) -> None:
 
 def test_pg_fresh_migrate_schema_v1(pg_db) -> None:
     """全新 schema 迁移：schema_migrations 落 [1, 2, 3]（v1 全量 + v1.1 分表 + M1-3 uploads）；
-    表落库（15 主表 + chunk_vectors 分表 + 工厂滚动 audit_events 分区表——主库
+    表落库（16 主表〔含 M1-3 uploads〕+ chunk_vectors 分表 + 工厂滚动 audit_events 分区表——主库
     schema 不含）；sem_* 不在；chunks 五列 tsvector GENERATED 在场（FTS5 虚表 +
     ai/ad/au 的 PG 等价物）。"""
     from knowledge_lattice.store.postgres.migrate import BUILTIN_DIRS, discover
@@ -374,6 +374,7 @@ def test_pg_fresh_migrate_schema_v1(pg_db) -> None:
         "user_org_memberships", "user_dimension_grants", "documents",
         "document_dimensions", "acl_entries", "chunks", "chunk_vectors",
         "quality_flags", "tasks", "embedding_fingerprints", "audit_outbox",
+        "uploads",
     }
     assert expected <= names, f"missing tables: {expected - names}"
     assert "audit_events" in names  # 连接工厂滚动的分区父表（月库的 PG 等价）

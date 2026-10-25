@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import json
 import threading
+import time
 
 import httpx
 import pytest
@@ -59,7 +60,9 @@ def _issue_and_put(env, *, act="agent-copilot", user="u_full", payload=PAYLOAD) 
     return upload_id
 
 
-def _call_upload(env, token, upload_id, *, dims=None, doc_id=None):
+def _call_upload(env, token: str, upload_id: str, *,
+                  dims: dict[str, list[str]] | None = None,
+                  doc_id: str | None = None):
     async def flow():
         async with _client(env["app"], {"Authorization": f"Bearer {token}"}) as client:
             result = await client.call_tool(
@@ -78,8 +81,6 @@ def _call_upload(env, token, upload_id, *, dims=None, doc_id=None):
 
 def _await_task_done(env, task_id: str, timeout_s: float = 10.0) -> None:
     """MCP upload 工具投递的摄取线程完成轮询（进程内执行器——M0a 口径）。"""
-    import time
-
     backend = env["app"].state.service.backend
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -240,20 +241,21 @@ def test_mcp_upload_fileref_only_opaque_ids(app_env, bad_id) -> None:
 
 
 def test_object_ref_containment_defense(cred_env) -> None:
-    """三防线纵深（NFR-6）：白名单根目录 + realpath 规范化 + 前缀校验——直插
-    越界 object_key 的凭证行（绕过签发面）→ 消费侧拒绝 invalid_object_ref。"""
+    """三防线纵深（NFR-6）：白名单根目录 + 前缀字符串拒绝——直插含 `..` 的
+    object_key 凭证行（绕过签发面）→ 消费侧拒绝 invalid_object_ref。
+    （realpath 分支的符号链接形态见 test_p3_3_object_ref_symlink_realpath_branch。）"""
     from knowledge_lattice.core.docs.credentials import ObjectRefError
 
-    upload_id = _issue_put_of(cred_env)
+    upload_id = _seed_uploaded_credential(cred_env)
     cred_env["db"].execute(
         "UPDATE uploads SET object_key = '../../escape.bin' WHERE id = ?", (upload_id,)
     )
     with pytest.raises(ObjectRefError) as exc_info:
-        _consume_via(cred_env, upload_id)
+        _consume_via_service(cred_env, upload_id)
     assert exc_info.value.code == "invalid_object_ref"
 
 
-def _issue_put_of(cred_env) -> str:
+def _seed_uploaded_credential(cred_env) -> str:
     creds = cred_env["creds"]
     issued = creds.issue(
         org_id="org:tax", user_id="u_full", service_id="agent-copilot",
@@ -266,7 +268,7 @@ def _issue_put_of(cred_env) -> str:
     return issued["upload_id"]
 
 
-def _consume_via(cred_env, upload_id):
+def _consume_via_service(cred_env, upload_id: str):
     creds, ingest = cred_env["creds"], cred_env["ingest"]
     return creds.consume(
         upload_id,
@@ -274,3 +276,50 @@ def _consume_via(cred_env, upload_id):
         dataset_id="ds:vat_lib", dims={"region": ["CN"]},
         create_document=ingest.create_document,
     )
+
+
+# ============ R2 修复：P1-1 MCP upload 逐请求成员关系校验（Committer R1） ============
+
+
+def test_p1_1_mcp_upload_expired_membership_403(app_env) -> None:
+    """P1-1（MCP 面）：凭证 TTL 内成员关系过期 → upload ToolError 403；凭证仍
+    uploaded、无文档产生；恢复正常成员后同凭证消费成功。"""
+    env = app_env
+    upload_id = _issue_and_put(env)
+    token = env["jwt"]("u_full", org="org:tax", act="agent-copilot")
+
+    env["conn"].execute(
+        "UPDATE user_org_memberships SET expires_at = '2020-01-01 00:00:00'"
+        " WHERE user_id = 'u_full' AND org_id = 'org:tax'"
+    )
+    env["conn"].commit()
+    docs_before = env["conn"].execute("SELECT count(*) FROM documents").fetchone()[0]
+
+    with pytest.raises(ToolError) as exc_info:
+        _call_upload(env, token, upload_id)
+    assert "403" in str(exc_info.value) and "membership" in str(exc_info.value)
+
+    row = env["conn"].execute(
+        "SELECT status, doc_id FROM uploads WHERE id = ?", (upload_id,)
+    ).fetchone()
+    assert row == ("uploaded", None)  # 未消费、未绑文档
+    assert env["conn"].execute("SELECT count(*) FROM documents").fetchone()[0] == docs_before
+
+    # 恢复正常成员（删过期行→重加——trg_membership_no_extend 拒 UPDATE 复活；
+    # 删行级联清授权，补回 region CN/OS）→ 同凭证消费成功（回归绿）
+    env["conn"].execute(
+        "DELETE FROM user_org_memberships WHERE user_id = 'u_full' AND org_id = 'org:tax'"
+    )
+    env["conn"].execute(
+        "INSERT INTO user_org_memberships(user_id, org_id) VALUES('u_full', 'org:tax')"
+    )
+    for value in ("CN", "OS"):
+        env["conn"].execute(
+            "INSERT INTO user_dimension_grants(user_id, dimension_id, value_id, source)"
+            " VALUES('u_full', 'dim:org:tax:region', ?, 'local')",
+            (f"val:dim:org:tax:region:{value}",),
+        )
+    env["conn"].commit()
+    payload = _call_upload(env, token, upload_id)
+    assert payload["status"] == "queued"
+    _await_task_done(env, payload["task_id"])

@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_p3_10_utc_iso_serialization() -> None:
     """P3-10：UTC 秒级存储 → ISO 8601 Z 后缀（API 序列化统一口径）。"""
@@ -51,7 +53,7 @@ def test_p3_r2_3_prod_401_message_has_no_internal_marker(app_env) -> None:
     from knowledge_lattice.domain.auth import AuthError, authenticate
 
     prod = Settings(environment="prod")
-    with __import__("pytest").raises(AuthError) as exc_info:
+    with pytest.raises(AuthError) as exc_info:
         authenticate(app_env["app"].state.service.backend, prod, "any-token")
     assert "P2-5" not in str(exc_info.value), "内部审查号泄漏到对外错误文案"
     assert "SSO" in str(exc_info.value) or "production" in str(exc_info.value)
@@ -60,12 +62,11 @@ def test_p3_r2_3_prod_401_message_has_no_internal_marker(app_env) -> None:
 def test_p3_c_upload_grant_check_single_implementation(ingest_env) -> None:
     """P3-C：create_document 新值越权 → 与 PATCH 共用 `_require_values_in_grants`
     的同款错误文案（helper 单一实现——防 upload 链改造时两份漂移）。"""
+    from fake_providers import FakeEmbedder
     from knowledge_lattice.core.docs.ingest import UploadPermissionError
 
-    service = ingest_env["make_service"](
-        __import__("fake_providers", fromlist=["FakeEmbedder"]).FakeEmbedder(dim=8)
-    )
-    with __import__("pytest").raises(UploadPermissionError) as exc_info:
+    service = ingest_env["make_service"](FakeEmbedder(dim=8))
+    with pytest.raises(UploadPermissionError) as exc_info:
         service.create_document(  # u_cn 仅 region=[CN]——OS 越权
             org_id="org:tax", dataset_id="ds:vat_lib", title="t",
             dims={"region": ["OS"]}, owner_user_id="u_cn",
