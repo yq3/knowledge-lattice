@@ -167,6 +167,55 @@ def test_t7_concurrent_overwrite_rejected(ver_env) -> None:
     assert doc["pending_version"] == 2, "pending 不被覆盖"
 
 
+# ============ R2 P2-2：start_overwrite 库级兜底的异常面 ============
+
+
+def test_r2_p2_2_start_overwrite_backend_guard_raises_conflict(ver_env) -> None:
+    """R2 P2-2（backend 直调）：库级兜底真实在——造 pending 非空非 failed 行后
+    直调 backend.start_overwrite → VersionConflictError（无需造并发；服务层
+    409 前置之外的库级双保险）。"""
+    from knowledge_lattice.store.backend import VersionConflictError
+
+    env = ver_env
+    doc_id, task1 = _upload(env)
+    env["service"].run_task(task1)
+    _overwrite_v2_to_lexical(env, doc_id, dims={"region": ["CN"]})  # pending v2 在途
+
+    with pytest.raises(VersionConflictError):
+        env["backend"].start_overwrite(
+            doc_id=doc_id, pending_version=3, content_hash="sha256:x",
+            mime_type="text/html", raw_object_key="objects/x",
+            pending_dims_json=None,
+        )
+
+
+def test_r2_p2_2_service_maps_version_conflict_to_upload_conflict(ver_env) -> None:
+    """R2 P2-2（服务层映射）：库级兜底触发（VersionConflictError）经 _start_overwrite
+    映射为 UploadConflictError（409）——不映射则 REST 500 违 §6.2（修前本用例红：
+    VersionConflictError 直接冒泡）。"""
+    from knowledge_lattice.core.docs.ingest import UploadConflictError
+    from knowledge_lattice.store.backend import VersionConflictError
+
+    env = ver_env
+    doc_id, task1 = _upload(env)
+    env["service"].run_task(task1)
+
+    original = type(env["backend"]).start_overwrite
+
+    # 注入：backend.start_overwrite 一律抛 VersionConflictError（模拟「服务层
+    # 快照校验通过后、库级兜底窗口内另一 pending 落地」的竞态）
+    def _always_conflict(self, **kw):
+        raise VersionConflictError("start_overwrite guard: pending appeared mid-flight")
+
+    type(env["backend"]).start_overwrite = _always_conflict
+    try:
+        with pytest.raises(UploadConflictError) as exc_info:
+            _upload(env, doc_id=doc_id, content=HTML_V2)
+        assert not isinstance(exc_info.value, VersionConflictError)
+    finally:
+        type(env["backend"]).start_overwrite = original
+
+
 def test_t7_failed_pending_allows_new_upload(ver_env) -> None:
     """failed pending 放行新上传（重试用新版本号——版本号不复用的另一面）。"""
     env = ver_env
@@ -257,6 +306,62 @@ def test_t7_api_409_and_delete_endpoint(app_env) -> None:
 
     # 删除不存在 / 跨组织 → 404
     assert client.delete(f"/api/orgs/{ORG}/documents/doc:none", headers=headers).status_code == 404
+
+
+# ============ R2 P2-3：PATCH /documents/{id}/dimensions REST 端点五态 ============
+
+
+def test_r2_p2_3_patch_dims_endpoint_five_states(app_env) -> None:
+    """R2 P2-3（Committer）：PATCH 维度 REST 端点五态直测——200（dims 回显）/
+    403（非 owner member）/ 404（不存在）/ 409（pending）/ 400（dot-key 或
+    未知值）。api/documents.py 异常 → HTTP 映射此前整条零用例。"""
+    client = app_env["client"]
+    service = app_env["app"].state.service
+    headers = {"Authorization": f"Bearer {app_env['static']['u_full']}", "X-Org-Id": ORG}
+    cn_headers = {"Authorization": f"Bearer {app_env['static']['u_cn']}", "X-Org-Id": ORG}
+
+    # 造文档：u_full 上传（region=[CN]，u_full owner）
+    doc_id, task1 = service.ingest.create_document(
+        org_id=ORG, dataset_id="ds:vat_lib", title="五态", dims={"region": ["CN"]},
+        owner_user_id="u_full", file_bytes=HTML_V1, mime_type="text/html",
+        filename="five.html",
+    )
+    service.ingest.run_task(task1)
+    url = f"/api/orgs/{ORG}/documents/{doc_id}/dimensions"
+
+    # 200：owner PATCH region [CN]→[OS]（新旧值均在其授权 [CN,OS] 内）+ dims 回显
+    resp200 = client.patch(url, json={"dims": {"region": ["OS"]}}, headers=headers)
+    assert resp200.status_code == 200
+    assert resp200.json() == {"doc_id": doc_id, "dims": {"region": ["OS"]}}
+    assert service.backend.get_document_dims(doc_id) == {"region": ["OS"]}
+
+    # 403：非 owner 普通 member（u_cn，region=[CN]——新值 OS 越权同判 403）
+    resp403 = client.patch(
+        url, json={"dims": {"region": ["CN"]}}, headers=cn_headers
+    )
+    assert resp403.status_code == 403
+
+    # 404：不存在 / 跨组织
+    resp404 = client.patch(
+        f"/api/orgs/{ORG}/documents/doc:none/dimensions",
+        json={"dims": {"region": ["CN"]}}, headers=headers,
+    )
+    assert resp404.status_code == 404
+
+    # 400：dot-key / 未知值（须在无 pending 时点——校验链 pending 409 先于 400）
+    for bad_dims in ({"re.gion": ["CN"]}, {"region": ["NO_VALUE"]}):
+        resp400 = client.patch(url, json={"dims": bad_dims}, headers=headers)
+        assert resp400.status_code == 400, bad_dims
+
+    # 409：pending 期间（core 层造 pending——REST background 时序不可控）
+    _, task2 = service.ingest.create_document(
+        org_id=ORG, dataset_id="ds:vat_lib", title="v2", dims={"region": ["OS"]},
+        owner_user_id="u_full", file_bytes=HTML_V2, mime_type="text/html",
+        filename="v2.html", doc_id=doc_id,
+    )
+    service.ingest.run_task(task2, stop_after="index_fts")
+    resp409 = client.patch(url, json={"dims": {"region": ["CN"]}}, headers=headers)
+    assert resp409.status_code == 409
 
 
 # ============ T10：待嵌入清单不含 tombstone ============

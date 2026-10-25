@@ -20,7 +20,15 @@ from __future__ import annotations
 
 import pytest
 
-from helpers import NOW_TS, grant_by_key, seed_membership, seed_user
+from helpers import (
+    NOW_TS,
+    grant_by_key,
+    insert_chunk,
+    seed_doc_dims,
+    seed_document,
+    seed_membership,
+    seed_user,
+)
 
 ORG = "org:tax"
 
@@ -102,8 +110,9 @@ def test_ver_02_overwrite_lexical_no_switch_full_switch(ver_env) -> None:
     assert doc["active_version"] == 1 and doc["active_status"] == "searchable_full"
     assert doc["pending_version"] == 2 and doc["pending_status"] == "searchable_lexical"
 
+    v1_ids = _doc_chunk_ids(ver_env, doc_id, 1)
     hits = _fts_hits(ver_env, "u_full", "阿尔法")
-    assert any(cid.startswith("chk_") for cid in hits), "v1 全程服务（lexical 时点检索只见 v1）"
+    assert hits and hits <= v1_ids, "v1 全程服务（lexical 时点命中 ⊆ v1 块集——P3-1 收窄）"
     assert _fts_hits(ver_env, "u_full", "贝塔") == set(), "pending v2 块不进 BM25 路"
 
     # --- full 时点：单事务切换（续跑 embed → searchable_full → switch）---
@@ -184,8 +193,6 @@ def test_ver_04_switch_transaction_atomic_rollback(ver_env) -> None:
         "UPDATE documents SET pending_dims_json = ? WHERE id = ?",
         ('{"region": ["NO_SUCH_VALUE"]}', doc_id),
     )
-
-    from knowledge_lattice.core.docs.ingest import VersionConflictError
 
     with pytest.raises(RuntimeError, match="pending_dims"):
         ver_env["backend"].switch_active_version(doc_id, expected_pending=2)
@@ -373,3 +380,71 @@ def test_ver_05_fetch_window_and_replaced_by(ver_env) -> None:
         fetch_chunks(
             ver_env["backend"], user_id="u_os", org_id=ORG, chunk_id=v1_ids[0], window=1
         )
+
+
+# ============ R2 P2-1：切换事务清空 active_error（状态互斥） ============
+
+
+def test_r2_p2_1_switch_clears_active_error(ver_env) -> None:
+    """R2 P2-1（Committer）：v1 首传 embed 失败（active_error 非空）→ 覆盖上传
+    v2 成功切换 → active_error 必须清空——成功在用版本不得残留旧版本错误
+    （GET documents 状态互斥：active_status=searchable_full 与 active_error
+    互斥）。"""
+    env = ver_env
+    doc_id, task1 = _upload(env)
+    env["embedder"].fail = True
+    with pytest.raises(Exception):  # noqa: B017
+        env["service"].run_task(task1)
+    doc = env["backend"].get_document(doc_id)
+    assert doc["active_version"] == 1 and doc["active_error"], "前置：v1 停 lexical 且带错误"
+
+    env["embedder"].fail = False
+    task2 = _overwrite_v2_to_lexical(env, doc_id, dims={"region": ["CN"]})
+    env["service"].run_task(task2)
+
+    doc = env["backend"].get_document(doc_id)
+    assert doc["active_version"] == 2 and doc["active_status"] == "searchable_full"
+    assert doc["active_error"] is None, "P2-1：成功切换清空 active_error（状态互斥）"
+
+
+# ============ R2 P3-3：fetch pending 块 → replaced_by（含 active_version=0 预期） ============
+
+
+def test_r2_p3_3_fetch_pending_block_replaced_by(ver_env) -> None:
+    """R2 P3-3：pending 版本块（非在用、非 tombstone）同样走 replaced_by 分支——
+    指向**当前在用**版本；首上传 pending（active_version=0）预期钉死为 0。"""
+    from knowledge_lattice.core.docs.fetch import fetch_chunks
+
+    env = ver_env
+    doc_id, task1 = _upload(env)
+    env["service"].run_task(task1)  # v1 在用
+
+    # 覆盖上传 v2 到 lexical（pending 期）：fetch v2 块 → replaced_by 指向在用 v1
+    _overwrite_v2_to_lexical(env, doc_id, dims={"region": ["CN"]})
+    v2_ids = sorted(_doc_chunk_ids(env, doc_id, 2))
+    out = fetch_chunks(
+        env["backend"], user_id="u_full", org_id=ORG, chunk_id=v2_ids[0], window=1
+    )
+    assert out["chunks"] == [], "pending 块不返回内容"
+    assert out["replaced_by"] == {"doc_id": doc_id, "active_version": 1}, (
+        "pending 期 fetch 指向当前在用版本 v1"
+    )
+
+    # 首上传 pending（active_version=0、pending v1 块已写）：真实流程 insert 事务
+    # 原子切换无此窗口，直插块钉死预期——replaced_by.active_version == 0
+    seed_document(
+        env["db"], doc_id="d_first_pending", dataset_id="ds:vat_lib", owner_user_id="u_owner"
+    )
+    env["db"].execute(
+        "UPDATE documents SET active_version = 0, pending_version = 1,"
+        " pending_status = 'searchable_lexical' WHERE id = 'd_first_pending'"
+    )
+    insert_chunk(env["db"], doc_id="d_first_pending", seq=1, version=1)
+    seed_doc_dims(env["db"], "d_first_pending", {"region": ["CN"]})
+    out0 = fetch_chunks(
+        env["backend"], user_id="u_full", org_id=ORG,
+        chunk_id="chk:d_first_pending:v1:1", window=1,
+    )
+    assert out0["replaced_by"] == {"doc_id": "d_first_pending", "active_version": 0}, (
+        "首上传 pending（无在用版本）→ replaced_by.active_version=0（预期钉死）"
+    )

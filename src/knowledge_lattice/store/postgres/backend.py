@@ -412,6 +412,8 @@ class PgBackend:
             cur = conn.execute(
                 "UPDATE documents SET"
                 " active_version = pending_version, active_status = pending_status,"
+                # R2 P2-1：成功切换清空 active_error（与 sqlite 同构——状态互斥）
+                " active_error = NULL,"
                 " pending_version = NULL, pending_status = NULL, pending_error = NULL,"
                 " updated_at = CURRENT_TIMESTAMP"
                 " WHERE id = %(doc)s AND pending_version = %(expected)s",

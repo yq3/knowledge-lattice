@@ -87,6 +87,28 @@ def _validate_dim_keys(dims: dict[str, list[str]]) -> None:
             )
 
 
+def _require_values_in_grants(
+    *,
+    key: str,
+    values,
+    grants: dict[str, tuple[str, ...]],
+    actor_user_id: str,
+    what: str,
+) -> None:
+    """取值 ∈ 操作者授权校验（FR-4「新旧取值均须校验」——**覆盖上传与 PATCH
+    共用同一语义实现**，R2 B-1① 防两处漂移）。
+
+    what 为文案前缀（"new" / "current"——403 语义与错误定位一致）。
+    """
+    allowed = grants.get(key, ())
+    for value in values:
+        if value not in allowed:
+            raise UploadPermissionError(
+                f"{what} value {value!r} of dimension {key!r} not within"
+                f" actor grants（{actor_user_id!r}）——新旧取值均须在授权内（FR-4）"
+            )
+
+
 class IngestService:
     """摄取编排（依赖经构造注入——backend/embedder/gate 均可测试替换）。"""
 
@@ -185,6 +207,7 @@ class IngestService:
                 mime_type=mime_type or "application/octet-stream",
                 raw_object_key=obj_name,
                 pending_dims_json=json.dumps(dims, ensure_ascii=False) if dims else None,
+                grants=grants,  # B-1①：复用已读授权展开（同一 actor，不二次读）
             )
         task_id = self._backend.create_task(doc_id, task_type="ingest")
         return doc_id, task_id
@@ -220,9 +243,18 @@ class IngestService:
         mime_type: str,
         raw_object_key: str,
         pending_dims_json: str | None,
+        grants: dict[str, tuple[str, ...]] | None = None,
     ) -> None:
-        """覆盖上传入口（§5.3 文档更新）：操作权限 → pending 409 → 新版本号
-        max(历史)+1（失败版本号不复用——P0-2.3）→ 开新 pending（不动 active_*）。"""
+        """覆盖上传入口（§5.3 文档更新）：操作权限 → **旧维度值校验**（B-1①，
+        FR-4 严格口径——文档当前全部维度值 ∈ 操作者 grants，与新值共用同一
+        公共校验 `_require_values_in_grants`，防两处漂移）→ pending 409 →
+        新版本号 max(历史)+1（失败版本号不复用——P0-2.3）→ 开新 pending
+        （不动 active_*）。
+
+        旧值校验理由：切换事务将**整体替换** document_dimensions（pending_dims_json
+        覆盖），操作者须对现行状态有写权限——防「把文档拉回自己可见域而不曾
+        看见现行状态」（如 u_cn 文档被 admin PATCH 成 [OS] 后 u_cn 写回 [CN]）。
+        首上传无旧值不涉及（create 分支不经本方法）。"""
         doc = self._require_document(doc_id=doc_id, org_id=org_id)
         self._require_write_permission(doc=doc, actor_user_id=actor_user_id)
         if doc["pending_version"] is not None and doc["pending_status"] != "failed":
@@ -231,15 +263,31 @@ class IngestService:
                 f"（v{doc['pending_version']}，{doc['pending_status']}）——"
                 "同一时刻只有一个 pending（409，P0-2.3/T7）"
             )
+        # B-1①：文档当前（旧）维度值 ∈ 操作者授权（全部维度——切换整体替换）
+        if grants is None:
+            grants = self._backend.read_grants(actor_user_id, org_id)
+        for key, old_values in self._backend.get_document_dims(doc_id).items():
+            _require_values_in_grants(
+                key=key, values=old_values, grants=grants,
+                actor_user_id=actor_user_id, what="current",
+            )
         new_version = self._backend.max_document_version(doc_id) + 1
-        self._backend.start_overwrite(
-            doc_id=doc_id,
-            pending_version=new_version,
-            content_hash=content_hash,
-            mime_type=mime_type,
-            raw_object_key=raw_object_key,
-            pending_dims_json=pending_dims_json,
-        )
+        try:
+            self._backend.start_overwrite(
+                doc_id=doc_id,
+                pending_version=new_version,
+                content_hash=content_hash,
+                mime_type=mime_type,
+                raw_object_key=raw_object_key,
+                pending_dims_json=pending_dims_json,
+            )
+        except VersionConflictError as exc:
+            # R2 P2-2：库级兜底（start_overwrite WHERE 零行）映射 409 语义——
+            # 不映射则 REST 500 违 §6.2（服务层快照校验后、库级窗口内竞态）
+            raise UploadConflictError(
+                f"document {doc_id!r} 已有进行中的 pending 版本"
+                "（库级兜底触发——并发覆盖窗口，P0-2.3/T7）"
+            ) from exc
 
     # ============ 删除与改维度（M1-2 最小管理面——§6.2） ============
 
@@ -301,19 +349,17 @@ class IngestService:
                     raise UploadValidationError(
                         f"unknown value {value!r} for dimension {key!r}"
                     )
-                if value not in grants.get(key, ()):  # 新值越权（TC-AZ-01②前半）
-                    raise UploadPermissionError(
-                        f"new value {value!r} of dimension {key!r} not within"
-                        f" actor grants（{actor_user_id!r}）"
-                    )
+            # 新值越权（TC-AZ-01②前半）——公共校验（与覆盖上传共用，R2 B-1①）
+            _require_values_in_grants(
+                key=key, values=values, grants=grants,
+                actor_user_id=actor_user_id, what="new",
+            )
             # 旧值越权（TC-AZ-01②后半）：该 key 当前值须在操作者授权内——
             # 防操作者把文档推离自己不可见的状态（结果集维度校验）
-            for old_value in current.get(key, ()):
-                if old_value not in grants.get(key, ()):
-                    raise UploadPermissionError(
-                        f"current value {old_value!r} of dimension {key!r} not within"
-                        f" actor grants（{actor_user_id!r}）——新旧取值均须在授权内"
-                    )
+            _require_values_in_grants(
+                key=key, values=current.get(key, ()), grants=grants,
+                actor_user_id=actor_user_id, what="current",
+            )
 
         self._backend.set_document_dims(doc_id, dims)
         self._backend.append_outbox(

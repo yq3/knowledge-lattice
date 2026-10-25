@@ -83,7 +83,6 @@ async def patch_document_dims(
         return JSONResponse({"error": str(exc)}, status_code=409)
     except UploadValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    doc = service.backend.get_document(doc_id)
     return {"doc_id": doc_id, "dims": service.backend.get_document_dims(doc_id)}
 
 

@@ -17,7 +17,7 @@ import pytest
 
 from helpers import NOW_TS, seed_doc_dims, seed_searchable_doc
 
-from test_ver_01_version_chain import ORG, HTML_V1, _upload
+from test_ver_01_version_chain import HTML_V1, HTML_V2, ORG, _upload
 
 # ============ TC-AZ-01①：上传越权值拒绝（backend 参数化形态） ============
 
@@ -160,6 +160,89 @@ def test_patch_unknown_dim_or_value_rejected(own_doc) -> None:
     for dims in ({"no_such_dim": ["CN"]}, {"region": ["NO_VALUE"]}, {"re.gion": ["CN"]}):
         with pytest.raises(UploadValidationError):
             _patch_dims(env, "d_cn_own", dims, actor="u_cn")
+
+
+# ============ R2 B-1①：覆盖上传校验文档当前（旧）维度值 ∈ 操作者授权 ============
+
+
+def test_r2_b1_overwrite_requires_current_dims_in_grants(own_doc) -> None:
+    """B-1①（FR-4 严格口径，用户拍板 2026-10-25）：覆盖上传须校验文档**当前
+    （旧）维度值** ∈ 操作者 grants——Committer 场景：u_cn 文档 region=[CN] →
+    admin PATCH 成 [OS] → u_cn 覆盖上传（新值 [CN] 在其授权内）应 403 拒绝
+    （防把文档拉回自己可见域而不曾看见现行状态）。首上传无旧值不涉及。"""
+    from knowledge_lattice.core.docs.ingest import UploadPermissionError
+
+    env = own_doc
+    # 造数：admin_full 把 d_cn_own（owner=u_cn）PATCH 成 region=[OS]
+    _patch_dims(env, "d_cn_own", {"region": ["OS"]}, actor="admin_full")
+    assert env["backend"].get_document_dims("d_cn_own") == {"region": ["OS"]}
+
+    # u_cn（region=[CN]）覆盖上传——新值 [CN] 在授权内、旧值 [OS] 不在 → 403
+    doc = env["backend"].get_document("d_cn_own")
+    content = (
+        "<html><body><h1>覆盖上传内容</h1><p>伽马条款测试正文。</p></body></html>"
+    ).encode("utf-8")
+    with pytest.raises(UploadPermissionError, match="current value"):
+        env["service"].create_document(
+            org_id=ORG, dataset_id="ds:vat_lib", title="覆盖",
+            dims={"region": ["CN"]}, owner_user_id=doc["owner_user_id"],
+            file_bytes=content, mime_type="text/html", filename="g.html",
+            doc_id="d_cn_own",
+        )
+
+    # 对照①：admin_full（region=[CN,OS]，旧值 [OS] 在授权内）覆盖上传放行
+    _, task_ok = env["service"].create_document(
+        org_id=ORG, dataset_id="ds:vat_lib", title="覆盖",
+        dims={"region": ["CN"]}, owner_user_id="admin_full",
+        file_bytes=content, mime_type="text/html", filename="g2.html",
+        doc_id="d_cn_own",
+    )
+    doc = env["backend"].get_document("d_cn_own")
+    assert doc["pending_version"] == 2 and doc["active_version"] == 1, "对照①放行（旧值在授权内）"
+    env["service"].run_task(task_ok)
+
+    # 对照②：旧值含部分越权（region=[CN,OS]、操作者仅 [CN]）同样拒绝——逐值校验
+    from helpers import seed_doc_dims as _seed_dims
+
+    _seed_dims(env["db"], "d_cn_own", {"region": ["OS"]})  # 切换后已是 [CN]→ 补回 [OS]
+    with pytest.raises(UploadPermissionError, match="current value"):
+        env["service"].create_document(
+            org_id=ORG, dataset_id="ds:vat_lib", title="覆盖2",
+            dims={"region": ["CN"]}, owner_user_id="u_cn",
+            file_bytes=content, mime_type="text/html", filename="g3.html",
+            doc_id="d_cn_own",
+        )
+
+
+def test_r2_p3_2_patch_failed_pending_still_409(ver_env) -> None:
+    """R2 P3-2：PATCH 对 pending_status='failed' 的从严 409 分支直测（口径①：
+    PATCH 409 = pending 存在即拒——含 failed，防 pending_dims_json 覆盖竞态；
+    与上传侧「failed 放行」形成对照）。"""
+    from knowledge_lattice.core.docs.ingest import UploadConflictError
+
+    env = ver_env
+    doc_id, task1 = _upload(env)
+    env["service"].run_task(task1)
+
+    # 造 failed pending：覆盖上传 v2 在 embed 阶段失败
+    env["embedder"].fail = True
+    _, task2 = env["service"].create_document(
+        org_id=ORG, dataset_id="ds:vat_lib", title="v2", dims={"region": ["CN"]},
+        owner_user_id="u_full", file_bytes=HTML_V2, mime_type="text/html",
+        filename="v2.html", doc_id=doc_id,
+    )
+    with pytest.raises(Exception):  # noqa: B017
+        env["service"].run_task(task2)
+    doc = env["backend"].get_document(doc_id)
+    assert doc["pending_version"] == 2 and doc["pending_status"] == "failed", (
+        "前置：failed pending 在列（上传侧对 failed 攧行——对照）"
+    )
+
+    # PATCH 仍 409（从严口径——pending_status='failed' 分支）
+    with pytest.raises(UploadConflictError):
+        env["service"].patch_document_dims(
+            org_id=ORG, doc_id=doc_id, dims={"region": ["OS"]}, actor_user_id="u_full"
+        )
 
 
 def test_patch_multivalue_and_empty_semantics(own_doc) -> None:

@@ -419,6 +419,10 @@ class SqliteBackend:
             cur = conn.execute(
                 "UPDATE documents SET"
                 " active_version = pending_version, active_status = pending_status,"
+                # R2 P2-1：成功切换清空 active_error——与 set_doc_active_status
+                #（首传路径）同款；成功在用版本不得残留旧版本错误（状态互斥）。
+                # design §5.3 切换 SQL 未列该列属设计缺项（口径申报，不写 docs）
+                " active_error = NULL,"
                 " pending_version = NULL, pending_status = NULL, pending_error = NULL,"
                 " updated_at = CURRENT_TIMESTAMP"
                 " WHERE id = :doc AND pending_version = :expected",
