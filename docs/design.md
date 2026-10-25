@@ -402,7 +402,7 @@ CREATE TABLE chunks (
   created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE UNIQUE INDEX uq_chunks_docver ON chunks(doc_id, version, seq);  -- v0.4：fetch 窗口与"按文档计算"共用（含 version——同文档多版本 seq 不唯一）；替代原 idx_chunks_doc（列相同，去重——#34 4.4）
-CREATE INDEX idx_chunks_vec_pending ON chunks(doc_id) WHERE embedding IS NULL AND tombstone = 0;  -- 谓词含 tombstone（P1-2——否则切换后旧块重回待嵌入清单）
+CREATE INDEX idx_chunks_vec_pending ON chunks(doc_id, embed_model) WHERE tombstone = 0;  -- v1.1（0002）重建：mark_embedding_batch(doc_id,…) 走 doc_id 前缀；pending_embeddings 为 embed_model 等值+NOT EXISTS 不走本索引（0002 注释）
 
 -- FTS5（P0-3 + P1-1/P1-3 重做）：
 --   · 五列分权：title_seg 3 / content_seg 1 / keywords 5 / llm_keywords 0.5~1 / tags 8
@@ -761,10 +761,13 @@ parse（docling→统一块结构；扫描件路由 MinerU；mojibake 质量门�
 
 ```sql
 BEGIN IMMEDIATE;
--- 旧块：标记 + 清向量 + **清五列 FTS 内容**（清空后 au 触发器执行 FTS 'delete' 再插入空行——
+-- 旧块：标记 + **删 chunk_vectors 向量行（v1.1——原 embedding=NULL 语义的等价迁移）** + **清五列 FTS 内容**（清空后 au 触发器执行 FTS 'delete' 再插入空行——
 -- UPDATE 不触发 ad、旧注释有误；FTS 里残留空 rowid 不影响 MATCH，#33 P0-2.4/T9）
+DELETE FROM chunk_vectors
+ WHERE rid IN (SELECT rid FROM chunks
+                WHERE doc_id = :doc AND version = :old_version);   -- v1.1 分表级联兜底显式化
 UPDATE chunks
-   SET tombstone = 1, embedding = NULL,
+   SET tombstone = 1,
        title_seg = '', content_seg = '', keywords = '', llm_keywords = '', tags = ''
  WHERE doc_id = :doc AND version = :old_version;
 UPDATE documents
@@ -782,7 +785,7 @@ COMMIT;
 
 **切换时机（D20）**：首次上传（active_version=0）在 `searchable_lexical` 即切换在用（保留先可搜收益；此后嵌入进度写 `active_status`、失败写 `active_error`——P0-2.2）；覆盖上传等新版本 `searchable_full` 再切换（旧版本全程服务）；新版本失败旧版本不受影响。tombstone 块保留 90 天（审计回溯）后物理删除；`fetch` 旧块返回 `{doc_id, active_version}` 对象替代提示（**不承诺块级映射**——重切分后无对应）。
 
-**换模型重嵌入（v0.7 新增，D12/#41；v0.8 修补驱动与孤儿向量——#42 必修2；**v0.9.1 定案方案二蓝绿——M0b-2 拍板③**）**：换嵌入模型（或网关换底模被指纹探针拦下）→ ①改 config 四件套（provider/model/dim/度量）；②**投递 `reembed` 任务类型**（M2 管理面「手动重索引」入口；扫描谓词 = **`chunks` 中无对应 (rid, :new) cv 行的在用块**——v1.1 后等价于旧「embedding IS NULL OR embed_model != :new」语义）：**方案二蓝绿（已选定）**：新标签向量并行写入 `chunk_vectors`（PK(rid, embed_model) 支撑新旧并存）→ 覆盖率 100%（分子/分母闭合 SQL 见仓库 RUNBOOK.md，限 tombstone=0 且 version=active_version）→ **原子切 `current_model` 配置标签**（零 SQL，同 dict_rev 切换模式 §5.8）→ 旧标签行延后清理（DELETE chunk_vectors WHERE embed_model=:old，WAL ≈4MB 极廉价——实测）；**全程向量路功能零降级**（M0b-2 实测：共存窗口 sqlite 零放大、pg 有读代价风险幅度跑间波动，见实验报告 §3.3/§5.5）。~~方案一（置空重建、迁移期 BM25 降级）~~已弃用（对照数据留实验报告 §3.3）。重嵌入窗口内任务行记 done/total 进度（管理面嵌入覆盖率面板数据源）；③quality 随之重跑——**缓存键 = (content_sha, embed_model)**（换模型不因内容相同被跳过）、重跑前清旧 `vector_crowding` 标记、区分度拥挤度绝对阈值按新模型余弦分布**重标定**（rerank/RRF 不受影响）；④**语义层强制重建**：`dict_rev` 已并入嵌入标签（§5.8），换模型 → 「相同则跳过」失效 → `semantic_build` 重跑、`sem_vec` 模糊向量按新模型重算；MRL 截断时标签带 `:trunc` 后缀区分。**流程挂 M2 管理面「手动重索引」（runbook 见仓库 RUNBOOK.md §1——引用实验报告 §3.5/§3.3）**。
+**换模型重嵌入（v0.7 新增，D12/#41；v0.8 修补驱动与孤儿向量——#42 必修2；**v0.9.1 定案方案二蓝绿——M0b-2 拍板③**）**：换嵌入模型（或网关换底模被指纹探针拦下）→ ①改 config 四件套（provider/model/dim/度量）；②**投递 `reembed` 任务类型**（M2 管理面「手动重索引」入口；扫描谓词 = **`chunks` 中无对应 (rid, :new) cv 行的在用块**——v1.1 后等价于旧「embedding IS NULL OR embed_model != :new」语义）：**方案二蓝绿（已选定）**：新标签向量并行写入 `chunk_vectors`（PK(rid, embed_model) 支撑新旧并存）→ 覆盖率 100%（分子/分母闭合 SQL 见仓库 RUNBOOK.md，限 tombstone=0 且 version=active_version）→ **原子切 `current_model` 配置标签**（零 SQL，同 dict_rev 切换模式 §5.8）→ 旧标签行延后清理（DELETE chunk_vectors WHERE embed_model=:old——**sqlite WAL ≈4MB 极廉价；PG 为满量死元组（≈552MB 量级 WAL）靠页内复用消化、需归还 OS 时 VACUUM FULL/pg_repack**——实测）；**全程向量路功能零降级**（M0b-2 实测：共存窗口 sqlite 零放大、pg 有读代价风险幅度跑间波动，见实验报告 §3.3/§5.5）。~~方案一（置空重建、迁移期 BM25 降级）~~已弃用（对照数据留实验报告 §3.3）。重嵌入窗口内任务行记 done/total 进度（管理面嵌入覆盖率面板数据源）；③quality 随之重跑——**缓存键 = (content_sha, embed_model)**（换模型不因内容相同被跳过）、重跑前清旧 `vector_crowding` 标记、区分度拥挤度绝对阈值按新模型余弦分布**重标定**（rerank/RRF 不受影响）；④**语义层强制重建**：`dict_rev` 已并入嵌入标签（§5.8），换模型 → 「相同则跳过」失效 → `semantic_build` 重跑、`sem_vec` 模糊向量按新模型重算；MRL 截断时标签带 `:trunc` 后缀区分。**流程挂 M2 管理面「手动重索引」（runbook 见仓库 RUNBOOK.md §1——引用实验报告 §3.5/§3.3）**。
 
 ### 5.4 区分度检测（core/docs/quality.py，v0.3 P1-8 + v0.4 P1-10 更正）
 

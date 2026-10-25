@@ -50,18 +50,18 @@
 - **预期**：① 返回 1；②③ 抛 `sqlite3.IntegrityError`（FOREIGN KEY 约束）——M0a 验收原句「插孤儿行断言 IntegrityError」。工厂对 pragma 失败显式 `raise RuntimeError`（非 assert——`python -O` 剥离，design §3）。
 - **后端**：both——PG 侧外键违例同断言（异常类型按后端适配：psycopg 外键错误码，断言语义不变——v1.4 标注，#42 必修4）。
 
-#### TC-SCAF-02 连接 PRAGMA 全集【单测｜M0a】
+#### TC-SCAF-02 连接 PRAGMA 全集【单测｜M0a】（v1.6 补 PG 连接纪律与 DSN 约定）
 
 - **前置**：连接工厂取连接。
 - **步骤**：依次查询 `journal_mode` / `busy_timeout` / `synchronous` / `foreign_keys`。
-- **预期**：`wal` / `5000` / `NORMAL`（1）/ `1`——与 design §3 连接工厂逐项一致；sqlite-vec 扩展加载成功（`SELECT vec_distance_cosine(...)` 可调用）。
+- **预期**：`wal` / `5000` / `NORMAL`（1）/ `1`——与 design §3 连接工厂逐项一致；sqlite-vec 扩展加载成功（`SELECT vec_distance_cosine(...)` 可调用）。**PG 工厂纪律（v1.6，M0b-1/3 交付）**：session TimeZone=UTC + `standard_conforming_strings=on`（Literal 转义前提）+ server_version≥16 + pgvector `<=>` 可用（断言落 `tests/test_pg_scaff.py`）。**DSN 约定**：`LATTICE_PG_DSN` 必须指向**专用测试库**（本仓 lattice 容器库）——public_audit_guard fixture 对 public schema 做 audit 对象清理（破坏性动作）。
 - **后端**：both（v1.5.1 回写——PG 等价已随 M0b spike 落地：连接池参数 + server_version≥16 + pgvector 距离函数可用性 + session TimeZone 钉 UTC；断言落点 `tests/test_pg_scaff.py`——PG 断言按方言形态独立成文件，SQLite 臂仍在原 TC-SCAF-02 用例）。
 
-#### TC-SCAF-03 迁移框架：改表流程与 foreign_key_check【单测｜M0a，M0b v1.1 迁移复跑】
+#### TC-SCAF-03 迁移框架：改表流程与 foreign_key_check【单测｜M0a，M0b v1.1 迁移复跑】（v1.6 补 v1.1 基线与竞态口径）
 
 - **前置**：迁移框架就绪；构造一份「建新表→拷数据→删旧表」的测试迁移。
 - **步骤**：① 正常跑迁移后执行 `PRAGMA foreign_key_check`；② setup：经迁移窗口内临时关闭外键的写入路径注入一行违反外键的数据，再跑同迁移。
-- **预期**：① 迁移期间临时关闭外键、结束恢复，`foreign_key_check` 返回空；② 检出违例即回滚，库内状态与迁移前一致（#33 P1-1）；③ `user_version` 只前进、重复运行迁移幂等（无重放副作用）。
+- **预期**：① 迁移期间临时关闭外键、结束恢复，`foreign_key_check` 返回空；② 检出违例即回滚，库内状态与迁移前一致（#33 P1-1）；③ `user_version` 只前进、重复运行迁移幂等（无重放副作用）。**v1.1 基线（M0b-3）**：全量迁移后 `user_version=2` / `schema_migrations=[1,2]`；0002 存量搬运计数=**合法成对行**（embedding 非空且 embed_model 非空），孤立行显式丢弃并断言（test_v11_schema）。**PG 锁外建表竞态口径（M0b-3）**：真实形态 = `UniqueViolation`（pg_type_typname_nsp_index，23505——主形态）/ `DuplicateTable`（42P07——间或），处置 = 双捕获 + `to_regclass` 复核（在场则干净继续、不在则原异常照抛 fail-closed）——引用 store/postgres/migrate.py docstring 与 RUNBOOK §3；竞态回归 test_pg_scaff 双异常类参数化（红灯实证 23505 穿透单捕获）。
 - **后端**：both（v1.5.1 回写——PG 等价已落地：`schema_migrations` 表 + 原生约束校验（违例整事务回滚）+ advisory lock 并发序列化 + 版本只前进（MAX 水位 fail-fast）；断言落点 `tests/test_pg_scaff.py`）。
 
 #### TC-SCAF-04 DDL 防护触发器全集【单测｜M0a】
@@ -177,7 +177,7 @@
 
 #### TC-ING-06 嵌入分批与钉标签【单测｜M1】（v1.6 随 v1.1 更新写路径）
 
-- **步骤**：摄取 >64 块文档（Embedder 以 OpenAI 兼容端点 mock——D12 修订，进程内推理取消）；断言逐批写入 `chunk_vectors(rid, embed_model, embedding)`（v1.1 分表——INSERT 新表，PK 含 embed_model 支撑蓝绿并存）；待嵌清点谓词 = `chunks` 无 (rid, :label) cv 行（原 embedding IS NULL 语义的 v1.1 等价——idx_chunks_vec_pending(doc_id, embed_model) WHERE tombstone=0 索引面）。
+- **步骤**：摄取 >64 块文档（Embedder 以 OpenAI 兼容端点 mock——D12 修订，进程内推理取消）；断言逐批写入 `chunk_vectors(rid, embed_model, embedding)`（v1.1 分表——INSERT 新表，PK 含 embed_model 支撑蓝绿并存）；待嵌清点谓词 = `chunks` 无 (rid, :label) cv 行（原 embedding IS NULL 语义的 v1.1 等价——**索引面注记（v1.6 与 0002 注释同步）**：idx_chunks_vec_pending(doc_id, embed_model) WHERE tombstone=0 服务 mark_embedding_batch 的 doc_id 前缀；pending_embeddings 的 embed_model 等值+NOT EXISTS **不走本索引**，量级后再评估专用索引）。
 - **预期**：分批 64；每向量行 `embed_model = '<model>:<dim>'`（如 `qwen3-embedding-4b:2560`——标签兼作向量路 JOIN 谓词，见 TC-EMB-02）；批次间任务可断点续跑。
 
 #### TC-ING-07 阶段幂等续跑【单测｜M0a】
@@ -187,11 +187,11 @@
 
 ### TC-EMB 嵌入服务与模型治理（v1.3 新增，D12/D24——#41）
 
-#### TC-EMB-01 嵌入维度校验【单测｜M0a】
+#### TC-EMB-01 嵌入维度校验【单测｜M0a】（v1.6 载荷口径迁 chunk_vectors）
 
 - **前置**：config 钉 `dim=2560`；Embedder mock 返回 1024 维向量。
 - **步骤**：摄取触发 embed 阶段。
-- **预期**：写入前校验 `len != dim` → **raise，不写库**（design §5.3）；库内无残缺向量行；任务 failed 可重试（无半写状态）。
+- **预期**：写入前校验 `len != dim` → **raise，不写库**（design §5.3）；库内 `chunk_vectors` 无残缺向量行；任务 failed 可重试（无半写状态）。
 
 #### TC-EMB-02 embed_model 查询谓词（编译/Plan 层）【单测｜M0a】（v1.6 随 v1.1 迁 cv JOIN）
 
@@ -220,7 +220,7 @@
 
 - **前置**：库内已有旧标签向量（chunk_vectors，造数）；config 切新标签（`model:dim` 变化）。
 - **步骤**：① 触发手动重索引 → 投递 `reembed` 任务（v1.4：驱动为独立任务类型——#42 必修2）；② 迁移期间多次 search；③ **竞态**：切换 config 瞬间构造一个旧模型在途批次（fake Embedder 慢返回），待其回写；④ 全库完成后核对。
-- **预期**（**v1.6 按拍板③方案二蓝绿重写**——原方案一置空重建作废，对照数据留实验报告 §3.3）：① 新标签向量**并行写入** `chunk_vectors`（新旧并存——PK(rid, embed_model) 物理支撑），扫描谓词 = 在用块中无 (rid, :new) cv 行；**旧标签持续服务**（`功能零降级`——检索行为不变，M0b-2 实测共存窗口 sqlite 零放大/pg 有读代价风险幅度跑间波动）；② 覆盖率 100%（分子/分母闭合 SQL 见 RUNBOOK——限 tombstone=0 且 version=active_version）后**原子切 config 标签**（零 SQL）；③ 旧模型在途批次回写防护（ON CONFLICT (rid,label) DO NOTHING + 回写防护谓词）——库内不出现孤儿行；④ 旧标签延后清理（`DELETE chunk_vectors WHERE embed_model=:old`——实测 WAL ≈4MB 极廉价）后全库单标签一致；quality 重跑（缓存键 = (content_sha, embed_model)、旧 `vector_crowding` 已清）且阈值随新模型重标定；`semantic_build` 强制重跑（`dict_rev` 含嵌入标签——design §5.8）；管理面可见嵌入覆盖率（design §8 M2.3）；PG 空间回收窗口（高水位页内复用，需归还 OS 时 VACUUM FULL/pg_repack——RUNBOOK 注记）。
+- **预期**（**v1.6 按拍板③方案二蓝绿重写**——原方案一置空重建作废，对照数据留实验报告 §3.3）：① 新标签向量**并行写入** `chunk_vectors`（新旧并存——PK(rid, embed_model) 物理支撑），扫描谓词 = 在用块中无 (rid, :new) cv 行；**旧标签持续服务**（`功能零降级`——检索行为不变，M0b-2 实测共存窗口 sqlite 零放大/pg 有读代价风险幅度跑间波动）；② 覆盖率 100%（分子/分母闭合 SQL 见 RUNBOOK——限 tombstone=0 且 version=active_version）后**原子切 config 标签**（零 SQL）；③ 旧模型在途批次回写防护（ON CONFLICT (rid,label) DO NOTHING + 回写防护谓词）——库内不出现孤儿行；④ 旧标签延后清理（`DELETE chunk_vectors WHERE embed_model=:old`——**sqlite 实测 WAL ≈4MB 极廉价；PG 为满量死元组 ≈552MB 量级、页内复用消化**）后全库单标签一致；quality 重跑（缓存键 = (content_sha, embed_model)、旧 `vector_crowding` 已清）且阈值随新模型重标定；`semantic_build` 强制重跑（`dict_rev` 含嵌入标签——design §5.8）；管理面可见嵌入覆盖率（design §8 M2.3）；PG 空间回收窗口（高水位页内复用，需归还 OS 时 VACUUM FULL/pg_repack——RUNBOOK 注记）。
 
 #### TC-EMB-07 混模型向量零距离计算（检索行为）【单测｜M1】（v1.6 口径迁 cv）
 
@@ -286,7 +286,7 @@
 #### TC-VER-04 切换事务内容【单测｜M1】
 
 - **步骤**：触发 v1→v2 切换，事务内逐项断言。
-- **预期**：旧块 `tombstone=1, embedding=NULL`、五列 FTS 内容清空（au 触发器清 FTS）；documents 在用/处理中五字段更新（active_version / active_status / pending_version / pending_status / pending_error——design §5.3，#38 P2 修正「四字段」）带 `WHERE pending_version=:expected` 乐观校验；`pending_dims_json` 解析落入 `document_dimensions`（v2 维度切换前不生效）；（M2-S3 起）同事务 `semantic.untag(doc, old_version)`——事务原子：中途失败全部回滚。
+- **预期**：旧块 `tombstone=1` + **`chunk_vectors` 对应向量行删除（v1.6——原 embedding=NULL 的等价迁移，拍板②）**、五列 FTS 内容清空（au 触发器清 FTS）；documents 在用/处理中五字段更新（active_version / active_status / pending_version / pending_status / pending_error——design §5.3，#38 P2 修正「四字段」）带 `WHERE pending_version=:expected` 乐观校验；`pending_dims_json` 解析落入 `document_dimensions`（v2 维度切换前不生效）；（M2-S3 起）同事务 `semantic.untag(doc, old_version)`——事务原子：中途失败全部回滚。
 
 #### TC-VER-05 fetch 旧块替代提示【单测｜M1】
 
@@ -416,10 +416,10 @@
 - **步骤**：u_full 可见 d_os(region=[OS])；撤掉其 OS 授权（或 PATCH d_os 维度收紧）后立即检索。
 - **预期**：下一次查询即不可见（查询时实时展开——D6）；**v1.6：dims_json 投影已随拍板①删除**——PATCH 直接写 `document_dimensions`，检索输出 dims 经 store 聚合回填（D6「维度变更即时生效」语义保持，UPDATE 不重嵌）；文档维度多值其余值不受影响。
 
-#### TC-E2E-05 schema v1.1 迁移【集成｜M0b】
+#### TC-E2E-05 schema v1.1 迁移【集成｜M0b】（✅ 已完成——M0b-3 兑现）
 
-- **步骤**：在 M0b 结论（dims_json 去留 / 分表与否）下执行 v1.1 迁移。
-- **预期**：迁移完成 + `PRAGMA foreign_key_check` 空（M0b 验收）；迁移后 **M0a 可达矩阵子集**复跑绿（T1~T5 / T20 / T22 + TC-SCAF / TC-ACL / TC-FTS 相关——版本链、凭证等 M1 能力尚未实现不在此列，#38 P1-5 修订）；**全量矩阵复跑在 M1 收口**（§六 M1 行）。
+- **步骤**：在 M0b 结论（**已拍板：删 dims_json + 分表 chunk_vectors**——2026-10-24 用户确认）下执行 v1.1 迁移（0002 双方言）。
+- **预期**：迁移完成 + `PRAGMA foreign_key_check` 空（M0b 验收——**已兑现**：存量搬运载荷逐字节保真、幂等重放、版本只前进、孤立行显式丢弃）；迁移后 **M0a 可达矩阵子集**复跑绿（T1~T5 / T20 / T22 + TC-SCAF / TC-ACL / TC-FTS 相关——版本链、凭证等 M1 能力尚未实现不在此列，#38 P1-5 修订；**M0b-3 实测：全量 271 双后端双模式绿**）；**全量矩阵复跑在 M1 收口**（§六 M1 行）。
 
 #### TC-E2E-06 MCP 端到端（M0a 验收原句）【集成｜M0a】
 
