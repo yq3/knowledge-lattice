@@ -22,6 +22,7 @@ dev_token_router = APIRouter()  # 仅 dev/test 注册（app.py 门控——生�
 class DevTokenRequest(BaseModel):
     user_id: str | None = None  # 缺省=给自己签；给他人签须系统管理员
     org: str | None = None  # 嵌入 token 的 org claim（单值——按组织签发）
+    act: str | None = None  # 服务身份 claim（M1-3 凭证三要素——委托 token act 开发形态）
 
 
 @dev_token_router.post("/api/dev/token")
@@ -34,12 +35,13 @@ async def issue_dev_token(
     if target != auth.user_id and not auth.is_system_admin:
         raise HTTPException(status_code=403, detail="只能给自己签发；代签须系统管理员")
     service = get_service(request)
-    token = issue_dev_jwt(service.settings, user_id=target, org=body.org)
+    token = issue_dev_jwt(service.settings, user_id=target, org=body.org, act=body.act)
     return {
         "token": token,
         "token_type": "bearer",
         "user_id": target,
         "org": body.org,
+        "act": body.act,
     }
 
 

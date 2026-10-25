@@ -19,8 +19,8 @@ from pathlib import Path
 from helpers import table_names
 
 REGRESS_V3_SQL = (
-    # 0002 已被 schema v1.1 占用（M0b-3）——回归探针改用 0003
-    "-- 0003 回归用最小迁移（触发 _apply_one 完整路径即可）\n"
+    # 0002=v1.1、0003=uploads（M1-3）均被 builtin 占用——回归探针改用 0004
+    "-- 0004 回归用最小迁移（触发 _apply_one 完整路径即可）\n"
     "CREATE TABLE regress_probe(x INTEGER);\n"
 )
 
@@ -31,7 +31,7 @@ def regress_dirs(tmp_path: Path) -> list[Path]:
 
     extra = tmp_path / "regress_migrations"
     extra.mkdir()
-    (extra / "0003_regress_probe.sql").write_text(REGRESS_V3_SQL, encoding="utf-8")
+    (extra / "0004_regress_probe.sql").write_text(REGRESS_V3_SQL, encoding="utf-8")
     return [BUILTIN_DIRS["docs"], BUILTIN_DIRS["semantic"], extra]
 
 
@@ -54,7 +54,7 @@ def test_fk_off_in_transaction_raises_migration_error(conn, regress_dirs) -> Non
         conn.execute("ROLLBACK")
     assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1  # 仍为 ON
     assert "regress_probe" not in table_names(conn)  # 迁移未生效
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2  # v1.1 基线
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3  # v1.2 基线（M1-3 uploads）
 
 
 # ============ ② P3-2：`:memory:` journal 失败 → RuntimeError + 连接关闭 ============

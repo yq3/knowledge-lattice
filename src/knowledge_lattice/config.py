@@ -69,6 +69,11 @@ class Settings:
     jwt_ttl_s: float = 12 * 3600.0
     mcp_timeout_s: float = 60.0  # MCP 60s 超时中间件（ragflow 纪律）
 
+    # 上传凭证（M1-3 三步式——P3-10/P3-13 择型：TTL 15min、全局上限 200MB 均可配置）
+    upload_credential_ttl_s: float = 900.0  # 凭证有效期（签发 → expires_at）
+    upload_max_bytes: int = 200 * 1024 * 1024  # 全局上限（PUT 独立生效——413，P3-13）
+    maintenance_interval_s: float = 300.0  # 调度器周期投递 maintenance 任务（0=关闭）
+
     # 运行日志（v0.8.5：结构化 JSON→stdout；本地开发可切人读格式）
     log_level: str = "INFO"
     log_format: str = "json"  # json | human
@@ -114,6 +119,9 @@ def get_settings() -> Settings:
         score_threshold=float(_num("LATTICE_SCORE_THRESHOLD", 0.0)),
         dev_jwt_secret=_f("LATTICE_DEV_JWT_SECRET", "dev-only-insecure-secret-0123456789ab"),
         mcp_timeout_s=float(_num("LATTICE_MCP_TIMEOUT_S", 60.0)),
+        upload_credential_ttl_s=float(_num("LATTICE_UPLOAD_TTL_S", 900.0)),
+        upload_max_bytes=int(_num("LATTICE_UPLOAD_MAX_BYTES", 200 * 1024 * 1024)),
+        maintenance_interval_s=float(_num("LATTICE_MAINTENANCE_INTERVAL_S", 300.0)),
         log_level=env("LATTICE_LOG_LEVEL", "INFO"),
         log_format=env("LATTICE_LOG_FORMAT", "json"),
     )

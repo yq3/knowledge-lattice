@@ -296,6 +296,48 @@ class AdminBackend(Protocol):
         """认证侧用户态（存在 / 禁用 / 系统管理员）。"""
         ...
 
+    # ---- 上传凭证（M1-3 三步式——design §6.1/§6.2/§6.3；状态机
+    #      issued→uploaded→consumed，「用掉」＝摄取成功入队——v1.4 口径） ----
+
+    def create_upload_credential(
+        self,
+        *,
+        upload_id: str,
+        org_id: str,
+        user_id: str,
+        service_id: str | None,
+        filename: str,
+        size: int,
+        sha256: str,
+        content_type: str,
+        expires_at: str,
+    ) -> None:
+        """凭证行落库（status='issued'——绑定 sub+org+服务身份三要素，#33 P1-3）。"""
+        ...
+
+    def get_upload_credential(self, upload_id: str) -> dict | None:
+        """凭证行（含 status/object_key/doc_id/task_id/expires_at 等全列）。"""
+        ...
+
+    def mark_upload_uploaded(self, upload_id: str, *, object_key: str) -> bool:
+        """PUT 成功：status→uploaded + 对象键（WHERE status IN ('issued','uploaded')
+        ——re-PUT 覆盖放行；并发已消费 → False＝409 语义）。"""
+        ...
+
+    def mark_upload_consumed(self, upload_id: str, *, doc_id: str, task_id: str) -> bool:
+        """消费：status→consumed + 文档/任务关联回填（WHERE status='uploaded'——
+        单次使用；竞态零行 → False＝409 语义）。"""
+        ...
+
+    def list_expired_upload_credentials(self, now: str) -> list[dict]:
+        """过期未消费凭证（status IN ('issued','uploaded') AND expires_at<=now）——
+        maintenance 清理任务扫描面（TC-CRED-05）。"""
+        ...
+
+    def delete_upload_credential(self, upload_id: str) -> None:
+        """凭证行删除（清理任务回收——已消费凭证保留供追溯，不进本方法）。"""
+        ...
+
 
 @runtime_checkable
 class SemanticBackend(Protocol):

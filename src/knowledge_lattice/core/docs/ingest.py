@@ -95,10 +95,14 @@ def _require_values_in_grants(
     actor_user_id: str,
     what: str,
 ) -> None:
-    """取值 ∈ 操作者授权校验（FR-4「新旧取值均须校验」——**覆盖上传与 PATCH
-    共用同一语义实现**，R2 B-1① 防两处漂移）。
+    """取值 ∈ 操作者授权校验（FR-4「新旧取值均须校验」）——**唯一实现**，三处共用：
 
-    what 为文案前缀（"new" / "current"——403 语义与错误定位一致）。
+    1. `create_document` 新值校验（what="upload"——P3-C〔m1-2 R2〕收敛：原 upload 侧
+       内联副本已删，两份实现并一，防本段改造 upload 链时漂移）；
+    2. `_start_overwrite` 旧值校验（what="current"——B-1①）；
+    3. `patch_document_dims` 新旧值校验（what="new"/"current"——TC-AZ-01）。
+
+    what 为文案前缀（403 语义与错误定位一致）。
     """
     allowed = grants.get(key, ())
     for value in values:
@@ -140,12 +144,15 @@ class IngestService:
         mime_type: str,
         filename: str,
         doc_id: str | None = None,
+        source_uri: str | None = None,
     ) -> tuple[str, str]:
         """校验（库/维度/取值在授权内）→ 存对象 → 建文档行（parsing）+ 任务（pending）。
 
         doc_id 缺省 = 首次上传（pending_version=1）；显式携带 = 覆盖上传（§5.3
         文档更新）：操作权限（owner/org_admin）+ pending 409 + 新版本号
         max(历史)+1 + pending_dims_json（pending 期间不生效，P0-2.1）。
+        source_uri：缺省 `user:<owner>`；凭证消费（M1-3）传 `agent:<服务身份>`
+        ——agent 代传内容标来源，随检索返回（§6.1）。
         返回 (doc_id, task_id)。
         """
         datasets = {d["id"] for d in self._backend.list_datasets(org_id)}
@@ -168,10 +175,12 @@ class IngestService:
                     raise UploadValidationError(
                         f"unknown value {value!r} for dimension {key!r}"
                     )
-                if value not in grants.get(key, ()):  # 值须在调用者授权内（P1-1）
-                    raise UploadPermissionError(
-                        f"value {value!r} of dimension {key!r} not within uploader grants"
-                    )
+            # P3-C 锚定（m1-2 R2）：upload 侧新值 ∈ 授权校验与 PATCH/覆盖上传共用
+            # `_require_values_in_grants` 同一实现（原内联副本已删——防两份漂移）
+            _require_values_in_grants(
+                key=key, values=values, grants=grants,
+                actor_user_id=owner_user_id, what="upload",
+            )
         for key, meta in dims_meta.items():
             if meta["required"] and not dims.get(key):
                 raise UploadValidationError(f"required dimension missing values: {key!r}")
@@ -188,7 +197,7 @@ class IngestService:
                 org_id=org_id,
                 dataset_id=dataset_id,
                 title=title or (filename or doc_id),
-                source_uri=f"user:{owner_user_id}",
+                source_uri=source_uri or f"user:{owner_user_id}",
                 content_hash=content_hash,
                 mime_type=mime_type or "application/octet-stream",
                 parser="docling",

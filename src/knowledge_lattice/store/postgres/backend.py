@@ -787,6 +787,85 @@ class PgBackend:
             return None
         return {"is_system_admin": bool(row[0]), "disabled_at": row[1]}
 
+    # ============ 上传凭证（M1-3 三步式——与 sqlite 实现同构，仅参数标记方言差异） ============
+
+    _UPLOAD_COLS = (
+        "id", "org_id", "user_id", "service_id", "filename", "size", "sha256",
+        "content_type", "status", "object_key", "doc_id", "task_id",
+        "expires_at", "created_at", "updated_at",
+    )
+
+    def create_upload_credential(
+        self,
+        *,
+        upload_id: str,
+        org_id: str,
+        user_id: str,
+        service_id: str | None,
+        filename: str,
+        size: int,
+        sha256: str,
+        content_type: str,
+        expires_at: str,
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO uploads(id, org_id, user_id, service_id, filename, size,"
+            " sha256, content_type, status, expires_at)"
+            " VALUES(%(id)s, %(org)s, %(uid)s, %(svc)s, %(fn)s, %(size)s, %(sha)s,"
+            " %(ct)s, 'issued', %(exp)s)",
+            {
+                "id": upload_id, "org": org_id, "uid": user_id, "svc": service_id,
+                "fn": filename, "size": size, "sha": sha256, "ct": content_type,
+                "exp": expires_at,
+            },
+        )
+
+    def get_upload_credential(self, upload_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT id, org_id, user_id, service_id, filename, size, sha256, content_type,"
+            " status, object_key, doc_id, task_id, expires_at, created_at, updated_at"
+            " FROM uploads WHERE id = %(id)s",
+            {"id": upload_id},
+        ).fetchone()
+        if row is None:
+            return None
+        row = list(row)
+        # 时间列归一化：psycopg 解析 TIMESTAMP 为 datetime——统一为 sqlite 同款
+        # UTC `YYYY-MM-DD HH:MM:SS` 字符串（连接工厂 SET TIME ZONE 'UTC'，无漂移）
+        for idx in (12, 13, 14):
+            if row[idx] is not None:
+                row[idx] = row[idx].strftime("%Y-%m-%d %H:%M:%S")
+        return dict(zip(self._UPLOAD_COLS, row))
+
+    def mark_upload_uploaded(self, upload_id: str, *, object_key: str) -> bool:
+        cur = self._conn.execute(
+            "UPDATE uploads SET status='uploaded', object_key=%(obj)s,"
+            " updated_at=CURRENT_TIMESTAMP"
+            " WHERE id=%(id)s AND status IN ('issued','uploaded')",
+            {"id": upload_id, "obj": object_key},
+        )
+        return cur.rowcount > 0
+
+    def mark_upload_consumed(self, upload_id: str, *, doc_id: str, task_id: str) -> bool:
+        cur = self._conn.execute(
+            "UPDATE uploads SET status='consumed', doc_id=%(doc)s, task_id=%(task)s,"
+            " updated_at=CURRENT_TIMESTAMP"
+            " WHERE id=%(id)s AND status='uploaded'",
+            {"id": upload_id, "doc": doc_id, "task": task_id},
+        )
+        return cur.rowcount > 0
+
+    def list_expired_upload_credentials(self, now: str) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT id, object_key FROM uploads"
+            " WHERE status IN ('issued','uploaded') AND expires_at <= %(now)s",
+            {"now": now},
+        ).fetchall()
+        return [{"id": r[0], "object_key": r[1]} for r in rows]
+
+    def delete_upload_credential(self, upload_id: str) -> None:
+        self._conn.execute("DELETE FROM uploads WHERE id = %(id)s", {"id": upload_id})
+
     # ============ Audit 域（outbox 写入 + 月分区滚动——接口与 sqlite 月库不变） ============
 
     def append_outbox(self, event_type: str, payload_json: str) -> None:
