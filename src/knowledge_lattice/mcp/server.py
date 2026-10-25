@@ -5,12 +5,15 @@
   检索参数（权重/阈值/召回窗口）不暴露；返回块带 chunk_id 溯源 + source
   （agent 代传可识别）；sync 工具由 FastMCP 线程池承接（模型 HTTP 调用不上
   事件循环——NFR-8）；
+- `fetch` 工具（M1-2）：按 chunk_id 取内容窗口；旧版本块（tombstone/pending）
+  返回 `replaced_by: {doc_id, active_version}` 替代提示（§6.1——不承诺块级映射、
+  不返回旧内容、不报不存在，TC-VER-05）；不可见/不存在 → 404（不泄漏存在性）；
 - 组织上下文（D18/TC-AUTH-02）：token org claim 优先 / 运行时注入 X-Org-Id 头兜底；
   并存且不一致 → 400（ToolError）；缺失 → 400；**工具参数 org 一律忽略并记审计**；
 - 60s 超时中间件（ragflow 纪律——超时请求不悬挂，TC-E2E-06）；超时值随
   settings.mcp_timeout_s（默认 60，测试可注入短值）。
 
-upload/fetch/list_documents 随 M1（凭证三步/版本链）；semantic 组随 M2-S。
+upload/list_documents 随 M1-3（凭证三步）；semantic 组随 M2-S。
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 
 from knowledge_lattice.config import Settings
 from knowledge_lattice.core.docs.acl import AclDeniedError
+from knowledge_lattice.core.docs.fetch import FetchNotFoundError, fetch_chunks
 from knowledge_lattice.core.docs.retrieve import search as run_search
 from knowledge_lattice.domain.auth import AuthError, OrgContextError, authenticate, resolve_org
 
@@ -35,6 +39,11 @@ SEARCH_TOOL_DESCRIPTION = (
     "检索企业知识库。缺私有信息（制度/手册/申报口径）时调用；"
     "query 越具体越好（含税种、区域、文档关键词）；返回结果自带 chunk_id 溯源，"
     "回答时请引用。"
+)
+
+FETCH_TOOL_DESCRIPTION = (
+    "按 chunk_id 取该块前后相邻的内容窗口（先搜后读）。"
+    "旧版本块返回替代提示（replaced_by 指向当前在用版本）。"
 )
 
 
@@ -59,7 +68,7 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
 
     mcp: FastMCP = FastMCP(
         name="knowledge-lattice",
-        instructions="企业知识层 docs 组工具（M0a：search；upload/fetch/list_documents 随 M1）。",
+        instructions="企业知识层 docs 组工具（search + fetch；upload/list_documents 随 M1-3）。",
     )
     mcp.add_middleware(ToolTimeoutMiddleware(timeout_s=settings.mcp_timeout_s))
 
@@ -114,6 +123,27 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
                 enhancer=getattr(service, "enhancer", None),
                 breakers=getattr(service, "breakers", None),
             )
+        except AclDeniedError as exc:
+            raise ToolError(f"403: {exc}") from exc
+
+    @mcp.tool(name="fetch", description=FETCH_TOOL_DESCRIPTION)
+    def fetch(
+        chunk_id: str,
+        window: int = 2,
+        ctx: Context = None,
+    ) -> dict:
+        """fetch（§6.1）：内容窗口 / 旧版本块 replaced_by 替代提示（TC-VER-05）。"""
+        user_id, org_id = _auth_and_org(ctx, param_org=None)
+        try:
+            return fetch_chunks(
+                service.backend,
+                user_id=user_id,
+                org_id=org_id,
+                chunk_id=chunk_id,
+                window=window,
+            )
+        except FetchNotFoundError as exc:
+            raise ToolError(f"404: {exc}") from exc
         except AclDeniedError as exc:
             raise ToolError(f"403: {exc}") from exc
 

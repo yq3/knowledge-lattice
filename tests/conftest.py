@@ -242,6 +242,21 @@ def sqlite_matrix(conn: sqlite3.Connection) -> sqlite3.Connection:
     return conn
 
 
+@pytest.fixture()
+def matrix_channel(matrix):
+    """标准矩阵 + `channel` 维度（值 A）——**fixture 选项形态**（m0a-2 committer
+    P3-6「conftest channel 口径」的清偿项）。
+
+    口径回写：T20/TC-ACL-04 的「建维度时库内已有存量文档（零回填前提）」语义
+    由本 fixture 保持——channel 在矩阵造数**之后**创建，存量 5 篇文档无 channel
+    行（空值放行）；既有用例可继续用例内自建（两者等价），需要复用矩阵全量
+    用户/文档的用例用本选项。
+    """
+    seed_dimension(matrix, ORG, "channel")
+    seed_dim_value(matrix, dim_id_for(ORG, "channel"), "A")
+    return matrix
+
+
 # ============ M0a-3 摄取/检索链 fixtures ============
 
 
@@ -297,6 +312,40 @@ def ingest_env(tmp_path):
         "make_service": make_service,
     }
     conn.close()
+
+
+# ============ M1-2 版本在用制 fixtures ============
+
+
+@pytest.fixture()
+def ver_env(matrix, tmp_path):
+    """M1-2 版本链共享栈（TC-VER-01~07 / T6~T10 / T21 / TC-E2E-02 双后端参数化）：
+    matrix 造数 + 真 backend + Settings(embed_dim=8, fake-embed) + FakeEmbedder +
+    IngestService（依赖注入——覆盖上传/切换/守卫全链可测）。
+
+    上传者默认 u_full（region=[CN,OS]+tax_type=[VAT]，首次上传即 owner——覆盖
+    上传操作权限成立）；文档内容用 v1/v2 独有关键词区分（阿尔法/贝塔）。
+    """
+    from knowledge_lattice.adapters.embedder import EmbeddingGate
+    from knowledge_lattice.config import Settings
+    from knowledge_lattice.core.docs.ingest import IngestService
+    from fake_providers import FakeEmbedder
+
+    backend = matrix.make_backend()
+    settings = Settings(environment="test", data_dir=tmp_path, embed_dim=8)
+    embedder = FakeEmbedder(dim=8, model_name="fake-embed")
+    gate = EmbeddingGate()
+    objects_dir = tmp_path / "objects"
+    service = IngestService(backend, embedder, settings, gate, objects_dir)
+    return {
+        "db": matrix,
+        "backend": backend,
+        "settings": settings,
+        "gate": gate,
+        "embedder": embedder,
+        "objects_dir": objects_dir,
+        "service": service,
+    }
 
 
 # ============ M1-1 检索配方 fixtures ============
