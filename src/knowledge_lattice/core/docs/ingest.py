@@ -38,9 +38,18 @@ from knowledge_lattice.adapters.embedder import (
     Embedder,
     validate_dim,
 )
-from knowledge_lattice.adapters.parser_docling import ParsedDocument, parse_document
+from knowledge_lattice.adapters.parser_docling import (
+    LEGACY_SUFFIXES,
+    ParsedDocument,
+    parse_document,
+)
 from knowledge_lattice.config import Settings
 from knowledge_lattice.core.docs.chunking import ChunkDraft, chunk_blocks
+from knowledge_lattice.core.docs.quality import (
+    MojibakeQualityError,
+    QualityService,
+    mojibake_tier,
+)
 from knowledge_lattice.store.backend import VersionConflictError
 
 __all__ = [
@@ -123,12 +132,16 @@ class IngestService:
         settings: Settings,
         gate: EmbeddingGate,
         objects_dir: Path,
+        *,
+        quality: QualityService | None = None,
     ) -> None:
         self._backend = backend
         self._embedder = embedder
         self._settings = settings
         self._gate = gate
         self._objects_dir = objects_dir
+        # 区分度环挂接（M1-4 §5.3 quality 阶段——检测 best-effort，None=未装配）
+        self._quality = quality
 
     # ============ 上传入口（写权限校验在 upload 即做——P0-2.1） ============
 
@@ -185,40 +198,58 @@ class IngestService:
             if meta["required"] and not dims.get(key):
                 raise UploadValidationError(f"required dimension missing values: {key!r}")
 
+        # TC-ING-04②：老格式拒收（.doc/.xls/.ppt）——提示转存新格式，不引入
+        # LibreOffice（零中间件纪律）；在校验链之后、对象落盘之前快速失败
+        suffix = Path(filename or "").suffix.lower()
+        if suffix in LEGACY_SUFFIXES:
+            raise UploadValidationError(
+                f"老格式 {suffix} 不受支持——请转存为新格式"
+                "（.docx/.xlsx/.pptx）后重传（TC-ING-04②）"
+            )
+
         obj_name = f"{str(_ulid.ULID()).lower()}{Path(filename or 'bin').suffix}"
         self._objects_dir.mkdir(parents=True, exist_ok=True)
         (self._objects_dir / obj_name).write_bytes(file_bytes)
         content_hash = "sha256:" + hashlib.sha256(file_bytes).hexdigest()
 
-        if doc_id is None:
-            doc_id = new_ulid("doc")
-            self._backend.create_document(
-                doc_id=doc_id,
-                org_id=org_id,
-                dataset_id=dataset_id,
-                title=title or (filename or doc_id),
-                source_uri=source_uri or f"user:{owner_user_id}",
-                content_hash=content_hash,
-                mime_type=mime_type or "application/octet-stream",
-                parser="docling",
-                owner_user_id=owner_user_id,
-                raw_object_key=obj_name,
-                pending_dims_json=json.dumps(dims, ensure_ascii=False) if dims else None,
-            )
-        else:
-            self._start_overwrite(
-                doc_id=doc_id,
-                org_id=org_id,
-                actor_user_id=owner_user_id,
-                dataset_id=dataset_id,
-                title=title,
-                content_hash=content_hash,
-                mime_type=mime_type or "application/octet-stream",
-                raw_object_key=obj_name,
-                pending_dims_json=json.dumps(dims, ensure_ascii=False) if dims else None,
-                grants=grants,  # B-1①：复用已读授权展开（同一 actor，不二次读）
-            )
-        task_id = self._backend.create_task(doc_id, task_type="ingest")
+        # P3-9（m1-2）：对象先落盘、DB 写失败 → 失败 unlink 补偿（不留孤儿对象；
+        # 校验已先行，本防护覆盖 DB 层失败——约束违例/磁盘满等）
+        try:
+            if doc_id is None:
+                doc_id = new_ulid("doc")
+                self._backend.create_document(
+                    doc_id=doc_id,
+                    org_id=org_id,
+                    dataset_id=dataset_id,
+                    title=title or (filename or doc_id),
+                    source_uri=source_uri or f"user:{owner_user_id}",
+                    content_hash=content_hash,
+                    mime_type=mime_type or "application/octet-stream",
+                    parser="docling",
+                    owner_user_id=owner_user_id,
+                    raw_object_key=obj_name,
+                    pending_dims_json=json.dumps(dims, ensure_ascii=False) if dims else None,
+                )
+            else:
+                self._start_overwrite(
+                    doc_id=doc_id,
+                    org_id=org_id,
+                    actor_user_id=owner_user_id,
+                    dataset_id=dataset_id,
+                    title=title,
+                    content_hash=content_hash,
+                    mime_type=mime_type or "application/octet-stream",
+                    raw_object_key=obj_name,
+                    pending_dims_json=json.dumps(dims, ensure_ascii=False) if dims else None,
+                    grants=grants,  # B-1①：复用已读授权展开（同一 actor，不二次读）
+                )
+            task_id = self._backend.create_task(doc_id, task_type="ingest")
+        except BaseException:
+            try:
+                (self._objects_dir / obj_name).unlink(missing_ok=True)
+            except OSError:
+                logger.warning("orphan object cleanup failed: %s", obj_name)
+            raise
         return doc_id, task_id
 
     def _require_document(self, *, doc_id: str, org_id: str) -> dict:
@@ -521,7 +552,26 @@ class IngestService:
         ):
             return "completed"  # 幂等 no-op（重跑 done 任务）
         self._embed_stage(doc, version)
+        self._quality_stage(doc)
         return "completed"
+
+    def _quality_stage(self, doc: dict) -> None:
+        """区分度检测（§5.3 quality 阶段——detect_document）：**best-effort**——
+        searchable_full 已达成，检测失败不回退文档状态（告警 + outbox，重算路径
+        可补——口径申报）；未装配 quality 服务（旧构造）为 no-op。"""
+        if self._quality is None:
+            return
+        try:
+            self._quality.detect_document(doc["id"], org_id=doc["org_id"])
+        except Exception:  # noqa: BLE001 —— 检测失败不回退 searchable_full
+            logger.exception("quality detect failed: %s", doc["id"])
+            try:
+                self._backend.append_outbox(
+                    "quality.detect_failed",
+                    json.dumps({"doc_id": doc["id"]}, ensure_ascii=False),
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("quality.detect_failed audit write failed")
 
     # ---- 阶段实现（各自幂等/可重入） ----
 
@@ -530,7 +580,30 @@ class IngestService:
 
     def _parse_stage(self, doc: dict) -> ParsedDocument:
         self._backend.set_doc_pending_status(doc["id"], self._effective_version(doc), "parsing")
-        return parse_document(self._object_path(doc))
+        parsed = parse_document(self._object_path(doc))
+        # mojibake 质量门（§5.4 OneRAG 借鉴项——TC-ING-05 三档）：fail → raise
+        #（任务 failed + T8 删块）；warn → 告警 + 审计（TXT 的「重试」已在编码
+        # 探测候选内完成——decode_txt_bytes 取最优候选）；pass 静默。
+        text = "\n".join(b.content for b in parsed.blocks)
+        tier, ratio = mojibake_tier(text)
+        if tier == "fail":
+            raise MojibakeQualityError(
+                f"mojibake quality gate: normal char ratio {ratio:.3f} < 0.40"
+                "（解析产物疑似乱码——拒绝入库，TC-ING-05）"
+            )
+        if tier == "warn":
+            logger.warning(
+                "mojibake warn: doc=%s ratio=%.3f（编码候选已穷尽，按最优候选继续）",
+                doc["id"], ratio,
+            )
+            self._backend.append_outbox(
+                "quality.mojibake_warn",
+                json.dumps(
+                    {"doc_id": doc["id"], "ratio": round(ratio, 4)},
+                    ensure_ascii=False,
+                ),
+            )
+        return parsed
 
     def _chunk_stage(self, doc: dict, parsed: ParsedDocument) -> list[ChunkDraft]:
         drafts = chunk_blocks(parsed.blocks, doc_title=doc["title"])

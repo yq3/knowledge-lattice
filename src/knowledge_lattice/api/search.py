@@ -1,7 +1,8 @@
-"""检索端点（design §6.2——POST /api/search：检索测试页；组织经 X-Org-Id——例外端点）。
+"""检索端点（design §6.2——POST /api/search：检索测试页）。
 
-参数同 MCP search（§6.1）；组织上下文统一规则：token org claim 优先 / X-Org-Id 头
-兜底、不一致 400、缺失 400（D18）。
+参数同 MCP search（§6.1）；组织上下文经 resolve_org 统一规则：token org claim
+优先 / X-Org-Id 头兜底、不一致 400、缺失 400（v0.9.4 按实现登记——原「X-Org-Id
+例外」为 v0.4 表述已作废，D18）。
 """
 
 from __future__ import annotations

@@ -229,7 +229,9 @@ class AdminBackend(Protocol):
     嵌入指纹基线（embedding_fingerprints）、维度/取值只读（页壳上传表单所需）。
     """
 
-    def create_task(self, doc_id: str, *, task_type: str = "ingest") -> str:
+    def create_task(self, doc_id: str | None, *, task_type: str = "ingest") -> str:
+        """新建任务行（maintenance 等无文档任务 doc_id=None——P3-19 注解口径；
+        tasks.doc_id ON DELETE SET NULL 允许 NULL）。"""
         ...
 
     def get_task(self, task_id: str) -> dict | None:
@@ -340,6 +342,123 @@ class AdminBackend(Protocol):
 
 
 @runtime_checkable
+class QualityBackend(Protocol):
+    """区分度反馈环（design §5.4 / FR-3——M1-4）：近邻扫描 / 词频统计 / flags CRUD。
+
+    近邻范围铁律（#33 P1-10）：**组织内 + 仅在用版本**（tombstone=0 AND
+    version=documents.active_version）——tombstone 旧版本与他组织块不得互为
+    拥挤近邻（否则换版窗口必然误报）。
+    """
+
+    def neighbor_sims(
+        self, rid: int, embed_model: str, *, top_k: int = 8
+    ) -> list[dict]:
+        """给定块在组织内在用块中的 top-k 余弦近邻（SQL 暴力扫描——入库单块路径，
+        §5.4「量小」）。行含 rid/chunk_id/doc_id/sim，按 sim 降序；排除自身；
+        无向量块（无该标签 cv 行）返回 []。"""
+        ...
+
+    def org_active_chunk_count(self, org_id: str | None) -> int:
+        """组织内在用块数（detected_at_scale 的「当前语料规模」与冷启动判定）；
+        org_id=None = 全局语料（冷启动 IDF 兜底——TC-QUAL-02）。"""
+        ...
+
+    def token_doc_frequency(
+        self, tokens: Sequence[str], org_id: str | None
+    ) -> dict[str, int]:
+        """token → 含该 token 的在用块数（df）。org_id=None 为全局语料（冷启动
+        兜底——TC-QUAL-02）；范围 = 在用块（tombstone=0 AND version=active）。"""
+        ...
+
+    def org_active_chunk_vectors(
+        self, org_id: str, embed_model: str
+    ) -> list[tuple[int, list[float]]]:
+        """组织内全部在用块的 (rid, 向量浮点列表)——numpy 批量重算的数据源
+        （§5.4「分块载入 numpy」；序列化还原收口各方言侧：sqlite=vec_f32
+        unpack / pg=vector 文本解析）。"""
+        ...
+
+    def org_active_chunk_segs(self, org_id: str) -> list[str]:
+        """组织内全部在用块的 content_seg（批量词面通用度重算的 df 流式统计源）。"""
+        ...
+
+    def chunks_for_quality_recompute(
+        self,
+        org_id: str,
+        *,
+        current_scale: int,
+        rescale_ratio: float,
+        sample_percent: int,
+    ) -> list[dict]:
+        """重算候选（TC-QUAL-04）：`detected_at_scale IS NULL OR < 当前规模×比例`
+        的在用块 ∪ 确定性抽样（rid 散列 %100 < sample_percent）命中的块。
+        行含 rid/chunk_id/doc_id/content/content_seg/detected_at_scale。"""
+        ...
+
+    def set_chunk_quality_marks(
+        self, marks: Sequence[tuple[int, str | None]], *, scale: int
+    ) -> None:
+        """检测后批量回写 chunks.detected_at_scale / content_sha（marks=[(rid, sha)]；
+        sha=None 保留原值——缓存键随 embed_model 语义由调用方保证，#42 P1-3）。"""
+        ...
+
+    def set_chunk_llm_keywords(self, rid: int, llm_keywords: str) -> None:
+        """LLM 兜底词写 llm_keywords 独立列（§5.4——不动 keywords 人工列；
+        sqlite au 触发器 / PG GENERATED 同步 FTS）。"""
+        ...
+
+    def append_chunk_manual_terms(
+        self, rid: int, *, keywords: str, tags: str
+    ) -> dict:
+        """人工补标追加 chunks.keywords / chunks.tags（PATCH 落点——仅人工词、
+        原样写入不进 jieba，TC-FTS-04）；返回追加后的两列值。"""
+        ...
+
+    def insert_quality_flag(
+        self,
+        *,
+        chunk_id: str,
+        doc_id: str,
+        reason: str,
+        detail_json: str,
+    ) -> str:
+        """写 open flag（同 chunk 同 reason 的既有 open flag 先删——重算覆盖语义）；
+        返回 flag id。"""
+        ...
+
+    def delete_open_flags(self, rids: Sequence[int], reasons: Sequence[str]) -> int:
+        """删除给定块的 open flags（reason 限定）——重算前清旧标记（§5.3 换模型
+        重嵌入同款语义）。返回删除行数。"""
+        ...
+
+    def get_quality_flag(self, flag_id: str) -> dict | None:
+        ...
+
+    def list_quality_flags(
+        self, doc_id: str | None = None, *, org_id: str | None = None,
+        state: str | None = None,
+    ) -> list[dict]:
+        ...
+
+    def set_quality_auto_keywords(self, flag_id: str, auto_keywords: str) -> None:
+        """LLM 兜底一句定位语写 auto_keywords（TC-QUAL-03——报告页展示）。"""
+        ...
+
+    def set_quality_flag_state(self, flag_id: str, state: str) -> bool:
+        """state 迁移（open|resolved|ignored）——resolved/ignored 落 resolved_at。"""
+        ...
+
+    def append_quality_manual_tags(self, flag_id: str, manual_json: str) -> None:
+        """manual_tags 追加记录（人工补标审计轨迹——JSON 行累积）。"""
+        ...
+
+    def chunks_by_rids(self, rids: Sequence[int]) -> list[dict]:
+        """按 rid 批量取块（detect_chunk 读取面 + 报告页可见近邻内容回填——
+        content 过 ACL 后才调用；含 content_seg 供词面路取 token）。"""
+        ...
+
+
+@runtime_checkable
 class SemanticBackend(Protocol):
     """M2-S：sync 分批 upsert / missing·retired 推进 / 构建产物与 sem_vec 读写 / L0 导出。
 
@@ -388,6 +507,7 @@ class StorageBackend(
     IngestBackend,
     AclBackend,
     AdminBackend,
+    QualityBackend,
     SemanticBackend,
     AuditBackend,
     Protocol,

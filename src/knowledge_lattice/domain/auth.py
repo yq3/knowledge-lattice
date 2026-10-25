@@ -135,7 +135,8 @@ def authenticate(backend, settings: Settings, token: str) -> AuthContext:
 
 
 def resolve_org(*, org_claim: str | None, org_header: str | None) -> str:
-    """MCP/检索端点统一解析：claim 与注入头并存且不一致 → 400；缺失 → 400。"""
+    """无 org 路径段 REST 端点与 MCP 的统一解析（v0.9.4 口径）：claim 与注入头
+    并存且不一致 → 400；缺失 → 400（无隐式默认）。"""
     if org_claim is not None and org_header is not None and org_claim != org_header:
         raise OrgContextError(
             f"org claim {org_claim!r} 与 X-Org-Id {org_header!r} 不一致（D18 统一规则）"

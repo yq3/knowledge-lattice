@@ -58,7 +58,8 @@ def get_auth(request: Request) -> AuthContext:
 
 
 def org_scoped(request: Request, org: str, auth: AuthContext) -> str:
-    """组织作用域统一规则：路径 org 与 X-Org-Id 并存且不一致 → 400；成员关系校验 403。"""
+    """组织作用域统一规则：路径 org 与 X-Org-Id 并存且不一致 → 400；成员关系校验 403
+    （body.code=membership_denied——T12 机器码一致性）。"""
     try:
         resolved = check_path_org(path_org=org, org_header=request.headers.get("x-org-id"))
     except OrgContextError as exc:
@@ -66,14 +67,16 @@ def org_scoped(request: Request, org: str, auth: AuthContext) -> str:
     service = get_service(request)
     if service.backend.read_membership(auth.user_id, resolved) is None:
         raise AclDeniedError(
-            f"no active membership: user={auth.user_id!r} org={resolved!r}"
+            f"no active membership: user={auth.user_id!r} org={resolved!r}",
+            code="membership_denied",
         )
     return resolved
 
 
-def _org_context(request: Request, auth: AuthContext) -> str:
-    """非 org 路径端点（/api/uploads）的组织上下文：claim 优先 / X-Org-Id 兜底 /
-    不一致·缺失 400（D18 统一规则）+ 成员关系 403。"""
+def resolve_request_org(request: Request, auth: AuthContext) -> str:
+    """非 org 路径端点（/api/uploads、/api/quality-flags 等）的组织上下文：claim
+    优先 / X-Org-Id 兜底 / 不一致·缺失 400（D18 统一规则）+ 成员关系 403
+    （body.code=membership_denied）。公开名——api 包内多模块共用（P3-17 卫生）。"""
     try:
         org = resolve_org(
             org_claim=auth.org_claim, org_header=request.headers.get("x-org-id")
@@ -83,7 +86,8 @@ def _org_context(request: Request, auth: AuthContext) -> str:
     service = get_service(request)
     if service.backend.read_membership(auth.user_id, org) is None:
         raise AclDeniedError(
-            f"no active membership: user={auth.user_id!r} org={org!r}"
+            f"no active membership: user={auth.user_id!r} org={org!r}",
+            code="membership_denied",
         )
     return org
 
@@ -105,7 +109,7 @@ async def issue_upload_credential(
 ) -> dict:
     """凭证签发（三步①）：绑定 sub+org+服务身份（act claim）+ expires_at。"""
     service = get_service(request)
-    org = _org_context(request, auth)
+    org = resolve_request_org(request, auth)
     return service.credentials.issue(
         org_id=org, user_id=auth.user_id, service_id=auth.act,
         filename=body.filename, size=body.size, sha256=body.sha256,
@@ -122,7 +126,7 @@ async def put_upload_bytes(
     """接收文件字节（三步②）：Bearer + 三一致 + 未过期未使用；流式进 staging——
     超声明 413 / sha256 拒 / 失败补偿清理（P3-5/P3-21）；错误码见 body.code（T12）。"""
     service = get_service(request)
-    org = _org_context(request, auth)
+    org = resolve_request_org(request, auth)
     credentials = service.credentials
     sink = credentials.begin_put(
         upload_id, org_id=org, user_id=auth.user_id, service_id=auth.act

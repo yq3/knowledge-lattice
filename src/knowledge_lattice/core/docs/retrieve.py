@@ -225,9 +225,13 @@ def search(
     provider 注入：embedder / reranker / enhancer（None 或 none 档 = 对应路停用，
     none 档不标降级——配置态非故障）；breakers={"embed":…, "rerank":…} 熔断共享态。
     """
-    started = time.monotonic()
     top_k = max(1, min(top_k, TOP_K_HARD_LIMIT))
+    # P3-12（m1-1）：空 query 口径——search 侧早返回 []（MCP/REST 同构生效）。
+    # 置于 compile_acl 之后：成员关系校验（403 语义）不被空查询绕过。
     plan = compile_acl(backend, user_id, org_id, dataset_ids=datasets, doc_ids=doc_filter)
+    if not query or not query.strip():
+        logger.info("search empty query: early return []（P3-12 空查询口径）")
+        return {"results": [], "notice": {"vector_pending": False, "degraded": []}}
     vec_plan = compile_acl(
         backend,
         user_id,
@@ -241,6 +245,12 @@ def search(
     # 向量缺失判定的有效标签：跟随 embedder（与写入标签同源）；无 embedder 退 settings
     vec_label = embedder.model_label if embedder is not None else settings.embed_model_label
 
+    # ---- 耗时分段（P3-13：嵌入/召回/融合/rerank 四段——design §3；M1-5 NFR-8
+    #      标定的数据源。段为**增量时长**：embed=query 嵌入调用、recall=双路召回
+    #      SQL（含增强第三路）、fuse=RRF+ACL 断言+归一、rerank=重排调用） ----
+    dur_embed = 0.0
+    dur_recall = 0.0
+
     # ---- LLM 增强并行窗口（800ms 硬预算——与原始召回并行；超时/失败丢弃）----
     enhance_future: Future | None = None
     enhance_t0 = 0.0
@@ -250,10 +260,11 @@ def search(
 
     # ---- FTS/BM25 路（五列加权——名次协议；召回窗口给足 NFR-8）----
     tokens = tokenizer.segment_query(query)
+    t_fts = time.monotonic()
     fts_rows = (
         backend.recall_fts(tokens, plan, top_k=settings.recall_window) if tokens else []
     )
-    t_fts = time.monotonic() - started
+    dur_recall += time.monotonic() - t_fts
 
     # ---- 向量路（query embed → 先 ACL 过滤后距离；降级链）----
     if gate is not None and gate.rejected:
@@ -278,15 +289,19 @@ def search(
         # NFR-8）；与 none 配置态不同，须标注 + 审计（P1-2）
         degraded.append("embed_unreachable")
     if not vec_skipped:
+        t_embed = time.monotonic()
         query_vec = _embed_query(settings, embedder, query, breakers, degraded)
+        dur_embed += time.monotonic() - t_embed
         if query_vec is not None:
+            t_vec = time.monotonic()
             vec_rows = backend.recall_vec(
                 query_vec, vec_plan, top_k=settings.recall_window
             )
+            dur_recall += time.monotonic() - t_vec
     # 向量路整体关闭（P1-1）：静态跳过（无 embedder/探针拒绝/熔断开）**或本次嵌入
     # 失败/超时**——「未就绪或降级」两面俱全（§6.1 vector_pending 契约）
     vec_closed = vec_skipped or (embedder is not None and query_vec is None)
-    t_recall = time.monotonic() - started
+    t_fuse0 = time.monotonic()
 
     # ---- RRF 融合（双路 → 增强词到位则并入第三路 BM25——不重做向量召回）----
     # 名次协议防御（P3-2）：各路 rid 序显式按 rank 升序取——不依赖后端返回顺序
@@ -300,22 +315,23 @@ def search(
             enhance_future, settings.enhance_budget_s - (time.monotonic() - enhance_t0)
         )
         if extra_terms:
+            t_enh = time.monotonic()
             enhanced_rows = backend.recall_fts(
                 extra_terms, plan, top_k=settings.recall_window
             )
+            dur_recall += time.monotonic() - t_enh
             if enhanced_rows:
                 routes.append(("enhanced", _rids_by_rank(enhanced_rows)))
                 for r in enhanced_rows:  # 溯源信息合并（第三路新块补位）
                     merged.setdefault(r["rid"], r)
     fused = rrf_fuse(routes, k=settings.rrf_k)
-    t_fuse = time.monotonic() - started
 
     candidates = [dict(merged[rid], rrf_score=score) for rid, score in fused]
     if not candidates:
         return _finalize(
             backend, settings, ctx, degraded, [], top_k,
             vec_closed=vec_closed, has_results=False, vec_label=vec_label,
-            timings=(t_fts, t_recall, t_fuse, time.monotonic() - started),
+            durations=(dur_embed, dur_recall, time.monotonic() - t_fuse0, 0.0),
             routes=len(routes),
         )
 
@@ -332,7 +348,7 @@ def search(
         return _finalize(
             backend, settings, ctx, degraded, [], top_k,
             vec_closed=vec_closed, has_results=False, vec_label=vec_label,
-            timings=(t_fts, t_recall, t_fuse, time.monotonic() - started),
+            durations=(dur_embed, dur_recall, time.monotonic() - t_fuse0, 0.0),
             routes=len(routes),
         )
 
@@ -347,11 +363,13 @@ def search(
     if rerank_breaker_open:
         # 熔断开路=已确认不可达的降级态——标注 + 审计（P1-2；none 配置态不标）
         degraded.append("rerank_skipped")
+    dur_rerank = 0.0
     if rerank_active and not rerank_breaker_open:
+        t_rerank0 = time.monotonic()
         rank_scores = _run_rerank(
             settings, reranker, breakers, query, candidates, degraded
         )
-    t_rerank = time.monotonic() - started
+        dur_rerank = time.monotonic() - t_rerank0
 
     # ---- 最终序（rerank 分降序、tie 用 RRF 序；无 rerank 分 = RRF 序）+ 归一 ----
     if rank_scores is not None:
@@ -392,7 +410,7 @@ def search(
         backend, settings, ctx, degraded, ordered, top_k,
         vec_closed=vec_closed, has_results=bool(fts_rows or vec_rows),
         vec_label=vec_label,
-        timings=(t_fts, t_recall, t_fuse, t_rerank),
+        durations=(dur_embed, dur_recall, time.monotonic() - t_fuse0 - dur_rerank, dur_rerank),
         routes=len(routes),
     )
 
@@ -408,10 +426,15 @@ def _finalize(
     vec_closed: bool,
     has_results: bool,
     vec_label: str,
-    timings: tuple[float, float, float, float],
+    durations: tuple[float, float, float, float],
     routes: int,
 ) -> dict:
-    """输出面组装：vector_pending 块级判定 + 双断言后 results + 降级审计 + 耗时日志。"""
+    """输出面组装：vector_pending 块级判定 + 双断言后 results + 降级审计 + 耗时日志。
+
+    耗时日志四段（P3-13，design §3「嵌入/召回/融合/rerank」——M1-5 NFR-8 标定
+    数据源）：embed=query 嵌入调用、recall=双路召回 SQL（含增强第三路）、
+    fuse=RRF+ACL 断言+归一、rerank=重排调用；均为增量时长（ms）。
+    """
     vector_pending = False
     if ordered:
         missing = backend.rids_without_vector([c["rid"] for c in ordered], vec_label)
@@ -442,11 +465,11 @@ def _finalize(
                 "snippet": content[:120],
             }
         )
-    t_fts, t_recall, t_fuse, t_rerank = timings
+    d_embed, d_recall, d_fuse, d_rerank = durations
     logger.info(
-        "search timing: fts=%.1fms recall=%.1fms fuse=%.1fms rerank=%.1fms"
+        "search timing: embed=%.1fms recall=%.1fms fuse=%.1fms rerank=%.1fms"
         " routes=%d results=%d degraded=%s",
-        t_fts * 1000, t_recall * 1000, t_fuse * 1000, t_rerank * 1000,
+        d_embed * 1000, d_recall * 1000, d_fuse * 1000, d_rerank * 1000,
         routes, len(results), degraded or "-",
     )
     return {

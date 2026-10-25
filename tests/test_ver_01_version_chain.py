@@ -183,14 +183,18 @@ def test_ver_02_vec_recall_only_active_version(ver_env) -> None:
 
 
 def test_ver_04_switch_transaction_atomic_rollback(ver_env) -> None:
-    """切换中途失败（dims 解析异常注入）→ 全回滚：v1 继续服务、pending 块零残留。"""
+    """切换中途失败（dims 解析异常注入）→ 全回滚：v1 继续服务、pending 块零残留。
+
+    P3-7（M1-4）：切换 UPDATE 加 `pending_status='searchable_full'` 守卫——本用例
+    造数推进到 searchable_full 后注入（D20 时点：覆盖上传等 full 再切换）。"""
     doc_id, task1 = _upload(ver_env)
     ver_env["service"].run_task(task1)
     _overwrite_v2_to_lexical(ver_env, doc_id, dims={"region": ["CN"]})
-
-    # 注入：pending_dims_json 指向不存在的取值 → 切换事务解析失败（P3-7 同款防护）
+    # 推进到 full（D20 切换时点）+ 注入：pending_dims_json 指向不存在的取值
+    # → 切换事务解析失败（P3-7 同款防护在解析之前不拦截本路径）
     ver_env["db"].execute(
-        "UPDATE documents SET pending_dims_json = ? WHERE id = ?",
+        "UPDATE documents SET pending_status = 'searchable_full',"
+        " pending_dims_json = ? WHERE id = ?",
         ('{"region": ["NO_SUCH_VALUE"]}', doc_id),
     )
 
@@ -199,7 +203,7 @@ def test_ver_04_switch_transaction_atomic_rollback(ver_env) -> None:
 
     doc = ver_env["backend"].get_document(doc_id)
     assert doc["active_version"] == 1, "回滚：active 仍是 v1"
-    assert doc["pending_version"] == 2 and doc["pending_status"] == "searchable_lexical"
+    assert doc["pending_version"] == 2 and doc["pending_status"] == "searchable_full"
     assert ver_env["db"].execute(
         "SELECT count(*) FROM chunks WHERE doc_id = ? AND version = 1 AND tombstone = 0",
         (doc_id,),

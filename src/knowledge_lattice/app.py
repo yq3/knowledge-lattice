@@ -31,6 +31,10 @@ from knowledge_lattice.config import Settings, get_settings
 from knowledge_lattice.core.docs.acl import AclDeniedError
 from knowledge_lattice.core.docs.credentials import CredentialError, CredentialService
 from knowledge_lattice.core.docs.ingest import IngestService
+from knowledge_lattice.core.docs.quality import (
+    NoopKeywordGenerator,
+    QualityService,
+)
 from knowledge_lattice.domain.auth import AuthError, OrgContextError
 from knowledge_lattice.mcp.server import build_mcp_server
 from knowledge_lattice.store.sqlite import connect, migrate_db
@@ -42,7 +46,7 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 
 
 class ServiceContext:
-    """依赖容器（backend/settings/gate/ingest/credentials/embedder/reranker/enhancer/breakers）。"""
+    """依赖容器（backend/settings/gate/ingest/credentials/quality/embedder/reranker/enhancer/breakers）。"""
 
     def __init__(
         self,
@@ -52,6 +56,7 @@ class ServiceContext:
         gate,
         ingest,
         credentials,
+        quality,
         embedder,
         reranker=None,
         enhancer=None,
@@ -62,6 +67,7 @@ class ServiceContext:
         self.gate = gate
         self.ingest = ingest
         self.credentials = credentials
+        self.quality = quality
         self.embedder = embedder
         self.reranker = reranker
         self.enhancer = enhancer
@@ -112,11 +118,24 @@ def create_app(
             failures=settings.breaker_failures, cooldown_s=settings.breaker_cooldown_s
         ),
     }
-    ingest = IngestService(backend, embedder, settings, gate, settings.data_dir / "objects")
     credentials = CredentialService(backend, settings, settings.data_dir / "objects")
+    # LLM 兜底 provider（quality_llm=none 默认 noop——不发网关调用；D12 同款形态）
+    from knowledge_lattice.adapters.enhancer import OpenAICompatKeywordGenerator
+
+    quality = QualityService(
+        backend, settings,
+        keyword_client=(
+            NoopKeywordGenerator() if settings.quality_llm == "none"
+            else OpenAICompatKeywordGenerator(settings)
+        ),
+    )
+    ingest = IngestService(
+        backend, embedder, settings, gate, settings.data_dir / "objects",
+        quality=quality,
+    )
     service = ServiceContext(
         settings=settings, backend=backend, gate=gate, ingest=ingest,
-        credentials=credentials, embedder=embedder,
+        credentials=credentials, quality=quality, embedder=embedder,
         reranker=reranker, enhancer=enhancer, breakers=breakers,
     )
 
@@ -190,7 +209,10 @@ def create_app(
 
     @app.exception_handler(AclDeniedError)
     async def _acl_error(_: Request, exc: AclDeniedError):
-        return JSONResponse({"error": str(exc)}, status_code=403)
+        # body.code 机器码（T12 一致性——membership_denied 类，M1-4 收口）
+        return JSONResponse(
+            {"error": str(exc), "code": exc.code}, status_code=403
+        )
 
     @app.exception_handler(OrgContextError)
     async def _org_error(_: Request, exc: OrgContextError):
@@ -202,12 +224,13 @@ def create_app(
             {"error": str(exc), "code": exc.code}, status_code=exc.http_status
         )
 
-    from knowledge_lattice.api import admin, documents, search, tasks, upload
+    from knowledge_lattice.api import admin, documents, quality, search, tasks, upload
 
     app.include_router(upload.router)
     app.include_router(documents.router)
     app.include_router(tasks.router)
     app.include_router(search.router)
+    app.include_router(quality.router)  # 区分度环（M1-4——报告/PATCH/抽查）
     app.include_router(admin.router)  # dimensions/datasets 等普通端点——不受环境门控（P2-4）
     if settings.environment in ("dev", "test"):  # dev token 仅 dev/test（生产 404——D18/P2-4）
         app.include_router(admin.dev_token_router)

@@ -68,3 +68,58 @@ class OpenAICompatEnhancer:
             if term and term not in terms:
                 terms.append(term)
         return terms[:_MAX_TERMS]
+
+
+# ============ 区分度环 LLM 兜底（design §5.4 / TC-QUAL-03——M1-4） ============
+
+_QUALITY_PROMPT = (
+    "你是企业税务知识库的质量助手。给定一个区分度低（与库内内容高度相似或词面"
+    "过于通用）的文档片段，输出：第一行最多 5 个能把它与其他内容区分开的检索"
+    "关键词（逗号分隔）；第二行一句不超过 40 字的定位语（说明该片段讲什么）。"
+    "不要输出其他解释。\n片段：{content}\n输出："
+)
+
+
+class OpenAICompatKeywordGenerator:
+    """LLM 兜底 provider（内部网关 chat completions）：content → (关键词, 定位语)。
+
+    输出协议：首行逗号分隔关键词、次行定位语；解析失败按无增益处理（空返回，
+    调用方跳过——兜底失败不阻断，§5.4）。
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        import httpx
+
+        self._settings = settings
+        self._client = httpx.Client(
+            base_url=settings.quality_llm_api_base,
+            headers={"Authorization": f"Bearer {settings.quality_llm_api_key}"},
+            timeout=settings.quality_llm_timeout_s,
+        )
+
+    def generate(self, content: str) -> tuple[list[str], str]:
+        resp = self._client.post(
+            "/chat/completions",
+            json={
+                "model": self._settings.quality_llm_model,
+                "messages": [
+                    {"role": "user", "content": _QUALITY_PROMPT.format(content=content[:2000])}
+                ],
+                "max_tokens": 256,
+                "temperature": 0.0,
+            },
+        )
+        resp.raise_for_status()
+        text = (resp.json()["choices"][0]["message"]["content"] or "").strip()
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        if not lines:
+            return [], ""
+        terms: list[str] = []
+        for chunk in (
+            lines[0].replace("，", ",").replace("；", ",").replace(";", ",").split(",")
+        ):
+            term = chunk.strip()
+            if term and term not in terms:
+                terms.append(term)
+        locator = lines[1] if len(lines) > 1 else ""
+        return terms[:5], locator

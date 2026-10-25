@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Sequence
 
 import psycopg
 
@@ -387,13 +388,15 @@ class PgBackend:
             row = conn.execute(
                 "SELECT active_version FROM documents"
                 " WHERE id = %(doc)s AND pending_version = %(expected)s"
+                "   AND pending_status = 'searchable_full'"
                 " FOR UPDATE",
                 {"doc": doc_id, "expected": expected_pending},
             ).fetchone()
             if row is None:
                 raise VersionConflictError(
                     f"switch rejected: doc={doc_id!r} pending_version"
-                    f" != {expected_pending}（并发切换/取消？——乐观校验，P0-2.3）"
+                    f" != {expected_pending} 或未达 searchable_full"
+                    "（并发切换/取消？——乐观校验，P0-2.3）"
                 )
             old_version = row[0]
             conn.execute(
@@ -416,7 +419,8 @@ class PgBackend:
                 " active_error = NULL,"
                 " pending_version = NULL, pending_status = NULL, pending_error = NULL,"
                 " updated_at = CURRENT_TIMESTAMP"
-                " WHERE id = %(doc)s AND pending_version = %(expected)s",
+                " WHERE id = %(doc)s AND pending_version = %(expected)s"
+                "   AND pending_status = 'searchable_full'",
                 {"doc": doc_id, "expected": expected_pending},
             )
             if cur.rowcount == 0:
@@ -594,9 +598,302 @@ class PgBackend:
         visible = {r[0] for r in self._conn.execute(sql, params)}
         return visible & set(doc_ids)
 
+    # ============ Quality 域（design §5.4 / FR-3——M1-4，与 SqliteBackend 同构） ============
+
+    _ACTIVE_CHUNK_JOIN = (
+        " FROM chunks c JOIN documents d ON d.id = c.doc_id"
+        " WHERE d.org_id = %(org)s AND c.tombstone = 0"
+        "   AND c.version = d.active_version AND d.active_version > 0"
+    )
+
+    def neighbor_sims(
+        self, rid: int, embed_model: str, *, top_k: int = 8
+    ) -> list[dict]:
+        """SQL 精确扫描 top-k 近邻（`<=>` 余弦距离升序——G-6 起步口径）。"""
+        row = self._conn.execute(
+            "SELECT d.org_id, cv1.embedding::text FROM chunks c1"
+            " JOIN documents d ON d.id = c1.doc_id"
+            " JOIN chunk_vectors cv1 ON cv1.rid = c1.rid AND cv1.embed_model = %(label)s"
+            " WHERE c1.rid = %(rid)s",
+            {"rid": rid, "label": embed_model},
+        ).fetchone()
+        if row is None:
+            return []
+        qv_text = row[1]
+        sql = (
+            "SELECT c2.rid, c2.id, c2.doc_id,"
+            " 1 - (cv2.embedding <=> %(qv)s::vector) AS sim"
+            " FROM chunks c2"
+            " JOIN documents d2 ON d2.id = c2.doc_id"
+            " JOIN chunk_vectors cv2 ON cv2.rid = c2.rid AND cv2.embed_model = %(label)s"
+            " WHERE d2.org_id = %(org)s AND c2.tombstone = 0"
+            "   AND c2.version = d2.active_version AND c2.rid != %(rid)s"
+            " ORDER BY cv2.embedding <=> %(qv)s::vector ASC"
+            " LIMIT %(k)s"
+        )
+        rows = self._conn.execute(
+            sql,
+            {"org": row[0], "rid": rid, "label": embed_model, "qv": qv_text, "k": top_k},
+        ).fetchall()
+        return [
+            {"rid": r[0], "chunk_id": r[1], "doc_id": r[2], "sim": r[3]} for r in rows
+        ]
+
+    def org_active_chunk_count(self, org_id: str | None) -> int:
+        """组织内在用块数；org_id=None 为全局语料（冷启动 IDF 兜底口径）。"""
+        if org_id is None:
+            return self._conn.execute(
+                "SELECT count(*) FROM chunks c JOIN documents d ON d.id = c.doc_id"
+                " WHERE c.tombstone = 0 AND c.version = d.active_version"
+                "   AND d.active_version > 0"
+            ).fetchone()[0]
+        return self._conn.execute(
+            "SELECT count(*)" + self._ACTIVE_CHUNK_JOIN, {"org": org_id}
+        ).fetchone()[0]
+
+    def token_doc_frequency(
+        self, tokens: Sequence[str], org_id: str | None
+    ) -> dict[str, int]:
+        """df：' '||content_seg||' ' 含 ' '+token+' '（strpos 边界精确）。"""
+        if org_id is not None:
+            scope = (
+                self._ACTIVE_CHUNK_JOIN
+                + " AND strpos(' ' || c.content_seg || ' ', ' ' || %(tok)s || ' ') > 0"
+            )
+        else:
+            scope = (
+                " FROM chunks c JOIN documents d ON d.id = c.doc_id"
+                " WHERE c.tombstone = 0 AND c.version = d.active_version"
+                "   AND d.active_version > 0"
+                "   AND strpos(' ' || c.content_seg || ' ', ' ' || %(tok)s || ' ') > 0"
+            )
+        out: dict[str, int] = {}
+        for tok in dict.fromkeys(tokens):
+            params: dict[str, object] = {"tok": tok}
+            if org_id is not None:
+                params["org"] = org_id
+            out[tok] = self._conn.execute(
+                "SELECT count(*)" + scope, params
+            ).fetchone()[0]
+        return out
+
+    def org_active_chunk_vectors(
+        self, org_id: str, embed_model: str
+    ) -> list[tuple[int, list[float]]]:
+        from knowledge_lattice.store.postgres.vec import parse_vector
+
+        rows = self._conn.execute(
+            "SELECT c.rid, cv.embedding::text FROM chunks c"
+            " JOIN documents d ON d.id = c.doc_id"
+            " JOIN chunk_vectors cv ON cv.rid = c.rid AND cv.embed_model = %(label)s"
+            " WHERE d.org_id = %(org)s AND c.tombstone = 0"
+            "   AND c.version = d.active_version AND d.active_version > 0",
+            {"org": org_id, "label": embed_model},
+        ).fetchall()
+        return [(r[0], parse_vector(r[1])) for r in rows]
+
+    def org_active_chunk_segs(self, org_id: str) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT c.content_seg" + self._ACTIVE_CHUNK_JOIN, {"org": org_id}
+        ).fetchall()
+        return [r[0] or "" for r in rows]
+
+    def chunks_for_quality_recompute(
+        self,
+        org_id: str,
+        *,
+        current_scale: int,
+        rescale_ratio: float,
+        sample_percent: int,
+    ) -> list[dict]:
+        """候选选择与 sqlite 同构（Knuth 散列抽样；`%%`——psycopg 参数态字面转义）。"""
+        floor = int(current_scale * rescale_ratio)
+        sql = (
+            "SELECT c.rid, c.id, c.doc_id, c.content, c.content_seg, c.detected_at_scale"
+            + self._ACTIVE_CHUNK_JOIN
+            + "   AND (c.detected_at_scale IS NULL OR c.detected_at_scale < %(floor)s"
+            + f"        OR (c.rid * 2654435761) %% 100 < {int(sample_percent)})"
+            " ORDER BY c.rid"
+        )
+        rows = self._conn.execute(sql, {"org": org_id, "floor": floor}).fetchall()
+        return [
+            {
+                "rid": r[0], "chunk_id": r[1], "doc_id": r[2], "content": r[3],
+                "content_seg": r[4], "detected_at_scale": r[5],
+            }
+            for r in rows
+        ]
+
+    def set_chunk_quality_marks(
+        self, marks: Sequence[tuple[int, str | None]], *, scale: int
+    ) -> None:
+        """批量回写检测标记（marks=[(rid, content_sha)]——sha None 保留原值）。"""
+        if not marks:
+            return
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            for rid, sha in marks:
+                conn.execute(
+                    "UPDATE chunks SET detected_at_scale = %(scale)s,"
+                    " content_sha = COALESCE(%(sha)s, content_sha) WHERE rid = %(rid)s",
+                    {"scale": scale, "sha": sha, "rid": rid},
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            try:
+                conn.execute("ROLLBACK")
+            except psycopg.Error:
+                pass
+            raise
+
+    def set_chunk_llm_keywords(self, rid: int, llm_keywords: str) -> None:
+        self._conn.execute(
+            "UPDATE chunks SET llm_keywords = %(kw)s WHERE rid = %(rid)s",
+            {"kw": llm_keywords, "rid": rid},
+        )
+
+    def append_chunk_manual_terms(
+        self, rid: int, *, keywords: str, tags: str
+    ) -> dict:
+        row = self._conn.execute(
+            "SELECT keywords, tags FROM chunks WHERE rid = %(rid)s", {"rid": rid}
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"chunk rid not found: {rid}")
+        new_kw = (row[0] + " " + keywords).strip() if row[0] else keywords
+        new_tags = (row[1] + " " + tags).strip() if row[1] else tags
+        self._conn.execute(
+            "UPDATE chunks SET keywords = %(kw)s, tags = %(tg)s WHERE rid = %(rid)s",
+            {"kw": new_kw, "tg": new_tags, "rid": rid},
+        )
+        return {"keywords": new_kw, "tags": new_tags}
+
+    _QFLAG_COLS = (
+        "id, chunk_id, doc_id, reason, detail_json, auto_keywords, manual_tags,"
+        " state, created_at, resolved_at"
+    )
+
+    def insert_quality_flag(
+        self, *, chunk_id: str, doc_id: str, reason: str, detail_json: str
+    ) -> str:
+        flag_id = f"qfl_{uuid.uuid4()}"
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "DELETE FROM quality_flags WHERE chunk_id = %(chk)s AND state = 'open'",
+                {"chk": chunk_id},
+            )
+            conn.execute(
+                "INSERT INTO quality_flags(id, chunk_id, doc_id, reason, detail_json)"
+                " VALUES(%(id)s, %(chk)s, %(doc)s, %(reason)s, %(detail)s)",
+                {
+                    "id": flag_id, "chk": chunk_id, "doc": doc_id,
+                    "reason": reason, "detail": detail_json,
+                },
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            try:
+                conn.execute("ROLLBACK")
+            except psycopg.Error:
+                pass
+            raise
+        return flag_id
+
+    def delete_open_flags(self, rids: Sequence[int], reasons: Sequence[str]) -> int:
+        if not rids or not reasons:
+            return 0
+        rmarks = ", ".join(f"%(r{i})s" for i in range(len(rids)))
+        vmarks = ", ".join(f"%(v{i})s" for i in range(len(reasons)))
+        params: dict[str, object] = {f"r{i}": rid for i, rid in enumerate(rids)}
+        params.update({f"v{i}": reason for i, reason in enumerate(reasons)})
+        cur = self._conn.execute(
+            f"DELETE FROM quality_flags WHERE state = 'open'"
+            f" AND reason IN ({vmarks})"
+            f" AND chunk_id IN (SELECT id FROM chunks WHERE rid IN ({rmarks}))",
+            params,
+        )
+        return cur.rowcount
+
+    def get_quality_flag(self, flag_id: str) -> dict | None:
+        row = self._conn.execute(
+            f"SELECT {self._QFLAG_COLS} FROM quality_flags WHERE id = %(id)s",
+            {"id": flag_id},
+        ).fetchone()
+        return None if row is None else dict(zip(self._QFLAG_COLS.split(", "), row))
+
+    def list_quality_flags(
+        self, doc_id: str | None = None, *, org_id: str | None = None,
+        state: str | None = None,
+    ) -> list[dict]:
+        sql = f"SELECT {self._QFLAG_COLS} FROM quality_flags"
+        conds: list[str] = []
+        params: dict[str, object] = {}
+        if doc_id is not None:
+            conds.append("doc_id = %(doc)s")
+            params["doc"] = doc_id
+        if org_id is not None:
+            conds.append("doc_id IN (SELECT id FROM documents WHERE org_id = %(org)s)")
+            params["org"] = org_id
+        if state is not None:
+            conds.append("state = %(state)s")
+            params["state"] = state
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += " ORDER BY created_at, id"
+        rows = self._conn.execute(sql, params).fetchall()
+        cols = self._QFLAG_COLS.split(", ")
+        return [dict(zip(cols, r)) for r in rows]
+
+    def set_quality_auto_keywords(self, flag_id: str, auto_keywords: str) -> None:
+        """LLM 兜底一句定位语写 auto_keywords（与 sqlite 同构）。"""
+        self._conn.execute(
+            "UPDATE quality_flags SET auto_keywords = %(ak)s WHERE id = %(id)s",
+            {"ak": auto_keywords, "id": flag_id},
+        )
+
+    def set_quality_flag_state(self, flag_id: str, state: str) -> bool:
+        resolved_at = "CURRENT_TIMESTAMP" if state in ("resolved", "ignored") else "NULL"
+        cur = self._conn.execute(
+            f"UPDATE quality_flags SET state = %(s)s, resolved_at = {resolved_at}"
+            " WHERE id = %(id)s",
+            {"s": state, "id": flag_id},
+        )
+        return cur.rowcount > 0
+
+    def append_quality_manual_tags(self, flag_id: str, manual_json: str) -> None:
+        row = self._conn.execute(
+            "SELECT manual_tags FROM quality_flags WHERE id = %(id)s", {"id": flag_id}
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"quality flag not found: {flag_id}")
+        lines = [x for x in ((row[0] or "").splitlines() + [manual_json]) if x]
+        self._conn.execute(
+            "UPDATE quality_flags SET manual_tags = %(m)s WHERE id = %(id)s",
+            {"m": "\n".join(lines), "id": flag_id},
+        )
+
+    def chunks_by_rids(self, rids: Sequence[int]) -> list[dict]:
+        if not rids:
+            return []
+        marks = ", ".join(f"%(r{i})s" for i in range(len(rids)))
+        params = {f"r{i}": rid for i, rid in enumerate(rids)}
+        rows = self._conn.execute(
+            f"SELECT rid, id, doc_id, content, content_seg FROM chunks"
+            f" WHERE rid IN ({marks})",
+            params,
+        ).fetchall()
+        return [
+            {"rid": r[0], "chunk_id": r[1], "doc_id": r[2], "content": r[3],
+             "content_seg": r[4]}
+            for r in rows
+        ]
+
     # ============ Admin 域（任务状态机 / 文档状态 / 指纹 / 只读维度取值） ============
 
-    def create_task(self, doc_id: str, *, task_type: str = "ingest") -> str:
+    def create_task(self, doc_id: str | None, *, task_type: str = "ingest") -> str:
         task_id = f"tsk_{uuid.uuid4()}"
         self._conn.execute(
             "INSERT INTO tasks(id, doc_id, type, status)"

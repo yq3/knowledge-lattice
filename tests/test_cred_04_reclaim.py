@@ -46,7 +46,7 @@ def test_purge_reclaims_expired_unconsumed_and_objects(cred_env) -> None:
         expired_uploaded, org_id="org:tax", user_id="u_full",
         service_id="agent-copilot", chunks=[PAYLOAD],
     )
-    obj = creds._backend.get_upload_credential(expired_uploaded)
+    obj = env["backend"].get_upload_credential(expired_uploaded)
     obj_path = env["objects_dir"] / obj["object_key"]
     assert obj_path.is_file()
 

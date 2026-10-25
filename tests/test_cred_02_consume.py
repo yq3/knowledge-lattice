@@ -401,28 +401,34 @@ def test_p2_1_finalize_rejects_expired_410_no_orphan(cred_env) -> None:
 
 
 def test_p2_1_purge_sweeps_only_stale_parts(cred_env) -> None:
-    """② 陈旧 .part（mtime 超阈值）被清理；新鲜 .part 保留。"""
+    """② 陈旧 .part（mtime 超阈值）被清理；新鲜保留——**边界双点 + 独立常量**
+    （m1-3 committer R2 残项：不再镜像实现式 max(ttl, 2×interval) 计算阈值，
+    以独立常量声明预期语义并在阈值两侧各取一点：threshold−1 保留 / +1 清除）。"""
     import os
     import time as _time
+
+    # 独立常量（预期阈值声明——cred_env 默认 ttl=900s、interval=300s → 900）：
+    # 语义 = max(900, 2×300)，此处按结果值直接钉死，实现若漂移即红
+    SWEEP_THRESHOLD_S = 900
 
     creds = cred_env["creds"]
     staging = creds.staging_dir
     staging.mkdir(parents=True, exist_ok=True)
-    stale = staging / "upl_stale0000000000000000000000.part"
-    fresh = staging / "upl_fresh0000000000000000000000.part"
-    stale.write_bytes(b"x")
-    fresh.write_bytes(b"y")
-    # 阈值 = max(ttl, 2×interval)（cred_env 默认 900s）——陈旧件回拨 mtime
-    threshold_s = max(
-        creds._settings.upload_credential_ttl_s, 2 * creds._settings.maintenance_interval_s
-    )
-    old_ts = _time.time() - threshold_s - 60
-    os.utime(stale, (old_ts, old_ts))
+    just_fresh = staging / "upl_justfresh000000000000000000.part"  # threshold−1
+    just_stale = staging / "upl_juststale000000000000000000.part"  # threshold+1
+    just_fresh.write_bytes(b"f")
+    just_stale.write_bytes(b"s")
+
+    now = _time.time()
+    fresh_ts = now - (SWEEP_THRESHOLD_S - 1)  # 阈值内 1s——保留
+    stale_ts = now - (SWEEP_THRESHOLD_S + 1)  # 阈值外 1s——清扫
+    os.utime(just_fresh, (fresh_ts, fresh_ts))
+    os.utime(just_stale, (stale_ts, stale_ts))
 
     creds.purge_expired()
 
-    assert not stale.exists(), "陈旧 .part 应被清扫"
-    assert fresh.exists(), "新鲜 .part（进行中 PUT）不得被清扫"
+    assert just_fresh.exists(), "阈值−1（threshold 内）.part 不得清扫"
+    assert not just_stale.exists(), "阈值+1（threshold 外）.part 应被清扫"
 
 
 # ============ R2 顺手：P3-15 outbox 事件断言 / P3-3 symlink realpath 分支 ============
