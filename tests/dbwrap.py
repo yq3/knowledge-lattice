@@ -7,8 +7,10 @@ TC-ACL-01~07 / TC-EMB-02 双后端）：
 - execute(sql, params)：qmark（?）SQL 原样进 sqlite；pg 臂自动把 ? 翻译为 %s
   （tests/helpers.py 种子函数单一写法服务双臂）；渲染器产物（sqlite=:name /
   pg=%(name)s）为字典参数、原样透传；
-- 方言分派：compile_acl / render_select / render_visible_docs_select / build_* /
-  render_sql / dims_scan / dim_marker / doc_side_trigger_names / fts_word_count；
+- 方言分派（v1.1 起 visible_docs CTE 唯一路径）：compile_acl / render_select /
+  build_rule_ast / build_cte_where / build_outer_where / build_vec_parts /
+  build_fts_where_ast（sqlite-only）/ render_sql / dim_marker /
+  doc_side_trigger_names / fts_word_count；
 - 断言口径：integrity_error（触发器 ABORT——sqlite=IntegrityError /
   pg=psycopg RaiseException[plpgsql RAISE EXCEPTION]）；fk_error + fk_marker
   （孤儿行外键违例——pg 另携 sqlstate 23503，TC-SCAF-01 后端行 v1.4）。
@@ -120,48 +122,44 @@ class SqliteDb:
 
         return render_select(plan)
 
-    def render_visible_docs_select(self, plan):
-        from knowledge_lattice.store.sqlite.acl_render import render_visible_docs_select
-
-        return render_visible_docs_select(plan)
-
     def render_sql(self, expr):
         from knowledge_lattice.store.sqlite.acl_render import render_sql
 
         return render_sql(expr)
 
-    def build_dimension_rule_ast(self, rule):
-        from knowledge_lattice.store.sqlite.acl_render import build_dimension_rule_ast
+    def build_rule_ast(self, rule, plan):
+        """单维 visible_docs 规则块（v1.1 唯一路径——方言无关构造）。"""
+        from knowledge_lattice.store.acl_ast import build_visible_docs_rule_ast
 
-        return build_dimension_rule_ast(rule)
+        return build_visible_docs_rule_ast(rule, plan.org_id)
 
-    def build_acl_ast(self, plan):
-        from knowledge_lattice.store.sqlite.acl_render import build_acl_ast
+    def build_cte_where(self, plan):
+        from knowledge_lattice.store.acl_ast import build_visible_docs_cte_where
 
-        return build_acl_ast(plan)
+        return build_visible_docs_cte_where(plan)
 
-    def build_where_ast(self, plan, *, vector: bool = False):
-        from knowledge_lattice.store.sqlite.acl_render import build_where_ast
+    def build_outer_where(self, plan):
+        from knowledge_lattice.store.acl_ast import build_visible_docs_outer_where
 
-        return build_where_ast(plan, vector=vector)
+        return build_visible_docs_outer_where(plan)
+
+    def build_vec_parts(self, plan):
+        from knowledge_lattice.store.acl_ast import build_vec_parts
+
+        return build_vec_parts(plan)
 
     def build_fts_where_ast(self, plan, *, query: str):
-        """FTS 路 WHERE（sqlite-only——PG FTS 路随 M0b-2/M1，TC-ACL-06 口径）。"""
-        from knowledge_lattice.store.sqlite.acl_render import build_fts_where_ast
+        """FTS 路 WHERE（sqlite-only——PG FTS 路随 M1，TC-ACL-06 口径）。"""
+        from knowledge_lattice.store.acl_ast import build_fts_where_ast
 
         return build_fts_where_ast(plan, query=query)
 
     # ---- 断言口径 ----
 
     def dim_marker(self, key: str) -> str:
-        """维度条件在渲染 SQL 中的在场标记（逐字断言用——T20④/TC-ACL-04②）。"""
-        return f"'$.{key}'"
-
-    def dims_scan(self, key: str):
-        """按块维度扫描节点（json_each——方言结构断言，TC-ACL-02）。"""
-        from knowledge_lattice.store.acl_ast import ColumnRef, Func, Literal
-
-        return Func("json_each", (ColumnRef("c", "dims_json"), Literal(f"$.{key}")))
+        """维度条件在渲染 SQL 中的在场标记（逐字断言用——T20④/TC-ACL-04②；
+        v1.1 CTE 形态：dim.key = '<key>'，双方言同文）。"""
+        return f"dim.key = '{key}'"
 
     def doc_side_trigger_names(self) -> set[str]:
         return set(SQLITE_DOC_SIDE_TRIGGERS)
@@ -247,47 +245,40 @@ class PgDb:
 
         return render_select(plan)
 
-    def render_visible_docs_select(self, plan):
-        from knowledge_lattice.store.postgres.acl_render import render_visible_docs_select
-
-        return render_visible_docs_select(plan)
-
     def render_sql(self, expr):
         from knowledge_lattice.store.postgres.acl_render import render_sql
 
         return render_sql(expr)
 
-    def build_dimension_rule_ast(self, rule):
-        from knowledge_lattice.store.postgres.acl_render import build_dimension_rule_ast
+    def build_rule_ast(self, rule, plan):
+        """单维 visible_docs 规则块（v1.1 唯一路径——方言无关构造）。"""
+        from knowledge_lattice.store.acl_ast import build_visible_docs_rule_ast
 
-        return build_dimension_rule_ast(rule)
+        return build_visible_docs_rule_ast(rule, plan.org_id)
 
-    def build_acl_ast(self, plan):
-        from knowledge_lattice.store.postgres.acl_render import build_acl_ast
+    def build_cte_where(self, plan):
+        from knowledge_lattice.store.acl_ast import build_visible_docs_cte_where
 
-        return build_acl_ast(plan)
+        return build_visible_docs_cte_where(plan)
 
-    def build_where_ast(self, plan, *, vector: bool = False):
-        from knowledge_lattice.store.postgres.acl_render import build_where_ast
+    def build_outer_where(self, plan):
+        from knowledge_lattice.store.acl_ast import build_visible_docs_outer_where
 
-        return build_where_ast(plan, vector=vector)
+        return build_visible_docs_outer_where(plan)
+
+    def build_vec_parts(self, plan):
+        from knowledge_lattice.store.acl_ast import build_vec_parts
+
+        return build_vec_parts(plan)
 
     def build_fts_where_ast(self, plan, *, query: str):  # pragma: no cover - 形态对齐
-        raise NotImplementedError("PG FTS 路（to_tsquery/ts_rank 加权）随 M0b-2/M1")
+        raise NotImplementedError("PG FTS 路（to_tsquery/ts_rank 加权）随 M1")
 
     # ---- 断言口径 ----
 
     def dim_marker(self, key: str) -> str:
-        return f"jsonb_extract_path(c.dims_json, {_quote_literal(key)})"
-
-    def dims_scan(self, key: str):
-        """按块维度扫描节点（jsonb 等价路径谓词——§4 PG 映射）。"""
-        from knowledge_lattice.store.acl_ast import ColumnRef, Func, Literal
-
-        return Func(
-            "jsonb_array_elements_text",
-            (Func("jsonb_extract_path", (ColumnRef("c", "dims_json"), Literal(key))),),
-        )
+        """v1.1 CTE 形态：dim.key = '<key>'（与 sqlite 同文——可移植性判据）。"""
+        return f"dim.key = '{key}'"
 
     def doc_side_trigger_names(self) -> set[str]:
         return set(PG_DOC_SIDE_TRIGGERS)
@@ -322,12 +313,13 @@ class PgDb:
         )
 
     def cosine_distance(self, rid: int, vector: list[float]) -> float:
-        """pgvector 余弦距离（<=> 精确扫描——G-6 起步口径）。"""
+        """pgvector 余弦距离（<=> 精确扫描——G-6 起步口径；v1.1 向量在 chunk_vectors）。"""
         from knowledge_lattice.store.postgres.vec import format_vector
 
         return (
             self.execute(
-                "SELECT embedding <=> %(v)s::vector FROM chunks WHERE rid = %(rid)s",
+                "SELECT cv.embedding <=> %(v)s::vector FROM chunk_vectors cv"
+                " WHERE cv.rid = %(rid)s",
                 {"v": format_vector(vector), "rid": rid},
             )
             .fetchone()[0]

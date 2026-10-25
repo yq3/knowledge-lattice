@@ -1,5 +1,7 @@
 """R2 审查修复回归（Committer R1）。
 
+- M0b-3 顺带：dot-key 维度（'a.b'）在 CTE 路径下只以引号字面量出现（P3-5 随
+  json_each 删除消解——原 JSON path '$.a.b' 的 dot 语义不复存在）。
 - **P1-1（必修）**：绑定参数名不得由库内数据（维度 key）拼接——渲染器自控序列命名
   + `InValue.param_prefix` 标识符白名单 fail-closed（构造即拒）；恶意 key 只保留在
   转义后的 JSON path Literal 与 AclDimensionRule。三条回归：①恶意 prefix 构造即拒；
@@ -8,7 +10,7 @@
 - **P2-1（应修）**：`read_grants` 取值 JOIN 校验 `v.dimension_id = dim.id`——FK
   合法但 dimension/value 不匹配的畸形授权行不计入任何维度。
 - **P3-3（覆盖盲区，5 条轻量断言）**：now=None 库时钟分支 / dataset_ids=() 与
-  doc_ids=() 恒假路径 / vector=True 缺 embed_model 的 ValueError / 全 retired 空
+  doc_ids=() 恒假路径 / 向量路缺 embed_model 的 ValueError / 全 retired 空
   Plan / 维度无取值场景。
 """
 
@@ -34,14 +36,11 @@ from helpers import (
 )
 
 from knowledge_lattice.core.docs.acl import AclDeniedError, compile_acl
+from knowledge_lattice.store.acl_ast import ColumnRef, InValue
 from knowledge_lattice.store.sqlite.acl_render import (
-    ColumnRef,
-    InValue,
-    build_dimension_rule_ast,
     build_where_ast,
     render_select,
     render_sql,
-    render_visible_docs_select,
 )
 from knowledge_lattice.store.sqlite.backend import SqliteBackend
 
@@ -78,7 +77,7 @@ def test_malicious_dimension_key_cannot_strip_constants(sqlite_matrix) -> None:
     """维度 key 是库内数据（DDL 无字符集约束）：造 x + 恶意 key + zzz 三维度并授权
     （Committer 攻击配方：先有 x 绑定 :g_x_0，再以恶意 key 截断参数名注入注释），
     渲染产物必须仍含全部外层常量、参数名全为合法标识符、注释记号不出现在字面量外。"""
-    for key in ("x", _EVIL_KEY, "zzz"):
+    for key in ("x", _EVIL_KEY, "zzz", "a.b"):
         _seed_granted_dimension(sqlite_matrix, key)
     plan = compile_acl(SqliteBackend(sqlite_matrix), "u_full", "org:tax", now=NOW_TS)
     rules = {r.key: r for r in plan.dimension_rules}
@@ -93,8 +92,10 @@ def test_malicious_dimension_key_cannot_strip_constants(sqlite_matrix) -> None:
     # 注释记号（-- 与 /*）不得出现在字符串字面量之外——注入面消除的直接证据
     stripped = _OUTSIDE_LITERALS.sub("''", sql)
     assert "--" not in stripped and "/*" not in stripped
-    # 恶意 key 只以转义后的 JSON path 字面量出现
-    assert f"'$.{_EVIL_KEY}'" in sql
+    # 恶意 key 只以转义后的字面量出现（v1.1 CTE：dim.key = '<key>'；无 JSON path）
+    assert f"dim.key = '{_EVIL_KEY}'" in sql
+    # dot-key（P3-5 消解佐证）：含点 key 同样只以字面量出现、真实执行过滤正确
+    assert "dim.key = 'a.b'" in sql
     # 行为照常：恶意/新增维度空值放行，u_full 可见集不变
     assert {r[2] for r in sqlite_matrix.execute(sql, params)} == {
         "d_cn", "d_multi", "d_empty_region", "d_os",
@@ -117,9 +118,11 @@ def test_malicious_key_dual_org_execution_no_cross_org_leak(conn) -> None:
     seed_user(conn, "u_tax")
     seed_membership(conn, "u_tax", "org:tax")
     grant_by_key(conn, "u_tax", key="region", value="CN")
-    # Committer 攻击配方：先有维度 x（绑定 :g_x_0），再有恶意 key 维度
+    # Committer 攻击配方：先有维度 x（绑定 :g_x_0），再有恶意 key 维度；
+    # 顺带 dot-key 维度（P3-5：v1.1 起 key 不进 JSON path——'a.b' 仅字面量）
     _seed_granted_dimension(conn, "x", user_id="u_tax")
     _seed_granted_dimension(conn, _EVIL_KEY_LEAK, user_id="u_tax")
+    _seed_granted_dimension(conn, "a.b", user_id="u_tax")
     seed_user(conn, "u_gl_owner")
     seed_membership(conn, "u_gl_owner", "org:gl")
     seed_searchable_doc(
@@ -140,6 +143,7 @@ def test_malicious_key_dual_org_execution_no_cross_org_leak(conn) -> None:
     sql, params = render_select(plan)
     rows = {r[2] for r in conn.execute(sql, params)}
     assert rows == {"d_tax"}  # org 隔离成立：恶意 key 维度空值放行、org:gl 文档绝不出现
+    assert "dim.key = 'a.b'" in sql and "$." not in sql  # dot-key 无 JSON path 语义
 
 
 # ============ P2-1：畸形授权行（FK 合法、dimension/value 不匹配）不计入任何维度 ============
@@ -200,12 +204,14 @@ def test_empty_dataset_or_doc_filter_matches_nothing(sqlite_matrix) -> None:
     assert {r[2] for r in sqlite_matrix.execute(sql, params)} == {"d_cn"}
 
 
-def test_vector_true_without_embed_model_raises(sqlite_matrix) -> None:
-    """vector=True 缺 embed_model → ValueError（谓词需要 model:dim 标签——D12）；
-    基础路渲染不受影响。"""
+def test_vector_route_without_embed_model_raises(sqlite_matrix) -> None:
+    """向量路缺 embed_model → ValueError（谓词需要 model:dim 标签——D12）；
+    基础路渲染不受影响（v1.1：向量路构造走 build_vec_parts）。"""
+    from knowledge_lattice.store.acl_ast import build_vec_parts
+
     plan = compile_acl(SqliteBackend(sqlite_matrix), "u_full", "org:tax", now=NOW_TS)
     with pytest.raises(ValueError, match="embed_model"):
-        build_where_ast(plan, vector=True)
+        build_vec_parts(plan)
     assert "embed_model" not in render_sql(build_where_ast(plan))[0]
 
 
@@ -217,7 +223,6 @@ def test_all_retired_dimensions_empty_plan(sqlite_matrix) -> None:
     assert plan.dimension_rules == ()
     all_docs = {"d_cn", "d_multi", "d_empty_region", "d_cit", "d_os"}
     assert {r[2] for r in sqlite_matrix.execute(*render_select(plan))} == all_docs
-    assert {r[2] for r in sqlite_matrix.execute(*render_visible_docs_select(plan))} == all_docs
 
 
 def test_dimension_without_values_not_exists_single(sqlite_matrix) -> None:
@@ -228,8 +233,11 @@ def test_dimension_without_values_not_exists_single(sqlite_matrix) -> None:
     plan = compile_acl(backend, "u_full", "org:tax", now=NOW_TS)
     rules = {r.key: r for r in plan.dimension_rules}
     assert rules["novalue_dim"].is_empty
-    assert render_sql(build_dimension_rule_ast(rules["novalue_dim"]))[0] == (
-        "NOT EXISTS (SELECT 1 FROM json_each(c.dims_json, '$.novalue_dim'))"
+    from knowledge_lattice.store.acl_ast import build_visible_docs_rule_ast
+    assert render_sql(build_visible_docs_rule_ast(rules["novalue_dim"], "org:tax"))[0] == (
+        "NOT EXISTS (SELECT 1 FROM document_dimensions AS dd"
+        " JOIN dimensions AS dim ON dim.id = dd.dimension_id"
+        " WHERE dd.doc_id = d.id AND dim.key = 'novalue_dim' AND dim.org_id = :org)"
     )
     sql, params = render_select(plan)
     assert {r[2] for r in sqlite_matrix.execute(sql, params)} == {

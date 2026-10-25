@@ -64,7 +64,9 @@ def test_embed_dim_mismatch_no_partial_write(ingest_env) -> None:
     assert doc["active_error"]
     # 库内无残缺向量行（该批全未写入）
     rows = ingest_env["conn"].execute(
-        "SELECT COUNT(*) FROM chunks WHERE doc_id = ? AND embedding IS NOT NULL", (doc_id,)
+        "SELECT COUNT(*) FROM chunk_vectors cv JOIN chunks c ON c.rid = cv.rid"
+        " WHERE c.doc_id = ?",
+        (doc_id,),
     ).fetchone()[0]
     assert rows == 0
 
@@ -79,6 +81,8 @@ def test_embed_dim_mismatch_no_partial_write(ingest_env) -> None:
         "SELECT COUNT(*) FROM chunks WHERE doc_id = ?", (doc_id,)
     ).fetchone()[0]
     embedded = ingest_env["conn"].execute(
-        "SELECT COUNT(*) FROM chunks WHERE doc_id = ? AND embedding IS NOT NULL", (doc_id,)
+        "SELECT COUNT(*) FROM chunk_vectors cv JOIN chunks c ON c.rid = cv.rid"
+        " WHERE c.doc_id = ?",
+        (doc_id,),
     ).fetchone()[0]
     assert total > 0 and total == embedded

@@ -143,7 +143,7 @@ MATERIALIZED 补充变体同样纳入复核（全部 ✓）。TC-ACL-07 语义�
 |---|---|---|---|
 | 1 | 按块 ACL 渲染模板（基础路） | `store/sqlite/acl_render.py` render_select / `store/postgres/acl_render.py` render_select（json_each/jsonb 扫描 + dims_scan 工厂） | 删；基础路改走 visible_docs（已有） |
 | 2 | FTS 路与向量路的 ACL 片段 | `build_fts_where_ast`（sqlite acl_render.py:171）、`build_where_ast(vector=True)`（双方言——向量路仅追加 embed_model 谓词）——**visible_docs 目前只有基础路形态，无 FTS/向量变体** | 新增 `render_fts_visible_docs_select`（FTS 虚表/tsvector JOIN 与 visible_docs CTE 组合，双方言各一）与向量路 CTE 变体；TC-ACL-06 三路同构断言与 TC-ACL-07 等价性测试改以 visible_docs 为基线（双后端复核） |
-| 3 | search 结果 `dims` 输出契约 | `core/docs/retrieve.py:67`：`dims = json.loads(r.get("dims_json"))`——直接消费 recall_fts 投影列（`render_fts_recall_select` 投影 `c.dims_json`，design §6.1 契约字段） | 二选一（M0b-3 拍板项）：①检索 SQL 按 doc_id LEFT JOIN document_dimensions 聚合（sqlite `json_group_array` / PG `jsonb_agg`，TOP-20 行数级聚合、代价小）；②契约调整（dims 字段退化/移除——影响 MCP 契约与 prototype 页面展示） |
+| 3 | search 结果 `dims` 输出契约 | `core/docs/retrieve.py:67`：`dims = json.loads(r.get("dims_json"))`——直接消费 recall_fts 投影列（`render_fts_recall_select` 投影 `c.dims_json`，design §6.1 契约字段） | 二选一（M0b-3 拍板项）：①检索 SQL 按 doc_id LEFT JOIN document_dimensions 聚合（sqlite `json_group_array` / PG `jsonb_agg`，TOP-20 行数级聚合、代价小）；②契约调整（dims 字段退化/移除——影响 MCP 契约与 prototype 页面展示）。**【实现注记（M0b-3）】实际择型①的变体：不做 SQL 内 LEFT JOIN 聚合，改 store 层第二条 IN 查询 `_attach_dims` 召回后回填（避免 JSON 聚合函数双方言差异，更符合 D24；top-20 行数级代价可忽略）——报告建议与实现的差异以此为准 |
 | 4 | 写路径投影 | `backend.insert` chunk 字段 dims_json（sqlite/postgres backend.py `_CHUNK_COLS`）、摄取链生成（core/docs/ingest）、tests 造数双写（tests/helpers.py `seed_doc_dims`：document_dimensions + UPDATE chunks.dims_json 投影） | 写侧删投影（chunk dict 去 dims_json 字段 + `_CHUNK_COLS` 去列）；`documents.pending_dims_json` **保留**（pending 期暂存 → 切换事务落 document_dimensions 的链路不变）；tests 造数与断言去投影 |
 
 另：pgvector 一侧 `chunks.dims_json JSONB` 列与 sqlite `TEXT` 列随 v1.1 迁移去列；
@@ -244,7 +244,7 @@ sqlite 非向量路（可见性/BM25 前置过滤这类**每次检索必经**的
 **方案二 ≈ 新写 + 清理**（sqlite 621.7+4.3≈626MB / pg 593.7+551.9≈1146MB ≈ 单次满写的
 1.05~1.93×）——两方案总 WAL 同量级（pg 1210 vs 1146MB），**差异不在 WAL 在降级语义**：
 方案一重嵌入窗口内向量路**全程功能降级**（设计已知口径），方案二旧标签持续服务到原子切
-瞬间、**功能零降级**；共存窗口读性能 sqlite 零放大、pg P50 +6% / P95 +19%（上表）——
+瞬间、**功能零降级**；共存窗口读性能 sqlite 零放大、pg P50 +6% / P95 +18%（上表）——
 「零降级」全程限定为**功能**零降级，共存窗口 pg 有约一至两成的读放大。
 
 ### 3.4 建议二（分表与否）与建议三（蓝绿方案）
@@ -266,7 +266,7 @@ G-6 / 调研 blog/04 §三/§四）——届时分表与否的结论需在 halfv
 窗口自主（低峰），sqlite 清理 WAL 仅 4.3MB；④方案一 pg 侧置空+重写 WAL ≈ 单次满写的
 2.0×（§3.3 口径），方案二 ≈1.9× 且换回零降级。代价（拍板时知情）：迁移期向量存储双倍
 （50K 档 pg 高水位 628→1258MB），清理后 plain VACUUM 不归还 OS（空页在文件前段、
-页内复用消化）；共存窗口 pg 读放大 P50 +6% / P95 +19%（sqlite 零）；若存储预算极紧且
+页内复用消化）；共存窗口 pg 读放大 P50 +6% / P95 +18%（sqlite 零）；若存储预算极紧且
 业务可接受降级窗口，方案一仍为可行退路（置空 1.6s、回收 1.6s、pg 空间确实归还）。
 
 ### 3.5 v1.1 分表形态建议（P2-3——拍板"分表"后的迁移形态与列影响清单）

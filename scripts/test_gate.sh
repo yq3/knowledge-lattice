@@ -31,13 +31,17 @@ if [[ -z "$PG_DSN" ]]; then
   exit 1
 fi
 
-# ---- pg 臂在场断言：收集期 [pg] 参数化条目 > 0（收集不执行 fixture、无需容器）----
-PG_COLLECTED="$(uv run pytest -m "not manual" --collect-only -q 2>/dev/null | grep -c '\[pg\]' || true)"
+# ---- pg 臂在场断言：收集期 [pg] 参数化条目 + PG 专用用例 > 0（收集不执行 fixture、无需容器）----
+# R2-P3-7：PG_COLLECTED 范围扩为「参数化 [pg] 条目 + PG 专用文件（test_pg_*）
+# 收集条目」——防 PG 专用用例被删/没收集到的假绿；${...:-0} 防 set -u 空引用。
+PG_PARAM_COLLECTED="$(uv run pytest -m "not manual" --collect-only -q 2>/dev/null | grep -c '\[pg\]' || true)"
+PG_ONLY_COLLECTED="$(uv run pytest tests/test_pg_*.py -m "not manual" --collect-only -q 2>/dev/null | grep -c '::' || true)"
+PG_COLLECTED="$(( ${PG_PARAM_COLLECTED:-0} + ${PG_ONLY_COLLECTED:-0} ))"
 if [[ "$PG_COLLECTED" -eq 0 ]]; then
-  echo "GATE FAIL: 收集期未发现任何 [pg] 参数化用例——backend 参数化骨架失守（防「没收集到」的假绿）。" >&2
+  echo "GATE FAIL: 收集期未发现任何 pg 臂用例（[pg] 参数化 ${PG_PARAM_COLLECTED:-0} + PG 专用 ${PG_ONLY_COLLECTED:-0}）——backend 参数化骨架失守（防「没收集到」的假绿）。" >&2
   exit 1
 fi
-echo "pg 臂参数化用例收集数：${PG_COLLECTED}（> 0 ✓）"
+echo "pg 臂用例收集数：${PG_COLLECTED}（[pg] 参数化 ${PG_PARAM_COLLECTED:-0} + PG 专用 ${PG_ONLY_COLLECTED:-0}，> 0 ✓）"
 
 # 单模式门禁：跑全量 → 退出码拦截 failed → summary 行拦截 skipped
 run_mode() {
@@ -51,8 +55,10 @@ run_mode() {
     exit 1
   fi
   # 完整 summary 行（最后一个 passed/failed/error 汇总行）上的 skipped 检测
+  # R2-P3-2：`|| true` 使 grep 无匹配（无 summary——收集崩溃等）时友好文案可达
+  #（原实现 set -e 在赋值处静默退出、诊断信息缺失；fail-closed 语义不变）
   local summary
-  summary="$(grep -E '[0-9]+ (passed|failed|error)' "$log" | tail -1)"
+  summary="$(grep -E '[0-9]+ (passed|failed|error)' "$log" | tail -1 || true)"
   if grep -Eq '[0-9]+ skipped' <<<"$summary"; then
     echo "GATE FAIL: [$label] summary 含 skipped（门禁口径：skip=失败——逐个核对环境或申报理由）" >&2
     echo "  summary: $summary" >&2
@@ -69,4 +75,4 @@ run_mode() {
 run_mode "pytest" uv run pytest
 run_mode "pytest-O" uv run python -O -m pytest
 
-echo "GATE PASS: sqlite+pg 双后端、双模式（常规/python -O）全绿，0 skipped（pg 臂 $PG_COLLECTED 组参数化全实跑）"
+echo "GATE PASS: sqlite+pg 双后端、双模式（常规/python -O）全绿，0 skipped（pg 臂 $PG_COLLECTED 条用例全实跑：[pg] 参数化 ${PG_PARAM_COLLECTED:-0} + PG 专用 ${PG_ONLY_COLLECTED:-0}）"

@@ -149,16 +149,21 @@ def portability_check() -> dict[str, str]:
 _LOOPS_RE = re.compile(r"loops=(\d+)")
 
 
-def _loops_by_kind(plan_text: str, kind: str) -> int:
+def _loops_by_kind(plan_text: str, kind: str) -> int | None:
     """解析 EXPLAIN ANALYZE 文本中含指定节点类型（如 "Anti Join" / "CTE Scan"）
     的行的 max loops——文档级谓词（Anti Join 分支）是按块还是按文档重复求值的
-    直接证据。"""
-    best = 0
+    直接证据。
+
+    P3-H（0 误判边界）：计划文本中**未命中**该节点类型时返回 None（区别于
+    命中但 loops=0）——调用方 PASS 判定要求非 None，防"证据缺失"被当作
+    loops=0 满足 `<= n_docs` 而误判 PASS。"""
+    best: int | None = None
     for line in plan_text.splitlines():
         if kind in line:
             m = _LOOPS_RE.search(line)
             if m:
-                best = max(best, int(m.group(1)))
+                loops = int(m.group(1))
+                best = loops if best is None else max(best, loops)
     return best
 
 
@@ -217,10 +222,18 @@ def capture_plans() -> dict[str, str]:
         mat_cte_scan_loops = _loops_by_kind(
             plans["pg_visible_docs_materialized_explain_analyze"], "CTE Scan"
         )
+        # P3-H：证据缺失（None）与数值 0 区分——任一分支未命中节点即 FAIL
+        evidence_complete = (
+            inline_anti_loops is not None
+            and mat_anti_loops is not None
+            and mat_cte_scan_loops is not None
+        )
         verdict = (
             "PASS"
-            if inline_anti_loops >= n_chunks and mat_anti_loops <= n_docs
-            else "FAIL（计划形态与结论不符——需上报）"
+            if evidence_complete
+            and inline_anti_loops >= n_chunks
+            and mat_anti_loops <= n_docs
+            else "FAIL（计划形态与结论不符/证据缺失——需上报）"
         )
         plans["pg_loops_verdict"] = (
             f"{verdict}: inline 文档级谓词（Anti Join 分支）max loops={inline_anti_loops}"
@@ -231,7 +244,27 @@ def capture_plans() -> dict[str, str]:
     return plans
 
 
+V10_SCHEMA_NOTICE = (
+    "本实验测量 schema v1.0 的 json_each 按块路 vs visible_docs 双写法（M0b-2）。\n"
+    "M0b-3 已拍板删 dims_json/json_each 模板（visible_docs+MATERIALIZED 唯一路径），\n"
+    "src 渲染器不再提供按块路——复跑本实验请 checkout M0b-2 提交（a6ffa1c）。"
+)
+
+
+def _guard_v10_schema() -> None:
+    """v1.0 实验退役守卫：探测 src 是否仍有按块渲染入口（render_visible_docs_select
+    已删/已并轨即视为退役）——退出码 0 + 明示信息，绝不静默产出误导性数据。"""
+    try:
+        from knowledge_lattice.store.sqlite import acl_render  # noqa: F401
+    except Exception as exc:  # pragma: no cover - 环境异常
+        raise SystemExit(f"bench1: import failed: {exc}")
+    if not hasattr(acl_render, "render_visible_docs_select"):
+        print(V10_SCHEMA_NOTICE)
+        raise SystemExit(0)
+
+
 def main() -> None:
+    _guard_v10_schema()
     all_rows: list[dict] = []
     equiv: list[str] = []
     for dialect in ("sqlite", "pg"):

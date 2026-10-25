@@ -3,7 +3,7 @@
 T20 新建维度零消失 / 回填只收紧 / 生命周期不放宽 / 仅退役放宽（审计半句「退役
 事件入 outbox」随 M2——条件消失断言必做）；T22 无授权维度只见空值文档、空集
 不出 `IN ()`（维度片段级断言）。维度条件在场/缺席的逐字断言经 dbwrap
-dim_marker 方言分派（sqlite `'$.k'` / PG `jsonb_extract_path(c.dims_json, 'k')`）。
+dim_marker（v1.1 CTE 形态 `dim.key = '<k>'`——双方言同文）。
 """
 
 from __future__ import annotations
@@ -65,18 +65,18 @@ def test_t22_no_grant_dimension_only_null_docs(matrix) -> None:
     rules = {r.key: r for r in plan.dimension_rules}
     assert rules["tax_type"].is_empty
 
-    fragment = matrix.render_sql(matrix.build_dimension_rule_ast(rules["tax_type"]))[0]
-    if matrix.is_sqlite:
-        assert fragment == "NOT EXISTS (SELECT 1 FROM json_each(c.dims_json, '$.tax_type'))"
-    else:
-        assert fragment == (
-            "NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text("
-            "jsonb_extract_path(c.dims_json, 'tax_type')))"
-        )
+    fragment = matrix.render_sql(matrix.build_rule_ast(rules["tax_type"], plan))[0]
+    org = ":org" if matrix.is_sqlite else "%(org)s"
+    assert fragment == (
+        "NOT EXISTS (SELECT 1 FROM document_dimensions AS dd"
+        " JOIN dimensions AS dim ON dim.id = dd.dimension_id"
+        f" WHERE dd.doc_id = d.id AND dim.key = 'tax_type' AND dim.org_id = {org})"
+    )
     assert " OR " not in fragment
 
     sql, params = matrix.render_select(plan)
-    assert matrix.dim_marker("region") in sql and " OR " in sql  # region 统一模板照常在场
+    # region 统一模板照常在场（key 条件 + 有值交集内层反连接）
+    assert matrix.dim_marker("region") in sql and "v.value IN" in sql
     assert "IN ()" not in sql
     assert set(params.values()) >= {"CN", "org:tax"}
 

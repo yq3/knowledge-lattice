@@ -245,6 +245,16 @@ def recall_sql(
       口径，P2-1）**；model 用于蓝绿共存期以新标签谓词计时（P2-4）。
     """
     mk = _mark(db)
+    # P3-I（组合校验）：非法 layout/table 组合 fail-fast——防静默跑出无意义口径
+    #（same 只对宽基表 chunks 成立——chunks_narrow 无 embedding 列；sep 两基表均可）
+    valid = (layout == "same" and table == "chunks") or (
+        layout == "sep" and table in ("chunks", "chunks_narrow")
+    )
+    if not valid:
+        raise ValueError(
+            f"recall_sql: 非法组合 layout={layout!r} table={table!r}"
+            "（same→chunks；sep→chunks|chunks_narrow）"
+        )
     if layout == "same":
         vec_pred = f"c.embedding IS NOT NULL AND c.embed_model = {mk('m')}"
         order = (
@@ -578,7 +588,36 @@ def run_dialect(dialect: str, vectors: Any) -> tuple[dict[str, Any], list[dict]]
         return out, bg
 
 
+V10_SCHEMA_NOTICE = (
+    "本实验测量 schema v1.0 的 chunks.embedding 同表 vs chunk_vectors 分表布局"
+    "（M0b-2）。\nM0b-3 已落库 v1.1（chunks.embedding 列删除、向量迁 chunk_vectors），"
+    "src 不再有同表形态——复跑本实验请 checkout M0b-2 提交（a6ffa1c）。"
+)
+
+
+def _guard_v10_schema() -> None:
+    """v1.0 实验退役守卫：v1.1 起 chunks 无 embedding 列（ensure_layout 的
+    CREATE TABLE chunk_vectors 会撞 already exists / 造数写 chunks.embedding 即失败）
+    ——探测列在场性，退出码 0 + 明示信息，绝不静默产出误导性数据。"""
+    import tempfile
+    from pathlib import Path
+
+    from knowledge_lattice.store.sqlite import connect, migrate_db
+
+    with tempfile.TemporaryDirectory() as td:
+        c = connect(Path(td) / "probe.db")
+        try:
+            migrate_db(c)
+            cols = {r[1] for r in c.execute("PRAGMA table_info(chunks)")}
+        finally:
+            c.close()
+    if "embedding" not in cols:
+        print(V10_SCHEMA_NOTICE)
+        raise SystemExit(0)
+
+
 def main() -> None:
+    _guard_v10_schema()
     global _QUERY_VEC
     vectors = synth_vectors(N_CHUNKS)
     _QUERY_VEC = vectors[0]

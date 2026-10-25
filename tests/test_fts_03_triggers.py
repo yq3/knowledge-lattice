@@ -70,11 +70,13 @@ def test_switch_clear_columns_zero_match(sqlite_matrix) -> None:
     rid = _setup(sqlite_matrix)
     assert _match_rids(sqlite_matrix, "留抵退税") == {rid}
     sqlite_matrix.execute(
-        "UPDATE chunks SET tombstone = 1, embedding = NULL,"
+        "UPDATE chunks SET tombstone = 1,"
         " title_seg = '', content_seg = '', keywords = '', llm_keywords = '', tags = ''"
         " WHERE rid = ?",
         (rid,),
     )
+    # v1.1：旧版本向量清理 = 删 chunk_vectors 行（分表形态；原 UPDATE embedding=NULL）
+    sqlite_matrix.execute("DELETE FROM chunk_vectors WHERE rid = ?", (rid,))
     assert _match_rids(sqlite_matrix, "留抵退税") == set()
     # 残留空行不影响 MATCH（#33 P0-2.4/T9）
     assert _fts_row(sqlite_matrix, rid) == ("", "")

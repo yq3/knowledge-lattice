@@ -228,11 +228,17 @@ def test_version_switch_clear_all_five_columns_zero_hits(backend) -> None:
     # 五列均有词 → 全部可命中
     for word in ("留抵", "留抵退税", "退税", "税"):
         assert backend.fts_word_count(word) >= 1, word
-    # 版本切换语义：旧版本块五列全清（tombstone=1 + embedding/五列置空）
+    # 版本切换语义：旧版本块五列全清（tombstone=1 + 五列置空）+ 向量清理
+    # （v1.1 分表：DELETE chunk_vectors——原 UPDATE embedding=NULL 的等价形态）
     backend.execute(
-        "UPDATE chunks SET tombstone = 1, embedding = NULL,"
+        "UPDATE chunks SET tombstone = 1,"
         " title_seg = '', content_seg = '', keywords = '', llm_keywords = '', tags = ''"
         " WHERE doc_id = ? AND version = 1",
+        (doc_id,),
+    )
+    backend.execute(
+        "DELETE FROM chunk_vectors WHERE rid IN"
+        " (SELECT rid FROM chunks WHERE doc_id = ? AND version = 1)",
         (doc_id,),
     )
     # 五列全清后：任一列词零命中（sqlite=FTS 行被 au 重写为空 / pg=GENERATED 空 tsvector）

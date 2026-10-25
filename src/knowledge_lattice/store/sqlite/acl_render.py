@@ -1,32 +1,28 @@
-"""AclPlan → SQLite SQL：渲染器 + sqlite 方言构造（D24——渲染收口 store/sqlite/ 侧）。
+"""AclPlan → SQLite SQL：渲染器 + 基础/FTS/召回路构造（D24——渲染收口 store/sqlite/ 侧）。
 
-- 节点类型与中性构造层上提至 `store/acl_ast.py`（M0b-1——双方言共享**同一棵
-  方言无关 AST**，本模块 re-export 保持既有导入路径不变）；本模块保留 sqlite
-  方言差异两件：参数语法 `:name` 的 `_Renderer` 与按块扫描
-  `json_each(c.dims_json, '$.k')`（dims_scan 注入）；
-- 产物一律由 AST 节点树渲染，**禁止字符串拼接**：授权取值 / org / dataset / doc /
-  模型标签全部经绑定参数；JSON path（'$.<key>'）与维度 key 为结构常量（转义渲染）；
-- **绑定参数名由渲染器按 AST 遍历顺序自控生成（g<seq>_<i>），与库内数据（维度
-  key 等）完全无关**（Committer R1 P1-1：由 key 拼接参数名时，含 SQL 记号的 key
-  会截断参数名、残余字符落入 SQL 文本——可注释掉外层常量造成跨组织/跨版本泄露）；
-  `InValue.param_prefix` 仅为 trace 标签（标识符白名单校验、绝不进入 SQL）；
+- 节点类型与中性构造层在 `store/acl_ast.py`（双方言共享**同一棵方言无关 AST**，
+  本模块 re-export 保持既有导入路径不变）；本模块保留 sqlite 方言差异一件：
+  参数语法 `:name` 的 `_Renderer`；
+- **visible_docs CTE 唯一路径（M0b-3 拍板 1）**：json_each 按块模板（dims_json
+  冗余投影）已删——基础路（render_select）/FTS 路（render_fts_select /
+  render_fts_recall_select）统一 `WITH visible_docs(doc_id) AS MATERIALIZED (…)`
+  前置 + `c.doc_id IN (visible_docs)`；`AS MATERIALIZED` sqlite ≥3.35 同语法
+  可用（本就默认物化、关键字为 no-op——双方言统一加注，报告 §2.3）；
+- 产物一律由 AST 节点树渲染，**禁止字符串拼接**：授权取值 / org / 模型标签 /
+  查询串全部经绑定参数；维度 key 为结构常量（转义渲染）；
+- 绑定参数名由渲染器按 AST 遍历顺序自控生成（g<seq>_<i>），与库内数据完全
+  无关（M0a-2 R2 P1-1 红线）；`InValue.param_prefix` 仅为 trace 标签（白名单
+  fail-closed、绝不进入 SQL）；`_Renderer` 单趟渲染状态、**不跨调用拼接片段**；
 - 「无 IN ()」为 Plan 层不变式（acl_ast.InValue 构造约束）：空授权集维度只产
   NotExists 单条件（§5.1 第 3 步 / T22）；
-- 双写法（§5.1 性能注 / TC-ACL-07）：按块 json_each 模板（render_select /
-  render_fts_select——dims_json 冗余投影）与按文档 visible_docs CTE
-  （render_visible_docs_select——document_dimensions），同一 AclPlan、同一授权
-  展开，结果集逐字等价；M0b 实验选定后删其一；
-- 三路同构（TC-ACL-06）：FTS / 向量 / 实体路共用同一 Plan 与同一 ACL 片段；
-  向量路仅追加 embed_model 谓词（vector=True——TC-EMB-02）；FTS 路版本条件在
-  chunks/documents JOIN 上（T9——FTS 层无旧版本/tombstone 命中的机制前提）。
+- 三路同构（TC-ACL-06）：FTS / 向量 / 实体路共用同一 Plan 与同一 visible_docs
+  CTE；向量路仅追加 chunk_vectors JOIN 谓词（TC-EMB-02——谓词迁 cv，sqlite 向量
+  召回渲染随 M1）；FTS 路版本条件在 chunks/documents JOIN 上（T9）。
 """
 
 from __future__ import annotations
 
 from knowledge_lattice.store.acl_ast import (  # noqa: F401  (re-export——既有导入路径不变)
-    CHUNKS as _CHUNKS,
-    DOCS as _DOCS,
-    JE as _JE,
     And,
     BindParam,
     ColumnRef,
@@ -43,24 +39,23 @@ from knowledge_lattice.store.acl_ast import (  # noqa: F401  (re-export——既
     Or,
     Select1,
     TableRef,
-    build_acl_ast as _build_acl_ast_neutral,
-    build_visible_docs_parts,
-    build_where_ast as _build_where_ast_neutral,
-    filter_nodes as _filter_nodes_neutral,
-    org_eq as _org_eq,
-    tombstone_eq as _tombstone_eq,
-    version_eq as _version_eq,
+    build_fts_where_ast as _build_fts_where_neutral,
+    build_visible_docs_cte_where as _build_cte_where_neutral,
+    build_visible_docs_outer_where as _build_outer_where_neutral,
 )
-from knowledge_lattice.store.backend import AclDimensionRule, AclPlan
+from knowledge_lattice.store.backend import AclPlan
 from knowledge_lattice.store.sqlite.fts import BM25_WEIGHTS
 
 __all__ = [
     "And", "BindParam", "ColumnRef", "Eq", "Exists", "Expr", "Func", "InSubquery",
     "InValue", "Join", "Literal", "Match", "NotExists", "Or", "Select1", "TableRef",
-    "build_dimension_rule_ast", "build_acl_ast", "build_where_ast",
-    "build_fts_where_ast", "render_sql", "render_select", "render_fts_select",
-    "render_fts_recall_select", "render_visible_docs_select",
+    "build_acl_ast", "build_where_ast", "build_fts_where_ast",
+    "render_sql", "render_select", "render_fts_select",
+    "render_fts_recall_select",
 ]
+
+# CTE 前缀（结构常量——MATERIALIZED 双方言统一；sqlite ≥3.35 同语法，默认物化）
+_CTE_PREFIX = "WITH visible_docs(doc_id) AS MATERIALIZED (SELECT d.id FROM documents d WHERE "
 
 
 # ============ 渲染器（AST → SQL 文本 + 参数表；数据值绝不进 SQL 文本） ============
@@ -72,6 +67,8 @@ class _Renderer:
     绑定参数名由渲染器按 AST 遍历顺序自控生成（g<seq>_<i>）——与库内数据
     （维度 key 等）完全无关（P1-1：参数名不得由数据拼接，防 SQL 文本注入）；
     显式命名的参数（org / current_model / q）为渲染器与 builder 的固定常量。
+    单趟纪律：一个 _Renderer 实例只在一次渲染内存活（CTE 与外层共用同一渲染
+    状态），**绝不跨调用拼接片段**——无中间 SQL 文本复用面。
     """
 
     def __init__(self) -> None:
@@ -143,68 +140,52 @@ def render_sql(root: Expr) -> tuple[str, dict[str, object]]:
     return renderer.expr(root), renderer.params
 
 
-# ============ AST builder（AclPlan → 节点树；sqlite 方言注入 json_each 扫描） ============
+# ============ 完整召回 SQL（visible_docs CTE 唯一路径——M0b-3 拍板 1） ============
 
 
-def _dims_scan(dim_key: str) -> Func:
-    """json_each(c.dims_json, '$.<key>')——按块模板的表值扫描（SQLite 方言节点）。"""
-    return Func("json_each", (ColumnRef(_CHUNKS, "dims_json"), Literal(f"$.{dim_key}")))
+def build_acl_ast(plan: AclPlan):
+    """维度规则块序列（方言无关构造的 re-export 面——结构与 acl_ast 一致）。"""
+    from knowledge_lattice.store.acl_ast import build_visible_docs_rule_ast
+
+    return tuple(build_visible_docs_rule_ast(rule, plan.org_id) for rule in plan.dimension_rules)
 
 
-def build_dimension_rule_ast(rule: AclDimensionRule) -> Expr:
-    """单维统一模板（§5.1 第 3 步）：有值则过滤、空值放行（语义见 acl_ast）。"""
-    from knowledge_lattice.store.acl_ast import build_dimension_rule_ast as _build
-
-    return _build(rule, dims_scan=_dims_scan)
+def build_where_ast(plan: AclPlan):
+    """基础路外层 WHERE（方言无关构造 re-export——语义见 acl_ast）。"""
+    return _build_outer_where_neutral(plan)
 
 
-def build_acl_ast(plan: AclPlan) -> Expr | None:
-    """维度规则合取——FTS/向量/实体三路共享的 ACL 片段（TC-ACL-06）。"""
-    return _build_acl_ast_neutral(plan, dims_scan=_dims_scan)
-
-
-def build_where_ast(plan: AclPlan, *, vector: bool = False) -> And:
-    """完整 WHERE（基础/向量/实体路）——TC-ACL-06 / TC-EMB-02（语义见 acl_ast）。"""
-    return _build_where_ast_neutral(plan, dims_scan=_dims_scan, vector=vector)
-
-
-def build_fts_where_ast(plan: AclPlan, *, query: str) -> And:
-    """FTS 路 WHERE：`chunks_fts MATCH` + 同一 ACL 片段 + 常量（版本条件移至
-    JOIN——render_fts_select；T9）。"""
-    parts: list[Expr] = [Match("f", "chunks_fts", BindParam("q", query))]
-    acl = build_acl_ast(plan)
-    if acl is not None:
-        parts.append(acl)
-    parts.append(And((_tombstone_eq(), _org_eq(plan))))
-    parts.extend(_filter_nodes_neutral(plan))
-    return And(tuple(parts))
-
-
-# ============ 完整召回 SQL（双写法——TC-ACL-07） ============
+def build_fts_where_ast(plan: AclPlan, *, query: str):
+    """FTS 路 WHERE：`chunks_fts MATCH` + 可见集引用 + 常量 + 过滤（版本条件在
+    JOIN 上——T9）；与基础路共用同一 CTE 构造（TC-ACL-06）。"""
+    return _build_fts_where_neutral(plan, query=query)
 
 
 def render_select(plan: AclPlan) -> tuple[str, dict[str, object]]:
-    """按块 json_each 模板的基础路召回 SQL（§5.1 编译产物示意——实体路同形）。"""
-    where_sql, params = render_sql(build_where_ast(plan))
+    """基础路召回 SQL（实体路同形）——visible_docs CTE + 外层常量/过滤
+    （§5.1 编译产物示意；M0b-2 实验选定唯一路径，json_each 模板已删）。"""
+    renderer = _Renderer()  # CTE 与外层同一渲染状态（参数名序列连续、org 复用同名同值）
     sql = (
-        "SELECT c.rid, c.id, c.doc_id"
+        f"{_CTE_PREFIX}{renderer.expr(_build_cte_where_neutral(plan))})"
+        " SELECT c.rid, c.id, c.doc_id"
         " FROM chunks c JOIN documents d ON d.id = c.doc_id"
-        f" WHERE {where_sql}"
+        f" WHERE {renderer.expr(_build_outer_where_neutral(plan))}"
     )
-    return sql, params
+    return sql, renderer.params
 
 
 def render_fts_select(plan: AclPlan, *, query: str) -> tuple[str, dict[str, object]]:
-    """FTS 路召回 SQL：chunks_fts MATCH + 同一 ACL 片段 + 版本条件在 JOIN 上（T9）。"""
-    where_sql, params = render_sql(build_fts_where_ast(plan, query=query))
+    """FTS 路召回 SQL：visible_docs CTE + chunks_fts MATCH + 版本条件在 JOIN 上（T9）。"""
+    renderer = _Renderer()
     sql = (
-        "SELECT c.rid, c.id, c.doc_id"
+        f"{_CTE_PREFIX}{renderer.expr(_build_cte_where_neutral(plan))})"
+        " SELECT c.rid, c.id, c.doc_id"
         " FROM chunks_fts f"
         " JOIN chunks c ON c.rid = f.rowid"
         " JOIN documents d ON d.id = c.doc_id AND c.version = d.active_version"
-        f" WHERE {where_sql}"
+        f" WHERE {renderer.expr(build_fts_where_ast(plan, query=query))}"
     )
-    return sql, params
+    return sql, renderer.params
 
 
 def render_fts_recall_select(
@@ -212,41 +193,27 @@ def render_fts_recall_select(
 ) -> tuple[str, dict[str, object]]:
     """M0a-3 BM25 召回（检索链实装形态，TC-FTS-02/TC-E2E-01）：
 
-    - 溯源列一次取齐（chunk_id/doc_id/title/page_no/dims/source/dataset/sheet/content/snippet 原文）；
+    - 溯源列一次取齐（chunk_id/doc_id/title/page_no/sheet/dataset/source/content/
+      snippet 原文；v1.1 起无 dims_json 投影——dims 由 recall_fts 按
+      document_dimensions 聚合回填，拍板 3）；
     - 五列加权 `bm25(chunks_fts, 3.0, 1.0, 5.0, 0.5, 8.0)`（结构常量，参数同列序）——
       越小越相关，ORDER BY ASC；LIMIT :top_k 经绑定参数；
     - match_expr 为 fts.build_match_expr 产物（token 转义后的字面量 OR 串），经 :q 绑定；
       WHERE 与 render_fts_select 同一 builder（build_fts_where_ast——三路同构 TC-ACL-06）。
     """
-    where_sql, params = render_sql(build_fts_where_ast(plan, query=match_expr))
-    params["top_k"] = top_k
+    renderer = _Renderer()
     sql = (
-        "SELECT c.id AS chunk_id, c.doc_id, d.title, c.page_no, c.sheet_name, c.dims_json,"
+        f"{_CTE_PREFIX}{renderer.expr(_build_cte_where_neutral(plan))})"
+        " SELECT c.id AS chunk_id, c.doc_id, d.title, c.page_no, c.sheet_name,"
         " d.source_uri, d.dataset_id, ds.name AS dataset_name, c.content,"
         f" bm25(chunks_fts, {BM25_WEIGHTS}) AS score_raw"
         " FROM chunks_fts f"
         " JOIN chunks c ON c.rid = f.rowid"
         " JOIN documents d ON d.id = c.doc_id AND c.version = d.active_version"
         " JOIN datasets ds ON ds.id = d.dataset_id"
-        f" WHERE {where_sql}"
+        f" WHERE {renderer.expr(build_fts_where_ast(plan, query=match_expr))}"
         " ORDER BY score_raw ASC"
         " LIMIT :top_k"
     )
-    return sql, params
-
-
-def render_visible_docs_select(plan: AclPlan) -> tuple[str, dict[str, object]]:
-    """按文档 visible_docs CTE 备选写法（§5.1 性能注）——同一 AclPlan/授权展开，
-    先求可见文档集合再 `c.doc_id IN (visible_docs)`（走 uq_chunks_docver）；
-    结果集与 render_select 逐字等价（TC-ACL-07；M0b 实验选定后二删其一）。"""
-    renderer = _Renderer()  # CTE 与外层同一渲染状态（参数名序列连续、org 复用同名同值）
-    cte_where, outer = build_visible_docs_parts(plan)
-    sql = (
-        "WITH visible_docs(doc_id) AS ("
-        "SELECT d.id FROM documents d"
-        f" WHERE {renderer.expr(cte_where)})"
-        " SELECT c.rid, c.id, c.doc_id"
-        " FROM chunks c JOIN documents d ON d.id = c.doc_id"
-        f" WHERE {renderer.expr(outer)}"
-    )
+    renderer.params["top_k"] = top_k
     return sql, renderer.params

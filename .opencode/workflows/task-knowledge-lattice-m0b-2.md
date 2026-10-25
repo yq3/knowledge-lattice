@@ -5,18 +5,18 @@ target: knowledge-lattice
 coderTaskId: ses_e9236e248ffeRQxs9M6quuudSD
 testerTaskId: ses_e920a8e4effev2ENq3zW9CV3sI
 committerTaskId: ses_e91fc8be7ffetapXWzTrxNf0kK
-status: approved
+status: done
 round: 2
 maxRounds: 3
 testVerdict: PASS
 reviewVerdict: APPROVED
 testedSha: a6ffa1cc07a5b2b8fbecd0e235da835ed99e41af
-reviewedSha: a6ffa1cc07a5b2b8fbecd0e235da835ed99e41af
+reviewedSha: 54fe4784e2b2914f09a58ece5c53c51d13824e4e   # doc-only 复核口径（54fe478）；代码级 codeTestedReviewedSha=a6ffa1cc07a5b2b8fbecd0e235da835ed99e41af
 # 以上 SHA = coder 最近一轮本地 commit（[taskId] R<n>）后的 HEAD；修复轮 commit 后 reviewedSha 置空待重审
 filesChanged: ["R1（6 files +1992）：benchmarks/bench_common.py（共享 harness：双后端库就位/确定性造数种子 20261024/合成向量 2560 维/nearest-rank 分位计时）", "R1：benchmarks/bench1_acl_dual_write.py（实验 1：双写法两档双后端 P95+12 组等价性复核+PG MATERIALIZED 变体+可移植性比对+EXPLAIN 证据）", "R1：benchmarks/bench2_vector_layout.py（实验 2：对称写相位 WAL 精确计量+向量路/元数据/点查+蓝绿方案一/二逐相位实测）", "R1：benchmarks/bench3_mcp_client.py（实验 3 编排：真实 FastMCP server+spawn mcp 1.x 独立 env driver）", "R1：benchmarks/bench3_client_driver.py（实验 3 客户端驱动：三形态计时+10 会话并持+过期刷新）", "R1：benchmarks/report-m0b-2.md（实验报告：原始数据+三项建议+口径限制+复跑入口）", "R2（5 files +508/−217）：bench2_vector_layout.py（P2-1 双基表口径宽=上界/窄=干净+窄表 rid 索引+ANALYZE / P2-4 蓝绿共存期读路径 / P2-5 probe_pk_rid_conflict 双后端 / P3-6 chunk_vectors 点查 / P3-7 n≥20 / PG 会话级禁并行口径统一）", "R2：bench1_acl_dual_write.py（P2-5 EXPLAIN ANALYZE loops 程序化解析+PASS/FAIL 判定 / P3-7 五万档 n=20）", "R2：bench3_mcp_client.py（P3-13 钉 mcp==1.30.0/pyjwt==2.15.1 / P3-2 范围钉表述）", "R2：bench3_client_driver.py（P3-8 ceil 统一+样本 15/40+口径申报）", "R2：report-m0b-2.md（P2-2 影响清单 / P2-3 v1.1 形态建议表 / P3-15 调研对照小节 / P3 措辞口径全修 / R2 权威数据表——实验 2 结论大修：分表向量路零代价、pg 元数据拖累撤销、并行伪差异实证）"]
 endReason: null
 createdAt: 2026-10-24T19:57:49+0800
-updatedAt: 2026-10-24T22:36:16+0800
+updatedAt: 2026-10-24T22:49:27+0800
 ---
 
 # task-knowledge-lattice-m0b-2: M0b-2 五实验——ACL 双写法性能 / 向量同表 vs 分表 / 委托 token 客户端实测 + 实验报告
@@ -79,7 +79,20 @@ updatedAt: 2026-10-24T22:36:16+0800
 
 ## 遗留事项（跨任务移交）
 
-- [ ] 无（本段为 M0b 第二段；实验结论的落库动作移交 M0b-3——见任务原文第 4 点）
+- [ ] **移交 M0b-3 批次（本段新增）**：P3-F 残留（report §3.3 尾句/§3.4 +19 与表 +18 统一——doc-only 复核发现的唯一残留，非阻塞）；R2 复审 P3-H/I 代码可维护性（bench1 loops 解析 0 误判边界、bench2 recall_sql 组合校验）；勘误批次合并登记（design §7 adapters 依赖注记、正文"压测/三档"字样——M0b-1/M0b-2 两任务累积）
+- [ ] 无（实验结论的落库动作移交 M0b-3——见任务原文第 4 点）
+
+## 交付记录（2026-10-24）
+
+- 收口落笔（supervised-coding，committer R2 授权 doc-only）：report-m0b-2.md 七处修订（P3-A~G：15.5×→9.0×、n=15 P95=最大值、§0 归因区分、pg 元数据表述收敛、零代价 P50 口径、+18% 统一、pg 共存期定性申报+波动带 -3%~+52%）；TEST-CASES v1.5.2（TC-PERF-01 两档 / TC-PERF-03 取消 / §六 M0b 行——2026-10-24 用户拍板口径）
+- PR：https://github.com/yq3/lab/pull/48（base=develop，head=develop_opencode；commits=4312092[R1] + a6ffa1c[R2] + 54fe478[docs]；9 files）
+- push：`9cdac5b..54fe478 develop_opencode -> develop_opencode`（用户已确认授权，SSH）
+- docs commit `54fe478`（4 files，+458/−15，零代码路径）：报告修订 + TEST-CASES v1.5.2 + M0b-1 检查点合入记录归档 + M0b-2 检查点归档
+- 评审留痕：committer `gh pr review --comment`（review id PRR_kwDOTsiHgs8AAAABUBbl0g——COMMENTED 于 head 54fe478；doc-only 复核七处修订 6 处一致 + P3-F 残留 1 处非阻塞登记 M0b-3；TEST-CASES v1.5.2 抽查全过；manifest 核对自洽；PR mergeable=MERGEABLE、mergeStateStatus=CLEAN）
+- 双 SHA 口径：代码级 a6ffa1c（R2 复审 APPROVED）/ head 54fe478（doc-only 复核 reviewedSha，零代码路径）——manifest docsCommitNote 注明
+- evidence manifest：已写入 PR description 末尾 `## Evidence Manifest` 小节（head=54fe478、codeTestedReviewedSha/testedSha/reviewedSha=a6ffa1c、PASS/APPROVED、gate_commands=[scripts/test_gate.sh 双后端双模式]、stale=false、docsCommitNote 在场）
+- 状态：approved→交付完成（合入待用户确认后执行，不自动合入）
+- **合入完成（2026-10-24 用户确认）**：PR #48 state=MERGED，mergeCommit=`6f0833428bf102f8519d5b94c8bb04a23c28f906`；origin/develop 前进 `aa74e7c..6f08334`（merge commit 保留 R1+R2+docs 完整历史）；develop_opencode 远端分支按 D30 约定保留，M0b-3 继续在此分支开发——**M0b-2 正式完成（done）**；M0b-3 开工事项：三项建议拍板（dims_json 删除+visible_docs+MATERIALIZED / 分表 chunk_vectors PK(rid,embed_model) / 重嵌入方案二蓝绿）→ schema v1.1 迁移 → 勘误批次 + 遗留清偿收口
 
 ## 轮次记录
 

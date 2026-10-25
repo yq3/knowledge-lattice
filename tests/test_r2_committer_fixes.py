@@ -120,7 +120,9 @@ def test_p2_3_write_embeddings_accepts_floats(ingest_env) -> None:
     conn.commit()
     written = ingest_env["backend"].write_embeddings("m:8", [(rid, [0.5, -0.5, 1.0])])
     assert written == 1
-    blob = conn.execute("SELECT embedding FROM chunks WHERE rid = ?", (rid,)).fetchone()[0]
+    blob = conn.execute(
+        "SELECT embedding FROM chunk_vectors WHERE rid = ?", (rid,)
+    ).fetchone()[0]
     assert blob is not None
     assert unpack_f32(blob) == pytest.approx([0.5, -0.5, 1.0])
 
@@ -277,9 +279,7 @@ def test_p3_7_pending_dims_mismatch_rolls_back(ingest_env) -> None:
         parser="docling", owner_user_id="u_full", raw_object_key="x.html",
         pending_dims_json='{"region": ["XX_NOT_EXIST"]}',
     )
-    chunks = [
-        {"id": "chk_p37_1", "seq": 1, "content": "内容", "content_seg": "内容", "dims_json": "{}"}
-    ]
+    chunks = [{"id": "chk_p37_1", "seq": 1, "content": "内容", "content_seg": "内容"}]
     with pytest.raises(RuntimeError, match="pending_dims resolution mismatch"):
         backend.insert("doc_p37", 1, chunks)
     # 回滚：块未写、pending_dims_json 保留供重试、状态未推进
@@ -308,7 +308,9 @@ def test_p3_8_embedding_count_mismatch_raises(ingest_env) -> None:
     assert doc["active_status"] == "searchable_lexical"  # 不置 full
     assert doc["active_error"]
     n = ingest_env["conn"].execute(
-        "SELECT COUNT(*) FROM chunks WHERE doc_id = ? AND embedding IS NOT NULL", (doc_id,)
+        "SELECT COUNT(*) FROM chunk_vectors cv JOIN chunks c ON c.rid = cv.rid"
+        " WHERE c.doc_id = ?",
+        (doc_id,),
     ).fetchone()[0]
     assert n == 0, "条数不符整批拒绝写入（防 zip 静默丢块后仍置 full）"
 

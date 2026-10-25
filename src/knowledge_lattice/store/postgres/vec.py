@@ -13,13 +13,3 @@ from collections.abc import Sequence
 def format_vector(vector: Sequence[float]) -> str:
     """list[float] → pgvector 文本形态 `'[0.1,0.2]'`。"""
     return "[" + ",".join(repr(float(v)) for v in vector) + "]"
-
-
-def parse_vector(text: str) -> list[float]:
-    """pgvector 文本形态 → list[float]（读回校验用）。"""
-    body = text.strip()
-    if body.startswith("["):
-        body = body[1:]
-    if body.endswith("]"):
-        body = body[:-1]
-    return [float(t) for t in body.split(",")] if body else []

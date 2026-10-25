@@ -102,6 +102,8 @@ class SqliteBackend:
 
         bm25(chunks_fts, 3.0, 1.0, 5.0, 0.5, 8.0) 越小越相关（ASC）；溯源列一次取齐。
         空表达式（tokens 全被过滤）返回 []（空短语部分版本 malformed——TC-FTS-01）。
+        dims 溯源字段（§6.1 契约）：v1.1 起 chunks 无 dims_json 投影——召回后按
+        doc_id 从 document_dimensions 聚合回填（拍板 3，D22 真相源；SQL 收口本层）。
         """
         from knowledge_lattice.store.sqlite.acl_render import render_fts_recall_select
 
@@ -111,13 +113,40 @@ class SqliteBackend:
         sql, params = render_fts_recall_select(plan, match_expr, top_k=top_k)
         cursor = self._conn.execute(sql, params)
         cols = [d[0] for d in cursor.description]
-        return [dict(zip(cols, r)) for r in cursor.fetchall()]
+        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+        self._attach_dims(rows)
+        return rows
 
-    # ============ Ingest 域（M0a-3：chunks+FTS 同事务 / 嵌入回写） ============
+    def _attach_dims(self, rows: list[dict]) -> None:
+        """按 doc_id 聚合 document_dimensions → rows[i]["dims"]（dict[key, list[value]]）。
+
+        单条 IN 查询取回命中文档的全部维度行（top_k ≤20 → doc 数有限）；无维度行
+        的文档落 {}（空值放行口径的输出面）。键序按 dim.key 稳定、值序按 v.value。
+        """
+        doc_ids = sorted({r["doc_id"] for r in rows})
+        if not doc_ids:
+            return
+        marks = ", ".join(f":d{i}" for i in range(len(doc_ids)))
+        params = {f"d{i}": doc for i, doc in enumerate(doc_ids)}
+        dims: dict[str, dict[str, list[str]]] = {doc: {} for doc in doc_ids}
+        for doc_id, key, value in self._conn.execute(
+            "SELECT dd.doc_id, dim.key, v.value"
+            " FROM document_dimensions dd"
+            " JOIN dimensions dim ON dim.id = dd.dimension_id"
+            " JOIN dimension_values v ON v.id = dd.value_id"
+            f" WHERE dd.doc_id IN ({marks})"
+            " ORDER BY dim.key, v.value",
+            params,
+        ):
+            dims[doc_id].setdefault(key, []).append(value)
+        for r in rows:
+            r["dims"] = dims.get(r["doc_id"], {})
+
+    # ============ Ingest 域（M0a-3：chunks+FTS 同事务 / 嵌入回写——v1.1 分表） ============
 
     _CHUNK_COLS = (
         "id, doc_id, seq, version, content, title_seg, content_seg, token_count,"
-        " heading_path, page_no, sheet_name, bbox_json, keywords, llm_keywords, tags, dims_json"
+        " heading_path, page_no, sheet_name, bbox_json, keywords, llm_keywords, tags"
     )
 
     def insert(self, doc_id: str, version: int, chunks: list[dict]) -> None:
@@ -138,7 +167,7 @@ class SqliteBackend:
                     f"INSERT INTO chunks({self._CHUNK_COLS}) VALUES"
                     " (:id, :doc_id, :seq, :version, :content, :title_seg, :content_seg,"
                     " :token_count, :heading_path, :page_no, :sheet_name, :bbox_json,"
-                    " :keywords, :llm_keywords, :tags, :dims_json)",
+                    " :keywords, :llm_keywords, :tags)",
                     {
                         "id": ch["id"],
                         "doc_id": doc_id,
@@ -155,7 +184,6 @@ class SqliteBackend:
                         "keywords": ch.get("keywords", ""),
                         "llm_keywords": ch.get("llm_keywords", ""),
                         "tags": ch.get("tags", ""),
-                        "dims_json": ch.get("dims_json", "{}"),
                     },
                 )
             conn.execute(
@@ -221,12 +249,15 @@ class SqliteBackend:
     def mark_embedding_batch(self, doc_id: str, version: int, batch_label: str) -> list[dict]:
         """批次启动时钉死标签（§5.3）：待嵌块打 embed_model=batch_label 并返回清单。
 
-        只认领 embedding IS NULL AND tombstone=0 的在处理块（含上次失败中断、
-        已带旧标签的块——重试重钉同标签续跑）；已回写/已切换的零触碰。
+        v1.1 分表口径（拍板 2）：认领 = 在处理块（tombstone=0）且 chunk_vectors 无
+        该 (rid, label) 行（含上次失败中断、已带旧标签的块——重试重钉同标签续跑；
+        重嵌入新标签=蓝绿认领同 rid）；已回写/已切换的零触碰。
         """
         rows = self._conn.execute(
             "UPDATE chunks SET embed_model = :label"
-            " WHERE doc_id = :doc AND version = :v AND embedding IS NULL AND tombstone = 0"
+            " WHERE doc_id = :doc AND version = :v AND tombstone = 0"
+            "   AND NOT EXISTS (SELECT 1 FROM chunk_vectors cv"
+            "     WHERE cv.rid = chunks.rid AND cv.embed_model = :label)"
             " RETURNING rid, content",
             {"doc": doc_id, "v": version, "label": batch_label},
         ).fetchall()
@@ -235,7 +266,8 @@ class SqliteBackend:
     def write_embeddings(
         self, batch_label: str, rows: list[tuple[int, list[float]]]
     ) -> int:
-        """逐批回写 embedding（防护：rid + tombstone=0 + embedding IS NULL + 标签匹配）。
+        """逐批回写向量入 chunk_vectors（防护：rid 在批 + tombstone=0 + 标签匹配
+        + (rid, label) 无行——PK 冲突即零触碰；同 rid 异标签照常写入=蓝绿并存）。
 
         P2-3：接收浮点向量、vec_f32 BLOB 序列化收口本方言侧（core 不碰方言）。
         M0a 基础版：版本 IN (:active,:pending) 防护随 M1 版本切换全链（TC-VER-06）——
@@ -244,9 +276,10 @@ class SqliteBackend:
         written = 0
         for rid, vector in rows:
             cur = self._conn.execute(
-                "UPDATE chunks SET embedding = :vec, embed_model = :label"
-                " WHERE rid = :rid AND tombstone = 0 AND embedding IS NULL"
-                "   AND embed_model = :label",
+                "INSERT INTO chunk_vectors(rid, embed_model, embedding)"
+                " SELECT :rid, :label, :vec FROM chunks c"
+                " WHERE c.rid = :rid AND c.tombstone = 0 AND c.embed_model = :label"
+                " ON CONFLICT(rid, embed_model) DO NOTHING",
                 {"vec": pack_f32(vector), "label": batch_label, "rid": rid},
             )
             written += cur.rowcount
@@ -254,11 +287,15 @@ class SqliteBackend:
         return written
 
     def pending_embeddings(self, batch_label: str) -> list[dict]:
-        """已钉标签未回写的待嵌入块（断点续跑清单——TC-ING-06 断言细则 M1）。"""
+        """已钉标签未回写的待嵌入块（断点续跑清单——TC-ING-06 断言细则 M1）。
+
+        v1.1：无行判定 = chunk_vectors 无该 (rid, label) 向量行。"""
         rows = self._conn.execute(
-            "SELECT rid, content FROM chunks"
-            " WHERE embed_model = :label AND embedding IS NULL AND tombstone = 0"
-            " ORDER BY rid",
+            "SELECT c.rid, c.content FROM chunks c"
+            " WHERE c.embed_model = :label AND c.tombstone = 0"
+            "   AND NOT EXISTS (SELECT 1 FROM chunk_vectors cv"
+            "     WHERE cv.rid = c.rid AND cv.embed_model = :label)"
+            " ORDER BY c.rid",
             {"label": batch_label},
         ).fetchall()
         return [{"rid": r[0], "content": r[1]} for r in rows]

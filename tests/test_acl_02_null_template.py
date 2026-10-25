@@ -2,9 +2,10 @@
 
 本地 fixture（#40 P1-R3：**不复用标准矩阵**——只启用 region 单个维度，消除多维度
 混淆）。主断言在 AclPlan 结构层（#42 P1-10）：每维 Plan 为
-`(NotExists | Or[Exists, InValue])` 组合、空值模板与授权常量落在结构节点上；
+`NotExists[dd 行存在 ∧ 无一行命中授权集]` 组合（v1.1 CTE 形态——可见=无行或有命中；
+空授权=无任何 dd 行才可见），空值模板与授权常量落在结构节点上；
 行为断言：u_cn_r 见 d_cn_r+d_empty_r、u_os_r 只见 d_empty_r（不见 d_cn_r）——
-维度间 AND、维度内 OR（D5）。SQLite 渲染 SQL 文本快照仅作渲染器附带断言
+维度间 AND、维度内空值放行（D5）。SQLite 渲染 SQL 文本快照仅作渲染器附带断言
 （sqlite-only，不锁 PG 实现——v1.4）。
 """
 
@@ -65,21 +66,24 @@ def single_region_sqlite(conn):
 
 
 def test_plan_structure_null_template_nodes(single_region) -> None:
-    """主断言（Plan 结构层）：每维 Plan 为 (NotExists | Or[Exists, InValue]) 组合，
-    空值模板（方言扫描节点——json_each / jsonb 等价）与授权常量（InValue.values）
-    落在结构节点上。"""
-    from knowledge_lattice.store.acl_ast import Exists, InValue, NotExists, Or
+    """主断言（Plan 结构层，v1.1 CTE 形态）：每维 Plan 为 NotExists 组合——
+    外层（该维无 dd 行=空值放行）+ 内层反连接（无一行取值 ∈ 授权集=有值过滤），
+    授权常量（InValue.values）落在结构节点上。"""
+    from knowledge_lattice.store.acl_ast import InValue, NotExists
 
     plan = single_region.compile_acl("u_cn_r", "org:tax", now=NOW_TS)
     assert plan.dimension_rules == (AclDimensionRule(key="region", grants=("CN",)),)
-    block = single_region.build_dimension_rule_ast(plan.dimension_rules[0])
-    assert isinstance(block, Or)
-    null_pass, has_value = block.parts
-    assert isinstance(null_pass, NotExists)
-    # 空值模板（方言分派扫描节点）：sqlite=json_each('$.region') / pg=jsonb 等价
-    assert null_pass.subquery.from_table == single_region.dims_scan("region")
-    assert isinstance(has_value, Exists)
-    predicate = has_value.subquery.predicate
+    block = single_region.build_rule_ast(plan.dimension_rules[0], plan)
+    assert isinstance(block, NotExists)
+    # 空值放行半句：外层 NotExists（文档在该维无任何 document_dimensions 行）
+    assert block.subquery.from_table.name == "document_dimensions"
+    # 有值交集半句：内层反连接（无一行命中授权集 → 不可见）
+    inner = block.subquery.predicate.parts[-1]
+    assert isinstance(inner, NotExists)
+    assert inner.subquery.from_table.name == "document_dimensions"
+    [v_join] = inner.subquery.joins
+    assert v_join.table.name == "dimension_values"
+    predicate = inner.subquery.predicate.parts[-1]
     assert isinstance(predicate, InValue) and predicate.values == ("CN",)
 
 
@@ -96,21 +100,28 @@ def test_behavior_u_os_r_sees_only_null(single_region) -> None:
 
 
 def test_sql_text_snapshot_renderer_side(single_region_sqlite) -> None:
-    """渲染器附带断言（sqlite-only）：单维 WHERE 文本快照 + 参数表。
-    参数名为渲染器序列名（g<seq>_<i>，与维度 key 无关——Committer R1 P1-1）。"""
+    """渲染器附带断言（sqlite-only）：单维 CTE 文本快照 + 参数表。
+    参数名为渲染器序列名（g<seq>_<i>，与维度 key 无关——Committer R1 P1-1）；
+    MATERIALIZED 双方言统一加注（sqlite ≥3.35 同语法、默认物化 no-op）。"""
     from knowledge_lattice.core.docs.acl import compile_acl
-    from knowledge_lattice.store.sqlite.acl_render import (
-        build_where_ast,
-        render_sql,
-    )
+    from knowledge_lattice.store.sqlite.acl_render import render_select
     from knowledge_lattice.store.sqlite.backend import SqliteBackend
 
     plan = compile_acl(SqliteBackend(single_region_sqlite), "u_cn_r", "org:tax", now=NOW_TS)
-    sql, params = render_sql(build_where_ast(plan))
+    sql, params = render_select(plan)
     assert sql == (
-        "(NOT EXISTS (SELECT 1 FROM json_each(c.dims_json, '$.region'))"
-        " OR EXISTS (SELECT 1 FROM json_each(c.dims_json, '$.region') AS je"
-        " WHERE je.value IN (:g0_0)))"
+        "WITH visible_docs(doc_id) AS MATERIALIZED (SELECT d.id FROM documents d"
+        " WHERE d.org_id = :org"
+        " AND NOT EXISTS (SELECT 1 FROM document_dimensions AS dd"
+        " JOIN dimensions AS dim ON dim.id = dd.dimension_id"
+        " WHERE dd.doc_id = d.id AND dim.key = 'region' AND dim.org_id = :org"
+        " AND NOT EXISTS (SELECT 1 FROM document_dimensions AS dd2"
+        " JOIN dimension_values AS v ON v.id = dd2.value_id AND v.dimension_id = dd2.dimension_id"
+        " WHERE dd2.doc_id = dd.doc_id AND dd2.dimension_id = dd.dimension_id"
+        " AND v.value IN (:g0_0))))"
+        " SELECT c.rid, c.id, c.doc_id"
+        " FROM chunks c JOIN documents d ON d.id = c.doc_id"
+        " WHERE c.doc_id IN (SELECT doc_id FROM visible_docs)"
         " AND (c.version = d.active_version AND c.tombstone = 0 AND d.org_id = :org)"
     )
     assert params == {"g0_0": "CN", "org": "org:tax"}
