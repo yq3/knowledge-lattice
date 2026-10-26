@@ -3,9 +3,13 @@
 > 任务：task-knowledge-lattice-m1-5（M1 验收收官段）。本报告**只陈述数据与现象**，
 > 判据落笔（阈值/口径/结论回写 known-gaps、TEST-CASES §六）归 supervised-coding。
 > JSON 明细：`data/bench-results/m1-5-*.json`；脚本：`benchmarks/bench4~7*.py`。
-> 配套材料：`report-m1-5-m1-checklist.md`（§六 M1 逐条勾验索引）、
+> 配套材料：`report-m1-5-matrix.md`（越权矩阵收口——T1~T23+TC-AZ 双后端 346/346）、
+> `report-m1-5-m1-checklist.md`（§六 M1 逐条勾验索引）、
 > `report-m1-5-tc-ui-walkthrough.md`（TC-UI 走查清单）、
-> `report-m1-5-llm-hook-budget.md`（LLM 钩子预算评估）。
+> `report-m1-5-llm-hook-budget.md`（LLM 钩子预算评估）、
+> `report-m1-5-g8-mrl.md` / `report-m1-5-g8-threshold.md`（G-8 两项校准）、
+> `report-m1-5-g6-variants.md`（停用词/ts_rank_cd）/ `report-m1-5-bluegreen.md`
+> （蓝绿复测）/ `report-m1-5-g6-real-model-deferred.md`（B-3① 受阻申报）。
 
 ## 0. 环境说明
 
@@ -25,11 +29,12 @@
 | A2 | TC-PERF-03 SLO 分项标定（1 万/5 万 × sqlite/pg） | ✅ §2 |
 | A3 | TC-PERF-04 rerank 并发曲线 + CPU 嵌入吞吐 | ✅ §3 |
 | A4 | G-6 halfvec/表达式索引 10 万块对比 | ⏸ **顺延**（用户 2026-10-26 裁定本段跳过——§8） |
-| B1/B2 | G-8 MRL 截断 / 指纹阈值校准 | ⏸ 未执行（§9——时间预算耗尽于 A 组与收口） |
-| B3 | G-6 双后端黄金集校准基线（数据面） | ◐ §5（B-3①真实模型受阻申报 + 偏差数据在档；②③④实验未执行） |
-| B4 | 蓝绿共存 PG 读代价复测 | ⏸ 未执行（§9；M0b-2 定性结论在档） |
+| B1 | G-8 MRL 截断对比（2560 vs 前缀 1024，双后端） | ✅ report-m1-5-g8-mrl.md（r@10 损失 0.00pp / MRR −1.6~−2.4pp——TokenBag 代理口径，真实 MRL 模型部分随 B-3① 受阻申报） |
+| B2 | G-8 指纹阈值校准（0.99/0.95 两档） | ✅（可构造面）report-m1-5-g8-threshold.md——同模型/fp16 噪声底实测 + 漂移判定剖面；**真实网关抖动分布受阻申报**（同 B-3①） |
+| B3 | G-6 双后端黄金集校准基线 | ◐ 数据面 §5 + 实验②④ ✅（report-m1-5-g6-variants.md——停用词 +7.14pp 假设精确命中 / ts_rank_cd 零差异）；①真实模型**受阻申报**（report-m1-5-g6-real-model-deferred.md）；③ OR 口径**未动**（决策材料齐备） |
+| B4 | 蓝绿共存 PG 读代价复测 | ✅ report-m1-5-bluegreen.md（10k 档共存读代价轻度 ~+6%/与噪声同量级——缓存受控对照） |
 | C4 | LLM 钩子时间预算评估 | ✅ report-m1-5-llm-hook-budget.md |
-| D | TC-UI 走查清单 / M1 勾验材料 / 门禁复验 | ✅（配套三材料 + §10） |
+| D | 越权矩阵收口（T1~T23+TC-AZ 双后端+E2E-05）/ TC-UI 清单 / M1 勾验材料 / 门禁复验 | ✅ report-m1-5-matrix.md（346/346 全绿）+ 配套材料 + §10 |
 
 ## 2. TC-PERF-03 SLO 标定（NFR-8：P95 ≤ 2s——1 万/5 万两档）
 
@@ -148,8 +153,9 @@ cursor 服务端游标，不物化 float 对象）；`delete_open_flags` rid 分
 
 - 根因与 M1-4 committer 判定一致（m1-4 检查点：sqlite OR / PG `&` AND——
   `store/*/fts.py` 口径差）；q01/q10/q20 偏差与「停用词滤除约 +7.1pp」假设
-  （2/28）方向吻合——**实验验证（B-3②）与 OR 口径决策材料（③）、ts_rank_cd
-  对照（④）本段未执行**（§9）；
+  （2/28）方向吻合——**实验验证已完成**（B-3② 停用词 +7.14pp 假设精确命中 /
+  B-3④ ts_rank_cd 零差异——report-m1-5-g6-variants.md；③ OR 口径未动、决策
+  材料齐备）；
 - B-3①（真实嵌入模型重测）**受阻**：本地无 ollama（未安装、`127.0.0.1:11434`
   不通）且无公司网关；可行路径＝公司网关端点或本地 ollama + qwen3-embedding
   模型 provisioning——TokenBag 代理对跨语言 query 系统性低估的疑点（q19/q20/
@@ -180,15 +186,15 @@ cursor 服务端游标，不物化 float 对象）；`delete_open_flags` rid 分
 `(embedding::halfvec(2560)) halfvec_cosine_ops` 表达式索引对照 + LIMIT
 1024/64 两档 + overlap@k 召回对照），后续段可直接复跑。
 
-## 9. 顺延/未执行申报（判据落笔归 supervised-coding）
+## 9. 顺延/受阻申报（判据落笔归 supervised-coding）
 
 | 项 | 状态 | 原因/基础 |
 |---|---|---|
 | G-6 收窄③ halfvec 对比 | 顺延（用户裁定） | §8 |
-| B-3① 真实嵌入模型重测 | 受阻 | §5——无网关/ollama 环境 |
-| B-3② 停用词滤除 / ③ OR 决策材料 / ④ ts_rank_cd | 未执行 | 段内时间预算耗尽于 A 组与收口；偏差数据+逐 query 现象已归档（§5），实验可基于 M1-4 黄金集基建直接开展 |
-| G-8 MRL 截断 / 指纹阈值校准 | 未执行 | 同上；真实网关抖动数据同 B-3① 受阻 |
-| 蓝绿共存 PG 读代价复测（B4） | 未执行 | M0b-2 定性结论在档（§7） |
+| B-3① 真实嵌入模型重测 | **受阻——申报材料已产出** | 无网关/ollama 环境；接入方案/选型/重测步骤/判据见 report-m1-5-g6-real-model-deferred.md |
+| B-3③ OR 口径变更 | **未动（按拍板走决策流程）** | 决策材料齐备：偏差 10.72pp 分解（§5）+ 停用词可收回 7.14pp + ts_rank_cd 无效路径排除（report-m1-5-g6-variants.md） |
+| G-8② 真实网关抖动分布 | 受阻（同 B-3①） | 可构造面已实测（噪声底/判定剖面——report-m1-5-g8-threshold.md）；剩余标定待真实网关版本对 |
+| G-8① 真实 MRL 模型验证 | 受阻（同 B-3①） | 代理机制面已实测（r@10 损失 0.00pp——report-m1-5-g8-mrl.md）；真实模型随 0.6b/网关就位补 |
 
 ## 10. 门禁与复现
 

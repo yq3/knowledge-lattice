@@ -9,7 +9,8 @@
 > 段交付指针：M1-1＝PR #50（R1 3bba1bf）；M1-2＝PR #51（R1/R2 afae23b/f281e44
 > 批）；M1-3＝PR #52（R1 aea936c / R2 2ee2118）；M1-4＝PR #53（R1 7567508 /
 > R2 912ddd5 + docs b2e36c0）；**M1-5＝本段**（R1 dev 批 992a0e2：门禁 604→661；
-> R1 实验+收尾批：本 commit——SHA 见交付报告）。
+> R1 实验+收尾批 b9db4c0；R1 矩阵收口与校准补齐批：本 commit）。
+> **矩阵收口专项证据**：`report-m1-5-matrix.md`（T1~T23+TC-AZ 双后端 346/346 全绿）。
 
 ## §六 M1 行逐条对照
 
@@ -58,7 +59,7 @@ T：`test_auth_01_token.py`、`test_auth_02_org.py`（双后端 + resolve_org �
 
 ### 8. 区分度：TC-QUAL-01~05、TC-EVAL-06
 
-T：`test_qual_01_crowding.py` ~ `test_qual_05_report_acl.py`（TC-QUAL-01~05，双后端）+ `test_qual_06_patch_service.py`（M1-4 R2 PATCH 面）。TC-EVAL-06（误报抽查机制）：`scripts/quality_sample.py`（确定性抽样清单）+ `test_qual_05/06`（patch_flag 落 state 轨迹）——**记录级用例**：真实语料误报率数值待真实语料（待决-1），机制面就位；阈值重标定实验（B 组校准）**本段未执行**（见主报告顺延申报）。
+T：`test_qual_01_crowding.py` ~ `test_qual_05_report_acl.py`（TC-QUAL-01~05，双后端）+ `test_qual_06_patch_service.py`（M1-4 R2 PATCH 面）。TC-EVAL-06（误报抽查机制）：`scripts/quality_sample.py`（确定性抽样清单）+ `test_qual_05/06`（patch_flag 落 state 轨迹）——**记录级用例**：真实语料误报率数值待真实语料（待决-1），机制面就位；阈值侧校准数据（G-8② 可构造面）见 `report-m1-5-g8-threshold.md`。
 
 ### 9. 真实 query 标注：TC-EVAL-01
 
@@ -79,10 +80,14 @@ M：`benchmarks/report-m1-5-tc-ui-walkthrough.md`（本段产出——逐条步�
 | 项 | 状态 | 原因 |
 |---|---|---|
 | G-6 收窄③ halfvec/表达式索引 10 万块对比（bench7） | **顺延**（用户 2026-10-26 裁定本段跳过——非 M1 验收硬门槛） | 断点现象：3.8GB 容器上 100k×2560 COPY+HNSW 构建预计 15~30 分钟，会话时间预算内不可并行完成；脚本已入库可复跑（`benchmarks/bench7_g6_halfvec.py` 头注顺延声明） |
-| B-3① 真实嵌入模型重测双后端基线 | **受阻未执行** | 本地无可运行真实嵌入模型环境：ollama 未安装（`127.0.0.1:11434` 不通）、无公司网关；可行路径＝公司网关端点或本地 ollama+qwen3-embedding 模型（需另行 provisioning）。TokenBag 代理基线（M1-4）仍在档 |
-| B-3② 停用词滤除评估 / ③ OR 口径决策材料 / ④ ts_rank_cd 对照 | **未执行**（本段时间预算耗尽于 A 组与收口） | 数据基础已在档：双后端偏差 10.72pp/6 query 逐条（`data/bench-results/m1-5-g6-golden-baseline-deviation.json` + 主报告 §5——q01/q10 PG 零召回与停用词假设、q24 反向差异等判据原料齐全，实验脚本未及跑） |
-| G-8 MRL 截断对比 / 指纹阈值校准（B-1/B-2） | **未执行**（同上） | 黄金集与 TokenBagEmbedder(dim 可调) 基建就位（M1-4）；真实网关抖动数据同 B-3① 受阻 |
-| 蓝绿共存窗口 PG 读代价复测（B4） | **未执行**（同上） | M0b-2 定性结论仍在档（`benchmarks/report-m0b-2.md` §3.3） |
+| 越权矩阵收口（T1~T23 + TC-AZ + TC-E2E-05） | ✅ **已补齐**（打回后） | `report-m1-5-matrix.md`——28 文件双后端实跑 **346/346 全绿**（[pg] 113 + [sqlite] 113 参数化 + REST/MCP/shell 面 120）；TC-AZ-02 经 list_documents 实装验证；TC-E2E-05＝test_v11_schema 21 用例双后端 + 门禁 661 全量复跑 |
+| B-3① 真实嵌入模型重测双后端基线 | **受阻——申报材料已产出** | 本地无 ollama/网关（实测核实）；选型/接入点/重测步骤/判据见 `report-m1-5-g6-real-model-deferred.md`。TokenBag 代理基线（M1-4）仍在档 |
+| B-3② 停用词滤除评估 | ✅ 已补齐（打回后） | `report-m1-5-g6-variants.md`——PG **+7.14pp 假设精确命中**（q01/q10），sqlite 零变化；产品代码未动（实验 monkeypatch） |
+| B-3③ OR 口径变更 | **未动（按拍板走决策流程）** | 决策材料齐备：偏差 10.72pp 分解 + 停用词可收回 7.14pp + ts_rank_cd 无效排除（`report-m1-5-g6-variants.md` 决策表） |
+| B-3④ ts_rank_cd 排序对照 | ✅ 已补齐（打回后） | 同 variants 报告——**零差异**（0.00pp r@10/MRR），印证「不能解 AND 零召回」判定 |
+| G-8 MRL 截断对比 | ✅ 已补齐（打回后·代理面） | `report-m1-5-g8-mrl.md`——双后端 r@10 截断损失 **0.00pp** / MRR −1.6~−2.4pp（TokenBag 非 MRL 训练口径申报）；真实模型验证随 B-3① 受阻 |
+| G-8 指纹阈值校准 | ✅ 已补齐（打回后·可构造面） | `report-m1-5-g8-threshold.md`——同模型 1.0 / fp16 噪声底 1.0（无误报面）+ 漂移判定剖面（warn 1% / reject 5% 粒度）；真实网关抖动分布受阻申报 |
+| 蓝绿共存窗口 PG 读代价复测（B4） | ✅ 已补齐（打回后） | `report-m1-5-bluegreen.md`——10k 档共存读代价轻度（~+6% P95，与相位噪声同量级；缓存受控对照）；M0b-2 高波动更可能为跑间环境 |
 | 判据落笔（MRL 是否开放配置/阈值数值/双后端偏差结论回写 known-gaps） | 归 supervised-coding | docs/ 冻结纪律——coder 禁改 |
 
 > 以上未执行项均为 M1-5 任务书 B 组实验；A 组（TC-PERF-03/04 + 改造前置）、
