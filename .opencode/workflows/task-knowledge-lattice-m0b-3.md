@@ -5,7 +5,7 @@ target: knowledge-lattice
 coderTaskId: ses_e91982b7bffenn2qJjTzLDPRMo
 testerTaskId: ses_e8fd0f9fdffe9Z6c4ZCzGwyrZN
 committerTaskId: ses_e8fbc753cffeq73PW6A2eZ2So0
-status: approved
+status: done
 round: 2
 maxRounds: 3
 testVerdict: PASS
@@ -16,7 +16,7 @@ reviewedSha: f35044ad6bbb9ed4ba12d96d26d0a45990f5b461
 filesChanged: ["R1（43 files +1617/−737）：store/sqlite+migrations 与 store/postgres+migrations 各新增 0002_schema_v1_1.sql（删 dims_json/embedding+chunk_vectors PK(rid,embed_model)+FK CASCADE+存量 INSERT..SELECT 搬运+谓词索引重建）", "R1：store/acl_ast.py 重写（删 json_each 系 builder/CTE 三构造+build_vec_parts 谓词迁 cv/v.status 残留删除/过滤下推/fullmatch/不变式 docstring）", "R1：store/sqlite/acl_render.py 与 store/postgres/acl_render.py 重写（visible_docs AS MATERIALIZED 唯一路径、render_fts_recall_select 改 CTE、render_vec_recall_select JOIN chunk_vectors、投影去 dims_json）", "R1：store/sqlite/backend.py 与 store/postgres/backend.py（insert 去投影/embeddings 三路迁 chunk_vectors/recall_fts 附 _attach_dims 聚合回填）", "R1：store/backend.py 协议 docstring v1.1 / sqlite migrate.py finally 恢复告警 / postgres migrate.py DuplicateTable 恢复分支（P3-6）/ connection.py+vec.py 未使用清理（P3-11）/ sqlite __init__ docstring", "R1：core/docs/retrieve.py dims 聚合回填 / core/docs/ingest.py 去投影", "R1：tests/（26 files：新增 test_v11_schema.py 21 用例 + dbwrap 方言分派面更新 + helpers 去投影 + acl_01~07/emb_02/matrix/r2_review_fixes 迁 CTE + scaf_03 版本基线 2 + pg_scaff/pg_backend 可移植性/自清理 fixture + fts_03/scaf_04 切向量等价 + emb_01/ing_07/r2_committer_fixes 列引用迁移）", "R1：RUNBOOK.md 新增（蓝绿 runbook+分区回溯）+ .env.example 新增 + scripts/test_gate.sh（no-summary||true + PG 专用计数）+ benchmarks/report P3-F + bench1/bench2 退役守卫+P3-H/I + bench_common 死方法移除", "R2（14 files +163/−80）：store/postgres/migrate.py（P2-1 双捕获 DuplicateTable+UniqueViolation+复核迁 to_regclass〔P3-3 顺手〕+docstring）", "R2：tests/test_pg_scaff.py（P2-1 竞态测试改名参数化 23505/42P07 双分支 / P3-1 public_audit_guard 三面真清理 / P3-2 DSN 测试库限定 / P3-7 docstring×2）", "R2：tests/test_v11_schema.py（P2-2 下推 AST 结构断言 / P3-5 孤立行断言 / P3-9 注释校准 / P3-10 卫生）", "R2：store/postgres/connection.py（P3-8 SET standard_conforming_strings=on）/ 双方言 0002 注释（P3-4/P3-5）/ RUNBOOK.md（P2-1 注记+P3-6 闭合 SQL）/ postgres __init__+store backend.py+acl_ast.py+sqlite acl_render.py+test_r2_review_fixes+bench2+test_gate.sh（P3-7/P3-10）"]
 endReason: null
 createdAt: 2026-10-24T22:51:45+0800
-updatedAt: 2026-10-25T08:08:29+0800
+updatedAt: 2026-10-25T08:45:18+0800
 ---
 
 # task-knowledge-lattice-m0b-3: M0b-3 收官——三项拍板落库 schema v1.1 迁移 + M0a/M0b 遗留清偿 + 勘误批次收口
@@ -80,6 +80,18 @@ updatedAt: 2026-10-25T08:08:29+0800
 ## 遗留事项（跨任务移交）
 
 - [ ] 无（本段为 M0b 收官段；M1 批次遗留维持 M1 去向不变）
+
+## 交付记录（2026-10-25）
+
+- **Committer 交付留痕（2026-10-25，review id PRR_kwDOTsiHgs8AAAABUDcMJQ）**：代码级 APPROVED 成立（f35044a 门禁 271+1 双模式）；**docs 回写核对发现 4 项 P2 缺项暂不放行**——①三处旧 SQL/列名（design §4 版本切换段 embedding=NULL / requirements:88 / TEST-CASES TC-VER-04）；②TC-SCAF-02/03 正文缺 v1.6 声称的补全（版本段超认领）；③design §4 索引 DDL 未更新 + TC-ING-06 索引面与 0002 注释不同步；④"DELETE WAL ≈4MB"缺 sqlite 限定（PG 552MB 满量死元组）；P3：TC-EMB-01/ING-07/E2E-05 正文、report §2.6 注记、design §4 列级注释
+- **补正（2026-10-25 supervised-coding，docs commit `61638ed` 4 files +21/−18）**：P2×4 全部补正（design §4 版本切换段改 DELETE chunk_vectors+UPDATE tombstone / requirements:88 / TC-VER-04 / design 索引行新形态）+ TC-SCAF-02 正文补 PG 纪律与 DSN 约定 + TC-SCAF-03 正文补 v1.1 基线与竞态双捕获 + TC-EMB-01/ING-06/E2E-05 正文 + report §2.6 实现注记 + "4MB"sqlite 限定两处；manifest head 更新 61638ed（代码级 f35044a 不变）
+- PR：https://github.com/yq3/lab/pull/49（base=develop，head=develop_opencode；commits=37a5f36[R1] + f35044a[R2] + 742011e[docs 回写] + 61638ed[docs 补正]；52 files）
+- push：`742011e..61638ed develop_opencode -> develop_opencode`（用户已确认授权，SSH）
+- 状态：代码级 approved + docs 补正已推——待 Committer doc-only 复核放行后请用户确认合入
+- **doc-only 复核放行（2026-10-25，review id PRR_kwDOTsiHgs8AAAABUDdKuw）**：4×P2 补正逐项核对 ✓（三处旧 SQL 闭环 / TC-SCAF-02/03 正文落实且与 migrate.py 逐字一致 / 索引行与 0002 注释一致 / 4MB sqlite 限定）+ P3 顺手三项落笔；无新增 material 走样；PR head=61638ed、MERGEABLE/CLEAN、manifest head=61638ed 双 SHA 自洽——**最终放行，可交用户合入**；4 条记录级 P3 不阻塞（TC-SCAF-02 standard_conforming_strings 断言行/TC-ING-07 正文/PR body commit 列表/design §4 列注释措辞——合入后文档维护顺手项，登记 M1 顺手批次）
+- **收尾补丁（2026-10-25，用户审计驱动）**：用户三问审计发现两处遗漏——①requirements.md 漏升版本号（正文已改 v1.1 口径但版本段停 v0.9，违反与 design 版本统一惯例）；②TC-SCAF-02 v1.6 声称的 standard_conforming_strings 断言在测试代码缺行（committer R2 P3 第 1 条）。补丁 commit `10d8d72`（2 files +11/−3）：requirements 版本段 v0.9.1 联动升版 + line 4 演进链 + test_pg_scaff 补断言（并入既有工厂测试函数）；门禁 271+1 双模式保持绿、manifest head 同步；committer 快速确认（review id PRR_kwDOTsiHgs8AAAABUDfE2A）——**P3 第 1 条闭环 + requirements 版本补齐 + 最终放行重申**；另 3 条记录级 P3 不阻塞（manifest docsCommitNote 措辞/PR body commit 列表/design-TEST-CASES 交叉引用版本刷新——合入后文档维护顺手项）
+- **最终状态：committer 放行（2026-10-25），待用户合入**——合入即 M0b 里程碑达成
+- **合入完成（2026-10-25 08:44 用户确认）**：PR #49 state=MERGED，mergeCommit=`1d37713fae50e8359496d3442b1fc43dcaa80b2e`；origin/develop 前进 `6f08334..1d37713`（merge commit 保留 R1+R2+docs+补正 完整历史）；develop_opencode 远端分支按 D30 约定保留——**M0b-3 正式完成（done），M0b 里程碑达成**（M0a+M0b 全部验收原句兑现；下一步 M1：完整检索配方+版本在用制全链+权限全链，新检查点新周期）
 
 ## 轮次记录
 
