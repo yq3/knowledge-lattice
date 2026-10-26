@@ -64,6 +64,22 @@ class Settings:
     breaker_failures: int = 3
     breaker_cooldown_s: float = 60.0
 
+    # 区分度反馈环（design §5.4 / FR-3——M1-4；阈值均为**绝对阈值初值**，
+    # 真实语料重标定随 M1-5 校准实验——口径申报见交付报告）
+    quality_neighbors: int = 8              # 拥挤近邻 top-k（§5.4「top-8」）
+    quality_crowding_threshold: float = 0.92  # mean(top-k 余弦) > 阈值 → 拥挤（初值）
+    quality_low_idf_threshold: float = 3.0  # token 平均 IDF < 阈值 → 词面通用（初值，nats）
+    quality_cold_start_min: int = 10        # 组织在用块数低于此 → 冷启动引用全局语料 IDF
+    quality_rescale_ratio: float = 0.5      # detected_at_scale < 当前规模×比例 → 重算
+    quality_sample_percent: int = 10        # 周期抽样重算比例（%，rid 确定性散列抽样）
+    # LLM 兜底（TC-QUAL-03）：none＝不用（默认——兜底是增益路非可用性前提）；
+    # openai＝内部网关 chat completions（adapters/enhancer 同款形态）
+    quality_llm: str = "none"
+    quality_llm_api_base: str = "http://127.0.0.1:11434/v1"
+    quality_llm_api_key: str = "local-dev"
+    quality_llm_model: str = "qwen3-llm"
+    quality_llm_timeout_s: float = 10.0
+
     # 服务壳（M0a-3）
     dev_jwt_secret: str = "dev-only-insecure-secret-0123456789ab"  # 仅 dev/test 签发（生产另配，D18）
     jwt_ttl_s: float = 12 * 3600.0

@@ -335,17 +335,21 @@ class CredentialService:
         if (cred["org_id"], cred["user_id"], cred["service_id"]) != (
             org_id, user_id, service_id,
         ):
+            # 文案泛化（m1-2 Tester R2 观察③）：不回显凭证绑定侧的明文取值——
+            # 持 upload_id 的任何请求方都不得借此枚举绑定身份（请求侧身份调用方
+            # 自知，无需回显）
             raise CredentialBindingError(
-                f"凭证绑定不匹配（upload_id 绑定 sub+org+服务身份三一致）——"
-                f"凭证=({cred['user_id']!r}@{cred['org_id']!r}/{cred['service_id']!r})"
-                f" 请求=({user_id!r}@{org_id!r}/{service_id!r})"
+                "凭证绑定不匹配（upload_id 绑定 sub+org+服务身份三一致）——"
+                "当前请求身份与凭证绑定不符（T11）"
             )
         # P1-1：凭证链逐请求成员关系校验（过期成员含过期即拒——403 语义，
-        # AclDeniedError 与检索/REST 面同款异常；不进 create_document 通用路径）
+        # AclDeniedError 与检索/REST 面同款异常；不进 create_document 通用路径；
+        # body.code=membership_denied——T12 机器码）
         if self._backend.read_membership(user_id, org_id) is None:
             raise AclDeniedError(
                 f"no active membership: user={user_id!r} org={org_id!r}"
-                "（凭证消费/PUT 需有效成员关系——FR-4）"
+                "（凭证消费/PUT 需有效成员关系）",
+                code="membership_denied",
             )
         if cred["status"] == "consumed":
             raise CredentialConsumedError(

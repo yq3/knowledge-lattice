@@ -439,8 +439,9 @@ def test_pg_migrate_idempotent_rerun(pg_db, tmp_path: Path) -> None:
     assert pg_db.execute("SELECT count(*) FROM datasets").fetchone()[0] == before
 
 
-def _write_pg_v3(tmp_path: Path, violation: bool) -> Path:
-    """构造 v4 测试迁移（0002=v1.1、0003=uploads 已被 builtin 占用——M1-3）：加 remark 列；
+def _write_extra_v4(tmp_path: Path, violation: bool) -> Path:
+    """构造 v4 额外测试迁移（内置迁移水位 0003=uploads——M1-3；M1-4 未新增内置
+    迁移，v4/v5 仍可用于测试；P3-17 残：函数名与版本号名实对齐）：加 remark 列；
     （violation=True 时）再插一行违反外键的数据——同事务内约束违例 → 整事务回滚
     （PG 原生约束即时校验，无外键窗口）。"""
     mig_dir = tmp_path / "pg_extra_migrations"
@@ -464,7 +465,7 @@ def test_pg_migration_applies_and_tracks_schema_migrations(pg_db, tmp_path: Path
 
     seed_org(pg_db)
     seed_dimension(pg_db)
-    dirs = [_write_pg_v3(tmp_path, violation=False)]
+    dirs = [_write_extra_v4(tmp_path, violation=False)]
 
     applied = migrate_db(pg_db.raw, dirs=dirs)
     assert applied == [4]
@@ -545,7 +546,7 @@ def test_pg_migration_violation_rolls_back_atomically(pg_db, tmp_path: Path) -> 
 
     seed_org(pg_db)
     seed_dimension(pg_db)
-    bad_dirs = [BUILTIN_DIRS["docs"], _write_pg_v3(tmp_path, violation=True)]
+    bad_dirs = [BUILTIN_DIRS["docs"], _write_extra_v4(tmp_path, violation=True)]
 
     with pytest.raises(psycopg.errors.ForeignKeyViolation):
         migrate_db(pg_db.raw, dirs=bad_dirs)
@@ -567,7 +568,7 @@ def test_pg_migration_violation_rolls_back_atomically(pg_db, tmp_path: Path) -> 
     ).fetchone()[0] == 0
 
     # 修复后同号迁移可正常应用（无残留半成品）
-    good_dirs = [BUILTIN_DIRS["docs"], _write_pg_v3(tmp_path / "good", violation=False)]
+    good_dirs = [BUILTIN_DIRS["docs"], _write_extra_v4(tmp_path / "good", violation=False)]
     assert migrate_db(pg_db.raw, dirs=good_dirs) == [4]
 
 
@@ -579,7 +580,7 @@ def test_pg_concurrent_migrate_advisory_lock_clean_skip(pg_db, tmp_path: Path) -
     from knowledge_lattice.store.postgres import migrate_db
     from knowledge_lattice.store.postgres.migrate import BUILTIN_DIRS
 
-    dirs = [BUILTIN_DIRS["docs"], _write_pg_v3(tmp_path, violation=False)]
+    dirs = [BUILTIN_DIRS["docs"], _write_extra_v4(tmp_path, violation=False)]
     schema = pg_db.schema
 
     barrier = threading.Barrier(2)

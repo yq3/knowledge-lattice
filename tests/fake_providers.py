@@ -111,6 +111,48 @@ class FixedVecEmbedder:
         return [list(self.vector) for _ in texts]
 
 
+class TokenBagEmbedder:
+    """token 袋嵌入（评测基线的稠密检索代理——TC-EVAL-01 专用）。
+
+    FakeEmbedder 的哈希向量与内容无语义关联（RRF 融合下纯噪声会压过 BM25 排序）；
+    本实现令每 token 派生确定性单位向量（sha256 种子）、文本向量 = token 向量
+    均值（归一化）——共享 token 的文本余弦更高，稠密路因此有意义的排序信号。
+    真实嵌入模型随 M1-5 校准实验接入（口径见 eval/reports 基线报告）。
+    """
+
+    def __init__(self, *, dim: int = 32, model_name: str = "tokbag-embed") -> None:
+        self.dim = dim
+        self.model_name = model_name
+
+    @property
+    def model_label(self) -> str:
+        return f"{self.model_name}:{self.dim}"
+
+    def _token_vec(self, token: str) -> list[float]:
+        seed = hashlib.sha256(("tokbag:" + token).encode("utf-8")).digest()
+        rng = random.Random(seed)
+        v = [rng.uniform(-1.0, 1.0) for _ in range(self.dim)]
+        norm = math.sqrt(sum(x * x for x in v)) or 1.0
+        return [x / norm for x in v]
+
+    def _vector(self, text: str) -> list[float]:
+        from knowledge_lattice.adapters.tokenizer import segment
+
+        tokens = [t for t in segment(text) if t.strip()]
+        if not tokens:
+            return [1.0] + [0.0] * (self.dim - 1)
+        acc = [0.0] * self.dim
+        for tok in tokens:
+            tv = self._token_vec(tok)
+            for i in range(self.dim):
+                acc[i] += tv[i]
+        norm = math.sqrt(sum(x * x for x in acc)) or 1.0
+        return [x / norm for x in acc]
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        return [self._vector(t) for t in texts]
+
+
 class FakeReranker:
     """可注入 fake 重排器：分数覆写 / 失败 / 延迟 / 并发峰值观测。
 

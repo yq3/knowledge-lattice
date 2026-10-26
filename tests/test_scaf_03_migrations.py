@@ -115,6 +115,20 @@ def test_fresh_migrate_applies_schema_v1(db_path: Path) -> None:
     assert (BUILTIN_DIRS["docs"] / "0001_schema_v1.sql").is_file()
     assert BUILTIN_DIRS["semantic"].is_dir()
     assert [m.version for m in discover()] == [1, 2, 3]  # M0a-1 基线 + M0b-3 v1.1 + M1-3 uploads
+
+    # P3-5 残（m1-3 committer R2）：uploads 表结构断言补全——CHECK 状态机 /
+    # 回收索引 / 三要素外键（0003 DDL 防回归）
+    uploads_ddl = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'uploads'"
+    ).fetchone()[0]
+    assert "CHECK (status IN ('issued','uploaded','consumed'))" in uploads_ddl
+    assert "REFERENCES orgs(id)" in uploads_ddl        # 绑定 org（三要素）
+    assert "REFERENCES users(id)" in uploads_ddl        # 绑定 sub（三要素）
+    assert "REFERENCES documents(id) ON DELETE SET NULL" in uploads_ddl  # 消费追溯
+    idx = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_uploads_reclaim'"
+    ).fetchone()
+    assert idx is not None, "清理任务扫描索引 idx_uploads_reclaim 缺失"
     conn.close()
 
 

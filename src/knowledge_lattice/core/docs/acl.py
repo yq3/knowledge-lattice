@@ -25,7 +25,15 @@ from knowledge_lattice.store.backend import AclBackend, AclDimensionRule, AclPla
 
 
 class AclDeniedError(Exception):
-    """第 0 步拒绝：无有效成员关系（403 语义——检索路径不豁免系统管理员，D22）。"""
+    """第 0 步拒绝：无有效成员关系（403 语义——检索路径不豁免系统管理员，D22）。
+
+    code＝机器可读错误码（body.code——T12 一致性边缘收口，M1-4）：
+    membership_denied＝成员关系缺失/过期；其余细分场景默认 acl_denied。
+    """
+
+    def __init__(self, message: str, *, code: str = "acl_denied") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def compile_acl(
@@ -51,7 +59,8 @@ def compile_acl(
     if membership is None:
         raise AclDeniedError(
             f"no active membership: user={user_id!r} org={org_id!r}"
-            "（检索路径不豁免管理员——D22）"
+            "（检索路径不豁免管理员——D22）",
+            code="membership_denied",
         )
     grants = backend.read_grants(user_id, org_id, now=now)
     rules = tuple(

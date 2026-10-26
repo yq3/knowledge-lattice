@@ -475,3 +475,41 @@ def cred_env(matrix, tmp_path):
         "ingest": IngestService(backend, embedder, settings, gate, objects_dir),
         "creds": CredentialService(backend, settings, objects_dir),
     }
+
+
+# ============ M1-4 区分度环 fixtures ============
+
+
+@pytest.fixture()
+def qual_env(matrix, tmp_path):
+    """M1-4 区分度环共享栈（TC-QUAL-01~05 双后端参数化）：matrix 造数 + 真
+    backend + Settings(embed_dim=8, fake-embed) + FakeEmbedder + QualityService +
+    IngestService（**挂 quality 钩子**——摄取管线 quality 阶段真实触达）。"""
+    from knowledge_lattice.adapters.embedder import EmbeddingGate
+    from knowledge_lattice.config import Settings
+    from knowledge_lattice.core.docs.ingest import IngestService
+    from knowledge_lattice.core.docs.quality import QualityService
+    from fake_providers import FakeEmbedder
+
+    backend = matrix.make_backend()
+    settings = Settings(
+        environment="test", data_dir=tmp_path, embed_dim=8, embed_model="fake-embed",
+    )
+    embedder = FakeEmbedder(dim=8, model_name="fake-embed")
+    gate = EmbeddingGate()
+    objects_dir = tmp_path / "objects"
+    quality = QualityService(backend, settings)
+    service = IngestService(
+        backend, embedder, settings, gate, objects_dir, quality=quality
+    )
+    return {
+        "db": matrix,
+        "backend": backend,
+        "settings": settings,
+        "gate": gate,
+        "embedder": embedder,
+        "objects_dir": objects_dir,
+        "quality": quality,
+        "service": service,
+        "label": settings.embed_model_label,
+    }

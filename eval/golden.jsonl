@@ -1,0 +1,28 @@
+{"qid": "q01", "query": "留抵退税的申请条件是什么", "lang": "zh", "labels": [["gk-vat-01", 1]]}
+{"qid": "q02", "query": "进项税额抵扣凭证有哪些种类", "lang": "zh", "labels": [["gk-vat-02", 1]]}
+{"qid": "q03", "query": "小规模纳税人增值税征收率是多少", "lang": "zh", "labels": [["gk-vat-07", 1]]}
+{"qid": "q04", "query": "增值税纳税申报的截止日期", "lang": "zh", "labels": [["gk-vat-08", 1]]}
+{"qid": "q05", "query": "出口货物零税率与退税率政策", "lang": "zh", "labels": [["gk-vat-05", 1]]}
+{"qid": "q06", "query": "差旅费报销的标准和时限", "lang": "zh", "labels": [["gk-exp-zh1", 1], ["gk-exp-01", 1]]}
+{"qid": "q07", "query": "业务招待费的扣除限额", "lang": "zh", "labels": [["gk-exp-zh2", 1], ["gk-exp-02", 1]]}
+{"qid": "q08", "query": "境外差旅补贴标准怎么规定", "lang": "zh", "labels": [["gk-exp-zh3", 1], ["gk-exp-03", 1]]}
+{"qid": "q09", "query": "报销需要提供什么发票", "lang": "zh", "labels": [["gk-exp-zh4", 1], ["gk-exp-04", 1]]}
+{"qid": "q10", "query": "消费税的征收范围包括哪些", "lang": "zh", "labels": [["gk-enc-01", 1]]}
+{"qid": "q11", "query": "增值税百分之十三税率适用于什么", "lang": "zh", "labels": [["gk-multi-01", 1]]}
+{"qid": "q12", "query": "小型微利企业所得税优惠政策", "lang": "zh", "labels": [["gk-multi-02", 1]]}
+{"qid": "q13", "query": "travel expense reimbursement policy deadline", "lang": "en", "labels": [["gk-exp-01", 1]]}
+{"qid": "q14", "query": "overseas per diem standard city tier", "lang": "en", "labels": [["gk-exp-03", 1]]}
+{"qid": "q15", "query": "corporate card settlement cut-off unmatched transactions", "lang": "en", "labels": [["gk-exp-05", 1]]}
+{"qid": "q16", "query": "exchange rate foreign currency invoice reimbursement", "lang": "en", "labels": [["gk-exp-06", 1]]}
+{"qid": "q17", "query": "input VAT deduction certificate types", "lang": "en", "labels": [["gk-vat-02", 1]]}
+{"qid": "q18", "query": "export zero rate refund method", "lang": "en", "labels": [["gk-vat-05", 1]]}
+{"qid": "q19", "query": "simplified taxation method small-scale taxpayer", "lang": "en", "labels": [["gk-vat-04", 1], ["gk-vat-07", 1]]}
+{"qid": "q20", "query": "stamp duty loan contract rate", "lang": "en", "labels": [["gk-mix-04", 1]]}
+{"qid": "q21", "query": "VAT 留抵退税 excess input VAT refund 申请", "lang": "mix", "labels": [["gk-mix-01", 1], ["gk-vat-01", 1]]}
+{"qid": "q22", "query": "研发费用加计扣除 R&D super deduction 比例", "lang": "mix", "labels": [["gk-mix-02", 1]]}
+{"qid": "q23", "query": "企业所得税 CIT 汇算清缴 annual settlement", "lang": "mix", "labels": [["gk-mix-03", 1]]}
+{"qid": "q24", "query": "个税 individual income tax 年终奖计税", "lang": "mix", "labels": [["gk-mix-07", 1]]}
+{"qid": "q25", "query": "土地增值税 land appreciation tax 清算预征", "lang": "mix", "labels": [["gk-mix-09", 1]]}
+{"qid": "q26", "query": "关税 customs duty 完税价格 dutiable value", "lang": "mix", "labels": [["gk-mix-06", 1]]}
+{"qid": "q27", "query": "增值税发票开具规范 发票栏次", "lang": "mix", "labels": [["gk-vat-09", 1]]}
+{"qid": "q28", "query": "契税 deed tax 税率计税依据", "lang": "mix", "labels": [["gk-mix-12", 1]]}

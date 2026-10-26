@@ -9,16 +9,33 @@ kind=heading|text|table、heading level、表格 rows——结构边界保留供
 - 页码：PDF 逐项 prov.page_no；pptx=slide 序号；xlsx=sheet 序号；docx/html 无页码（None）。
 - sheet_name：docling xlsx 后端不保留 sheet 名——经 openpyxl（docling 依赖，零新增）
   按 sheet 序号补名（FR-1）。
-- PDF 解析需 layout 模型权重（首运行下载；网络受限环境经 HF_ENDPOINT 镜像），
-  选项 do_ocr/do_table_structure 关闭以最小化模型面（M0a 无扫描件/无 PDF 表格样例）。
+- TXT（TC-ING-04①，M1-4）：docling 无纯文本输入格式——本模块直读字节做**编码
+  探测**（utf-8-sig → utf-8 → gb18030 依序严格解码，选正常字符比最高的候选；
+  全部失败退 latin-1 由摄取侧 mojibake 质量门把关）→ 段落（空行分隔）为块。
+- 老格式（TC-ING-04②）：`.doc/.xls/.ppt` 拒收（上传入口 400 提示转存新格式——
+  零中间件纪律不引入 LibreOffice；此处纵深防御同拒）。
+
+PDF 解析需 layout 模型权重（首运行下载；网络受限环境经 HF_ENDPOINT 镜像），
+选项 do_ocr/do_table_structure 关闭以最小化模型面（M0a 无扫描件/无 PDF 表格样例）。
 """
 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
+
+# 老格式拒收清单（TC-ING-04②——上传入口与服务层共用同一常量）
+LEGACY_SUFFIXES = frozenset({".doc", ".xls", ".ppt"})
+
+# TXT 编码探测候选（严格解码依序尝试；gb18030 为 GBK/GB2312 超集——TC-ING-04①）
+TXT_ENCODING_CANDIDATES = ("utf-8-sig", "utf-8", "gb18030")
+
+
+class UnsupportedFormatError(Exception):
+    """老格式拒收（.doc/.xls/.ppt——提示转存新格式，TC-ING-04②）。"""
 
 
 @dataclass(frozen=True)
@@ -94,9 +111,55 @@ def _sheet_names(path: Path) -> list[str]:
         wb.close()
 
 
+def decode_txt_bytes(data: bytes) -> tuple[str, str]:
+    """TXT 编码探测（TC-ING-04①）：候选严格解码 → 取正常字符比最高者
+    （「探测并转 UTF-8」——解码即转；全部失败退 latin-1，质量由 mojibake 门把关）。
+
+    返回 (text, encoding)。
+    """
+    from knowledge_lattice.adapters.textutil import normal_char_ratio
+
+    best: tuple[str, str] | None = None
+    best_ratio = -1.0
+    for enc in TXT_ENCODING_CANDIDATES:
+        try:
+            text = data.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        ratio = normal_char_ratio(text)
+        if ratio >= 0.99:
+            return text, enc  # 干净解码——无需再比
+        if ratio > best_ratio:
+            best, best_ratio = (text, enc), ratio
+    if best is not None:
+        return best
+    return data.decode("latin-1"), "latin-1"
+
+
+def _parse_txt(path: Path) -> ParsedDocument:
+    """TXT → 统一块结构（空行分段；无页码/表格——纯文本形态）。"""
+    data = path.read_bytes()
+    text, encoding = decode_txt_bytes(data)
+    paragraphs = [p.strip() for p in re.split(r"\r?\n\r?\n", text) if p.strip()]
+    blocks = tuple(
+        ParsedBlock(kind="text", content=p) for p in paragraphs
+    )
+    doc = ParsedDocument(blocks=blocks, parser=f"txt:{encoding}")
+    return doc
+
+
 def parse_document(path: str | Path) -> ParsedDocument:
-    """解析任意支持格式 → 统一块结构（docling 原生：docx/pptx/xlsx/html/pdf）。"""
+    """解析任意支持格式 → 统一块结构（docling 原生：docx/pptx/xlsx/html/pdf；
+    TXT 本模块编码探测；.doc/.xls/.ppt 拒收——UnsupportedFormatError）。"""
     path = Path(path)
+    suffix = path.suffix.lower()
+    if suffix in LEGACY_SUFFIXES:
+        raise UnsupportedFormatError(
+            f"老格式 {suffix} 不受支持——请转存为新格式（.docx/.xlsx/.pptx）后重传"
+            "（零中间件纪律：不引入 LibreOffice，TC-ING-04②）"
+        )
+    if suffix == ".txt":
+        return _parse_txt(path)
     conv = _converter()
     result = conv.convert(str(path))
     doc = result.document
