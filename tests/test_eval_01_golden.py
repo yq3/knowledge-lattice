@@ -1,6 +1,6 @@
 """TC-EVAL-01 M1 小型黄金集【评测｜M1——双后端参数化基线】。
 
-- 黄金集（28 条：纯中/纯英/中英混排）+ 合成语料（35 docs，含 GBK 编码样例与
+- 黄金集（28 条：纯中/纯英/中英混排）+ 合成语料（39 docs，含 GBK 编码样例与
   多 chunk 文档）批量上线 → Recall@k / MRR 检索层指标（集合运算、零 LLM）；
 - **多 token 场景覆盖**（m1-1 Tester 观察项）：每条 query 的 jieba 切分 ≥2 token；
 - 基线数字归档 eval/reports/m1-baseline-<backend>.md（scripts/eval_baseline.py

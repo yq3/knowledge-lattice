@@ -164,6 +164,57 @@ def test_403_membership_denied_machine_code(app_env) -> None:
     assert err.code == "acl_denied"
 
 
+def test_rest_quality_sample_endpoint_gates(app_env) -> None:
+    """P3-新-2（R2 顺手）：GET /api/quality-flags/sample——非 org_admin 403、
+    n clamp 1~100（越界收敛不 500）、seed 确定性（同 seed 同序）。"""
+    from helpers import insert_chunk, seed_doc_dims, seed_document
+
+    client = app_env["client"]
+    backend = app_env["app"].state.service.backend
+    conn = app_env["conn"]
+
+    # 造 2 个 open flag（org:tax）
+    seed_document(conn, doc_id="d_smp", dataset_id="ds:vat_lib", owner_user_id="u_full")
+    seed_doc_dims(conn, "d_smp", {"region": ["CN"]})
+    for seq in (1, 2):
+        insert_chunk(conn, doc_id="d_smp", seq=seq, content=f"抽查样例块 {seq}")
+    conn.execute("UPDATE documents SET active_version = 1 WHERE id = 'd_smp'")
+    conn.commit()
+    for seq in (1, 2):
+        backend.insert_quality_flag(
+            chunk_id=f"chk:d_smp:v1:{seq}", doc_id="d_smp",
+            reason="low_idf", detail_json="{}",
+        )
+
+    admin_h = {
+        "Authorization": f"Bearer {app_env['static']['sysadmin']}", "X-Org-Id": "org:tax",
+    }
+    # sysadmin 提为 org_admin（抽查端点门；app_env 造数默认全 member）
+    conn.execute(
+        "UPDATE user_org_memberships SET role = 'org_admin'"
+        " WHERE user_id = 'sysadmin' AND org_id = 'org:tax'"
+    )
+    conn.commit()
+    # 非 org_admin（u_full 普通成员）→ 403
+    member_h = {
+        "Authorization": f"Bearer {app_env['static']['u_full']}", "X-Org-Id": "org:tax",
+    }
+    resp = client.get("/api/quality-flags/sample", headers=member_h)
+    assert resp.status_code == 403, "抽查端点限 org_admin（复核流程入口）"
+
+    # n clamp：0 → 1（不下查）；1000 → 100（不上查不 500）；返回 ≤ 库存 2
+    for bad_n, expect_min in (("0", 1), ("1000", 1)):
+        resp = client.get(
+            f"/api/quality-flags/sample?n={bad_n}&seed=m1", headers=admin_h
+        )
+        assert resp.status_code == 200, f"n={bad_n} 不得 500（clamp 生效）"
+        assert 1 <= len(resp.json()["flags"]) <= 2
+    # seed 确定性：同 seed 两次同序
+    r1 = client.get("/api/quality-flags/sample?n=10&seed=r2", headers=admin_h).json()
+    r2 = client.get("/api/quality-flags/sample?n=10&seed=r2", headers=admin_h).json()
+    assert [f["flag_id"] for f in r1["flags"]] == [f["flag_id"] for f in r2["flags"]]
+
+
 def test_403_message_no_bound_values_echo(cred_env) -> None:
     """403/绑定文案泛化：CredentialBindingError 不回显凭证绑定侧明文取值
     （m1-2 Tester R2 观察③——持 upload_id 者不得枚举绑定身份）。"""
@@ -209,6 +260,42 @@ def test_p3_9_create_document_db_failure_cleans_object(ingest_env, monkeypatch) 
         p for p in env["objects_dir"].iterdir() if p.is_file()
     ] if env["objects_dir"].exists() else []
     assert leftovers == [], f"DB 失败后不得留孤儿对象：{leftovers}"
+
+
+def test_p2_3_create_task_failure_keeps_object(ingest_env, monkeypatch) -> None:
+    """P2-3（R2）：补偿范围收窄——create_task 失败**保留对象**（文档行已在库
+    并引用该对象，删除反而造成引用缺失）；文档状态一致（parsing、对象可寻）。"""
+    from fake_providers import FakeEmbedder
+
+    env = ingest_env
+    svc = env["make_service"](FakeEmbedder(dim=8))
+
+    def _boom(doc_id, *, task_type="ingest"):
+        raise RuntimeError("task insert failed (simulated)")
+
+    monkeypatch.setattr(env["backend"], "create_task", _boom)
+    with pytest.raises(RuntimeError, match="task insert failed"):
+        svc.create_document(
+            org_id="org:tax", dataset_id="ds:vat_lib", title="任务失败样例",
+            dims={"region": ["CN"]}, owner_user_id="u_full",
+            file_bytes=b"task-fail-body", mime_type="text/plain",
+            filename="taskfail.txt",
+        )
+    # 对象保留：文档行在场且其 raw_object_key 指向的对象可寻（引用一致）
+    row = env["conn"].execute(
+        "SELECT id, pending_status, raw_object_key FROM documents"
+        " WHERE title = '任务失败样例'"
+    ).fetchone()
+    assert row is not None, "create_task 失败时文档行已在库（不被回滚）"
+    doc_id, pending_status, obj_key = row
+    assert pending_status == "parsing"
+    assert (env["objects_dir"] / obj_key).is_file(), (
+        "对象必须保留——文档行引用它（P2-3：删了反而引用缺失）"
+    )
+    objects = [p.name for p in env["objects_dir"].iterdir() if p.is_file()]
+    assert objects == [obj_key], f"对象与文档引用一致：{objects} == [{obj_key}]"
+    # 对照：无孤儿之外的多余对象（create_document 失败路径对象被清——同文件
+    # 上一用例已直测；本用例断言 create_task 路径不误伤）
 
 
 # ============ P3-12 / P3-13（m1-1）：空 query 口径 + 耗时四段 ============

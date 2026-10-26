@@ -2,10 +2,12 @@
 
 - 标注时间：2026-10-25（M1-4 段）；标注人：开发自标（合成语料——待决-1 真实
   语料未到位先行，design 既有注记；真实 query 标注随语料到位后替换/扩充）。
-- 语料：`eval/corpus.jsonl`——39 docs（纯中 12 VAT 域 + 纯英 6 费用域 + 中英
-  混排 14 + GBK 编码样例 1 + 多 chunk 文档 2）；维度挂 region（CN/OS）与
-  tax_type（VAT/空值）双形态；`gk-multi-*` 两篇为 2-chunk 文档（seq=1/2 是
-  标注锚点）。
+- 语料：`eval/corpus.jsonl`——39 docs，分类拆解：纯中 12 VAT 域（gk-vat-01~12）
+  + 纯英 6 费用域（gk-exp-01~06）+ **中文费用域 4（gk-exp-zh1~4——v2 增补，
+  zh 费用 query 的可达标注面）** + 中英混排 14（gk-mix-01~14，其中 5 篇
+  gk-vat-0x 附英文索引句——en query 可达性）+ GBK 编码样例 1（gk-enc-01）
+  + 多 chunk 文档 2（gk-multi-01/02）；维度挂 region（CN/OS）与 tax_type
+  （VAT/空值）双形态；`gk-multi-*` 两篇为 2-chunk 文档（seq=1/2 是标注锚点）。
 - 黄金集：`eval/golden.jsonl`——28 条 query（zh 12 / en 8 / mix 8；全部
   multi-token——jieba 切分 ≥2，m1-1 Tester 观察项覆盖）。
 

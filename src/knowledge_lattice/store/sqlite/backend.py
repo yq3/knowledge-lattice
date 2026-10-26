@@ -707,7 +707,16 @@ class SqliteBackend:
         ).fetchall()
         return [(r[0], unpack_f32(r[1])) for r in rows]
 
-    def org_active_chunk_segs(self, org_id: str) -> list[str]:
+    def org_active_chunk_segs(self, org_id: str | None) -> list[str]:
+        """org_id=None = 全局语料（冷启动重算兜底——P2-1，TC-QUAL-02 同构口径）。"""
+        if org_id is None:
+            rows = self._conn.execute(
+                "SELECT c.content_seg FROM chunks c"
+                " JOIN documents d ON d.id = c.doc_id"
+                " WHERE c.tombstone = 0 AND c.version = d.active_version"
+                "   AND d.active_version > 0"
+            ).fetchall()
+            return [r[0] or "" for r in rows]
         rows = self._conn.execute(
             "SELECT c.content_seg" + self._ACTIVE_CHUNK_JOIN, {"org": org_id}
         ).fetchall()
@@ -921,7 +930,8 @@ class SqliteBackend:
 
     # ============ Admin 域（M0a-3：任务状态机 / 文档状态 / 指纹 / 只读维度取值） ============
 
-    def create_task(self, doc_id: str, *, task_type: str = "ingest") -> str:
+    def create_task(self, doc_id: str | None, *, task_type: str = "ingest") -> str:
+        """新建任务行（maintenance 等无文档任务 doc_id=None——P3-19 口径）。"""
         task_id = f"tsk_{uuid.uuid4()}"
         self._conn.execute(
             "INSERT INTO tasks(id, doc_id, type, status) VALUES(:id, :doc, :type, 'pending')",

@@ -212,8 +212,11 @@ class IngestService:
         (self._objects_dir / obj_name).write_bytes(file_bytes)
         content_hash = "sha256:" + hashlib.sha256(file_bytes).hexdigest()
 
-        # P3-9（m1-2）：对象先落盘、DB 写失败 → 失败 unlink 补偿（不留孤儿对象；
-        # 校验已先行，本防护覆盖 DB 层失败——约束违例/磁盘满等）
+        # P3-9（m1-2）+ P2-3（R2 收窄）：对象先落盘、**文档行写失败** → unlink
+        # 补偿（不留孤儿对象；校验已先行，本防护覆盖 DB 层失败——约束违例/
+        # 磁盘满等）。补偿范围限定 create_document/_start_overwrite 本身——
+        # **create_task 失败保留对象**（文档行已在库并引用该对象，删了反而
+        # 造成「文档引用缺失对象」的不一致；任务缺失可由重试/维护面补）
         try:
             if doc_id is None:
                 doc_id = new_ulid("doc")
@@ -243,13 +246,14 @@ class IngestService:
                     pending_dims_json=json.dumps(dims, ensure_ascii=False) if dims else None,
                     grants=grants,  # B-1①：复用已读授权展开（同一 actor，不二次读）
                 )
-            task_id = self._backend.create_task(doc_id, task_type="ingest")
         except BaseException:
             try:
                 (self._objects_dir / obj_name).unlink(missing_ok=True)
             except OSError:
                 logger.warning("orphan object cleanup failed: %s", obj_name)
             raise
+        # create_task 在补偿范围外（P2-3）：文档行已引用对象——失败上抛但对象保留
+        task_id = self._backend.create_task(doc_id, task_type="ingest")
         return doc_id, task_id
 
     def _require_document(self, *, doc_id: str, org_id: str) -> dict:
@@ -556,9 +560,14 @@ class IngestService:
         return "completed"
 
     def _quality_stage(self, doc: dict) -> None:
-        """区分度检测（§5.3 quality 阶段——detect_document）：**best-effort**——
-        searchable_full 已达成，检测失败不回退文档状态（告警 + outbox，重算路径
-        可补——口径申报）；未装配 quality 服务（旧构造）为 no-op。"""
+        """区分度检测 + LLM 兜底（§5.3 quality 阶段——detect → flags → LLM 关键词
+        → 回写 llm_keywords，编排逐项）：**best-effort**——searchable_full 已达成，
+        失败不回退文档状态（告警 + outbox，重算/重跑兜底可补）；未装配 quality
+        服务（旧构造）为 no-op。
+
+        P2-2（R2）：LLM 兜底在检测后自动接入（doc 作用域——本阶段新产 flags）；
+        noop provider（quality_llm=none 默认）run_llm_keywords 早返回零成本。
+        """
         if self._quality is None:
             return
         try:
@@ -572,6 +581,13 @@ class IngestService:
                 )
             except Exception:  # noqa: BLE001
                 logger.exception("quality.detect_failed audit write failed")
+            return  # 检测失败即无新 flags——兜底不发起（重跑补）
+        try:
+            self._quality.run_llm_keywords(
+                org_id=doc["org_id"], doc_id=doc["id"]
+            )
+        except Exception:  # noqa: BLE001 —— 兜底失败不阻断（增益路，可重跑）
+            logger.exception("llm keywords stage failed: %s", doc["id"])
 
     # ---- 阶段实现（各自幂等/可重入） ----
 

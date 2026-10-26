@@ -69,33 +69,14 @@ class MojibakeQualityError(Exception):
 
 
 # ============ mojibake 质量门（§5.4 OneRAG 借鉴项——TC-ING-05 三档） ============
+# 判分原语下沉 adapters/textutil.py（R2 分层修正：parser 编码择优与本门共用，
+# core→adapters 为既有合法方向）；本模块 re-export 维持既有 import 面稳定。
 
-# 「正常字符」= CJK 统一表意 + ASCII 可打印 + 常用中文标点/全角区
-_NORMAL_RANGES = (
-    (0x4E00, 0x9FFF),    # CJK 统一表意
-    (0x3400, 0x4DBF),    # CJK 扩展 A
-    (0x20, 0x7E),        # ASCII 可打印
-    (0x3000, 0x303F),    # CJK 标点
-    (0xFF00, 0xFFEF),    # 全角形式
-    (0x2018, 0x201D),    # 弯引号
-    (0x00A0, 0x00FF),    # Latin-1 补充（西文内容正常态）
+from knowledge_lattice.adapters.textutil import (  # noqa: F401 —— re-export
+    MOJIBAKE_FAIL,
+    MOJIBAKE_WARN,
+    normal_char_ratio,
 )
-
-MOJIBAKE_WARN = 0.55   # 正常字符比 < 0.55 → 告警档（重试）
-MOJIBAKE_FAIL = 0.40   # < 0.40 → 失败档（design §5.4 三档）
-
-
-def _is_normal(ch: str) -> bool:
-    cp = ord(ch)
-    return any(lo <= cp <= hi for lo, hi in _NORMAL_RANGES)
-
-
-def normal_char_ratio(text: str) -> float:
-    """正常字符比：非空白字符中「正常字符」的占比（空格/换行不计分母）。"""
-    chars = [c for c in text if not c.isspace()]
-    if not chars:
-        return 1.0
-    return sum(1 for c in chars if _is_normal(c)) / len(chars)
 
 
 def mojibake_tier(text: str) -> tuple[str, float]:
@@ -265,34 +246,51 @@ class QualityService:
 
     # ---- LLM 兜底（TC-QUAL-03） ----
 
-    def run_llm_keywords(self, *, org_id: str | None = None) -> int:
+    def run_llm_keywords(self, *, org_id: str | None = None, doc_id: str | None = None) -> int:
         """open flags → LLM 关键词写 llm_keywords + 定位语写 auto_keywords。
 
-        noop provider（quality_llm=none）不发起任何调用、返回 0；生成失败单块
-        跳过（告警日志——兜底失败不阻断，可重跑）。
+        - **块正文取自 chunks 表**（chunks_by_rids——flag 行不含 content；P1-1：
+          R1 误读 flag.get("content") 恒空串直传 provider）；**空内容块跳过**
+          （不发起调用）；
+        - **terms 为空不写 llm_keywords**（防空串清空既有值——半产出〔只回
+          定位语〕仅写 auto_keywords）；
+        - noop provider（quality_llm=none）不发起任何调用、返回 0（早返回零成本
+          ——P2-2：quality 阶段摄取后自动接入）；
+        - doc_id 限定文档作用域（quality 阶段入口）；生成失败单块跳过（告警
+          日志——兜底失败不阻断，可重跑）。
         """
         if isinstance(self._keywords, NoopKeywordGenerator):
             return 0
-        flags = self._backend.list_quality_flags(org_id=org_id, state="open")
+        flags = self._backend.list_quality_flags(
+            doc_id=doc_id, org_id=org_id, state="open"
+        )
         done = 0
         for flag in flags:
             chunk = self._backend.get_chunk(flag["chunk_id"])
             if chunk is None:
                 continue
+            rows = self._backend.chunks_by_rids([chunk["rid"]])
+            content = rows[0]["content"] if rows else ""
+            if not content.strip():
+                continue  # 空内容块跳过（P1-1——不发起 provider 调用）
             try:
-                terms, locator = self._keywords.generate(flag.get("content") or "")
+                terms, locator = self._keywords.generate(content)
             except Exception:  # noqa: BLE001 —— 单块失败跳过、不阻断批次
                 logger.exception("llm keyword generation failed: %s", flag["id"])
                 continue
             if not terms and not locator:
                 continue
-            self._backend.set_chunk_llm_keywords(chunk["rid"], " ".join(terms))
+            if terms:  # P1-1：空 terms 不写（防空串清空既有 llm_keywords）
+                self._backend.set_chunk_llm_keywords(chunk["rid"], " ".join(terms))
             self._backend.set_quality_auto_keywords(flag["id"], locator)
             done += 1
         if done:
             self._backend.append_outbox(
                 "quality.llm_keywords",
-                json.dumps({"org_id": org_id, "count": done}, ensure_ascii=False),
+                json.dumps(
+                    {"org_id": org_id, "doc_id": doc_id, "count": done},
+                    ensure_ascii=False,
+                ),
             )
         return done
 
@@ -303,6 +301,11 @@ class QualityService:
 
         拥挤度：组织内全部在用块向量载入 numpy（float32 归一化），分块矩阵乘取
         候选行 top-N 近邻均值（非 SQL 标量逐行——§5.4 v0.4 更正）。
+
+        词面通用度冷启动（P2-1，R2）：组织在用块数 < quality_cold_start_min 时
+        **df 统计切全局语料**（org_active_chunk_segs(None)——与 detect_chunk 的
+        _idf_stats 同构口径：小组织自身 IDF 无判别语义，不因组织语料为空而
+        误判/漏判）；detail.idf_scope 如实记录 org|global。
         """
         import numpy as np
 
@@ -325,8 +328,15 @@ class QualityService:
         # 拥挤度批量：numpy 归一化 + 分块矩阵乘（候选行 × 全体近邻池）
         mean_topk = self._crowding_means(np, org_id, label, [c["rid"] for c in candidates])
 
-        # 词面通用度批量：content_seg 流式 df 统计（一次载入统计，非逐块 SQL）
-        segs = self._backend.org_active_chunk_segs(org_id)
+        # 词面通用度批量：content_seg 流式 df 统计（一次载入统计，非逐块 SQL）；
+        # 冷启动（P2-1）——组织块数不足时切全局语料统计
+        idf_scope = "org"
+        segs_org = settings.quality_cold_start_min
+        if current < segs_org:
+            idf_scope = "global"
+            segs = self._backend.org_active_chunk_segs(None)
+        else:
+            segs = self._backend.org_active_chunk_segs(org_id)
         n_corpus = len(segs)
         df: dict[str, int] = {}
         for seg in segs:
@@ -364,7 +374,7 @@ class QualityService:
                 else None
             )
             if reason is not None:
-                detail: dict = {"idf_scope": "org", "recomputed": True}
+                detail: dict = {"idf_scope": idf_scope, "recomputed": True}
                 if mean_sim is not None:
                     detail["mean_sim"] = round(mean_sim, 6)
                 if avg_idf is not None:
@@ -526,7 +536,7 @@ class QualityService:
             if membership is None or membership["role"] != "org_admin":
                 raise QualityPermissionError(
                     f"operation not permitted: {actor_user_id!r} is neither owner"
-                    " nor org_admin（FR-4 操作矩阵）"
+                    " nor org_admin"
                 )
 
         chunk_cols: dict | None = None

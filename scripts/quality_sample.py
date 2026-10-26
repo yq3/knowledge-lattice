@@ -1,9 +1,8 @@
 #!/usr/bin/env python
 """区分度误报抽查（M1.7 验收句的记录形态——机制面；阈值校准实验属 M1-5）。
 
-用法：
+用法（sqlite-only——PG 侧经服务层/测试面抽样，脚本不背 DSN）：
   uv run python scripts/quality_sample.py --n 20 --seed m1
-  LATTICE_PG_DSN=... uv run python scripts/quality_sample.py --backend pg
 
 输出 open flags 确定性抽样清单（JSON——供人工复核）；复核结论经
 PATCH /api/quality-flags/{id} 落 state（resolved=误报处置 / ignored=接受通用）

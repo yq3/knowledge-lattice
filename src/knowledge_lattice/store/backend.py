@@ -378,8 +378,9 @@ class QualityBackend(Protocol):
         unpack / pg=vector 文本解析）。"""
         ...
 
-    def org_active_chunk_segs(self, org_id: str) -> list[str]:
-        """组织内全部在用块的 content_seg（批量词面通用度重算的 df 流式统计源）。"""
+    def org_active_chunk_segs(self, org_id: str | None) -> list[str]:
+        """组织内全部在用块的 content_seg（批量词面通用度重算的 df 流式统计源）；
+        org_id=None = 全局语料（冷启动兜底——P2-1：小组织 IDF 缺失语义）。"""
         ...
 
     def chunks_for_quality_recompute(

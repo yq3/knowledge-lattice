@@ -85,6 +85,58 @@ def test_qual_05_low_idf_flagged(qual_env) -> None:
     assert r_rare["reason"] is None, "稀有词块不应判词面通用度低"
 
 
+def test_qual_06b_recompute_cold_start_uses_global_df(qual_env) -> None:
+    """P2-1（R2）：重算冷启动——组织在用块数 < quality_cold_start_min 时 df 切
+    全局语料（与 detect_chunk/TC-QUAL-02 同构口径），detail.idf_scope=global。"""
+    import dataclasses
+
+    from knowledge_lattice.core.docs.quality import QualityService
+
+    env = qual_env
+    db = env["db"]
+    # 全局语料：org:tax 20 块全含「跨组织常见词」（组织语料充足 ≥ 冷启动下限）
+    _seed_corpus(db, doc_id="d_global_rc", n=20, seg="跨组织常见词")
+    # org:gl 小语料：仅 1 块（< 10）——组织内 df 无判别语义
+    seed_dataset(db, ORG_GL, "ds:gl")
+    seed_document(
+        db, doc_id="d_gl_rc", org_id=ORG_GL, dataset_id="ds:gl", owner_user_id="u_owner"
+    )
+    gl_chunk = insert_chunk(
+        db, doc_id="d_gl_rc", seq=1, content="冷启动重算块",
+        content_seg="跨组织常见词 跨组织常见词",
+    )
+    db.insert_vector(_rid(db, gl_chunk), LABEL, list(_VEC))
+    db.execute("UPDATE documents SET active_version = 1 WHERE id = 'd_gl_rc'")
+    db.commit()
+
+    # 隔离拥挤路（本用例只验词面口径）
+    quality = QualityService(
+        env["backend"],
+        dataclasses.replace(env["settings"], quality_crowding_threshold=1.1),
+    )
+    result = quality.recompute(ORG_GL)
+    assert result["candidates"] == 1
+    flags = env["backend"].list_quality_flags("d_gl_rc")
+    assert flags and flags[0]["reason"] == "low_idf", (
+        "冷启动重算应引用全局语料 df 判出通用词（org 内 1 块的 df 无语义——"
+        "若用组织口径 IDF=log(1/1)=0 恒命中属噪声，全局口径的判别才是语义）"
+    )
+    detail = json.loads(flags[0]["detail_json"])
+    assert detail["idf_scope"] == "global", "冷启动重算必须记录 global 口径"
+    assert detail.get("recomputed") is True
+    # 全局口径数值可复核：N=21（tax 20 + gl 1）、df=21 → IDF≈0 < 阈值
+    assert detail["avg_idf"] < 3.0
+
+    # 对照：org:tax 充足语料（20+5 matrix 块 ≥ 10）→ org 口径
+    quality.recompute(ORG)
+    tax_flags = env["backend"].list_quality_flags(
+        doc_id="d_global_rc"
+    )
+    for f in tax_flags:
+        detail = json.loads(f["detail_json"])
+        assert detail["idf_scope"] == "org", "充足语料重算保持 org 口径"
+
+
 def test_qual_06_cold_start_uses_global_idf(qual_env) -> None:
     """冷启动：org:gl 无语料（块数 < cold_start_min）→ 全局语料 IDF 判定。"""
     from knowledge_lattice.core.docs.quality import QualityService

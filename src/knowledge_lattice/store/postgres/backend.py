@@ -692,7 +692,16 @@ class PgBackend:
         ).fetchall()
         return [(r[0], parse_vector(r[1])) for r in rows]
 
-    def org_active_chunk_segs(self, org_id: str) -> list[str]:
+    def org_active_chunk_segs(self, org_id: str | None) -> list[str]:
+        """org_id=None = 全局语料（冷启动重算兜底——P2-1，与 sqlite 同构）。"""
+        if org_id is None:
+            rows = self._conn.execute(
+                "SELECT c.content_seg FROM chunks c"
+                " JOIN documents d ON d.id = c.doc_id"
+                " WHERE c.tombstone = 0 AND c.version = d.active_version"
+                "   AND d.active_version > 0"
+            ).fetchall()
+            return [r[0] or "" for r in rows]
         rows = self._conn.execute(
             "SELECT c.content_seg" + self._ACTIVE_CHUNK_JOIN, {"org": org_id}
         ).fetchall()

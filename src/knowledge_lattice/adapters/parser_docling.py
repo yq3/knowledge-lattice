@@ -22,6 +22,7 @@ PDF 解析需 layout 模型权重（首运行下载；网络受限环境经 HF_E
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -116,7 +117,7 @@ def decode_txt_bytes(data: bytes) -> tuple[str, str]:
 
     返回 (text, encoding)。
     """
-    from knowledge_lattice.core.docs.quality import normal_char_ratio
+    from knowledge_lattice.adapters.textutil import normal_char_ratio
 
     best: tuple[str, str] | None = None
     best_ratio = -1.0
@@ -139,7 +140,7 @@ def _parse_txt(path: Path) -> ParsedDocument:
     """TXT → 统一块结构（空行分段；无页码/表格——纯文本形态）。"""
     data = path.read_bytes()
     text, encoding = decode_txt_bytes(data)
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    paragraphs = [p.strip() for p in re.split(r"\r?\n\r?\n", text) if p.strip()]
     blocks = tuple(
         ParsedBlock(kind="text", content=p) for p in paragraphs
     )
