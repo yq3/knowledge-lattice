@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 
 import psycopg
 
@@ -39,6 +39,10 @@ __all__ = ["PgBackend"]
 
 class PgBackend:
     """持有单个主库连接的 PostgreSQL 后端（测试/单进程形态；池化随 M1）。"""
+
+    # delete_open_flags 的 rid 分批上限（M1-5：PG 单语句绑定参数上限 65535——
+    # 预留 reasons 位后 32000 安全；sqlite 侧同款数值）
+    _DELETE_FLAG_BATCH = 32_000
 
     def __init__(self, conn: psycopg.Connection) -> None:
         self._conn = conn
@@ -598,6 +602,39 @@ class PgBackend:
         visible = {r[0] for r in self._conn.execute(sql, params)}
         return visible & set(doc_ids)
 
+    def visible_documents(
+        self,
+        plan: AclPlan,
+        *,
+        dataset_ids: list[str] | None = None,
+        active_status: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """按调用者权限的文档清单（M1-5 MCP list_documents 数据源——与 sqlite
+        同构；dims 经 _attach_dims 聚合回填）。"""
+        from knowledge_lattice.store.postgres.acl_render import render_documents_select
+
+        sql, params = render_documents_select(
+            plan, dataset_ids=dataset_ids, active_status=active_status, limit=limit
+        )
+        cursor = self._conn.execute(sql, params)
+        cols = [d[0] for d in cursor.description]
+        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+        self._attach_dims(rows)
+        return rows
+
+    def visible_dataset_counts(
+        self, plan: AclPlan, *, dataset_ids: list[str] | None = None
+    ) -> list[dict]:
+        """datasets 统计（§6.1：doc_count 按调用者权限计算——与 sqlite 同构）。"""
+        from knowledge_lattice.store.postgres.acl_render import render_dataset_counts_select
+
+        sql, params = render_dataset_counts_select(plan, dataset_ids=dataset_ids)
+        return [
+            {"id": r[0], "name": r[1], "doc_count": r[2]}
+            for r in self._conn.execute(sql, params)
+        ]
+
     # ============ Quality 域（design §5.4 / FR-3——M1-4，与 SqliteBackend 同构） ============
 
     _ACTIVE_CHUNK_JOIN = (
@@ -679,18 +716,33 @@ class PgBackend:
 
     def org_active_chunk_vectors(
         self, org_id: str, embed_model: str
-    ) -> list[tuple[int, list[float]]]:
-        from knowledge_lattice.store.postgres.vec import parse_vector
+    ) -> Iterator[tuple[int, bytes]]:
+        """组织内全部在用块的 (rid, packed float32 bytes)——**服务端游标惰性流**
+        （M1-4 P2-4 / M1-5 改造：named cursor itersize 分批取行、不物化全量
+        （普通游标 libpq 一次收全量行——100k×2560 文本 ~5GB 客户端内存）；
+        文本 → parse_vector_bytes 直转 packed bytes。named cursor 须在事务内
+        DECLARE——conn.transaction() 包裹（autocommit 下显式开合，流式期间
+        连接单线程独占、无 interleaving）。"""
+        from knowledge_lattice.store.postgres.vec import parse_vector_bytes
 
-        rows = self._conn.execute(
+        sql = (
             "SELECT c.rid, cv.embedding::text FROM chunks c"
             " JOIN documents d ON d.id = c.doc_id"
             " JOIN chunk_vectors cv ON cv.rid = c.rid AND cv.embed_model = %(label)s"
             " WHERE d.org_id = %(org)s AND c.tombstone = 0"
-            "   AND c.version = d.active_version AND d.active_version > 0",
-            {"org": org_id, "label": embed_model},
-        ).fetchall()
-        return [(r[0], parse_vector(r[1])) for r in rows]
+            "   AND c.version = d.active_version AND d.active_version > 0"
+        )
+        params = {"org": org_id, "label": embed_model}
+
+        def _stream() -> Iterator[tuple[int, bytes]]:
+            with self._conn.transaction():
+                with self._conn.cursor(name="lattice_quality_vec_stream") as cur:
+                    cur.itersize = 512
+                    cur.execute(sql, params)
+                    for rid, text in cur:
+                        yield rid, parse_vector_bytes(text)
+
+        return _stream()
 
     def org_active_chunk_segs(self, org_id: str | None) -> list[str]:
         """org_id=None = 全局语料（冷启动重算兜底——P2-1，与 sqlite 同构）。"""
@@ -812,19 +864,28 @@ class PgBackend:
         return flag_id
 
     def delete_open_flags(self, rids: Sequence[int], reasons: Sequence[str]) -> int:
+        """给定块的 open flags 删除（reason 限定）——**rid 分批**（M1-4 P2-4 /
+        M1-5：PG 单语句绑定参数上限 65535，~6.5 万候选超限失败；每批
+        ≤_DELETE_FLAG_BATCH 行参数化删除，计数累加）。"""
         if not rids or not reasons:
             return 0
-        rmarks = ", ".join(f"%(r{i})s" for i in range(len(rids)))
-        vmarks = ", ".join(f"%(v{i})s" for i in range(len(reasons)))
-        params: dict[str, object] = {f"r{i}": rid for i, rid in enumerate(rids)}
-        params.update({f"v{i}": reason for i, reason in enumerate(reasons)})
-        cur = self._conn.execute(
-            f"DELETE FROM quality_flags WHERE state = 'open'"
-            f" AND reason IN ({vmarks})"
-            f" AND chunk_id IN (SELECT id FROM chunks WHERE rid IN ({rmarks}))",
-            params,
-        )
-        return cur.rowcount
+        deleted = 0
+        for start in range(0, len(rids), self._DELETE_FLAG_BATCH):
+            batch = rids[start : start + self._DELETE_FLAG_BATCH]
+            rmarks = ", ".join(f"%(r{start + i})s" for i in range(len(batch)))
+            vmarks = ", ".join(f"%(v{i})s" for i in range(len(reasons)))
+            params: dict[str, object] = {
+                f"r{start + i}": rid for i, rid in enumerate(batch)
+            }
+            params.update({f"v{i}": reason for i, reason in enumerate(reasons)})
+            cur = self._conn.execute(
+                f"DELETE FROM quality_flags WHERE state = 'open'"
+                f" AND reason IN ({vmarks})"
+                f" AND chunk_id IN (SELECT id FROM chunks WHERE rid IN ({rmarks}))",
+                params,
+            )
+            deleted += cur.rowcount
+        return deleted
 
     def get_quality_flag(self, flag_id: str) -> dict | None:
         row = self._conn.execute(

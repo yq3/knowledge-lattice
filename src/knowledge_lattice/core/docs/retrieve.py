@@ -248,8 +248,11 @@ def search(
     # ---- 耗时分段（P3-13：嵌入/召回/融合/rerank 四段——design §3；M1-5 NFR-8
     #      标定的数据源。段为**增量时长**：embed=query 嵌入调用、recall=双路召回
     #      SQL（含增强第三路）、fuse=RRF+ACL 断言+归一、rerank=重排调用） ----
+    # M1-5 双计修正（m1-4 P3-9 顺延）：增强 800ms 并行窗口的**等待**单列
+    # enh_wait——不计入 fuse（模型等待不是融合计算，否则 NFR-8 分解被污染）。
     dur_embed = 0.0
     dur_recall = 0.0
+    dur_enh_wait = 0.0
 
     # ---- LLM 增强并行窗口（800ms 硬预算——与原始召回并行；超时/失败丢弃）----
     enhance_future: Future | None = None
@@ -301,6 +304,23 @@ def search(
     # 向量路整体关闭（P1-1）：静态跳过（无 embedder/探针拒绝/熔断开）**或本次嵌入
     # 失败/超时**——「未就绪或降级」两面俱全（§6.1 vector_pending 契约）
     vec_closed = vec_skipped or (embedder is not None and query_vec is None)
+
+    # ---- 增强窗口收口（等待单列 enh_wait——双计修正；词条到位则第三路 BM25
+    #      召回 SQL 计入 recall 段，与原始两路同口径）----
+    extra_terms: list[str] | None = None
+    enhanced_rows: list[dict] = []
+    if enhance_future is not None:
+        t_enh_wait = time.monotonic()
+        extra_terms = _await_enhancement(
+            enhance_future, settings.enhance_budget_s - (time.monotonic() - enhance_t0)
+        )
+        dur_enh_wait = time.monotonic() - t_enh_wait
+        if extra_terms:
+            t_enh = time.monotonic()
+            enhanced_rows = backend.recall_fts(
+                extra_terms, plan, top_k=settings.recall_window
+            )
+            dur_recall += time.monotonic() - t_enh
     t_fuse0 = time.monotonic()
 
     # ---- RRF 融合（双路 → 增强词到位则并入第三路 BM25——不重做向量召回）----
@@ -310,20 +330,10 @@ def search(
     if vec_rows:
         routes.append(("vec", _rids_by_rank(vec_rows)))
         merged.update({r["rid"]: r for r in vec_rows})
-    if enhance_future is not None:
-        extra_terms = _await_enhancement(
-            enhance_future, settings.enhance_budget_s - (time.monotonic() - enhance_t0)
-        )
-        if extra_terms:
-            t_enh = time.monotonic()
-            enhanced_rows = backend.recall_fts(
-                extra_terms, plan, top_k=settings.recall_window
-            )
-            dur_recall += time.monotonic() - t_enh
-            if enhanced_rows:
-                routes.append(("enhanced", _rids_by_rank(enhanced_rows)))
-                for r in enhanced_rows:  # 溯源信息合并（第三路新块补位）
-                    merged.setdefault(r["rid"], r)
+    if enhanced_rows:
+        routes.append(("enhanced", _rids_by_rank(enhanced_rows)))
+        for r in enhanced_rows:  # 溯源信息合并（第三路新块补位）
+            merged.setdefault(r["rid"], r)
     fused = rrf_fuse(routes, k=settings.rrf_k)
 
     candidates = [dict(merged[rid], rrf_score=score) for rid, score in fused]
@@ -331,7 +341,8 @@ def search(
         return _finalize(
             backend, settings, ctx, degraded, [], top_k,
             vec_closed=vec_closed, has_results=False, vec_label=vec_label,
-            durations=(dur_embed, dur_recall, time.monotonic() - t_fuse0, 0.0),
+            durations=(dur_embed, dur_recall, time.monotonic() - t_fuse0, 0.0,
+                        dur_enh_wait),
             routes=len(routes),
         )
 
@@ -348,7 +359,8 @@ def search(
         return _finalize(
             backend, settings, ctx, degraded, [], top_k,
             vec_closed=vec_closed, has_results=False, vec_label=vec_label,
-            durations=(dur_embed, dur_recall, time.monotonic() - t_fuse0, 0.0),
+            durations=(dur_embed, dur_recall, time.monotonic() - t_fuse0, 0.0,
+                        dur_enh_wait),
             routes=len(routes),
         )
 
@@ -410,7 +422,8 @@ def search(
         backend, settings, ctx, degraded, ordered, top_k,
         vec_closed=vec_closed, has_results=bool(fts_rows or vec_rows),
         vec_label=vec_label,
-        durations=(dur_embed, dur_recall, time.monotonic() - t_fuse0 - dur_rerank, dur_rerank),
+        durations=(dur_embed, dur_recall, time.monotonic() - t_fuse0 - dur_rerank,
+                    dur_rerank, dur_enh_wait),
         routes=len(routes),
     )
 
@@ -426,14 +439,16 @@ def _finalize(
     vec_closed: bool,
     has_results: bool,
     vec_label: str,
-    durations: tuple[float, float, float, float],
+    durations: tuple[float, float, float, float, float],
     routes: int,
 ) -> dict:
     """输出面组装：vector_pending 块级判定 + 双断言后 results + 降级审计 + 耗时日志。
 
     耗时日志四段（P3-13，design §3「嵌入/召回/融合/rerank」——M1-5 NFR-8 标定
     数据源）：embed=query 嵌入调用、recall=双路召回 SQL（含增强第三路）、
-    fuse=RRF+ACL 断言+归一、rerank=重排调用；均为增量时长（ms）。
+    fuse=RRF+ACL 断言+归一、rerank=重排调用；均为增量时长（ms）。enh_wait=
+    增强 800ms 并行窗口的等待时长（M1-5 双计修正——单列观测字段，不计入四段：
+    模型等待不是融合计算，NFR-8 分解按四段+enh_wait 口径读数）。
     """
     vector_pending = False
     if ordered:
@@ -465,12 +480,12 @@ def _finalize(
                 "snippet": content[:120],
             }
         )
-    d_embed, d_recall, d_fuse, d_rerank = durations
+    d_embed, d_recall, d_fuse, d_rerank, d_enh = durations
     logger.info(
         "search timing: embed=%.1fms recall=%.1fms fuse=%.1fms rerank=%.1fms"
-        " routes=%d results=%d degraded=%s",
+        " enh_wait=%.1fms routes=%d results=%d degraded=%s",
         d_embed * 1000, d_recall * 1000, d_fuse * 1000, d_rerank * 1000,
-        routes, len(results), degraded or "-",
+        d_enh * 1000, routes, len(results), degraded or "-",
     )
     return {
         "results": results,

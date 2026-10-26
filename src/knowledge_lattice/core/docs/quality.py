@@ -393,34 +393,76 @@ class QualityService:
         logger.info("quality recompute org=%s %s", org_id, result)
         return result
 
+    # 流式分块参数（M1-4 P2-4 / M1-5 改造）：候选块 × 池块双层矩阵乘的块宽
+    # （sims 峰值 = 1024×4096 float32 ≈ 16MB；RSS 与语料规模解耦）
+    _CROWDING_CAND_BLOCK = 1024
+    _CROWDING_POOL_BLOCK = 4096
+
     def _crowding_means(self, np, org_id: str, label: str, cand_rids: Sequence[int]) -> dict[int, float]:
-        """候选行 top-N 近邻均值（numpy 分块矩阵乘——近邻池=组织内全部在用块）。"""
-        rows = self._backend.org_active_chunk_vectors(org_id, label)
-        if len(rows) < 2:
-            return {}
-        rids = [r for r, _ in rows]
-        index = {r: i for i, r in enumerate(rids)}
-        wanted = [index[r] for r in cand_rids if r in index]
-        if not wanted:
-            return {}
-        x = np.asarray([v for _, v in rows], dtype=np.float32)
-        if x.ndim == 1:
-            x = x.reshape(1, -1)
-        norms = np.linalg.norm(x, axis=1, keepdims=True)
-        xn = x / np.clip(norms, 1e-12, None)
-        k = min(self._settings.quality_neighbors, len(rids) - 1)
-        out: dict[int, float] = {}
-        block = 1024
-        for start in range(0, len(wanted), block):
-            chunk_rows = wanted[start : start + block]
-            sims = xn[chunk_rows] @ xn.T  # (b, n) 余弦（已归一化）
-            for bi, gi in enumerate(chunk_rows):
-                sims[bi, gi] = -1.0  # 排除自身
-                if 0 < k < len(rids):
-                    top = np.partition(sims[bi], len(rids) - k)[len(rids) - k :]
-                else:
-                    top = sims[bi]
-                out[rids[gi]] = float(top.mean())
+        """候选行 top-N 近邻均值（**流式分块矩阵乘**——M1-4 P2-4 / M1-5 改造）。
+
+        近邻池 = 组织内全部在用块向量，经 org_active_chunk_vectors 惰性流
+        （packed bytes，一次落盘临时 float32 文件 + np.memmap，块内归一化
+        in-place）——不物化 Python float 对象（100k×2560 档 >1GB 根因消除，
+        峰值 RSS ≈ 候选块+池块缓冲，与语料规模解耦；内存实测见
+        benchmarks/report-m1-5-recompute-100k.md）。候选块 × 池块矩阵乘 +
+        running top-k（concat+partition，自身按块内定位置 -1 排除——与全行
+        扫描语义等价）。"""
+        import tempfile
+        from pathlib import Path
+
+        dim = 0
+        rids: list[int] = []
+        with tempfile.TemporaryDirectory(prefix="lattice-crowding-") as td:
+            pool_path = Path(td) / "pool.f32"
+            with open(pool_path, "wb", buffering=1 << 20) as fh:
+                for rid, packed in self._backend.org_active_chunk_vectors(org_id, label):
+                    if not packed:
+                        continue
+                    d = len(packed) // 4
+                    if dim == 0:
+                        dim = d
+                    elif d != dim:
+                        continue  # 维度异行防御跳过（蓝绿共窗不混算——标签谓词已滤）
+                    fh.write(packed)
+                    rids.append(rid)
+            if len(rids) < 2 or dim == 0:
+                return {}
+            pool = np.memmap(pool_path, dtype=np.float32, mode="r+",
+                             shape=(len(rids), dim))
+            # 块内 L2 归一化（in-place 一次；零向量防除零）
+            pblock = self._CROWDING_POOL_BLOCK
+            for lo in range(0, len(rids), pblock):
+                block = np.asarray(pool[lo : lo + pblock], dtype=np.float32)
+                norms = np.linalg.norm(block, axis=1, keepdims=True)
+                pool[lo : lo + pblock] = block / np.clip(norms, 1e-12, None)
+
+            index = {r: i for i, r in enumerate(rids)}
+            wanted = [index[r] for r in cand_rids if r in index]
+            if not wanted:
+                return {}
+            k = min(self._settings.quality_neighbors, len(rids) - 1)
+            if k <= 0:
+                return {}
+            out: dict[int, float] = {}
+            cblock = self._CROWDING_CAND_BLOCK
+            for cstart in range(0, len(wanted), cblock):
+                cand_rows = wanted[cstart : cstart + cblock]
+                cand_mat = np.asarray(pool[cand_rows], dtype=np.float32)
+                topk = np.full((len(cand_rows), k), -2.0, dtype=np.float32)
+                for pstart in range(0, len(rids), pblock):
+                    hi = pstart + pblock
+                    sims = cand_mat @ pool[pstart:hi].T  # (b, m) 余弦（已归一化）
+                    for bi, gi in enumerate(cand_rows):  # 自身排除（块内定位）
+                        if pstart <= gi < hi:
+                            sims[bi, gi - pstart] = np.float32(-1.0)
+                    merged = np.concatenate([topk, sims], axis=1)
+                    topk = np.partition(
+                        merged, merged.shape[1] - k, axis=1
+                    )[:, -k:]
+                for bi, gi in enumerate(cand_rows):
+                    out[rids[gi]] = float(topk[bi].mean())
+            pool._mmap.close()  # noqa: SLF001 —— memmap 显式释放（Windows 句柄纪律）
         return out
 
     # ---- 报告页（TC-QUAL-05——近邻过同一套 ACL） ----
