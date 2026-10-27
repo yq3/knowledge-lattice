@@ -222,9 +222,11 @@ def concurrency_phase(backend, settings, embedder, reranker, n_pool: int,
                       duration_s: float = 12.0, *, backend_mode: str = "?") -> dict:
     """N=5 并发档（NFR-8 口径）：5 线程持续检索，聚合延迟分布。
 
-    sqlite 连接线程绑定（check_same_thread 纪律）——backend 传
-    ThreadLocalBackend（生产 §2 线程模型同款：每线程一连接）；pg 单连接
-    psycopg 线程安全（连接级锁）直用。"""
+    连接形态（两臂同构——每线程一连接）：sqlite 传 ThreadLocalBackend
+    （check_same_thread 纪律，生产 §2 线程模型同款）；pg 传
+    ThreadLocalPgBackend（R3 池化——消除 R2 版单例 PgBackend 被 psycopg3
+    连接锁串行化的测量假象）。注：错峰建连窗（5×0.7s≈2.8s）计入名义 12s
+    窗口——rps 按含窗口 elapsed 计、偏保守（有效窗口径见报告 §2）。"""
     from knowledge_lattice.adapters.embedder import EmbeddingGate
     from knowledge_lattice.core.docs.retrieve import search
 
