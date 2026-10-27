@@ -1228,7 +1228,7 @@ SELECT e.id, e.type, e.key, e.name, MIN(w.depth) AS depth, GROUP_CONCAT(DISTINCT
 | sqlite-vec | **距离函数**（`vec_distance_cosine` 等标量函数作用于 BLOB 列，P0-1；非 vec0 虚表 KNN）——**SQLite 后端** | 一期 ~10 万 chunk 实测（NFR-2，**真实 2560 维**） |
 | **psycopg（v0.7 新增，D24）** | **PG 后端**：连接 + pgvector（`<=>` 距离，精确扫描起步） | 扩展白名单已确认——公司 PG 16 + pgvector 0.8.x（2026-10-22，待决-6 关闭、G-6 收窄①闭环）；FTS 用 tsvector 五列 GENERATED——**显式 regconfig 双参 `to_tsvector('simple', …)`**（GENERATED 要求 immutable，v0.8）+ 加权 ts_rank（不依赖 ParadeDB）；差异口径见 known-gaps G-6 |
 | **实验客户端依赖归属口径（v0.9.1，M0b-2 实测）** | `langchain-mcp-adapters` 为 **deepagents 调用方侧**接入件（§6.3——agent 侧依赖），**不进服务端依赖清单**：其 mcp 1.x 系依赖与 fastmcp 4.1.3（服务端，钉 mcp 2.x）同进程互斥——实验以 uv 独立 env 隔离实测（M0b-2 实验 3），服务端零引入 | design §8 M0b.3 实测项的依赖归属澄清——服务端 §7 清单保持最小（D2） |
-| **numpy（v0.9.5 补登，M1-5）** | 区分度批量重算的矩阵运算（§5.4——packed bytes 流式解析 + BLAS 分块矩阵乘 + running top-k）与评测脚本的召回指标计算 | 实现依赖（uv 锁定），重算路径 L795 的 numpy/BLAS 论断所本；M1-4 committer 裁定 100k 档改造（packed bytes 流/分批删除）落地后补登归属 |
+| **numpy（v0.9.5 补登，M1-5）** | 区分度批量重算的矩阵运算（§5.4——packed bytes 流式解析 + BLAS 分块矩阵乘 + running top-k）与评测脚本的召回指标计算 | 实现依赖（uv 锁定），重算路径（§5.4 批量重算段）的 numpy/BLAS 论断所本；M1-4 committer 裁定 100k 档改造（packed bytes 流/分批删除）落地后补登归属 |
 | pydantic v2 | 实体与配置 | |
 | python-ulid | 主键 | 时间有序，利于排序与溯源可读 |
 | pyahocorasick（M2-S2） | AC 自动机多模式精确匹配——`annotate` 第 1 层、ingest 打标、过渡期 agent 本地版共用（D23） | C 扩展；数万别名构建秒级、匹配 P99 < 5ms；按 (org, dict_rev) 懒加载 |
