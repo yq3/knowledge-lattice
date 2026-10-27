@@ -6,6 +6,7 @@
 > `sample_open_flags(seed="m1-5-fp")`）；数据
 > `data/bench-results/m1-5-fp-review-sample.json`。
 > **结论落笔（阈值调整）归 supervised-coding——本记录只陈述复核事实。**
+> 口径申报：下列「复核判定」为 **coder 代行**（合成语料、内容区分度判断有主观面）——逐条附判定依据与内容摘录，供人工复检与真实语料复核（待决-1）校准。
 
 ## 抽样口径
 
@@ -17,7 +18,7 @@
 
 ## 逐条复核表（12/41）
 
-| # | reason | mean_sim | avg_idf | 内容（首 46 字） | 人工判定 | 判定依据 |
+| # | reason | mean_sim | avg_idf | 内容（首 46 字） | 复核判定（coder 代行，供人工复检） | 判定依据 |
 |---|---|---|---|---|---|---|
 | 1 | low_idf | 0.270 | 2.224 | Business entertainment expenses are capped at 0.5%… | **误报** | 内容具体（0.5% 限额规则）；词面 expense/capped 与差旅招待族共享 |
 | 2 | low_idf | 0.258 | 1.424 | 代销货物/用于集体福利等视同销售列举 | 存疑（偏合理） | 法条列举式通用表述，词面确高复用 |

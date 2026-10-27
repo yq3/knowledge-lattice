@@ -2,15 +2,17 @@
 
 > 用途：TEST-CASES §六 M1 行逐条勾验的**证据索引**（coder 产出；完成态落笔归
 > supervised-coding）。证据形态三类：**T**＝门禁内测试（`scripts/test_gate.sh`
-> 全量绿——本段最新一轮 661 passed / 1 deselected / 0 skipped，双后端双模式，
+> 全量绿——本段最新一轮（R2/R3 复验）663 passed / 1 deselected / 0 skipped，双后端双模式，
 > pg 臂 225 实跑）；**R**＝实验报告/数据工件（benchmarks/、eval/reports/）；
 > **M**＝手动走查材料（本段产出清单，用户执行）。
 >
 > 段交付指针：M1-1＝PR #50（R1 3bba1bf）；M1-2＝PR #51（R1/R2 afae23b/f281e44
 > 批）；M1-3＝PR #52（R1 aea936c / R2 2ee2118）；M1-4＝PR #53（R1 7567508 /
 > R2 912ddd5 + docs b2e36c0）；**M1-5＝本段**（R1 dev 批 992a0e2：门禁 604→661；
-> R1 实验+收尾批 b9db4c0；R1 矩阵收口与校准补齐批：本 commit）。
-> **矩阵收口专项证据**：`report-m1-5-matrix.md`（T1~T23+TC-AZ 双后端 346/346 全绿）。
+> R1 实验+收尾批 b9db4c0；R1 矩阵收口与校准补齐批 74892e7；R2 docs 批
+> 13450ea + 修复批 0d1cee9（661→663）；R3 docs 批 + 修复批：本 commit）。
+> **矩阵收口专项证据**：`report-m1-5-matrix.md`（T1~T23+TC-AZ 双后端——R2 复跑
+> **348/348 全绿**：R1 346 + P2-3/P2-4 新用例 2）。
 
 ## §六 M1 行逐条对照
 
@@ -23,7 +25,7 @@
 | T11/T12（凭证三一致/错误码） | T：`tests/test_cred_02_consume.py`、`test_cred_03_mcp.py`（binding_mismatch 专项） |
 | T13（可信子系统——**M1 以 dev 白名单模拟**） | T：dev JWT `act` claim 形态＝`test_cred_03_mcp.py::test_mcp_upload_binding_mismatch_403`（服务身份不一致拒绝）；生产白名单/X-On-Behalf-Of 全形态随 M2（附录 A-1 口径） |
 | T14~T16、T18（org 上下文/审计分级/质量报告 ACL） | T：`test_auth_02_org.py`（claim/头不一致 400）、`test_acl_06_constants_routes.py`；T18＝`test_qual_05_report_acl.py`（近邻过同一套 ACL，双后端） |
-| T17（授权撤销后 owner 不再见在用文档） | T：**M1-5 新支撑**——MCP `list_documents` 实装（`mcp/server.py` + `tests/test_m1_5_dev.py::test_mcp_list_documents_stats_per_caller_acl`，§6.1「owner 查处理中/在用文档走 list_documents」路径就位）＋ `test_acl_09_write_path.py` 撤销面 |
+| T17（授权撤销后 owner 不再见在用文档） | T：**载体=文档详情端点（TEST-CASES v1.7 裁定 A=②——org 域管理面）**：检索零命中（无 owner 分支）＝`test_ver_01_version_chain.py` T21 段（owner 覆盖上传处理窗口检索不到任何版本）+ `test_acl_07`（按用户可见集——无 owner 特例）；owner 元数据兜底＝GET `/api/orgs/{org}/documents/{id}`＝`test_e2e_01_chain.py`（详情状态轮询）+ `test_ver_02_guard_409.py`（删除后 404）。**缺口注记**：「owner 授权撤销后 GET 自己文档详情仍 200」无专属断言——M2 管理面验收补（与矩阵报告 T17 行同口径） |
 | T19（删文档＝M1 半句 ✓；删库半句→M2） | T：`api/documents.py` DELETE + `test_ver_02_guard_409.py`/`test_e2e_01_chain.py` 联动；删库随 M2（v0.6.1 限定） |
 | T20（生命周期/退役——审计半句→M2） | T：`tests/test_matrix_t20_t22.py`（M1 面双后端）+ `test_acl_04_lifecycle.py`；退役审计半句随 M2 |
 | T22/T23（触发器/成员清理） | T：`tests/test_scaf_04_triggers.py`、`test_scaf_05_membership_cleanup.py`（双后端 v1.5.1 起 both） |
@@ -39,7 +41,7 @@ T：`tests/test_ver_01_version_chain.py`（TC-VER-01~05）、`test_ver_02_guard_
 
 ### 3. 全量矩阵复跑：TC-E2E-05 收口
 
-T：`tests/test_v11_schema.py`（v1.1 迁移 12 用例——存量搬运/幂等/版本只前进/孤立行丢弃）+ **本段门禁全量绿**（661/0 skipped，双后端双模式——schema v1.1 之上全矩阵复跑即 TC-E2E-05 收口形态；M0b-3 先例 271 → M1 收口 661）。
+T：`tests/test_v11_schema.py`（v1.1 迁移——**12 个测试函数 / 双后端参数化展开 21 items**：存量搬运/幂等/版本只前进/孤立行丢弃）+ **本段门禁全量绿**（R2/R3 复验 663/0 skipped，双后端双模式——schema v1.1 之上全矩阵复跑即 TC-E2E-05 收口形态；M0b-3 先例 271 → M1 收口 663）。
 
 ### 4. 凭证：T11/T12、TC-CRED-01~05
 
@@ -67,7 +69,7 @@ R：`eval/golden.jsonl`（28 queries——zh/en/mix 全 multi-token）+ `eval/co
 
 ### 10. 性能：TC-PERF-03/04
 
-R（本段）：`benchmarks/report-m1-5.md` §2（TC-PERF-03 SLO 分项标定——1 万/5 万 × sqlite/pg 四组合，N=5 并发档 P95 全部 ≤2000ms PASS；NFR-8 预算表对照）+ §3（TC-PERF-04 rerank 并发曲线 4.84→24.52 rps@信号量 1→8 + CPU 嵌入吞吐 20205 块/分）；数据工件 `data/bench-results/m1-5-tc-perf-03-*.json`、`m1-5-tc-perf-04.json`。**前置改造**（M1-4 P2-4）：100k 档批量重算内存/参数上限改造——报告 §4（旧形态 10k 行 1.09GB → 外推 10.67GB 不可行；新形态 100k 池实测峰值 673MB、全量候选 74.5s 分钟级）。
+R（本段，R3 全量同步）：`benchmarks/report-m1-5.md` §2（TC-PERF-03 SLO 分项标定——1 万/5 万 × sqlite/pg 四组合：**单请求档四组合 wall P95 全部 ≤2s 达标**；N=5 并发档 sqlite 两档 PASS + pg-1万 PASS（R2 串行形态=悲观上界）+ **pg-5万 R3 池化重测 P95 2443.2ms 未达标**——按用户裁定②处置：P95 基线出数为 M1 完成口径、未达标项登记 M2 halfvec 复测（G-6 收窄③ bench7 顺延衔接）、不改 NFR-8 文本）+ §3（TC-PERF-04 rerank 并发曲线 4.84→24.52 rps@信号量 1→8 + CPU 嵌入吞吐 20205 块/分）；数据工件 `data/bench-results/m1-5-tc-perf-03-*.json`、`m1-5-tc-perf-04.json`。**前置改造**（M1-4 P2-4）：100k 档批量重算内存/参数上限改造——报告 §4（旧形态 10k 行 Δ1.04~1.09GB → 外推 10.67GB 不可行；新形态 100k 池：5% 候选峰值 684.0MB（Δ644.2）、**全量候选档实测峰值 2990.4MB / 87.68s**——§5.4 分钟级主张兑现）。
 
 ### 11. 界面国际化走查：TC-UI-01 复验 + TC-UI-02（检索页）/ 03 / 04
 
@@ -80,7 +82,7 @@ M：`benchmarks/report-m1-5-tc-ui-walkthrough.md`（本段产出——逐条步�
 | 项 | 状态 | 原因 |
 |---|---|---|
 | G-6 收窄③ halfvec/表达式索引 10 万块对比（bench7） | **顺延**（用户 2026-10-26 裁定本段跳过——非 M1 验收硬门槛） | 断点现象：3.8GB 容器上 100k×2560 COPY+HNSW 构建预计 15~30 分钟，会话时间预算内不可并行完成；脚本已入库可复跑（`benchmarks/bench7_g6_halfvec.py` 头注顺延声明） |
-| 越权矩阵收口（T1~T23 + TC-AZ + TC-E2E-05） | ✅ **已补齐**（打回后） | `report-m1-5-matrix.md`——28 文件双后端实跑 **346/346 全绿**（[pg] 113 + [sqlite] 113 参数化 + REST/MCP/shell 面 120）；TC-AZ-02 经 list_documents 实装验证；TC-E2E-05＝test_v11_schema 21 用例双后端 + 门禁 661 全量复跑 |
+| 越权矩阵收口（T1~T23 + TC-AZ + TC-E2E-05） | ✅ **已补齐**（打回后；R2 复跑 348/348） | `report-m1-5-matrix.md`——28 文件双后端实跑 **348/348 全绿**（[pg] 113 + [sqlite] 113 参数化 + REST/MCP/shell 面 122）；TC-AZ-02 经 list_documents 实装验证；TC-E2E-05＝test_v11_schema 12 函数/21 items 双后端 + 门禁 663 全量复跑 |
 | B-3① 真实嵌入模型重测双后端基线 | **受阻——申报材料已产出** | 本地无 ollama/网关（实测核实）；选型/接入点/重测步骤/判据见 `report-m1-5-g6-real-model-deferred.md`。TokenBag 代理基线（M1-4）仍在档 |
 | B-3② 停用词滤除评估 | ✅ 已补齐（打回后） | `report-m1-5-g6-variants.md`——PG **+7.14pp 假设精确命中**（q01/q10），sqlite 零变化；产品代码未动（实验 monkeypatch） |
 | B-3③ OR 口径变更 | **未动（按拍板走决策流程）** | 决策材料齐备：偏差 10.72pp 分解 + 停用词可收回 7.14pp + ts_rank_cd 无效排除（`report-m1-5-g6-variants.md` 决策表） |

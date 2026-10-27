@@ -57,6 +57,32 @@ MODEL_LABEL = "synth-embed:2560"
 QUERY_TERMS = ["增值税 申报 指南", "增值税 留抵 退税", "发票 抵扣 进项", "消费税 征收 范围", "申报 期限 滞纳金"]
 
 
+class ThreadLocalPgBackend:
+    """PG 并发档（R3 P1-1）：每线程一连接——经 store/postgres/connection.connect
+    工厂（版本/pgvector 断言 + 审计分区纪律同源），search_path 复用实验 schema。
+    与 sqlite 臂 ThreadLocalBackend 同构：消除单例 PgBackend(conn) 被 psycopg3
+    连接锁串行化的测量假象（R2 版 N=5 pg 臂实为单连接排队——数据作废申报）。"""
+
+    def __init__(self, dsn: str, schema: str) -> None:
+        self._dsn = dsn
+        self._schema = schema
+        self._local = threading.local()
+
+    def _current(self):
+        backend = getattr(self._local, "backend", None)
+        if backend is None:
+            from knowledge_lattice.store.postgres import connect
+            from knowledge_lattice.store.postgres.backend import PgBackend
+
+            conn = connect(self._dsn, search_path=f"{self._schema}, public")
+            backend = PgBackend(conn)
+            self._local.backend = backend
+        return backend
+
+    def __getattr__(self, name):
+        return getattr(self._current(), name)
+
+
 class TimingHandler(logging.Handler):
     """采集 retrieve 的 search timing 四段日志（M1-5 双计修正后五字段）。"""
 
@@ -193,7 +219,7 @@ def _once_terms_once(backend, settings, embedder, reranker, terms: str) -> None:
 
 
 def concurrency_phase(backend, settings, embedder, reranker, n_pool: int,
-                      duration_s: float = 12.0) -> dict:
+                      duration_s: float = 12.0, *, backend_mode: str = "?") -> dict:
     """N=5 并发档（NFR-8 口径）：5 线程持续检索，聚合延迟分布。
 
     sqlite 连接线程绑定（check_same_thread 纪律）——backend 传
@@ -207,7 +233,23 @@ def concurrency_phase(backend, settings, embedder, reranker, n_pool: int,
     errors: list[str] = []
     stop = time.perf_counter() + duration_s
 
+    # R3：PG 每线程建连的 setup（审计分区 DDL）并发有目录竞态（tuple
+    # concurrently updated）——错峰建连（0.7s 步进）+ Barrier 对齐计时起点
+    barrier = threading.Barrier(5, timeout=30.0)
+
     def worker(wid: int) -> None:
+        time.sleep(wid * 0.7)  # 错峰建连（setup_connection 的审计 DDL 串行化）
+        # barrier 前显式预热建连（首个后端调用触发 thread-local 连接 setup）
+        try:
+            backend.read_membership("u_broad", BENCH_ORG)
+        except Exception as exc:  # noqa: BLE001
+            with lock:
+                errors.append(f"prewarm: {type(exc).__name__}: {exc}")
+            return
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:
+            return
         i = 0
         while time.perf_counter() < stop:
             terms = QUERY_TERMS[(wid + i) % len(QUERY_TERMS)]
@@ -229,10 +271,10 @@ def concurrency_phase(backend, settings, embedder, reranker, n_pool: int,
                 return
             i += 1
 
-    t_start = time.perf_counter()
     threads = [threading.Thread(target=worker, args=(w,)) for w in range(5)]
     for t in threads:
         t.start()
+    t_start = time.perf_counter()  # barrier 对齐后起算（含尾差——实测 elapsed 口径）
     for t in threads:
         t.join()
     elapsed_actual = time.perf_counter() - t_start  # P2-1：rps 按实测 elapsed
@@ -243,6 +285,7 @@ def concurrency_phase(backend, settings, embedder, reranker, n_pool: int,
     mean_ms = sum(latencies) / n
     return {
         "concurrency": 5,
+        "backend_mode": backend_mode,
         "duration_nominal_s": duration_s,
         "elapsed_actual_s": round(elapsed_actual, 2),
         "requests": n,
@@ -306,12 +349,16 @@ def main() -> int:
                         from knowledge_lattice.store.sqlite.threaded import ThreadLocalBackend
 
                         conc_backend = ThreadLocalBackend(db.sqlite_path)
-                    else:
-                        conc_backend = backend
+                    else:  # R3 P1-1：PG 并发档每线程一连接（与 sqlite 臂同构）
+                        conc_backend = ThreadLocalPgBackend(db.pg_dsn_value, db.pg_schema)
                     result["C_full_n5"] = concurrency_phase(
                         conc_backend, settings,
                         DelayedQueryEmbedder(vectors, 0.15, row_of_query),
-                        FakeReranker(delay_s=0.2), scale)
+                        FakeReranker(delay_s=0.2), scale,
+                        backend_mode=(
+                            "thread-local-per-thread" if db.is_sqlite
+                            else "pg-per-thread-conn(R3)"
+                        ))
                 save_result(f"m1-5-tc-perf-03-{backend_name}-{scale}", result)
                 summary[f"{backend_name}-{scale}"] = result
                 for key in ("A_base", "B_embed150", "C_full"):

@@ -431,7 +431,9 @@ class QualityService:
             return {}
         kept = [r for r in cand_rids if r in cand_packed]
         cand_mat = np.empty((len(kept), dim), dtype=np.float32)
-        for i, rid in enumerate(kept):  # pop 逐行腾挪——峰值 ≈ 单份候选数据
+        # pop 逐行腾挪：转填期 packed 字典与 ndarray 短暂共存（全量档 ≈2×候选
+        # 数据——实测见 report-m1-5.md §4；抽样档候选小、窗口可忽略）
+        for i, rid in enumerate(kept):
             cand_mat[i] = np.frombuffer(cand_packed.pop(rid), dtype=np.float32)
         norms = np.linalg.norm(cand_mat, axis=1, keepdims=True)
         cand_mat /= np.clip(norms, 1e-12, None)  # P3-2：原地除——免临时副本减半峰值

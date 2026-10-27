@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import platform
 import random
 import sqlite3
@@ -81,12 +82,16 @@ def pg_dsn() -> str:
 class BenchDb:
     """方言无关执行面 + 方言分派渲染（自包含，不依赖 tests/ 基建）。"""
 
-    def __init__(self, dialect: str, conn: Any, *, sqlite_path: Path | None = None) -> None:
+    def __init__(self, dialect: str, conn: Any, *, sqlite_path: Path | None = None,
+                 pg_schema: str | None = None, pg_dsn_value: str | None = None) -> None:
         self.dialect = dialect
         self.is_sqlite = dialect == "sqlite"
         self.is_pg = dialect == "pg"
         self._conn = conn
         self.sqlite_path = sqlite_path
+        # M1-5 R3 P1-1：并发档每线程独立 PG 连接（search_path 复用）所需
+        self.pg_schema = pg_schema
+        self.pg_dsn_value = pg_dsn_value
 
     @property
     def raw(self) -> Any:
@@ -196,14 +201,16 @@ def open_bench_db(dialect: str, *, tag: str) -> Iterator[BenchDb]:
 
     from knowledge_lattice.store.postgres import migrate_db, setup_connection
 
-    schema = f"lattice_bench_{tag}_{uuid.uuid4().hex[:8]}"
+    # R3：tag 净化为合法 PG 标识符（工厂 _SCHEMA_ITEM_RE 校验拒连字符——
+    # search_path 逐项校验的防御面在工厂侧，bench 侧按其口径命名）
+    schema = f"lattice_bench_{re.sub(r'[^0-9a-zA-Z_]', '_', tag)}_{uuid.uuid4().hex[:8]}"
     raw = psycopg.connect(pg_dsn(), autocommit=True)
     try:
         raw.execute(f'CREATE SCHEMA "{schema}"')
         raw.execute(f'SET search_path TO "{schema}", public')
         setup_connection(raw)
         migrate_db(raw)
-        yield BenchDb("pg", raw)
+        yield BenchDb("pg", raw, pg_schema=schema, pg_dsn_value=pg_dsn())
     finally:
         try:
             raw.execute("SET search_path TO public")
