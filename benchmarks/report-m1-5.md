@@ -35,6 +35,7 @@
 | B4 | 蓝绿共存 PG 读代价复测 | ✅ report-m1-5-bluegreen.md（10k 档共存读代价轻度 ~+6%/与噪声同量级——缓存受控对照） |
 | C4 | LLM 钩子时间预算评估 | ✅ report-m1-5-llm-hook-budget.md |
 | D | 越权矩阵收口（T1~T23+TC-AZ 双后端+E2E-05）/ TC-UI 清单 / M1 勾验材料 / 门禁复验 | ✅ report-m1-5-matrix.md（346/346 全绿）+ 配套材料 + §10 |
+| B=② | 合成语料区分度误报抽查（R2 用户裁定） | ✅ report-m1-5-fp-review.md——41 open flags 抽 12 逐条复核：词面路误报 11~12/12（同域小语料 IDF 稀释）、拥挤路零误报、漏报不可评（无金标申报） |
 
 ## 2. TC-PERF-03 SLO 标定（NFR-8：P95 ≤ 2s——1 万/5 万两档）
 
@@ -43,45 +44,59 @@
 u_broad（最宽授权——最重扫描面），5 query × 预热 3 + 10 轮；分项耗时取自
 P3-13 四段日志（M1-5 双计修正后 `enh_wait` 单列，本档 enhancer=none → 恒 0）。
 
+> **R2 勘误（P1-1——Committer R1 审查项）**：R1 版 embedder 行号解析对中文
+> query 抛错被 `_embed_query` 吞成 `embed_unreachable`——全部样本实为 **BM25
+> 单路降级**（recall 段缺向量扫描、embed 段 ≈0.1ms），SLO 数据失真。R2 修复：
+> 查询文本→语料行号显式 dict 映射（未知文本 KeyError fail-fast）+ **每请求
+> 断言 `notice == {"vector_pending": False, "degraded": []}` 与结果非空**
+> （预热样本亦断言但不进统计——P2-2；wall P50 改 nearest-rank——P3-5）。
+> 下表为全配方净跑重测数据（rps 一致性检查列：rps ≈ 5/mean——5 线程串行环
+> 自洽；P2-1：rps 按实测 elapsed 计，非名义 12s）。
+
 三配置：**A base**（embed 0ms + 无 rerank——存储/融合纯段）/ **B embed150**
 （embed 150ms——NFR-8 预算值）/ **C full**（embed 150ms + rerank 200ms·32 候选，
 rerank_max_concurrency=4）。
 
-### 单请求档（wall 与分段均为 P95，ms）
+### 单请求档（wall 与分段均为 P95，ms；B 行为 A/C 插值——完整数据见 JSON）
 
-| 档位 | 后端 | 配置 | wall P50/P95 | embed | recall | fuse | rerank |
-|---|---|---|---|---|---|---|---|
-| 1 万块 | sqlite | A base | 38.6 / 41.2 | 0.1 | 28.8 | 12.7 | 0.0 |
-| 1 万块 | sqlite | C full | 411.7 / 419.9 | 155.2 | 39.3 | 21.2 | 205.2 |
-| 5 万块 | sqlite | A base | 186.8 / 197.8 | 0.1 | 139.6 | 59.6 | 0.0 |
-| 5 万块 | sqlite | C full | 559.6 / 571.4 | 155.2 | 141.9 | 72.5 | 205.2 |
-| 1 万块 | pg | A base | 83.5 / 243.4 | 0.1 | 119.0 | 34.8 | 0.0 |
-| 1 万块 | pg | C full | 166.7 / 422.8 | 155.2 | 100.4 | 36.0 | 205.2 |
-| 5 万块 | pg | A base | 42.7 / 119.8 | 0.1 | 67.7 | 47.5 | 0.0 |
-| 5 万块 | pg | C full | 219.0 / 545.7 | 160.3 | 99.7 | 94.9 | 205.7 |
+| 档位 | 后端 | A base wall | A recall | C full wall | C embed | C recall | C fuse | C rerank |
+|---|---|---|---|---|---|---|---|---|
+| 1 万块 | sqlite | 117.2 | 97.9 | 482.3 | 160.5 | 94.3 | 19.4 | 210.2 |
+| 5 万块 | sqlite | 611.2 | 530.2 | 880.1 | 160.7 | 440.4 | 82.9 | 210.2 |
+| 1 万块 | pg | 312.0* | 212.1* | 474.4 | 160.6 | 82.5 | 26.3 | 210.2 |
+| 5 万块 | pg | 512.7 | 453.6 | 836.2 | 160.5 | 405.6 | 71.2 | 210.2 |
 
-（B_embed150 行为 A 与 C 的插值——完整数据见 JSON；pg 臂 P50/P95 差距大于
-sqlite，为 docker 容器 CPU 争用的观测噪声，逐请求样本在 JSON。）
+（\*pg-1 万 A_base 为造数后首个测量相位，容器页缓存冷热噪声大（P50 69.1ms）；
+后续相位热态稳定。pg 臂逐请求样本在 JSON。）
 
 ### N=5 并发档（NFR-8 口径——5 线程持续 12s，C full 配置）
 
-| 档位 | 后端 | rps | P50 | P95 | P99 | SLO（P95 ≤ 2000ms） |
-|---|---|---|---|---|---|---|
-| 1 万块 | sqlite | 16.58 | 399.8 | 417.4 | 437.9 | **PASS** |
-| 5 万块 | sqlite | 12.33 | 558.1 | 633.4 | 662.2 | **PASS** |
-| 1 万块 | pg | 22.50 | 176.9 | 428.8 | 446.4 | **PASS** |
-| 5 万块 | pg | 16.67 | 239.8 | 581.6 | 606.4 | **PASS** |
+| 档位 | 后端 | rps（实测 elapsed） | mean | P50 | P95 | P99 | SLO（P95 ≤ 2000ms） |
+|---|---|---|---|---|---|---|---|
+| 1 万块 | sqlite | 9.8（12.34s） | 501.8 | 494.3 | 570.7 | 625.2 | **PASS** |
+| 5 万块 | sqlite | 4.0（12.75s） | 1212.8 | 1199.7 | 1677.6 | 1707.5 | **PASS** |
+| 1 万块 | pg | 7.61（12.49s） | 647.6 | 646.1 | 672.3 | 1004.3 | **PASS** |
+| 5 万块 | pg | 1.99（13.57s） | 2418.4 | 2353.6 | **3437.5** | 3558.0 | **FAIL** |
 
-### NFR-8 延迟预算表对照（5 万块 · C full · 各后端 P95）
+**PG 5 万块 N=5 超标（如实申报）**：单请求档 P95 836.2ms（预算内）；N=5 并发
+下 P95 3437.5ms——5 路并发 `<=>` 精确扫描（每路 ~450ms、500MB 堆表）在
+3.825GB 内存容器上争用 CPU/页缓存，线性劣化（mean 2418ms ≈ 5×单路——
+近串行排队）。归因：**精确扫描 × 并发**叠加 + 容器资源上限（生产部署规格
+更高、且 NFR-8 口径为 ~10 万块全链路预算表——本数据为标定输入而非验收判）。
+该结果与 G-6 halfvec/表达式索引评估（bench7 顺延）直接相关——索引化是
+消除该超标的候选路径；NFR-8 降级开关（rerank 候选 32→16 等）为另一路径。
+
+### NFR-8 延迟预算表对照（5 万块 · C full · 单请求 P95）
 
 | 预算项 | 预算 | sqlite 实测 | pg 实测 | 备注 |
 |---|---|---|---|---|
-| query 嵌入 | ≤150ms | 155.2 | 160.3 | 模拟值=预算+5~10ms 注入误差（模拟器 sleep 精度） |
-| 双路召回 | ≤300ms | 141.9 | 99.7 | 两后端均在预算内（5 万块） |
-| rerank | ≤1000ms | 205.2 | 205.7 | 模拟 RTT 200ms 档 |
-| 其余（fuse 等） | ≤200ms | 72.5 | 94.9 | fuse=RRF+双断言+归一 |
-| **合计 wall** | ≤2000ms | **571.4** | **545.7** | 单请求；N=5 并发 633.4 / 581.6 |
-| LLM 增强 | 800ms 并行不计关键路径 | enh_wait=0 | enh_wait=0 | 本档 enhancer=none；双计修正后该段单列（§2 注） |
+| query 嵌入 | ≤150ms | 160.7 | 160.5 | 模拟值=预算+10ms 注入误差（sleep 精度）；向量还原（2560 float 构造）含在其内 |
+| 双路召回 | ≤300ms | 440.4 | 405.6 | **两后端均超**——BM25 1024 窗 + 向量 1024 精确扫描双路之和（R2 全配方真值；R1 假值 141.9/99.7 系单路失真作废） |
+| rerank | ≤1000ms | 210.2 | 210.2 | 模拟 RTT 200ms 档 |
+| 其余（fuse 等） | ≤200ms | 82.9 | 71.2 | fuse=RRF+双断言+归一 |
+| **合计 wall（单请求）** | ≤2000ms | 880.1 | 836.2 | 单请求档两后端均在预算内 |
+| N=5 并发 | — | 1677.6 | 3437.5 | sqlite PASS / **pg 超标**（上表） |
+| LLM 增强 | 800ms 并行不计关键路径 | enh_wait=0 | enh_wait=0 | 本档 enhancer=none；双计修正后该段单列 |
 
 ## 3. TC-PERF-04 rerank 并发与嵌入吞吐
 
@@ -104,24 +119,28 @@ sqlite，为 docker 容器 CPU 争用的观测噪声，逐请求样本在 JSON�
 
 ## 4. 100k 档批量重算改造实测（M1-4 P2-4 / TC-PERF-03 前置）
 
-改造（commit 992a0e2 + 本批 `_crowding_means` 双流版）：`org_active_chunk_vectors`
+改造（commit 992a0e2 + R1 收口 + R2 P3-1/P3-2 完善）：`org_active_chunk_vectors`
 返回 **packed float32 bytes 惰性流**（sqlite=vec_f32 BLOB 原样 / PG=named
 cursor 服务端游标，不物化 float 对象）；`delete_open_flags` rid 分批 32,000/
 语句（PG 65535 / sqlite 32766 参数上限——70,000 rid 删除双后端用例绿）；
-`_crowding_means`＝候选驻留 float32 矩阵 + 池块流 + running top-k。
+`_crowding_means`＝候选驻留 float32 矩阵 + 池块流 + running top-k（维度异行
+两遍同口径防御——P3-1；候选归一化原地除——P3-2）。
 
-脚本 `bench4_recompute_100k.py`（子进程隔离测峰值 RSS——ru_maxrss 进程高
-水位不可同进程叠加；数据源=合成 100k×2560 确定性向量，普通文件 read 流——
-隔离算法私有内存）：
+脚本 `bench4_recompute_100k.py`（子进程隔离测峰值——ru_maxrss 进程高水位不可
+同进程叠加；数据源=合成 100k×2560 确定性向量普通文件 read 流——隔离算法私有
+内存；**内存口径（P2-5/P3-7）**：`peak_rss_mb`=子进程绝对高水位 /
+`rss_delta_mb`=对 import 后基线增量，两口径同记；候选比例经 `--cand-percent`）：
 
-| 形态 | 规模 | 峰值内存 | 耗时 |
+| 形态 | 规模 | 峰值内存（peak / Δ） | 耗时 |
 |---|---|---|---|
-| 旧（`list[tuple[int, list[float]]]` 物化） | 10,000 行 | **1,092.7 MB** | 3.0s（仅物化） |
-| 旧 · 线性外推 | 100,000 行 | **≈10.67 GB**（=16GB 机不可行；每行 80KB=packed bytes 的 11.2×） | — |
-| 新（packed bytes 流 + 候选驻留 + 分块 running top-k） | 100k 池 · 5% 候选 | **673.1 MB** | 4.67s |
-| 新 · 全量候选档 | 100k 池 · 100k 候选 | 候选矩阵上界 ≈0.95GB（单块 ndarray，§5.4「载入 numpy」同口径） | **74.5s（1.2 min）** |
+| 旧（`list[tuple[int, list[float]]]` 物化） | 10,000 行 | Δ **1,036~1,093 MB**（三轮观测带） | 3.0~4.7s（仅物化） |
+| 旧 · 线性外推 | 100,000 行 | **≈10.67 GB**（111.9KB/行 = packed bytes 的 11.2×） | —（16GB 机不可行） |
+| 新（流 + 候选驻留 + running top-k） | 100k 池 · **5%** 候选 | **684.0 / 644.2 MB** | 6.81s |
+| 新 · **全量候选**（`--cand-percent 100` 实测） | 100k 池 · 100k 候选 | **2,990.4 / 2,949.1 MB** | **87.68s（1.5 min）** |
 
-- §5.4「10 万×2560 维分钟级可行」设计主张兑现（全量 74.5s）；
+- §5.4「10 万×2560 维分钟级可行」设计主张兑现（全量 87.68s；候选驻留矩阵
+  ≈0.95GB 单块 ndarray + sims（8192×4096≈128MB）/池块缓冲与分配器保持构成
+  其余增量）；
 - SQL 侧流式正确性：双后端 `test_m1_5_dev.py`（packed bytes 契约 + 70k rid
   分批删除）+ `test_qual_04`（10k 全链重算，门禁内）覆盖；
 - 候选清单（content/content_seg 字符串）仍为列表物化（~百 MB 量级 @100k）——
@@ -198,11 +217,11 @@ cursor 服务端游标，不物化 float 对象）；`delete_open_flags` rid 分
 
 ## 10. 门禁与复现
 
-- 门禁：`LATTICE_PG_DSN=… bash scripts/test_gate.sh` → **661 passed / 1
-  deselected（manual 走查标记）/ 0 skipped，双后端双模式**；pg 臂 225 实跑
-  （[pg] 参数化 193 + PG 专用 32）。计数对账：M1-4 交付 604+1 → 本段 +57
+- 门禁：`LATTICE_PG_DSN=… bash scripts/test_gate.sh` → **R2 复验 663 passed /
+  1 deselected（manual 走查标记）/ 0 skipped，双后端双模式**；pg 臂 225 实跑
+  （[pg] 参数化 193 + PG 专用 32）。计数对账：M1-4 交付 604+1 → R1 +57
   （`tests/test_m1_5_dev.py`：C3 fuse 4 + A1 改造 4 + C1 list_documents 5 +
-  C2 畸形参数 44）；
+  C2 畸形参数 44）→ **R2 +2**（P2-3 状态值全集 / P2-4 非成员 403）；
 - 复现：`uv run python benchmarks/bench4_recompute_100k.py`；
   `uv run python benchmarks/bench5_slo_perf03.py`（pg 臂需 LATTICE_PG_DSN）；
   `uv run python benchmarks/bench6_perf04.py`；`uv run python benchmarks/llm_hook_budget.py`。

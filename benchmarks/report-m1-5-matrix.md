@@ -10,9 +10,10 @@
 > LATTICE_PG_DSN=postgresql://postgres:lattice@localhost:5432/lattice uv run pytest \
 >   <本文 28 个矩阵文件清单见附录> -v --tb=no
 > ```
-> **结果：346 passed / 0 failed / 0 skipped**——其中 `[pg]` 参数化 **113** 条、
-> `[sqlite]` 参数化 **113** 条（同代码双后端各跑）、REST/MCP/shell 面（app_env
-> 系，sqlite）120 条。逐用例 PASSED 留痕见执行输出（-v）。
+> **结果：348 passed / 0 failed / 0 skipped**（R2 复跑——R1 版 346 + P2-3/P2-4
+> 新增 list_documents 状态值全集/非成员 403 两用例）——其中 `[pg]` 参数化 **113**
+> 条、`[sqlite]` 参数化 **113** 条（同代码双后端各跑）、REST/MCP/shell 面
+> （app_env 系，sqlite）122 条。逐用例 PASSED 留痕见执行输出（-v）。
 
 ## T1~T23 逐条收口表
 
@@ -34,7 +35,7 @@
 | T14 org claim 与头不一致 400 | `test_auth_02_org.py`（①~⑤ 全形态，T14 展开） | ✅ | ✅ | 接口面=sqlite；resolve_org 服务层经 app_env |
 | T15 他组织维度 id 403/404 | DB/编译层＝`test_acl_05_membership.py::test_other_org_membership_rejected`；跨组织凭证＝T11（u_multi/org:gl）；文档详情跨组织 404＝`api/documents.py` org 判定（`test_e2e_01_chain.py` 检索空集面） | ✅ | ✅ | REST 端点全枚举（grants/values 逐端点）属 M2 管理面验收——B-1① 限定申报 |
 | T16 生产配置 token 端点 404 | `test_auth_01_token.py::test_dev_token_prod_404` | ✅ | ✅ | |
-| T17 授权撤销后 owner 不再见在用文档 | **M1-5 新支撑**：MCP `list_documents`（owner 元数据兜底路径——§4.2 无 owner 分支设计）＝`test_m1_5_dev.py::test_mcp_list_documents_stats_per_caller_acl`（撤销面 dims 变化即统计变化）；撤销+版本窗口行为＝`test_ver_01` T21 面 | ✅ | ✅（backend 层）/ ✅（MCP=sqlite） | 撤销后实时不可见由 visible_docs CTE 快照口径保证（TC-ACL-07） |
+| T17 授权撤销后 owner 不再见在用文档 | **载体=文档详情端点（TEST-CASES v1.7 裁定 A=②——org 域管理面）**：①检索零命中（无 owner 分支——#34 必修 2）＝`test_ver_01_version_chain.py` T21 段（owner 覆盖上传处理窗口检索不到任何版本）+ `test_acl_07`（按用户可见集——无 owner 特例）；②owner 元数据兜底＝GET `/api/orgs/{org}/documents/{id}`（org 匹配即返回元数据/状态、无块内容）＝`test_e2e_01_chain.py`（详情状态轮询）+ `test_ver_02_guard_409.py`（删除后 404） | ✅ | ✅ | **缺口注记**：无「owner 授权撤销后 GET 自己文档详情仍 200」专属断言（管理面语义——M2 管理面验收补）；`list_documents` 为 §6.1 ACL 视角工具，证据只挂 TC-AZ-02 |
 | T18 报告页近邻不泄露无权内容 | `test_qual_05_report_acl.py`（双后端）+ `test_fts_04_keywords_purity.py`（u_cn 报告 OS-only 近邻不出现） | ✅ | ✅ | |
 | T19 删文档（M1 半句） | `test_ver_02_guard_409.py`（T19：REST owner/org_admin、级联+取消任务、非 owner 403、摄取中 DELETE 取消） | ✅ | ✅ | **删库半句随 M2**（申报） |
 | T20 生命周期（M1 面） | `test_matrix_t20_t22.py::test_t20_new_dimension_lifecycle` + `test_acl_04_lifecycle.py` | ✅ | ✅ | **退役审计半句随 M2**（申报） |
@@ -47,7 +48,7 @@
 | 用例 | 覆盖测试 | sqlite | pg |
 |---|---|---|---|
 | TC-AZ-01 上传/PATCH 取值限授权内 | `test_acl_09_write_path.py`（四步全形态，双后端；B-1① 覆盖上传旧值校验） | ✅ | ✅ |
-| TC-AZ-02 统计与概况不泄露 | **M1-5 实装支撑**：`test_m1_5_dev.py::test_mcp_list_documents_stats_per_caller_acl`（u_cn doc_count=2 vs u_full=3、全 payload 无 d_os 泄露——MCP 面）+ `test_backend_list_documents_for_acl_dual_backend`（backend 层双后端） | ✅ | ✅ |
+| TC-AZ-02 统计与概况不泄露 | **M1-5 实装支撑**（list_documents 证据唯一挂靠点——T17 另挂详情端点，v1.7 裁定 A=②）：`test_mcp_list_documents_stats_per_caller_acl`（u_cn doc_count=2 vs u_full=3、全 payload 无 d_os 泄露——MCP 面）+ `test_backend_list_documents_for_acl_dual_backend`（backend 层双后端）+ R2 增 `test_mcp_list_documents_active_status_accepts_documented_values` / `test_mcp_list_documents_non_member_403`（P2-3/P2-4：状态值 DDL 口径全集 + 非成员 403） | ✅ | ✅ |
 | TC-AZ-03 管理权与可见权分离（M1/M2） | MCP 面=TC-AZ-02 同款按调用者 ACL；管理列表端点=M2 半句——「两个端点两个口径」边界注释见 `mcp/server.py` 工具 docstring | ✅ | —（M2 半句申报） |
 | TC-AZ-05 库过滤与 doc_filter 收窄 | `test_e2e_01_chain.py`（datasets/doc_filter 交集语义）+ `test_ret_01_recipe.py` | ✅ | ✅ |
 

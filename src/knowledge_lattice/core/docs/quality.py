@@ -408,7 +408,9 @@ class QualityService:
         ① 取候选行 → 驻留 float32 矩阵（归一化一次）+ 顺带数出池规模；
         ② 池分块流过（单遍）：块归一化 → 与候选驻留矩阵分块乘 → running top-k
         （concat+partition，自身按 rid 定位置 -1 排除——与全行扫描语义等价）。
-        峰值私有内存 ≈ 候选矩阵 + sims 块 + 池块（实测见
+        维度异行防御两遍同口径（P3-1：只计同维行——pool_n/k 与池块实际行数
+        对齐；标签谓词（cv.embed_model = label）正常保证同维，防御面为手工行/
+        异常数据）。峰值私有内存 ≈ 候选矩阵 + sims 块 + 池块（实测见
         benchmarks/report-m1-5.md §4）。"""
         cand_set = set(cand_rids)
         cand_packed: dict[int, bytes] = {}
@@ -417,13 +419,13 @@ class QualityService:
         for rid, packed in self._backend.org_active_chunk_vectors(org_id, label):
             if not packed:
                 continue
+            d = len(packed) // 4
+            if dim == 0:
+                dim = d
+            elif d != dim:
+                continue  # 维度异行不计池——与第二遍 _pool_blocks 同口径（P3-1）
             pool_n += 1
             if rid in cand_set:
-                d = len(packed) // 4
-                if dim == 0:
-                    dim = d
-                elif d != dim:
-                    continue  # 维度异行防御跳过（蓝绿共窗不混算——标签谓词已滤）
                 cand_packed[rid] = packed
         if pool_n < 2 or not cand_packed or dim == 0:
             return {}
@@ -432,7 +434,7 @@ class QualityService:
         for i, rid in enumerate(kept):  # pop 逐行腾挪——峰值 ≈ 单份候选数据
             cand_mat[i] = np.frombuffer(cand_packed.pop(rid), dtype=np.float32)
         norms = np.linalg.norm(cand_mat, axis=1, keepdims=True)
-        cand_mat = cand_mat / np.clip(norms, 1e-12, None)
+        cand_mat /= np.clip(norms, 1e-12, None)  # P3-2：原地除——免临时副本减半峰值
         cand_pos = {rid: i for i, rid in enumerate(kept)}
 
         k = min(self._settings.quality_neighbors, pool_n - 1)
@@ -441,7 +443,7 @@ class QualityService:
         topk = np.full((len(kept), k), -2.0, dtype=np.float32)
         sim_rows = self._CROWDING_SIM_ROWS
         pblock = self._CROWDING_POOL_BLOCK
-        for block_rids, block_mat in self._pool_blocks(np, org_id, label, pblock):
+        for block_rids, block_mat in self._pool_blocks(np, org_id, label, pblock, dim):
             for cstart in range(0, len(kept), sim_rows):  # sims 分块（内存上界）
                 sims = cand_mat[cstart : cstart + sim_rows] @ block_mat.T
                 for j, rid in enumerate(block_rids):  # 自身排除（rid 定位——与流序无关）
@@ -454,12 +456,14 @@ class QualityService:
                 )[:, -k:]
         return {rid: float(topk[i].mean()) for i, rid in enumerate(kept)}
 
-    def _pool_blocks(self, np, org_id: str, label: str, block_n: int):
-        """池流 → (rid 列表, 归一化 float32 块) 生成器（块用即弃——峰值 = 单块）。"""
+    def _pool_blocks(self, np, org_id: str, label: str, block_n: int, dim: int):
+        """池流 → (rid 列表, 归一化 float32 块) 生成器（块用即弃——峰值 = 单块）。
+        dim 为期望维度（第一遍定标）：异维行跳过——与第一遍 pool_n 计数同口径
+        （P3-1：防御统一，防 reshape 撞维）。"""
         buf_rids: list[int] = []
         buf: list[bytes] = []
         for rid, packed in self._backend.org_active_chunk_vectors(org_id, label):
-            if not packed:
+            if not packed or len(packed) // 4 != dim:
                 continue
             buf_rids.append(rid)
             buf.append(packed)

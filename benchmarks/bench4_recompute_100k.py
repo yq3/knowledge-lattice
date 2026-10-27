@@ -2,12 +2,14 @@
 """TC-PERF-03 前置（M1-4 P2-4 / M1-5 改造的内存实测）：100k×2560 档批量重算
 （QualityService 拥挤路）峰值内存与耗时。
 
-对比两形态（各自独立子进程测——ru_maxrss 是进程高水位，不可同进程叠加）：
+对比两形态（各自独立子进程测——ru_maxrss 是进程高水位，不可同进程叠加；
+**内存口径（P2-5/P3-7）**：每形态同时记 `peak_rss_mb`（子进程绝对高水位）与
+`rss_delta_mb`（对子进程基线=import 后、开跑前的增量）——旧形态 10k 行的
+delta 在同进程内可观测（基线低于负载）；新形态以 peak 为主、delta 供参考）：
 - **旧形态**（物化 float 对象列表：list[tuple[int, list[float]]]）：10k 行实测
-  （100k 档外推 ~8GB——本机 16GB 不可全量跑，按 10k 实测 + 线性外推申报）；
+  （100k 档线性外推 **≈10.67GB**——本机 16GB 不可全量跑，按 10k 实测申报）；
 - **新形态**（packed bytes 流 + 候选驻留 ndarray + 分块 running top-k）：
-  100k 池全量 + 5% 候选（5000）重算实测；另附全量候选（100k）驻留矩阵口径
-  外推（n_cand×dim×4B ≈ 1.02GB 单块 ndarray——§5.4「载入 numpy」同口径）。
+  100k 池全量 + 候选比例经 `--cand-percent`（缺省 5；100=全量候选档）。
 
 数据：合成 2560 维 unit float32（bench_common.synth_vectors——确定性 seed，
 mmap 缓存复用）；不落 DB（本实验隔离 numpy 拥挤路的内存形态；SQL 侧流式
@@ -39,7 +41,7 @@ from bench_common import (  # noqa: E402
 
 POOL_N = 100_000
 DIM = 2560
-CAND_PERCENT = 5  # 周期抽样档（config.quality_sample_percent 默认 10——取 5 保守）
+CAND_PERCENT_DEFAULT = 5  # 抽样档缺省（config.quality_sample_percent 默认 10——取 5 保守）
 
 
 def rss_mb() -> float:
@@ -54,7 +56,7 @@ _MEASURE_NEW = "new"
 _MEASURE_OLD = "old"
 
 
-def _child(mode: str) -> dict:
+def _child(mode: str, cand_percent: int) -> dict:
     """子进程内跑单形态（隔离高水位），打印 JSON 由父进程回收。"""
     import numpy as np
 
@@ -84,7 +86,7 @@ def _child(mode: str) -> dict:
 
     vectors = synth_vectors(POOL_N)  # 确保缓存文件存在（首次生成）
     rids = list(range(1, POOL_N + 1))
-    n_cand = POOL_N * CAND_PERCENT // 100
+    n_cand = max(1, POOL_N * cand_percent // 100)
     cand_rids = rids[:: POOL_N // n_cand][:n_cand]
 
     from knowledge_lattice.config import Settings
@@ -110,14 +112,17 @@ def _child(mode: str) -> dict:
         service = QualityService(
             FakeVectorBackend(vector_cache_path(POOL_N), POOL_N, DIM), settings
         )
+        base = rss_mb()  # 开跑前基线（P2-5 口径：peak 与 delta 同记）
         t0 = time.perf_counter()
         means = service._crowding_means(np, "org:bench", "synth-embed:2560", cand_rids)
         elapsed = time.perf_counter() - t0
         payload = {
-            "mode": "new_streaming_100k_pool",
+            "mode": f"new_streaming_100k_pool_{cand_percent}pct",
             "pool": POOL_N,
             "candidates": len(cand_rids),
-            "rss_delta_mb": round(rss_mb(), 1),
+            "cand_percent": cand_percent,
+            "peak_rss_mb": round(rss_mb(), 1),
+            "rss_delta_mb": round(rss_mb() - base, 1),
             "elapsed_s": round(elapsed, 2),
             "mean_sim_avg": round(float(np.mean(list(means.values()))), 5),
         }
@@ -125,13 +130,27 @@ def _child(mode: str) -> dict:
 
 
 def main() -> int:
-    print_header("TC-PERF-03 前置：100k×2560 批量重算内存/耗时（M1-4 P2-4 改造实测）")
-    out: dict = {"machine": machine_profile(), "pool": {"n": POOL_N, "dim": DIM, "seed": SEED}}
+    import argparse
 
-    for mode, label in ((_MEASURE_NEW, "新形态"), (_MEASURE_OLD, "旧形态")):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--cand-percent", type=int, default=CAND_PERCENT_DEFAULT,
+                        help="新形态候选比例%%（5=抽样档缺省；100=全量候选档——P2-5）")
+    args = parser.parse_args()
+
+    print_header("TC-PERF-03 前置：100k×2560 批量重算内存/耗时（M1-4 P2-4 改造实测）")
+    out: dict = {"machine": machine_profile(),
+                 "pool": {"n": POOL_N, "dim": DIM, "seed": SEED},
+                 "memory_metric_note": (
+                     "peak_rss_mb=子进程绝对高水位（ru_maxrss）；rss_delta_mb=对"
+                     "子进程 import 后基线的增量——两口径同记（P2-5/P3-7）"
+                 )}
+
+    jobs = ((_MEASURE_NEW, "新形态", args.cand_percent), (_MEASURE_OLD, "旧形态", 0))
+    for mode, label, pct in jobs:
+        cmd = [sys.executable, __file__, "--child", mode, str(pct)]
         proc = subprocess.run(
-            [sys.executable, __file__, "--child", mode],
-            capture_output=True, text=True, cwd=Path(__file__).resolve().parent.parent,
+            cmd, capture_output=True, text=True,
+            cwd=Path(__file__).resolve().parent.parent,
         )
         line = next(
             (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:")), None
@@ -144,18 +163,19 @@ def main() -> int:
         print(f"{label}：{json.dumps(payload, ensure_ascii=False)}")
 
     old = out["old_materialized_10k"]
-    new = out["new_streaming_100k_pool"]
+    new = out[next(k for k in out if k.startswith("new_streaming_100k_pool"))]
     per_row_kb = old["rss_delta_mb"] * 1024 / old["rows"]
+    ext_gb = round(per_row_kb * POOL_N / 1024 / 1024, 2)
     out["derived"] = {
         "old_per_row_kb": round(per_row_kb, 1),
-        "old_extrapolated_100k_gb": round(per_row_kb * POOL_N / 1024 / 1024, 2),
+        "old_extrapolated_100k_gb": ext_gb,
         "packed_bytes_per_row_kb": round(DIM * 4 / 1024, 1),
         "new_full_candidates_matrix_gb": round(POOL_N * DIM * 4 / 1024**3, 2),
         "verdict": (
-            f"旧形态 100k 档外推 ≈{round(per_row_kb * POOL_N / 1024 / 1024, 2)}GB"
+            f"旧形态 100k 档外推 ≈{ext_gb}GB"
             f"（float 对象 {round(per_row_kb / (DIM * 4 / 1024), 1)}× 于 packed bytes）——16GB 机不可行；"
-            f"新形态 100k 池 5% 候选实测峰值 {new['rss_delta_mb']}MB，"
-            f"全量候选上限 ≈{round(POOL_N * DIM * 4 / 1024**3, 2)}GB 单块 ndarray（§5.4 同口径）"
+            f"新形态 100k 池 {new['cand_percent']}% 候选实测峰值 {new['peak_rss_mb']}MB"
+            f"（增量 {new['rss_delta_mb']}MB）"
         ),
     }
     print("\n判据：" + out["derived"]["verdict"])
@@ -166,6 +186,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     if len(sys.argv) >= 3 and sys.argv[1] == "--child":
-        _child(sys.argv[2])
+        _child(sys.argv[2], int(sys.argv[3]) if len(sys.argv) >= 4 else CAND_PERCENT_DEFAULT)
     else:
         raise SystemExit(main())

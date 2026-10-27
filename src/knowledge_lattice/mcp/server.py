@@ -84,8 +84,10 @@ LIST_DOCUMENTS_TOOL_DESCRIPTION = (
     "active_status 可按处理状态过滤、limit 控制返回条数（缺省 50）。"
 )
 
-# 文档 active_status 合法值（ingest 状态机——§5.3；非法值 400 而非静默空列表）
-_ACTIVE_STATUSES = frozenset({"searchable_lexical", "searchable_full", "failed"})
+# 文档 active_status 合法值（DDL 口径——#33 P0-2.2 列注释：
+# searchable_lexical | searchable_full | degraded；`failed` 属 pending_status 域
+# ——P2-3：非法值 400 而非静默空列表误导 LLM）
+_ACTIVE_STATUSES = frozenset({"searchable_lexical", "searchable_full", "degraded"})
 LIST_DOCUMENTS_HARD_LIMIT = 200  # limit 服务端硬上限（§6.1 缺省 50；防大响应）
 
 
@@ -256,11 +258,14 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
                 f"（合法值：{sorted(_ACTIVE_STATUSES)}）"
             )
         limit = max(1, min(limit, LIST_DOCUMENTS_HARD_LIMIT))
-        plan = compile_acl(service.backend, auth.user_id, org_id, dataset_ids=datasets)
-        counts = service.backend.visible_dataset_counts(plan, dataset_ids=datasets)
-        rows = service.backend.visible_documents(
-            plan, dataset_ids=datasets, active_status=active_status, limit=limit
-        )
+        try:
+            plan = compile_acl(service.backend, auth.user_id, org_id, dataset_ids=datasets)
+            counts = service.backend.visible_dataset_counts(plan, dataset_ids=datasets)
+            rows = service.backend.visible_documents(
+                plan, dataset_ids=datasets, active_status=active_status, limit=limit
+            )
+        except AclDeniedError as exc:  # P2-4：与 search/fetch/upload 同款 403 映射
+            raise ToolError(f"403: {exc}（code={exc.code}）") from exc
         documents = [
             {
                 "doc_id": r["doc_id"],

@@ -256,17 +256,17 @@ def test_mcp_list_documents_filters_and_limit(app_env) -> None:
         "UPDATE documents SET pending_version = 2, pending_status = 'parsing'"
         " WHERE id = 'd_pen'"
     )
+    conn.execute(
+        "UPDATE documents SET active_status = 'searchable_full',"
+        " source_uri = 'user:u_full',"
+        " updated_at = '2026-10-26 12:00:00' WHERE id IN ('d_cn', 'd_open', 'd_pen')"
+    )
     conn.commit()
     token = env["jwt"]("u_full", org=ORG)
 
     limited = _call_list_documents(env["app"], token, limit=2)
     assert len(limited["documents"]) == 2
 
-    conn.execute(
-        "UPDATE documents SET active_status = 'searchable_full'"
-        " WHERE id IN ('d_cn', 'd_open', 'd_pen')"
-    )
-    conn.commit()
     pending = _call_list_documents(env["app"], token, active_status="searchable_full")
     by_id = {d["doc_id"]: d for d in pending["documents"]}
     assert "d_pen" in by_id  # active v1 searchable_full 仍列出（pending 字段另示）
@@ -280,6 +280,48 @@ def test_mcp_list_documents_filters_and_limit(app_env) -> None:
     with pytest.raises(ToolError) as exc_info:
         _call_list_documents(env["app"], token, active_status="not_a_status")
     assert "400" in str(exc_info.value)
+
+
+def test_mcp_list_documents_active_status_accepts_documented_values(app_env) -> None:
+    """P2-3：active_status 合法值与 DDL 口径一致——文档化状态值
+    （searchable_lexical | searchable_full | degraded，#33 P0-2.2 DDL 注释）
+    逐个被接受（非 400）；`failed`（pending_status 域）不是 active 合法值。"""
+    env = app_env
+    conn = env["conn"]
+    seed_searchable_doc(conn, "d_cn", owner_user_id="u_full", dims={"region": ["CN"]})
+    conn.execute(
+        "UPDATE documents SET active_status = 'degraded' WHERE id = 'd_cn'"
+    )
+    conn.commit()
+    token = env["jwt"]("u_full", org=ORG)
+
+    for status in ("searchable_lexical", "searchable_full", "degraded"):
+        payload = _call_list_documents(env["app"], token, active_status=status)
+        names = [d["doc_id"] for d in payload["documents"]]
+        if status == "degraded":
+            assert names == ["d_cn"], f"{status} 应命中 degraded 文档"
+        else:
+            assert names == [], f"{status} 无命中文档但调用被接受（非 400）"
+
+    with pytest.raises(ToolError) as exc_info:
+        _call_list_documents(env["app"], token, active_status="failed")
+    assert "400" in str(exc_info.value), "failed 是 pending_status 域——非 active 合法值"
+
+
+def test_mcp_list_documents_non_member_403(app_env) -> None:
+    """P2-4：非成员调用 list_documents → ToolError 403（与 search/fetch/upload
+    同款 AclDeniedError 映射——compile_acl 逐请求成员关系校验）。"""
+    from knowledge_lattice.core.docs.acl import AclDeniedError
+
+    env = app_env
+    # u_cn 是 org:tax 成员，但对其无成员关系的组织（org:gl）→ 403
+    token = env["jwt"]("u_cn", org="org:gl")
+    with pytest.raises(ToolError) as exc_info:
+        _call_list_documents(env["app"], token)
+    assert "403" in str(exc_info.value)
+    assert isinstance(exc_info.value.__context__, AclDeniedError) or "membership" in str(
+        exc_info.value
+    )
 
 
 def test_backend_list_documents_for_acl_dual_backend(matrix) -> None:

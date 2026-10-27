@@ -59,7 +59,7 @@ T：`test_auth_01_token.py`、`test_auth_02_org.py`（双后端 + resolve_org �
 
 ### 8. 区分度：TC-QUAL-01~05、TC-EVAL-06
 
-T：`test_qual_01_crowding.py` ~ `test_qual_05_report_acl.py`（TC-QUAL-01~05，双后端）+ `test_qual_06_patch_service.py`（M1-4 R2 PATCH 面）。TC-EVAL-06（误报抽查机制）：`scripts/quality_sample.py`（确定性抽样清单）+ `test_qual_05/06`（patch_flag 落 state 轨迹）——**记录级用例**：真实语料误报率数值待真实语料（待决-1），机制面就位；阈值侧校准数据（G-8② 可构造面）见 `report-m1-5-g8-threshold.md`。
+T：`test_qual_01_crowding.py` ~ `test_qual_05_report_acl.py`（TC-QUAL-01~05，双后端）+ `test_qual_06_patch_service.py`（M1-4 R2 PATCH 面）。TC-EVAL-06（误报抽查机制）：`scripts/quality_sample.py`（确定性抽样清单）+ `test_qual_05/06`（patch_flag 落 state 轨迹）——**记录级用例**；R2 补合成语料抽查人工复核记录 `report-m1-5-fp-review.md`（41 flags 抽 12：词面路误报 11~12/12——同域小语料 IDF 稀释、拥挤路零误报、漏报不可评无金标申报）；真实语料误报率待真实语料（待决-1）；阈值侧校准数据（G-8② 可构造面）见 `report-m1-5-g8-threshold.md`。
 
 ### 9. 真实 query 标注：TC-EVAL-01
 
