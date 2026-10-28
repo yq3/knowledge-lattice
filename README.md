@@ -4,14 +4,14 @@
 
 > 名字释义：lattice（晶格）——知识单元（chunk）按结构有序排列成格；**格子是本体，检索是在格上寻位**。文档上架是晶体生长，索引是晶格结构，可重建、可演化。并入业务语义层后，"lattice"同时描述**文档知识 + 业务对象关系图**这种有结构的知识网络，名字比以前更贴切（#35 §4.1）。
 >
-> **知识层定位（2026-10-18 D23 修订，取代 2026-10-16「双层分立」口径）**：文档知识层与业务语义层（术语 + 业务对象的类型化对象图）**同服务归一**——术语层原定的独立 glossary-agent MCP server 部署形态取消，并入本系统 `core/semantic/` 模块（[requirements.md D17/D23](docs/requirements.md)）；[glossary-agent](../glossary-agent/) 转为调研与设计沉淀，其结论是 semantic 模块的设计输入。
+> **知识层定位（2026-10-18 D23 修订，取代 2026-10-16「双层分立」口径）**：文档知识层与业务语义层（术语 + 业务对象的类型化对象图）**同服务归一**——术语层原定的独立 glossary-agent MCP server 部署形态取消，并入本系统 `core/semantic/` 模块（[requirements.md D17/D23](docs/requirements.md)）；[glossary-agent（lab 仓）](https://github.com/yq3/lab/tree/main/glossary-agent) 转为调研与设计沉淀，其结论是 semantic 模块的设计输入。
 
 - 需求文档：[docs/requirements.md](docs/requirements.md)（先读这份）
 - 方案设计：[docs/design.md](docs/design.md)（架构 / 数据模型 DDL（含 `sem_*`）/ ACL 编译 / MCP 契约（docs + semantic 两组）/ 里程碑分解）
 - 验收用例：[docs/TEST-CASES.md](docs/TEST-CASES.md)（v1.5，2026-10-22——design §9 冻结编号 T1~T23 / T-S1~T-S12 的展开层（编号沿用）+ 模块 TC-* 用例（含 TC-EMB 嵌入服务与模型治理组、TC-UI 界面国际化组——FR-8，v1.5）+ 标准矩阵 fixture + 里程碑验收对照表；176 条覆盖 M0a~M3 与 M2-S1~S3；v1.1 吸收评审 [issue #38](https://github.com/yq3/lab/issues/38)、v1.2/v1.2.1 吸收复审 [issue #40](https://github.com/yq3/lab/issues/40)、v1.3 随正文 v0.7/ [#41](https://github.com/yq3/lab/issues/41) 增补、v1.3.1/v1.3.2/v1.4 吸收 [issue #42](https://github.com/yq3/lab/issues/42)（必修 2/3/4 + P1/P2，新增 TC-ACL-08 / TC-EMB-07）；测试按存储后端参数化（D24）；活文档、随实现回写口径，附录 A（A-1~A-17，A-7~A-9 已随正文 v0.6.1 闭环）登记待澄清口径；v1.4.1/v1.4.2 仅同步依据区版本引用——待决-6 关闭与运行时口径登记，无用例影响）
 - 已预见问题登记：[docs/known-gaps.md](docs/known-gaps.md)（活文档——已接受缺口与规格开放点：语义层不可达窗口 G-1 / fuzzy 层闭环 G-2 / restricted 静默缺失 G-3 / L0 陈旧性 G-4 / 容器化易失 G-5 / PG 后端差异 G-6 / 嵌入模型治理 G-8 / 间接注入 G-9 / 网关留存未确认 G-10 / 目标机 Python 运行时 G-11（G-7 rerank 端点已闭环：网关提供 Cohere 风格 /rerank，2026-10-22）；与需求 §9、设计 §10「有对策的风险」分工，不受设计冻结纪律约束）
 - 交互原型：[prototype/index.html](prototype/index.html)（v0.5，issue [#36](https://github.com/yq3/lab/issues/36)；浏览器直接打开、mock 数据；**信息结构与 UI 风格均为前端实现基准**，含语义层视图——实体浏览按 10⁴~10⁵ 节点规模设计：类型总览落地 + 搜索优先 + 全宽结果表 top-N + 详情独立成页，无常驻实体列表；关系图 / 关系列表按（关系类型 × 方向）分组、每组最多 3 个端点，超出以 +N 计数占位——宽扇出不成毛球；**v0.5.1（2026-10-22，#42 对齐）**：补「嵌入与存储」只读卡片（模型/维度/覆盖率 + 重索引入口挂 M2）、实体召回权重与展开关系对齐 §5.10（0.5、不含 uses）、任务类型 reembed、MCP 身份文案对齐 D18、移除 Google Fonts 外链）
-- 调研基础：[../research/enterprise-rag/](../research/enterprise-rag/)（22 仓源码级调研 + 四厂商第一方实践）；术语层调研沉淀见 [../glossary-agent/](../glossary-agent/)
+- 调研基础：[enterprise-rag 调研·lab 仓](https://github.com/yq3/lab/tree/main/research/enterprise-rag/)（22 仓源码级调研 + 四厂商第一方实践）；术语层调研沉淀见 [glossary-agent·lab 仓](https://github.com/yq3/lab/tree/main/glossary-agent)
 
 ## 一句话定位
 
