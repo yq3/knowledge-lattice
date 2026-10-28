@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 import ulid as _ulid
@@ -81,8 +82,27 @@ class UploadNotFoundError(Exception):
     """覆盖/删除/改维度的目标文档不存在或跨组织（404 语义）。"""
 
 
+class _LostLeaseError(Exception):
+    """执行中途租约失守/取消（should_continue=False 在不可返回的深处触发——
+    embed 批次边界）：run_task 以 lost_lease 语义静默退出，不落终态不写文档侧。"""
+
+
 def new_ulid(prefix: str) -> str:
     return f"{prefix}_{str(_ulid.ULID()).lower()}"
+
+
+def _copy_streaming(src: Path, dst: Path) -> str:
+    """流式拷贝 + sha256 增量哈希（P3-10——consume 路径 200MB 档不整体读内存）；
+    返回 hex digest。"""
+    digest = hashlib.sha256()
+    with open(src, "rb") as fsrc, open(dst, "wb") as fdst:
+        while True:
+            block = fsrc.read(64 * 1024)
+            if not block:
+                break
+            digest.update(block)
+            fdst.write(block)
+    return digest.hexdigest()
 
 
 def _validate_dim_keys(dims: dict[str, list[str]]) -> None:
@@ -153,7 +173,8 @@ class IngestService:
         title: str,
         dims: dict[str, list[str]],
         owner_user_id: str,
-        file_bytes: bytes,
+        file_bytes: bytes | None = None,
+        file_src: Path | None = None,
         mime_type: str,
         filename: str,
         doc_id: str | None = None,
@@ -166,11 +187,18 @@ class IngestService:
         max(历史)+1 + pending_dims_json（pending 期间不生效，P0-2.1）。
         source_uri：缺省 `user:<owner>`；凭证消费（M1-3）传 `agent:<服务身份>`
         ——agent 代传内容标来源，随检索返回（§6.1）。
-        返回 (doc_id, task_id)。
+
+        字节来源二选一（M2.1 P3-10 清偿）：file_bytes（multipart 直传——请求侧
+        已在内存）或 file_src（凭证消费路径——**流式拷贝 + 增量哈希**，200MB
+        档不整体读内存）。返回 (doc_id, task_id)。
         """
         datasets = {d["id"] for d in self._backend.list_datasets(org_id)}
         if dataset_id not in datasets:
             raise UploadValidationError(f"dataset not found in org: {dataset_id!r}")
+        if (file_bytes is None) == (file_src is None):
+            raise UploadValidationError(
+                "exactly one of file_bytes / file_src is required"
+            )
 
         # P3-12：维度值去重（document_dimensions 主键 (doc,dim,value)——重复值会导致
         # index_fts 事务 IntegrityError 且重试永久失败）
@@ -209,8 +237,14 @@ class IngestService:
 
         obj_name = f"{str(_ulid.ULID()).lower()}{Path(filename or 'bin').suffix}"
         self._objects_dir.mkdir(parents=True, exist_ok=True)
-        (self._objects_dir / obj_name).write_bytes(file_bytes)
-        content_hash = "sha256:" + hashlib.sha256(file_bytes).hexdigest()
+        obj_path = self._objects_dir / obj_name
+        if file_bytes is not None:
+            obj_path.write_bytes(file_bytes)
+            content_hash = "sha256:" + hashlib.sha256(file_bytes).hexdigest()
+        else:
+            # P3-10：凭证消费路径流式拷贝 + 增量哈希（64KB 分块——峰值内存与
+            # 对象体积解耦）；源对象经调用方（consume）先行哈希复验
+            content_hash = "sha256:" + _copy_streaming(file_src, obj_path)
 
         # P3-9（m1-2）+ P2-3（R2 收窄）：对象先落盘、**文档行写失败** → unlink
         # 补偿（不留孤儿对象；校验已先行，本防护覆盖 DB 层失败——约束违例/
@@ -335,6 +369,43 @@ class IngestService:
 
     # ============ 删除与改维度（M1-2 最小管理面——§6.2） ============
 
+    def cancel_task(self, *, org_id: str, task_id: str, actor_user_id: str) -> dict:
+        """任务取消（M2.1——TC-TASK-03，POST /api/orgs/{org}/tasks/{id}/cancel）：
+
+        1. 任务定位（404 语义：不存在/无文档归属/跨组织——maintenance 等无文档
+           任务不在 org 路径管辖内）；
+        2. 操作权限（FR-4 操作矩阵：owner / org_admin——与删除/覆盖上传同款）；
+        3. `backend.cancel_task` 原子转终态（非终态 → failed + 'cancelled: by user
+           request' + 清租约；**已终态 → 不动**——幂等续跑不复活）；
+        4. 文档侧一致性（不滞留 parsing）：取消生效时若 pending 版本仍在途
+           （parsing/chunked/searchable_lexical）→ 同款 T8 语义落
+           pending_status=failed + 立即物理删块；首次上传已切换（active 在用、
+           无 pending）→ 文档停在 searchable_lexical 稳态（一致，无需处理）。
+
+        在途 worker 在下一阶段/批次边界经 should_continue 探测到取消并停止
+        （lost_lease——不写终态不改文档，取消结果为准）。返回取消后的任务行。
+        """
+        task = self._backend.get_task(task_id)
+        if task is None or task.get("doc_id") is None:
+            raise UploadNotFoundError(f"task not found in org: {task_id!r}")
+        doc = self._require_document(doc_id=task["doc_id"], org_id=org_id)
+        self._require_write_permission(doc=doc, actor_user_id=actor_user_id)
+
+        cancelled = self._backend.cancel_task(
+            task_id, reason="cancelled: by user request"
+        )
+        if cancelled is not None:
+            fresh = self._backend.get_document(doc["id"])
+            if (
+                fresh is not None
+                and fresh.get("pending_version") is not None
+                and fresh.get("pending_status") not in ("failed", None)
+            ):
+                self._backend.set_doc_pending_failed(
+                    doc["id"], fresh["pending_version"], "cancelled by user request"
+                )
+        return self._backend.get_task(task_id)
+
     def delete_document(self, *, org_id: str, doc_id: str, actor_user_id: str) -> None:
         """删除文档：操作权限 → 同事务取消任务 + 级联删（TC-VER-07/T19①）→
         对象文件清理（best effort）。管理动作入 outbox 审计。"""
@@ -419,9 +490,12 @@ class IngestService:
             ),
         )
 
-    # ============ 执行器（进程内——M0a/M1；子进程化随 M2） ============
+    # ============ 执行器（M2.1 起经 worker TaskRunner 驱动；直调保留为单测捷径） ============
 
-    def run_task(self, task_id: str, *, stop_after: str | None = None) -> None:
+    def run_task(
+        self, task_id: str, *, stop_after: str | None = None,
+        should_continue: Callable[[], bool] | None = None,
+    ) -> None:
         """执行摄取任务（阶段幂等：重跑从上一完成阶段续——TC-ING-07）。
 
         stop_after：测试/中断缝（'parse'|'chunk'|'index_fts' 后返回，模拟进程中断；
@@ -429,10 +503,18 @@ class IngestService:
         failed+error 并写文档失败态（P2-1：按 id 重读文档后落 active_error/pending；
         pending 失败立即删块——T8）。文档已删/版本被顶替时任务优雅取消（failed +
         'cancelled'——TC-VER-07，不冒泡）。
+
+        should_continue（M2.1 worker 框架）：阶段边界存活检查（租约心跳/取消探测，
+        TC-TASK-03）——False 时任务停在当前阶段边界并返回 **不落任何终态**（任务
+        行此刻由外部动作方所有：取消已写 failed / 租约已被重认领）。已取消终态
+        （error 以 'cancelled:' 开头）的任务重跑直接幂等拒绝（取消不复活）。
         """
         task = self._backend.get_task(task_id)
         if task is None:
             raise KeyError(f"task not found: {task_id}")
+        if task["status"] == "failed" and (task.get("error") or "").startswith("cancelled:"):
+            # 取消终态：幂等续跑不复活（TC-TASK-03）——取消是吸收态
+            return
         doc = self._backend.get_document(task["doc_id"])
         if doc is None:
             # 文档已删（tasks.doc_id 置 NULL / 行已不在）：任务在取消态——重跑
@@ -446,9 +528,16 @@ class IngestService:
         self._backend.update_task(task_id, status="leased")
         self._backend.update_task(task_id, status="running")
         try:
-            outcome = self._run_stages(doc, stop_after=stop_after)
+            outcome = self._run_stages(doc, stop_after=stop_after,
+                                       should_continue=should_continue)
             if outcome == "interrupted":
                 return  # 模拟中断：任务留 running，不写 done（P3-1）
+            if outcome == "lost_lease":
+                # 租约失守/取消先行落账（should_continue=False）：任务行归外部
+                # 动作方所有（取消已写 failed 或新持有者已接管）——本执行器静默
+                # 退出，不写终态不改文档（TC-TASK-03 阶段边界停止）
+                logger.warning("ingest task lost lease/cancelled at stage boundary: %s", task_id)
+                return
             if outcome == "cancelled":
                 # 文档已删/版本被顶替（含 failed 版本旧任务重跑）：取消在阶段边界
                 # 生效（TC-VER-07——状态机无 cancelled 枚举，以 failed + 'cancelled:'
@@ -460,7 +549,20 @@ class IngestService:
                 )
                 return
             self._backend.update_task(task_id, status="done")
+        except _LostLeaseError:
+            # embed 批次边界失守（深处不可返回处 raise）：同 lost_lease 语义——
+            # 任务行归外部动作方所有，静默退出（TC-TASK-03）
+            logger.warning("ingest task lost lease/cancelled in embed stage: %s", task_id)
+            return
         except Exception as exc:  # noqa: BLE001 —— 任务级失败统一落 failed+error
+            fresh = self._backend.get_task(task_id)
+            if fresh is not None and fresh["status"] == "failed" and (
+                fresh.get("error") or ""
+            ).startswith("cancelled:"):
+                # 取消与在途执行竞争（如取消已把 pending 落 failed、本执行器的
+                # insert 存活复核 raise）：终态归取消所有——不覆盖、不写文档侧
+                logger.warning("ingest task aborted by concurrent cancel: %s", task_id)
+                return
             logger.exception("ingest task failed: %s", task_id)
             self._backend.update_task(task_id, status="failed", error=str(exc))
             self._record_doc_error(doc, exc)
@@ -518,25 +620,43 @@ class IngestService:
             return True  # 覆盖上传：pending 版本块已提交（lexical 时点不切换——D20）
         return False
 
-    def _run_stages(self, doc: dict, *, stop_after: str | None) -> str:
+    def _run_stages(
+        self, doc: dict, *, stop_after: str | None,
+        should_continue: Callable[[], bool] | None = None,
+    ) -> str:
         """返回 'completed' | 'interrupted'（stop_after 中断缝）| 'cancelled'
-        （文档已删/版本被顶替——阶段边界取消，TC-VER-07）。"""
+        （文档已删/版本被顶替——阶段边界取消，TC-VER-07）| 'lost_lease'
+        （should_continue=False——租约失守/取消，M2.1）。"""
+
+        def _alive() -> bool:
+            return should_continue is None or should_continue()
+
         doc_id = doc["id"]
         version = self._effective_version(doc)
         # 阶段判定（幂等续跑）：目标版本块已写 → 跳过 parse/chunk/index_fts；
         # 目标版本已 searchable_full → 幂等 no-op（重跑 done 任务）
+        #
+        # 边界检查次序（M2.1）：先 _alive（租约/取消探测）后 guard_alive——取消
+        # 已同时落任务 failed + pending failed 时，任务行的终态归取消动作方所有
+        # （lost_lease 静默退出），本执行器不得以 cancelled 结果覆写其 error。
         done = self._guard_alive(doc_id, version)
         if done is None:
             return "cancelled"
+        if not _alive():
+            return "lost_lease"
         if not self._index_fts_done(done, version):
             doc = done
             parsed = self._parse_stage(doc)
+            if not _alive():
+                return "lost_lease"
             doc = self._guard_alive(doc_id, version)
             if doc is None:
                 return "cancelled"
             if stop_after == "parse":
                 return "interrupted"
             drafts = self._chunk_stage(doc, parsed)
+            if not _alive():
+                return "lost_lease"
             doc = self._guard_alive(doc_id, version)
             if doc is None:
                 return "cancelled"
@@ -545,6 +665,8 @@ class IngestService:
             self._index_fts_stage(doc, drafts)
             if stop_after == "index_fts":
                 return "interrupted"
+            if not _alive():
+                return "lost_lease"
             doc = self._guard_alive(doc_id, version)
             if doc is None:
                 return "cancelled"
@@ -555,7 +677,9 @@ class IngestService:
             and doc.get("active_status") == "searchable_full"
         ):
             return "completed"  # 幂等 no-op（重跑 done 任务）
-        self._embed_stage(doc, version)
+        self._embed_stage(doc, version, should_continue=should_continue)
+        if not _alive():
+            return "lost_lease"
         self._quality_stage(doc)
         return "completed"
 
@@ -646,13 +770,23 @@ class IngestService:
         ]
         self._backend.insert(doc["id"], self._effective_version(doc), chunks)
 
-    def _embed_stage(self, doc: dict, version: int) -> None:
+    def _embed_stage(
+        self, doc: dict, version: int, *,
+        should_continue: Callable[[], bool] | None = None,
+    ) -> None:
         doc_id = doc["id"]
         self._gate.ensure_writable()  # 拒绝档：拒绝以同标签写入（可重试——TC-EMB-03）
         label = self._embedder.model_label
         pending = self._backend.mark_embedding_batch(doc_id, version, label)
         batch_size = self._settings.embed_batch_size
         for start in range(0, len(pending), batch_size):
+            # 批次边界存活检查（M2.1——取消在 embed 长阶段内的细粒度边界生效，
+            # TC-TASK-03；剩余批次零外呼）
+            if should_continue is not None and not should_continue():
+                raise _LostLeaseError(
+                    f"embed stage aborted at batch boundary (lease lost/cancelled)"
+                    f" doc={doc_id!r} v{version}"
+                )
             batch = pending[start : start + batch_size]
             vectors = self._embedder.embed([row["content"] for row in batch])
             if len(vectors) != len(batch):  # P3-8：返回条数不符——防 zip 静默丢块

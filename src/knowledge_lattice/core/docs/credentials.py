@@ -33,6 +33,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
@@ -154,7 +155,12 @@ class PutSink:
         self._declared = int(cred["size"])
         self._digest = hashlib.sha256()
         self._total = 0
-        self._staging = service.staging_dir / f"{cred['id']}.part"
+        # M2.1 P3-6 清偿：staging 文件名带随机后缀——同一凭证的并发 PUT（修正
+        # 重传合法路径）各写各的 .part，互不覆写；转正以 rename 原子替换，输家
+        # 的 .part 由 abort/清扫兜底（P2-1 年龄阈值同款）
+        self._staging = (
+            service.staging_dir / f"{cred['id']}.{uuid.uuid4().hex[:12]}.part"
+        )
         self._fh = None
         self._done = False
 
@@ -423,10 +429,19 @@ class CredentialService:
         obj_path = self._resolve_object(cred)
         if not obj_path.is_file():
             raise UploadNotReadyError(f"凭证对象缺失：{cred['object_key']!r}")
-        data = obj_path.read_bytes()
-        if len(data) > self._settings.upload_max_bytes:
+        stat_size = obj_path.stat().st_size
+        if stat_size > self._settings.upload_max_bytes:
             raise SizeOverLimitError("凭证对象超全局上限")
-        if hashlib.sha256(data).hexdigest() != cred["sha256"]:
+        # P3-10 清偿：哈希复验改流式（64KB 分块增量——不整体读内存；此前
+        # read_bytes 一次载入 200MB 档全量字节）
+        digest = hashlib.sha256()
+        with open(obj_path, "rb") as fh:
+            while True:
+                block = fh.read(64 * 1024)
+                if not block:
+                    break
+                digest.update(block)
+        if digest.hexdigest() != cred["sha256"]:
             raise HashMismatchError(
                 f"消费时哈希复验不符（落盘对象与声明哈希不一致）——declared={cred['sha256'][:12]}…"
             )
@@ -438,7 +453,7 @@ class CredentialService:
             title=title or cred["filename"] or doc_id or "",
             dims=dims,
             owner_user_id=user_id,
-            file_bytes=data,
+            file_src=obj_path,  # 流式拷贝（P3-10）——字节不经过内存
             mime_type=cred["content_type"],
             filename=cred["filename"],
             doc_id=doc_id,
@@ -448,6 +463,28 @@ class CredentialService:
         if not self._backend.mark_upload_consumed(
             upload_id, doc_id=doc_id_new, task_id=task_id
         ):
+            # M2.1 P3-11 清偿（并发消费极窗口）：输家（并发竞态 409）不得留下
+            # 已建文档+已入队任务——worker 会把孤儿任务真跑成重复文档。补偿 =
+            # 删文档（delete_document 同事务取消其任务 + 级联删块）+ 清 canonical
+            # 对象（best effort）。仅限本次消费新建的文档（doc_id 显式携带的
+            # 覆盖上传路径：并发第二消费在 start_overwrite 库级兜底处已 409，
+            # 走不到这里）
+            if doc_id is None:
+                try:
+                    fresh = self._backend.get_document(doc_id_new)
+                    if fresh is not None:
+                        obj_key = fresh["raw_object_key"]
+                        self._backend.delete_document(doc_id_new)
+                        try:
+                            (self._objects_dir / obj_key).unlink(missing_ok=True)
+                        except OSError:
+                            logger.warning(
+                                "consume compensation object cleanup failed: %s", obj_key
+                            )
+                except Exception:  # noqa: BLE001 —— 补偿 best-effort，不遮蔽 409
+                    logger.exception(
+                        "consume compensation failed (orphan doc): %s", doc_id_new
+                    )
             raise CredentialConsumedError(
                 f"凭证 {upload_id} 已被消费（并发竞态——单次使用）"
             )

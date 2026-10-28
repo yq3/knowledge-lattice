@@ -218,10 +218,26 @@ class SqliteBackend:
 
         幂等（TC-ING-07）：同 (doc_id, version) 先删后插（uq_chunks_docver 兜底）；
         pending_dims_json 同事务落 document_dimensions（首次上传切换即生效——设计 §5.3）。
+
+        M2.1 并发面收口（事务内 pending 存活复核）：事务开启后重读 pending 行，
+        pending_status='failed'（取消/失败已落账）→ raise——防「worker 过边界守卫后、
+        取消事务先行提交」窗口里把 failed 版本复活成 searchable_lexical（TC-TASK-03
+        竞态半句；BEGIN IMMEDIATE 与 set_doc_pending_failed 串行化）。
         """
         conn = self._conn
         conn.execute("BEGIN IMMEDIATE")
         try:
+            pending_row = conn.execute(
+                "SELECT pending_status FROM documents"
+                " WHERE id = :doc AND pending_version = :v",
+                {"doc": doc_id, "v": version},
+            ).fetchone()
+            if pending_row is not None and pending_row[0] == "failed":
+                conn.execute("ROLLBACK")
+                raise VersionConflictError(
+                    f"insert rejected: doc={doc_id!r} v{version} pending 已 failed"
+                    "（取消/并发失败先落账——版本亡故不复活，P0-2.3/TC-TASK-03）"
+                )
             conn.execute(
                 "DELETE FROM chunks WHERE doc_id = :doc AND version = :v",
                 {"doc": doc_id, "v": version},
@@ -415,9 +431,10 @@ class SqliteBackend:
                 {"doc": doc_id, "old": old_version},
             )
             # 旧块标记 + 五列 FTS 内容清空（清空后 au 触发器执行 FTS 'delete' 再插
-            # 空行——UPDATE 不触发 ad；FTS 残留空 rowid 不影响 MATCH，#33 P0-2.4/T9）
+            # 空行——UPDATE 不触发 ad；FTS 残留空 rowid 不影响 MATCH，#33 P0-2.4/T9）；
+            # tombstoned_at = 90 天物理清理的时点基准（0004/M2.1）
             conn.execute(
-                "UPDATE chunks SET tombstone = 1,"
+                "UPDATE chunks SET tombstone = 1, tombstoned_at = CURRENT_TIMESTAMP,"
                 " title_seg = '', content_seg = '', keywords = '',"
                 " llm_keywords = '', tags = ''"
                 " WHERE doc_id = :doc AND version = :old",
@@ -991,18 +1008,23 @@ class SqliteBackend:
 
     def get_task(self, task_id: str) -> dict | None:
         row = self._conn.execute(
-            "SELECT id, doc_id, type, status, attempts, error, created_at, updated_at"
+            "SELECT id, doc_id, type, status, attempts, error, lease_owner,"
+            " lease_until, heartbeat_at, created_at, updated_at"
             " FROM tasks WHERE id = :id",
             {"id": task_id},
         ).fetchone()
         if row is None:
             return None
-        cols = ("id", "doc_id", "type", "status", "attempts", "error", "created_at", "updated_at")
+        cols = (
+            "id", "doc_id", "type", "status", "attempts", "error", "lease_owner",
+            "lease_until", "heartbeat_at", "created_at", "updated_at",
+        )
         return dict(zip(cols, row))
 
     def list_tasks(self, org_id: str, *, doc_id: str | None = None) -> list[dict]:
         sql = (
             "SELECT t.id, t.doc_id, t.type, t.status, t.attempts, t.error,"
+            " t.lease_owner, t.lease_until, t.heartbeat_at,"
             " t.created_at, t.updated_at FROM tasks t"
             " JOIN documents d ON d.id = t.doc_id"
             " WHERE d.org_id = :org"
@@ -1013,16 +1035,23 @@ class SqliteBackend:
             params["doc"] = doc_id
         sql += " ORDER BY t.created_at DESC"
         rows = self._conn.execute(sql, params).fetchall()
-        cols = ("id", "doc_id", "type", "status", "attempts", "error", "created_at", "updated_at")
+        cols = (
+            "id", "doc_id", "type", "status", "attempts", "error", "lease_owner",
+            "lease_until", "heartbeat_at", "created_at", "updated_at",
+        )
         return [dict(zip(cols, r)) for r in rows]
 
     def update_task(
         self, task_id: str, *, status: str | None = None, error: str | None = None
     ) -> None:
-        """状态机推进：pending→leased→running→done|failed（§5.3）；attempts 随 running 递增。"""
+        """状态机推进：pending→leased→running→done|failed（§5.3）。
+
+        attempts 随 **claim_next_task 认领**递增（M2.1 口径：一次认领 = 一次执行
+        尝试——认领后即崩的窗口也计数，防无限崩溃循环；running 时不再重复计）。
+        """
         if status == "running":
             self._conn.execute(
-                "UPDATE tasks SET status = :s, attempts = attempts + 1,"
+                "UPDATE tasks SET status = :s,"
                 " heartbeat_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP"
                 " WHERE id = :id",
                 {"s": status, "id": task_id},
@@ -1034,6 +1063,125 @@ class SqliteBackend:
                 {"s": status, "err": error, "id": task_id},
             )
         self._conn.commit()
+
+    # ---- 任务队列（租约·心跳·认领——M2.1 worker 框架，design §5.3） ----
+
+    def claim_next_task(
+        self,
+        worker_id: str,
+        *,
+        lease_s: float,
+        task_types: Sequence[str] = ("ingest", "maintenance"),
+        max_attempts: int = 3,
+        now: str | None = None,
+    ) -> dict | None:
+        """原子认领（单语句 UPDATE…WHERE id=(SELECT …)——sqlite 单写序列化下
+        第二个并发认领者的子查询在首者提交后重估，不再命中同一行）。"""
+        from knowledge_lattice.store.taskclock import add_seconds, utc_now_ts
+
+        now_ts = now or utc_now_ts()
+        until = add_seconds(now_ts, lease_s)
+        marks = ", ".join(f":t{i}" for i in range(len(task_types)))
+        params: dict[str, object] = {
+            "w": worker_id, "now": now_ts, "until": until,
+            "max": max_attempts, **{f"t{i}": t for i, t in enumerate(task_types)},
+        }
+        rows = self._conn.execute(
+            "UPDATE tasks SET status = 'leased', attempts = attempts + 1,"
+            " lease_owner = :w,"
+            " lease_until = :until, heartbeat_at = :now, updated_at = :now"
+            f" WHERE id = (SELECT id FROM tasks"
+            f"   WHERE type IN ({marks}) AND attempts < :max"
+            "     AND (status = 'pending'"
+            "          OR (status IN ('leased','running')"
+            "              AND lease_until IS NOT NULL AND lease_until <= :now))"
+            "   ORDER BY created_at, id LIMIT 1)"
+            " RETURNING id, doc_id, type, status, attempts, error, lease_owner,"
+            " lease_until, heartbeat_at, created_at, updated_at",
+            params,
+        ).fetchall()
+        self._conn.commit()
+        if not rows:
+            return None
+        cols = (
+            "id", "doc_id", "type", "status", "attempts", "error", "lease_owner",
+            "lease_until", "heartbeat_at", "created_at", "updated_at",
+        )
+        return dict(zip(cols, rows[0]))
+
+    def heartbeat_task(
+        self, task_id: str, worker_id: str, *, lease_s: float, now: str | None = None
+    ) -> bool:
+        from knowledge_lattice.store.taskclock import add_seconds, utc_now_ts
+
+        now_ts = now or utc_now_ts()
+        cur = self._conn.execute(
+            "UPDATE tasks SET heartbeat_at = :now, lease_until = :until,"
+            " updated_at = :now"
+            " WHERE id = :id AND lease_owner = :w AND status IN ('leased','running')",
+            {"now": now_ts, "until": add_seconds(now_ts, lease_s), "id": task_id, "w": worker_id},
+        )
+        self._conn.commit()
+        return cur.rowcount == 1
+
+    def cancel_task(self, task_id: str, *, reason: str, now: str | None = None) -> dict | None:
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        now_ts = now or utc_now_ts()
+        cur = self._conn.execute(
+            "UPDATE tasks SET status = 'failed', error = :reason, lease_owner = NULL,"
+            " lease_until = NULL, updated_at = :now"
+            " WHERE id = :id AND status IN ('pending','leased','running')",
+            {"reason": reason, "now": now_ts, "id": task_id},
+        )
+        self._conn.commit()
+        if cur.rowcount == 0:
+            return None  # 已终态（幂等不复活——TC-TASK-03）
+        return self.get_task(task_id)
+
+    def delete_expired_memberships(self, *, now: str | None = None) -> int:
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        cur = self._conn.execute(
+            "DELETE FROM user_org_memberships"
+            " WHERE expires_at IS NOT NULL AND expires_at <= :now",
+            {"now": now or utc_now_ts()},
+        )
+        self._conn.commit()
+        return cur.rowcount  # trg_membership_delete_cleanup 级联清授权（§5.1）
+
+    def delete_aged_tombstones(self, *, before_ts: str) -> int:
+        cur = self._conn.execute(
+            "DELETE FROM chunks WHERE tombstone = 1 AND tombstoned_at IS NOT NULL"
+            " AND tombstoned_at <= :before",
+            {"before": before_ts},
+        )
+        self._conn.commit()
+        return cur.rowcount  # chunk_vectors FK CASCADE + chunks_ad 触发器清 FTS
+
+    def trim_finished_tasks(
+        self, *, keep_days: int, keep_count: int, task_type: str = "maintenance",
+        now: str | None = None,
+    ) -> int:
+        from knowledge_lattice.store.taskclock import add_seconds, utc_now_ts
+
+        now_ts = now or utc_now_ts()
+        cutoff = add_seconds(now_ts, -keep_days * 86400)
+        terminal = "type = :ty AND status IN ('done','failed')"
+        cur = self._conn.execute(
+            f"DELETE FROM tasks WHERE {terminal} AND updated_at < :cutoff",
+            {"ty": task_type, "cutoff": cutoff},
+        )
+        removed = cur.rowcount
+        cur = self._conn.execute(
+            f"DELETE FROM tasks WHERE {terminal} AND id NOT IN ("
+            f"  SELECT id FROM tasks WHERE {terminal}"
+            f"  ORDER BY updated_at DESC LIMIT :keep)",
+            {"ty": task_type, "keep": max(keep_count, 0)},
+        )
+        removed += cur.rowcount
+        self._conn.commit()
+        return removed
 
     def get_document(self, doc_id: str) -> dict | None:
         row = self._conn.execute(
@@ -1084,9 +1232,12 @@ class SqliteBackend:
         self._conn.commit()
 
     def set_doc_pending_status(self, doc_id: str, version: int, status: str) -> None:
+        # M2.1 并发面收口：failed 是 pending 版本的吸收态（P0-2.3 版本亡故）——
+        # 取消/失败先行落账后，在途执行器的状态推进零行生效（防复活）
         self._conn.execute(
             "UPDATE documents SET pending_status = :s, updated_at = CURRENT_TIMESTAMP"
-            " WHERE id = :doc AND pending_version = :v",
+            " WHERE id = :doc AND pending_version = :v"
+            "   AND (pending_status IS NULL OR pending_status != 'failed')",
             {"s": status, "doc": doc_id, "v": version},
         )
         self._conn.commit()

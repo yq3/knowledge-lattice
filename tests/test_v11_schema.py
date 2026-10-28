@@ -88,9 +88,9 @@ def test_sqlite_0002_migrates_legacy_vectors_and_drops_columns(tmp_path: Path) -
             embedding=pack_f32([9.0, 9.0]),
         )
 
-        applied = migrate_db(conn)  # 默认目录 → 0002+0003（v1.1 搬运 + M1-3 uploads）
-        assert applied == [2, 3]
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        applied = migrate_db(conn)  # 默认目录 → 0002+0003+0004（v1.1 搬运 + M1-3 uploads + M2.1 tombstoned_at）
+        assert applied == [2, 3, 4]
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
         # 列删除：dims_json/embedding 双删；embed_model 保留为摄取状态标签
@@ -136,15 +136,15 @@ def test_sqlite_0002_fresh_empty_db(tmp_path: Path) -> None:
 
     conn = connect(tmp_path / "fresh.db")
     try:
-        assert migrate_db(conn) == [1, 2, 3]
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert migrate_db(conn) == [1, 2, 3, 4]
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert conn.execute("SELECT count(*) FROM chunk_vectors").fetchone()[0] == 0
         cols = {r[1] for r in conn.execute("PRAGMA table_info(chunks)")}
         assert "dims_json" not in cols and "embedding" not in cols
         # 版本只前进：v1 目录重放不回退（user_version 只前进语义）
         assert migrate_db(conn, dirs=_v1_dirs(tmp_path / "again")) == []
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
     finally:
         conn.close()
 
@@ -195,9 +195,9 @@ def test_pg_0002_migrates_legacy_vectors_and_drops_columns(tmp_path: Path) -> No
             " VALUES('chk:pending', 'd1', 3, 1, 'x', '{}'::jsonb, 'm:old')"
         )
 
-        assert pg_migrate_db(raw) == [2, 3]  # 默认目录 → 0002+0003（v1.1 + M1-3 uploads）
+        assert pg_migrate_db(raw) == [2, 3, 4]  # 默认目录 → 0002+0003+0004（v1.1 + M1-3 uploads + M2.1 tombstoned_at）
         versions = [r[0] for r in raw.execute("SELECT version FROM schema_migrations ORDER BY version")]
-        assert versions == [1, 2, 3]
+        assert versions == [1, 2, 3, 4]
 
         cols = {
             r[0]

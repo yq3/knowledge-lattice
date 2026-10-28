@@ -181,9 +181,12 @@ def test_task_state_machine(pg_env) -> None:
     )
     task_id = backend.create_task("doc:5")
     assert backend.get_task(task_id)["status"] == "pending"
-    backend.update_task(task_id, status="leased")
-    backend.update_task(task_id, status="running")  # attempts 随 running 递增
-    assert backend.get_task(task_id)["attempts"] == 1
+    # M2.1 口径：attempts 随 claim 认领递增（一次认领 = 一次执行尝试）
+    claimed = backend.claim_next_task("wk-1", lease_s=60.0)
+    assert claimed is not None and claimed["id"] == task_id
+    assert claimed["status"] == "leased" and claimed["attempts"] == 1
+    backend.update_task(task_id, status="running")
+    assert backend.get_task(task_id)["attempts"] == 1  # running 不重复计
     backend.update_task(task_id, status="done")
     tasks = backend.list_tasks("org:tax", doc_id="doc:5")
     assert [t["status"] for t in tasks] == ["done"]
