@@ -5,7 +5,7 @@ target: knowledge-lattice
 coderTaskId: ses_e8cea469effeDgSeDLzAGgETlK
 testerTaskId: ses_e8c9f2db2ffepj2rUFKm40NHm8
 committerTaskId: ses_e8c8795b7ffeZP5VDd9hMxLd9k
-status: approved
+status: done
 round: 2
 maxRounds: 3
 testVerdict: PASS
@@ -16,7 +16,7 @@ reviewedSha: b2e36c09b657173c6742e0c53b28c8e969c94ccc
 filesChanged: ["R1 48 files +4292/−112：新增 core/docs/quality.py（§5.4 权威实现：两路信号/LLM 兜底/numpy 批量重算/ACL 过滤报告/人工补标/误报抽查 + mojibake 三档门）+ api/quality.py（GET 报告近邻过 ACL/PATCH quality-flags/GET 抽样）", "新增 eval/{metrics,harness}.py（Recall@k/MRR 纯函数 + 批量上线→检索→标注对齐 harness）+ eval/corpus.jsonl（39 docs）+ eval/golden.jsonl（28 queries 全 multi-token）+ eval/reports/（双后端基线 + 标注记录）+ scripts/eval_baseline.py·quality_sample.py", "改 store 双后端 Quality 域 15 方法 + backend.py 协议 + pg/vec.py", "改 adapters/parser_docling.py（TXT 编码探测+老格式拒收）+ ingest.py（拒收/质量门/quality 挂接/P3-9 补偿）+ retrieve.py（P3-12/P3-13）+ config.py quality_* + app.py 装配 + acl.py·upload.py·credentials.py·mcp/server.py（403 机器码/文案）+ enhancer.py KeywordGenerator + pyproject numpy + fake_providers TokenBagEmbedder + conftest qual_env", "tests 新增 10 文件（qual 26/ing 12/eval 双后端/p3_followups 11）+ 改 7 文件（fts_04 REST 面/cred/pg_scaff/scaf_03/ver_01/conftest）", "R2 14 files +578/−57：quality.py P1-1(chunks_by_rids 取 content+空跳过+空 terms 防护)+P2-1(org_active_chunk_segs(None) 冷启动)+P3 顺手集（见后）、ingest.py P2-2(兜底接入 quality 阶段)+P2-3(补偿收窄)、adapters/textutil.py 新增(判分原语下沉)、parser_docling CRLF、tests qual_02+06b/qual_03+4/qual_06 新 3 用例/p3+2（顺手清偿集：sqlite create_task 注解/quality_sample docstring/sample 端点直测/eval docstring/labeling-notes/textutil 分层/403 文案/CRLF/PG 写路径——编号对照见 R2 coder 报告）", "docs 勘误批 b2e36c0 3 files +4/−4：TEST-CASES A-13 回写+design/requirements 日期行欠账+§5.1 笔误（supervised-coding 落笔）"]
 endReason: null
 createdAt: 2026-10-25T20:33:00+0800
-updatedAt: 2026-10-26T21:17:32+0800
+updatedAt: 2026-10-26T21:21:00+0800
 ---
 
 # task-knowledge-lattice-m1-4: M1-4 区分度环 + 语料批量上线 + 黄金集/评测基建 + 摄取补全（M1 开发收尾段）
@@ -134,6 +134,8 @@ updatedAt: 2026-10-26T21:17:32+0800
 
 - 残项复核修正（2026-10-26 21:09，supervised-coding，响应 committer 第二轮专项残项清单）：残项 1（⏸ 组 m1-3 描述误植入剔除）/2（P1/P2-1~3+P2-4 排除三处+自证句如实化）/4（D 组矛盾短语删除）/5（统一 P3-1~P3-14 十四项口径）已修；残项 3（filesChanged 旧编号串错误引用→实际修正集（quality_sample docstring 修/sample 端点直测/eval docstring/labeling-notes 补录/textutil 分层/403 文案/CRLF/create_task 注解）已修；L133 B-2/B-3 摘要同步最终口径。核验：旧编号串（P3-斜杠-8-12-13-20 形态，不再复写字面）在 filesChanged R2 段已替换为实际修正集描述
 - 交付完成（2026-10-26）：①Coder 同步 origin/develop（Already up to date）+ push develop_opencode `cd915f8..b2e36c0`（SSH；3 commits——coder 纠正 supervised-coding 前置描述的「4 commit」计数错误）；②**PR #53** 开立（base=develop，MERGEABLE/CLEAN，52 唯一文件无流程文件混入），description 含 evidence manifest（testedSha=912ddd5 代码级 / reviewedSha=b2e36c0=交付 HEAD 含 docs 批 / GATE 604+1 双后端双模式 0 skipped / pg 臂 220 / boundaryNote 四条边界裁定 / carriedOver M1-5+M2 两组）；③Committer 正式评审留痕 review id `PRR_kwDOTsiHgs8AAAABUOtCvA`（COMMENTED @2026-10-26T13:17:02Z，首行「评审结论=APPROVED（可交用户合入）」——单账号留痕标准）。**待用户合入 PR #53；合入即 M1-4 里程碑达成，下一段 M1-5（实验校准与 M1 验收收官段——M1 最后一段）新检查点新会话**
+- **合入完成（2026-10-26 21:21 用户指令"合入"）**：PR #53 state=MERGED，mergedAt=2026-10-26T13:20:30Z，mergeCommit=`befff9e884d541d1780ea80556fa097b31ae09cb`；origin/develop 前进 `2da63ec..befff9e`（含交付 3 commits + 检查点归档 commit 共 4 个）；develop_opencode 远端按 D30 保留——**M1-4 正式完成（done），M1-4 里程碑达成**（区分度环 + 评测基建 + 摄取补全 + TC-FTS-04 硬条件闭环 + 边界四条裁定落地）。下一步 M1-5（实验校准与 M1 验收收官段——M1 最后一段）：新检查点 + 全新 Coder/Tester/Committer 会话；**M1-5 完成合入即 M1 里程碑整体达成**
+- **检查点归档（2026-10-26 21:20 用户指令「检查点文件也都要一并提交推送」——历轮「流程文件不入 commit」惯例自此废止）**：commit `649d8322e4e399e26d7ea614b731800bfd1d0899`（6 files +1011/−2：m0b-3 done 记录 + m1-1~m1-5 全量检查点）+ push `b2e36c0..649d832`——PR #53 现含 4 commits（交付 3 + 检查点归档 1），合入 #53 时一并入库。本条记录与后续 updatedAt 更新将随 M1-5 交付批或下次归档入库（活文档特性）
 ## 最新验证意见原文
 - R1 Tester 报告关键细节补充（2026-10-25，逐字级——PG 召回差异逐 query 归因表，**M1-5 校准实验输入**）：
 
