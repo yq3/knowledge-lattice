@@ -496,16 +496,24 @@ class PgBackend:
             )
 
     def set_doc_pending_failed(self, doc_id: str, version: int, error: str) -> None:
-        """pending 版本失败：failed + pending_error + 立即物理删块——同一事务。"""
+        """pending 版本失败：failed + pending_error + 立即物理删块——同一事务。
+
+        P1-1 守卫（M2.1 R2，与 sqlite 同构）：UPDATE 零行（版本已被切换收编/
+        清空/取代——调用方事务外 stale read）时不删块直接提交返回，防取消×切换
+        竞态删掉在用版本全部 chunks。
+        """
         conn = self._conn
         conn.execute("BEGIN")
         try:
-            conn.execute(
+            cur = conn.execute(
                 "UPDATE documents SET pending_status = 'failed', pending_error = %(err)s,"
                 " updated_at = CURRENT_TIMESTAMP"
                 " WHERE id = %(doc)s AND pending_version = %(v)s",
                 {"err": error, "doc": doc_id, "v": version},
             )
+            if cur.rowcount == 0:
+                conn.execute("COMMIT")
+                return
             conn.execute(
                 "DELETE FROM chunks WHERE doc_id = %(doc)s AND version = %(v)s",
                 {"doc": doc_id, "v": version},
@@ -976,34 +984,39 @@ class PgBackend:
 
     # ============ Admin 域（任务状态机 / 文档状态 / 指纹 / 只读维度取值） ============
 
-    def create_task(self, doc_id: str | None, *, task_type: str = "ingest") -> str:
+    def create_task(
+        self, doc_id: str | None, *, task_type: str = "ingest",
+        target_version: int | None = None,
+    ) -> str:
+        """target_version（0005/M2.1 R2 边界裁定 B(a)）：ingest 任务的目标文档
+        版本——取消与崩溃耗尽清扫按该版本落 pending failed（P2-3）；NULL=无版本任务。"""
         task_id = f"tsk_{uuid.uuid4()}"
         self._conn.execute(
-            "INSERT INTO tasks(id, doc_id, type, status)"
-            " VALUES(%(id)s, %(doc)s, %(type)s, 'pending')",
-            {"id": task_id, "doc": doc_id, "type": task_type},
+            "INSERT INTO tasks(id, doc_id, type, status, target_version)"
+            " VALUES(%(id)s, %(doc)s, %(type)s, 'pending', %(tv)s)",
+            {"id": task_id, "doc": doc_id, "type": task_type, "tv": target_version},
         )
         return task_id
 
     def get_task(self, task_id: str) -> dict | None:
         row = self._conn.execute(
-            "SELECT id, doc_id, type, status, attempts, error, lease_owner,"
-            " lease_until, heartbeat_at, created_at, updated_at"
+            "SELECT id, doc_id, type, status, attempts, error, target_version,"
+            " lease_owner, lease_until, heartbeat_at, created_at, updated_at"
             " FROM tasks WHERE id = %(id)s",
             {"id": task_id},
         ).fetchone()
         if row is None:
             return None
         cols = (
-            "id", "doc_id", "type", "status", "attempts", "error", "lease_owner",
-            "lease_until", "heartbeat_at", "created_at", "updated_at",
+            "id", "doc_id", "type", "status", "attempts", "error", "target_version",
+            "lease_owner", "lease_until", "heartbeat_at", "created_at", "updated_at",
         )
         return dict(zip(cols, row))
 
     def list_tasks(self, org_id: str, *, doc_id: str | None = None) -> list[dict]:
         sql = (
             "SELECT t.id, t.doc_id, t.type, t.status, t.attempts, t.error,"
-            " t.lease_owner, t.lease_until, t.heartbeat_at,"
+            " t.target_version, t.lease_owner, t.lease_until, t.heartbeat_at,"
             " t.created_at, t.updated_at FROM tasks t"
             " JOIN documents d ON d.id = t.doc_id"
             " WHERE d.org_id = %(org)s"
@@ -1015,8 +1028,8 @@ class PgBackend:
         sql += " ORDER BY t.created_at DESC"
         rows = self._conn.execute(sql, params).fetchall()
         cols = (
-            "id", "doc_id", "type", "status", "attempts", "error", "lease_owner",
-            "lease_until", "heartbeat_at", "created_at", "updated_at",
+            "id", "doc_id", "type", "status", "attempts", "error", "target_version",
+            "lease_owner", "lease_until", "heartbeat_at", "created_at", "updated_at",
         )
         return [dict(zip(cols, r)) for r in rows]
 
@@ -1026,6 +1039,7 @@ class PgBackend:
         """状态机推进：pending→leased→running→done|failed（§5.3）。
 
         attempts 随 claim_next_task 认领递增（M2.1 口径——认领后即崩也计数）。
+        P2-1 守卫（M2.1 R2）：done 仅非终态可入——已终态零行生效（sqlite 同构）。
         """
         if status == "running":
             self._conn.execute(
@@ -1033,6 +1047,13 @@ class PgBackend:
                 " heartbeat_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP"
                 " WHERE id = %(id)s",
                 {"s": status, "id": task_id},
+            )
+        elif status == "done":
+            self._conn.execute(
+                "UPDATE tasks SET status = 'done', error = NULL,"
+                " updated_at = CURRENT_TIMESTAMP"
+                " WHERE id = %(id)s AND status IN ('pending','leased','running')",
+                {"id": task_id},
             )
         elif error is not None or status is not None:
             self._conn.execute(
@@ -1043,6 +1064,26 @@ class PgBackend:
 
     # ---- 任务队列（租约·心跳·认领——M2.1 worker 框架，design §5.3） ----
 
+    def fail_exhausted_tasks(
+        self, *, max_attempts: int, now: str | None = None
+    ) -> list[dict]:
+        """崩溃耗尽清扫（P2-2，M2.1 R2——与 sqlite 同构）：过期且 attempts ≥ max
+        的 leased/running → failed + error 原因；返回被清扫行供文档侧收尾。"""
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        now_ts = now or utc_now_ts()
+        rows = self._conn.execute(
+            "UPDATE tasks SET status = 'failed', lease_owner = NULL, lease_until = NULL,"
+            " error = 'attempt limit exceeded (lease expired after ' || attempts"
+            "   || ' attempts — worker crash?)', updated_at = %(now)s"
+            " WHERE status IN ('leased','running') AND attempts >= %(max)s"
+            "   AND lease_until IS NOT NULL AND lease_until <= %(now)s"
+            " RETURNING id, doc_id, type, status, attempts, error, target_version",
+            {"max": max_attempts, "now": now_ts},
+        ).fetchall()
+        cols = ("id", "doc_id", "type", "status", "attempts", "error", "target_version")
+        return [dict(zip(cols, r)) for r in rows]
+
     def claim_next_task(
         self,
         worker_id: str,
@@ -1051,17 +1092,27 @@ class PgBackend:
         task_types: Sequence[str] = ("ingest", "maintenance"),
         max_attempts: int = 3,
         now: str | None = None,
+        created_before: str | None = None,
     ) -> dict | None:
         """原子认领（FOR UPDATE SKIP LOCKED——两执行器并发认领同一候选行时不
-        互等不重叠，恰好一人得手；与 sqlite 单语句 UPDATE 子查询重估同语义）。"""
+        互等不重叠，恰好一人得手；与 sqlite 单语句 UPDATE 子查询重估同语义）。
+        created_before（P2-7）：仅认领 created_at <= 该时点的任务（陈旧任务口径，
+        sqlite 同构——见 sqlite 侧 docstring）。"""
         from knowledge_lattice.store.taskclock import add_seconds, utc_now_ts
 
         now_ts = now or utc_now_ts()
         until = add_seconds(now_ts, lease_s)
+        age_filter = " AND created_at <= %(cb)s" if created_before is not None else ""
+        params: dict[str, object] = {
+            "w": worker_id, "now": now_ts, "until": until, "max": max_attempts,
+            "types": list(task_types),
+        }
+        if created_before is not None:
+            params["cb"] = created_before
         rows = self._conn.execute(
             "WITH candidate AS ("
             "  SELECT id FROM tasks"
-            "  WHERE type = ANY(%(types)s) AND attempts < %(max)s"
+            "  WHERE type = ANY(%(types)s) AND attempts < %(max)s" + age_filter +
             "    AND (status = 'pending'"
             "         OR (status IN ('leased','running')"
             "             AND lease_until IS NOT NULL AND lease_until <= %(now)s))"
@@ -1071,16 +1122,15 @@ class PgBackend:
             " lease_until = %(until)s, heartbeat_at = %(now)s, updated_at = %(now)s"
             " FROM candidate c WHERE t.id = c.id"
             " RETURNING t.id, t.doc_id, t.type, t.status, t.attempts, t.error,"
-            " t.lease_owner, t.lease_until, t.heartbeat_at,"
+            " t.target_version, t.lease_owner, t.lease_until, t.heartbeat_at,"
             " t.created_at, t.updated_at",
-            {"w": worker_id, "now": now_ts, "until": until, "max": max_attempts,
-             "types": list(task_types)},
+            params,
         ).fetchall()
         if not rows:
             return None
         cols = (
-            "id", "doc_id", "type", "status", "attempts", "error", "lease_owner",
-            "lease_until", "heartbeat_at", "created_at", "updated_at",
+            "id", "doc_id", "type", "status", "attempts", "error", "target_version",
+            "lease_owner", "lease_until", "heartbeat_at", "created_at", "updated_at",
         )
         return dict(zip(cols, rows[0]))
 

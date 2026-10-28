@@ -251,6 +251,7 @@ class IngestService:
         # 磁盘满等）。补偿范围限定 create_document/_start_overwrite 本身——
         # **create_task 失败保留对象**（文档行已在库并引用该对象，删了反而
         # 造成「文档引用缺失对象」的不一致；任务缺失可由重试/维护面补）
+        task_version: int | None = None
         try:
             if doc_id is None:
                 doc_id = new_ulid("doc")
@@ -267,7 +268,9 @@ class IngestService:
                     raw_object_key=obj_name,
                     pending_dims_json=json.dumps(dims, ensure_ascii=False) if dims else None,
                 )
+                task_version = 1  # 首传：pending v1（create_document 置 1）
             else:
+                task_version = self._backend.max_document_version(doc_id) + 1
                 self._start_overwrite(
                     doc_id=doc_id,
                     org_id=org_id,
@@ -278,6 +281,7 @@ class IngestService:
                     mime_type=mime_type or "application/octet-stream",
                     raw_object_key=obj_name,
                     pending_dims_json=json.dumps(dims, ensure_ascii=False) if dims else None,
+                    pending_version=task_version,  # 与 _start_overwrite 同源版本号
                     grants=grants,  # B-1①：复用已读授权展开（同一 actor，不二次读）
                 )
         except BaseException:
@@ -286,8 +290,12 @@ class IngestService:
             except OSError:
                 logger.warning("orphan object cleanup failed: %s", obj_name)
             raise
-        # create_task 在补偿范围外（P2-3）：文档行已引用对象——失败上抛但对象保留
-        task_id = self._backend.create_task(doc_id, task_type="ingest")
+        # create_task 在补偿范围外（P2-3）：文档行已引用对象——失败上抛但对象保留；
+        # target_version（0005）：首传=1 / 覆盖上传=新 pending 版本号——取消与
+        # 崩溃耗尽清扫按任务目标版本落失败（不误杀新版本上传，P2-3）
+        task_id = self._backend.create_task(
+            doc_id, task_type="ingest", target_version=task_version
+        )
         return doc_id, task_id
 
     def _require_document(self, *, doc_id: str, org_id: str) -> dict:
@@ -321,6 +329,7 @@ class IngestService:
         mime_type: str,
         raw_object_key: str,
         pending_dims_json: str | None,
+        pending_version: int | None = None,
         grants: dict[str, tuple[str, ...]] | None = None,
     ) -> None:
         """覆盖上传入口（§5.3 文档更新）：操作权限 → **旧维度值校验**（B-1①，
@@ -328,6 +337,10 @@ class IngestService:
         公共校验 `_require_values_in_grants`，防两处漂移）→ pending 409 →
         新版本号 max(历史)+1（失败版本号不复用——P0-2.3）→ 开新 pending
         （不动 active_*）。
+
+        pending_version（M2.1 R2）：调用方已计算的新版本号（与 create_task 的
+        target_version 同源——一次读取两处消费，防「任务目标版本 ≠ 实开 pending
+        版本」的错位）；缺省时本方法自算（兼容旧调用形态）。
 
         旧值校验理由：切换事务将**整体替换** document_dimensions（pending_dims_json
         覆盖），操作者须对现行状态有写权限——防「把文档拉回自己可见域而不曾
@@ -349,11 +362,12 @@ class IngestService:
                 key=key, values=old_values, grants=grants,
                 actor_user_id=actor_user_id, what="current",
             )
-        new_version = self._backend.max_document_version(doc_id) + 1
+        if pending_version is None:
+            pending_version = self._backend.max_document_version(doc_id) + 1
         try:
             self._backend.start_overwrite(
                 doc_id=doc_id,
-                pending_version=new_version,
+                pending_version=pending_version,
                 content_hash=content_hash,
                 mime_type=mime_type,
                 raw_object_key=raw_object_key,
@@ -369,6 +383,33 @@ class IngestService:
 
     # ============ 删除与改维度（M1-2 最小管理面——§6.2） ============
 
+    def _fail_doc_version(self, doc_id: str, target_version: int, reason: str) -> None:
+        """按**任务目标版本**落 pending failed + 删块（P2-3，M2.1 R2）。
+
+        仅当文档当前 pending_version == target_version 且非 failed 时生效——
+        目标版本已切换收编（pending 清空）/被新版本取代/无版本任务（None）时
+        不触碰文档（防「取消旧任务误杀新版本上传」；切换竞态由 store 层
+        set_doc_pending_failed 的 rowcount 守卫〔P1-1〕兜底）。取消（cancel_task）
+        与崩溃耗尽清扫（fail_document_version）共用本实现。
+        """
+        doc = self._backend.get_document(doc_id)
+        if (
+            doc is not None
+            and doc.get("pending_version") == target_version
+            and doc.get("pending_status") not in ("failed", None)
+        ):
+            self._backend.set_doc_pending_failed(doc_id, target_version, reason)
+
+    def fail_document_version(self, task_row: dict, reason: str) -> None:
+        """崩溃耗尽清扫的文档侧收尾（P2-2，M2.1 R2）：按任务行 target_version
+        落 pending failed + 删块（T8 同款）；无版本/版本不匹配不触碰。"""
+        if task_row.get("doc_id") is None:
+            return
+        version = task_row.get("target_version")
+        if version is None:
+            return  # 存量行（0005 前）无版本关联——任务行已 failed 留人工，文档侧登记移交
+        self._fail_doc_version(task_row["doc_id"], version, reason)
+
     def cancel_task(self, *, org_id: str, task_id: str, actor_user_id: str) -> dict:
         """任务取消（M2.1——TC-TASK-03，POST /api/orgs/{org}/tasks/{id}/cancel）：
 
@@ -377,10 +418,10 @@ class IngestService:
         2. 操作权限（FR-4 操作矩阵：owner / org_admin——与删除/覆盖上传同款）；
         3. `backend.cancel_task` 原子转终态（非终态 → failed + 'cancelled: by user
            request' + 清租约；**已终态 → 不动**——幂等续跑不复活）；
-        4. 文档侧一致性（不滞留 parsing）：取消生效时若 pending 版本仍在途
-           （parsing/chunked/searchable_lexical）→ 同款 T8 语义落
-           pending_status=failed + 立即物理删块；首次上传已切换（active 在用、
-           无 pending）→ 文档停在 searchable_lexical 稳态（一致，无需处理）。
+        4. 文档侧一致性（不滞留 parsing）：**按任务 target_version**（0005/P2-3，
+           非文档当前 pending）落 pending failed + 删块——取消旧任务（目标版本
+           已是 active 或已被 v2 取代）不触碰新版本上传；首传已切换（无 pending）
+           → 文档停在 searchable_lexical 稳态。
 
         在途 worker 在下一阶段/批次边界经 should_continue 探测到取消并停止
         （lost_lease——不写终态不改文档，取消结果为准）。返回取消后的任务行。
@@ -394,16 +435,10 @@ class IngestService:
         cancelled = self._backend.cancel_task(
             task_id, reason="cancelled: by user request"
         )
-        if cancelled is not None:
-            fresh = self._backend.get_document(doc["id"])
-            if (
-                fresh is not None
-                and fresh.get("pending_version") is not None
-                and fresh.get("pending_status") not in ("failed", None)
-            ):
-                self._backend.set_doc_pending_failed(
-                    doc["id"], fresh["pending_version"], "cancelled by user request"
-                )
+        if cancelled is not None and task.get("target_version") is not None:
+            self._fail_doc_version(
+                doc["id"], task["target_version"], "cancelled by user request"
+            )
         return self._backend.get_task(task_id)
 
     def delete_document(self, *, org_id: str, doc_id: str, actor_user_id: str) -> None:
@@ -525,10 +560,20 @@ class IngestService:
                 )
             return
 
+        def _alive() -> bool:
+            return should_continue is None or should_continue()
+
+        # 目标版本（0005/P2-3）：任务行携带的 v1/vN 优先——阶段守卫/幂等续跑按
+        # 任务自己的版本判定（新 pending 顶替旧任务目标版本时旧任务优雅取消）；
+        # 存量行（NULL）回退文档当前有效版本（M1 口径）
+        version = task.get("target_version")
+        if version is None:
+            version = self._effective_version(doc)
+
         self._backend.update_task(task_id, status="leased")
         self._backend.update_task(task_id, status="running")
         try:
-            outcome = self._run_stages(doc, stop_after=stop_after,
+            outcome = self._run_stages(doc, version=version, stop_after=stop_after,
                                        should_continue=should_continue)
             if outcome == "interrupted":
                 return  # 模拟中断：任务留 running，不写 done（P3-1）
@@ -548,6 +593,13 @@ class IngestService:
                     error="cancelled: document deleted or version superseded",
                 )
                 return
+            # P2-1（M2.1 R2）终态前最后探测：quality 等长阶段内取消/丢租约时
+            # done 不得覆盖取消终态（update_task 的 done 守卫为库级兜底）
+            if not _alive():
+                logger.warning(
+                    "ingest task lost lease/cancelled before terminal write: %s", task_id
+                )
+                return
             self._backend.update_task(task_id, status="done")
         except _LostLeaseError:
             # embed 批次边界失守（深处不可返回处 raise）：同 lost_lease 语义——
@@ -555,6 +607,13 @@ class IngestService:
             logger.warning("ingest task lost lease/cancelled in embed stage: %s", task_id)
             return
         except Exception as exc:  # noqa: BLE001 —— 任务级失败统一落 failed+error
+            if not _alive():
+                # P2-1（M2.1 R2）except 首行探测：丢租约/取消后的异常不写终态、
+                # 不写文档侧——任务行归取消方/新持有者所有
+                logger.warning(
+                    "ingest task lost lease/cancelled before failure write: %s", task_id
+                )
+                return
             fresh = self._backend.get_task(task_id)
             if fresh is not None and fresh["status"] == "failed" and (
                 fresh.get("error") or ""
@@ -621,18 +680,24 @@ class IngestService:
         return False
 
     def _run_stages(
-        self, doc: dict, *, stop_after: str | None,
+        self, doc: dict, *, version: int | None = None,
+        stop_after: str | None = None,
         should_continue: Callable[[], bool] | None = None,
     ) -> str:
         """返回 'completed' | 'interrupted'（stop_after 中断缝）| 'cancelled'
         （文档已删/版本被顶替——阶段边界取消，TC-VER-07）| 'lost_lease'
-        （should_continue=False——租约失守/取消，M2.1）。"""
+        （should_continue=False——租约失守/取消，M2.1）。
+
+        version（M2.1 R2）：任务目标版本（0005/P2-3）——由 run_task 传入；None
+        回退文档当前有效版本（直调/存量行 M1 口径）。阶段守卫按该版本判定归属。
+        """
 
         def _alive() -> bool:
             return should_continue is None or should_continue()
 
         doc_id = doc["id"]
-        version = self._effective_version(doc)
+        if version is None:
+            version = self._effective_version(doc)
         # 阶段判定（幂等续跑）：目标版本块已写 → 跳过 parse/chunk/index_fts；
         # 目标版本已 searchable_full → 幂等 no-op（重跑 done 任务）
         #

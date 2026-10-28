@@ -37,6 +37,7 @@ def reclaim_app(tmp_path, monkeypatch):
     )
     settings = Settings(
         environment="test", data_dir=tmp_path, embed_dim=8,
+        embed_model="fake-embed",  # P3-9：与 worker fake 标签对齐——向量路真实验证
         probe_interval_s=0, maintenance_interval_s=0,
         worker_mode="subprocess", worker_lease_s=2.0, worker_poll_s=0.3,
         worker_heartbeat_s=1.0, worker_startup_probe=False,

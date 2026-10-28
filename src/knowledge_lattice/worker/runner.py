@@ -12,7 +12,10 @@ TaskRunner（进程内库——inline 模式与子进程 main() 共用同一执�
   （TC-TASK-03）；
 - **重试**：执行异常且 attempts < task_max_attempts → 回 pending 供重认领
   （TC-TASK-02：attempts ≥ 3 保持 failed 留人工，error 落原因）；取消类
-  （'cancelled:'）不可重试；
+  （'cancelled:'）不可重试；终态所有权守卫（P2-1）：done 不被迟来异常覆盖、
+  丢租约旧执行器不覆盖新持有者（worker_id 每 runner 唯一）；
+- **崩溃耗尽清扫**（P2-2）：每轮认领前——租约过期且 attempts ≥ max 的任务
+  转 failed 留人工，并按 target_version 落文档侧 pending failed；
 - **日志贯通**：task_id 进 contextvars（log.py task_id_var——主进程侧同款）。
 
 子进程入口（`python -m knowledge_lattice.worker`）：装配 backend/services →
@@ -27,6 +30,10 @@ worker 短事务分批提交〔各阶段写入本就逐事务提交〕）：**�
 服务装配扩展点：`LATTICE_WORKER_SERVICES=module:attr` 指向 build(settings) ->
 WorkerServices 的工厂（部署侧自定义 provider / 测试注入 fake embedder 与崩溃
 桩——跨进程无法传对象，经 import 钩子达成）。
+
+worker_mode 默认 subprocess（M2.1 R2 边界裁定 A(a)——生产 fail-safe）；inline
+为测试/最小部署的显式选项（app.py InlineWorkerHandle：kick 同步消化 + 兜底
+循环全类型认领——ingest 陈旧口径 created_before，见 P2-7）。
 """
 
 from __future__ import annotations
@@ -36,6 +43,7 @@ import os
 import subprocess
 import sys
 import threading
+import uuid
 from dataclasses import dataclass
 
 from knowledge_lattice.config import Settings, get_settings
@@ -81,7 +89,9 @@ class TaskRunner:
         self._backend = backend
         self._settings = settings
         self._services = services or WorkerServices(backend=backend, settings=settings)
-        self._worker_id = worker_id or f"wk-{os.getpid()}"
+        # P2-1（M2.1 R2）：worker_id 每 runner 唯一（pid+uuid）——inline 多执行器
+        # 共进程时 owner 校验仍可区分（防丢租约旧执行器覆盖新持有者终态）
+        self._worker_id = worker_id or f"wk-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         self._clock = clock or utc_now_ts
         self._executors: dict[str, object] = {
             "ingest": self._exec_ingest,
@@ -92,12 +102,19 @@ class TaskRunner:
 
     # ---- 对外主口 ----
 
-    def run_once(self, *, task_types=None) -> bool:
+    def run_once(self, *, task_types=None, created_before=None) -> bool:
         """认领并执行一个任务；无可认领任务 → False（不抛——循环安全）。
 
-        task_types：认领类型过滤（None = CLAIMABLE_TASK_TYPES 全集）——inline
-        兜底循环只领 maintenance（投递方 kick 同步消化 ingest，保 M1 时序语义）。
+        - task_types：认领类型过滤（None = CLAIMABLE_TASK_TYPES 全集）；
+        - created_before（P2-7）：仅认领 created_at <= 该时点的「陈旧」任务——
+          inline 兜底循环以此认领 ingest（投递方 kick 的同步消化恒先于循环抢到
+          新任务，保 M1 上传时序语义；重启遗留/超量滞留任务照常被领）。
+
+        每轮先执行**崩溃耗尽清扫**（P2-2）：租约过期且 attempts ≥ max 的
+        leased/running 任务 → failed 留人工（error 落原因），并按 target_version
+        落文档侧 pending failed（经 ingest 服务，无版本关联行只落任务行）。
         """
+        self._sweep_exhausted()
         try:
             task = self._backend.claim_next_task(
                 self._worker_id,
@@ -105,6 +122,7 @@ class TaskRunner:
                 task_types=task_types or CLAIMABLE_TASK_TYPES,
                 max_attempts=self._settings.task_max_attempts,
                 now=self._clock(),
+                created_before=created_before,
             )
         except Exception:  # noqa: BLE001 —— 认领失败（锁竞争等）按无任务处理
             logger.exception("claim_next_task failed——本轮跳过（兜底轮询会再试）")
@@ -113,6 +131,32 @@ class TaskRunner:
             return False
         self._execute(task)
         return True
+
+    def _sweep_exhausted(self) -> None:
+        """P2-2（M2.1 R2）崩溃耗尽清扫：类型过滤无关（每轮先跑——任何认领路径
+        都会收口滞留任务）。"""
+        try:
+            swept = self._backend.fail_exhausted_tasks(
+                max_attempts=self._settings.task_max_attempts, now=self._clock()
+            )
+        except Exception:  # noqa: BLE001 —— 清扫失败不阻断本轮认领
+            logger.exception("fail_exhausted_tasks sweep failed")
+            return
+        for row in swept:
+            logger.error(
+                "task exhausted after %s attempts (lease expired — worker crash?):"
+                " %s → failed 留人工",
+                row.get("attempts"), row.get("id"),
+            )
+            ingest = self._services.ingest
+            fail = getattr(ingest, "fail_document_version", None)
+            if fail is None:
+                continue
+            try:
+                fail(row, "attempt limit exceeded (worker crash?)")
+            except Exception:  # noqa: BLE001 —— 文档侧收尾失败不阻断（任务行已 failed）
+                logger.exception("doc-side finalize failed for exhausted task: %s",
+                                 row.get("id"))
 
     # ---- 执行与心跳 ----
 
@@ -186,6 +230,7 @@ class TaskRunner:
     # ---- 失败处置（重试上限——TC-TASK-02） ----
 
     def _on_failure(self, task: dict, exc: Exception) -> None:
+        """失败处置（重试上限——TC-TASK-02；P2-1 终态所有权守卫，M2.1 R2）。"""
         task_id = task["id"]
         logger.exception("task execution failed: %s", task_id)
         try:
@@ -193,6 +238,18 @@ class TaskRunner:
         except Exception:  # noqa: BLE001
             fresh = None
         if fresh is None:
+            return
+        # P2-1 守卫 1：已 done（新持有者完成 / 本执行器完成后的迟来异常）不覆盖
+        if fresh["status"] == "done":
+            logger.warning("failure ignored: task already done: %s", task_id)
+            return
+        # P2-1 守卫 2：租约已归他人（重认领后的旧执行器迟来失败）不覆盖新持有者
+        owner = fresh.get("lease_owner")
+        if owner not in (None, self._worker_id):
+            logger.warning(
+                "failure ignored: lease owned by %r (lost to reclaimer): %s",
+                owner, task_id,
+            )
             return
         err = fresh.get("error") or ""
         if err.startswith("cancelled:"):
@@ -329,41 +386,24 @@ class _ParentWakeShim:
 
 
 def build_default_services(settings: Settings) -> WorkerServices:
-    """按 settings 装配 worker 服务集（生产默认——镜像 app.py 的 backend/embedder/
-    ingest/credentials 构造，无 web/api/MCP）。"""
+    """按 settings 装配 worker 服务集（生产默认）。
+
+    P2-4/P2-5（M2.1 R2）：backend 经共享工厂 `store.factory.build_backend`
+    （与 app.create_app 同源——恒 sqlite，LATTICE_PG_DSN 不再触发 worker 侧
+    PG 自动分支，杜绝主/子进程跨库 split-brain）；quality 经共享工厂
+    `core.docs.quality.build_quality_service`（LLM 兜底按 settings.quality_llm
+    选择——与 app 同款，subprocess 部署下不再静默 Noop）。
+    """
     from knowledge_lattice.adapters.embedder import EmbeddingGate, OpenAICompatEmbedder
     from knowledge_lattice.core.docs.credentials import CredentialService
     from knowledge_lattice.core.docs.ingest import IngestService
-    from knowledge_lattice.core.docs.quality import (
-        NoopKeywordGenerator,
-        QualityService,
-    )
+    from knowledge_lattice.core.docs.quality import build_quality_service
+    from knowledge_lattice.store.factory import build_backend
 
-    dsn = os.environ.get("LATTICE_PG_DSN")
-    if dsn:
-        import psycopg
-
-        from knowledge_lattice.store.postgres import migrate_db, setup_connection
-        from knowledge_lattice.store.postgres.backend import PgBackend
-
-        conn = psycopg.connect(dsn, autocommit=True)
-        setup_connection(conn)
-        migrate_db(conn)
-        backend = PgBackend(conn)
-    else:
-        from knowledge_lattice.store.sqlite import connect, migrate_db
-        from knowledge_lattice.store.sqlite.threaded import ThreadLocalBackend
-
-        bootstrap = connect(settings.db_path)
-        migrate_db(bootstrap)
-        bootstrap.close()
-        backend = ThreadLocalBackend(settings.db_path)  # 心跳线程独立连接
-
+    backend = build_backend(settings)  # 心跳线程独立连接（ThreadLocal）
     gate = EmbeddingGate()
     embedder = OpenAICompatEmbedder(settings)
-    quality = QualityService(
-        backend, settings, keyword_client=NoopKeywordGenerator()
-    )
+    quality = build_quality_service(backend, settings)
     ingest = IngestService(
         backend, embedder, settings, gate, settings.data_dir / "objects",
         quality=quality,
@@ -386,12 +426,18 @@ def _load_services_factory(spec: str):
 
 
 def main() -> None:
-    """子进程入口（`python -m knowledge.lattice.worker`）——装配/日志/探针/双通道循环。"""
+    """子进程入口（`python -m knowledge_lattice.worker`）——装配/日志/探针/双通道循环。"""
     settings = get_settings()
+    if settings.worker_mode not in ("inline", "subprocess"):
+        raise ValueError(
+            f"invalid worker_mode {settings.worker_mode!r}（合法值：inline | subprocess"
+            "——fail-closed，不静默回退）"
+        )
     setup_logging(settings.log_level, settings.log_format)  # log.py 同套 handler
 
     factory_spec = os.environ.get("LATTICE_WORKER_SERVICES")
     if factory_spec:
+        logger.info("worker services from factory: %s", factory_spec)
         services = _load_services_factory(factory_spec)(settings)
     else:
         services = build_default_services(settings)

@@ -88,9 +88,9 @@ def test_sqlite_0002_migrates_legacy_vectors_and_drops_columns(tmp_path: Path) -
             embedding=pack_f32([9.0, 9.0]),
         )
 
-        applied = migrate_db(conn)  # 默认目录 → 0002+0003+0004（v1.1 搬运 + M1-3 uploads + M2.1 tombstoned_at）
-        assert applied == [2, 3, 4]
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        applied = migrate_db(conn)  # 默认目录 → 0002~0005（v1.1 搬运 + M1-3 uploads + M2.1 tombstoned_at + M2.1 R2 target_version）
+        assert applied == [2, 3, 4, 5]
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
         # 列删除：dims_json/embedding 双删；embed_model 保留为摄取状态标签
@@ -136,15 +136,15 @@ def test_sqlite_0002_fresh_empty_db(tmp_path: Path) -> None:
 
     conn = connect(tmp_path / "fresh.db")
     try:
-        assert migrate_db(conn) == [1, 2, 3, 4]
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert migrate_db(conn) == [1, 2, 3, 4, 5]
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert conn.execute("SELECT count(*) FROM chunk_vectors").fetchone()[0] == 0
         cols = {r[1] for r in conn.execute("PRAGMA table_info(chunks)")}
         assert "dims_json" not in cols and "embedding" not in cols
         # 版本只前进：v1 目录重放不回退（user_version 只前进语义）
         assert migrate_db(conn, dirs=_v1_dirs(tmp_path / "again")) == []
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
     finally:
         conn.close()
 
@@ -175,6 +175,7 @@ def test_pg_0002_migrates_legacy_vectors_and_drops_columns(tmp_path: Path) -> No
         setup_connection(raw)
         assert pg_migrate_db(raw, dirs=[v1]) == [1]
         raw.execute("INSERT INTO orgs(id, name) VALUES('org:tax', 't')")
+        raw.execute("INSERT INTO users(id, username) VALUES('u1', 'u1')")
         raw.execute("INSERT INTO datasets(id, org_id, name) VALUES('ds:vat', 'org:tax', 'n')")
         raw.execute("INSERT INTO users(id, username) VALUES('u0', 'u0')")
         raw.execute(
@@ -195,9 +196,9 @@ def test_pg_0002_migrates_legacy_vectors_and_drops_columns(tmp_path: Path) -> No
             " VALUES('chk:pending', 'd1', 3, 1, 'x', '{}'::jsonb, 'm:old')"
         )
 
-        assert pg_migrate_db(raw) == [2, 3, 4]  # 默认目录 → 0002+0003+0004（v1.1 + M1-3 uploads + M2.1 tombstoned_at）
+        assert pg_migrate_db(raw) == [2, 3, 4, 5]  # 默认目录 → 0002~0005（v1.1 + M1-3 uploads + M2.1 tombstoned_at + M2.1 R2 target_version）
         versions = [r[0] for r in raw.execute("SELECT version FROM schema_migrations ORDER BY version")]
-        assert versions == [1, 2, 3, 4]
+        assert versions == [1, 2, 3, 4, 5]
 
         cols = {
             r[0]
@@ -482,3 +483,51 @@ def test_dot_key_dimension_executes_via_cte(matrix) -> None:
     assert "dim.key = 'a.b'" in sql  # key 只以转义字面量出现（无 '$.a.b' JSON path）
     visible = {r[2] for r in matrix.execute(sql, params)}
     assert "d_dot" in visible  # 有值交集 → 可见
+
+
+def test_sqlite_0004_backfills_existing_tombstones(tmp_path: Path) -> None:
+    """P3-1（M2.1 R2 / Tester P3-a）：0004 存量回填直接断言——构造 0004 前形态库
+    （仅应用 0001~0003）+ 造 tombstone=1 行（无 tombstoned_at 列）→ 应用 0004
+    → 回填非 NULL（自迁移时点起算 90 天保守窗口——RUNBOOK 升级注记的用例化）。"""
+    import shutil
+
+    from knowledge_lattice.store.sqlite import connect, migrate_db
+    from knowledge_lattice.store.sqlite.migrate import BUILTIN_DIRS
+
+    subset = tmp_path / "upto_0003"
+    subset.mkdir()
+    for name in ("0001_schema_v1.sql", "0002_schema_v1_1.sql", "0003_uploads.sql"):
+        shutil.copy(BUILTIN_DIRS["docs"] / name, subset / name)
+
+    conn = connect(tmp_path / "legacy.db")
+    try:
+        assert migrate_db(conn, dirs=[subset]) == [1, 2, 3]
+        # 造数：org/dataset/doc + v1 块（tombstone=1——0004 前无时点列）
+        conn.execute(
+            "INSERT INTO orgs(id, name) VALUES('org:tax', 't')"
+        )
+        conn.execute("INSERT INTO users(id, username) VALUES('u1', 'u1')")
+        conn.execute(
+            "INSERT INTO datasets(id, org_id, name) VALUES('ds:vat', 'org:tax', 'v')"
+        )
+        conn.execute(
+            "INSERT INTO documents(id, org_id, dataset_id, title, content_hash,"
+            " mime_type, parser, active_version, active_status, owner_user_id,"
+            " raw_object_key)"
+            " VALUES('d1', 'org:tax', 'ds:vat', 't', 'sha256:x', 'text/html',"
+            " 'docling', 2, 'searchable_full', 'u1', 'objects/x')"
+        )
+        conn.execute(
+            "INSERT INTO chunks(id, doc_id, seq, version, tombstone, content)"
+            " VALUES('chk_legacy', 'd1', 1, 1, 1, '旧版本块')"
+        )
+        conn.commit()
+
+        applied = migrate_db(conn)  # builtin 全量 → 0004（回填）+ 0005
+        assert 4 in applied and 5 in applied
+        row = conn.execute(
+            "SELECT tombstoned_at FROM chunks WHERE id = 'chk_legacy'"
+        ).fetchone()
+        assert row is not None and row[0] is not None, "0004 存量回填缺失（P3-1）"
+    finally:
+        conn.close()

@@ -120,6 +120,7 @@ def test_mcp_timeout_middleware_no_hang(tmp_path) -> None:
     settings = Settings(
         environment="test", data_dir=tmp_path, embed_dim=2560,
         probe_interval_s=0, mcp_timeout_s=0.2,  # 测试注入短超时（中间件同款路径）
+        worker_mode="inline",
     )
     from fake_providers import FakeEmbedder
 

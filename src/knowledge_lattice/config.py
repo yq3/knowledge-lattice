@@ -91,7 +91,10 @@ class Settings:
     maintenance_interval_s: float = 300.0  # 调度器周期投递 maintenance 任务（0=关闭）
 
     # worker 任务框架（M2.1——design §5.3 任务状态机/心跳/租约/重试 + §2 部署形态）
-    worker_mode: str = "inline"  # inline=进程内 TaskRunner（测试/最小部署） | subprocess=子进程隔离（生产——§2）
+    # 默认 subprocess（M2.1 R2 边界裁定 A(a)：生产 fail-safe——OOM 只杀 worker 子
+    # 进程 + 自动拉起，NFR-1/§2「主进程 ×1（内含 worker 子进程）」默认成立；
+    # 测试/最小部署显式 inline——进程内同一 TaskRunner 执行体）
+    worker_mode: str = "subprocess"  # inline=进程内 TaskRunner | subprocess=子进程隔离（§2）
     worker_heartbeat_s: float = 5.0  # running 任务心跳周期（heartbeat_at/lease_until 刷新）
     worker_lease_s: float = 60.0  # 租约时长（过期任务可被重认领——worker 崩溃不丢任务）
     worker_poll_s: float = 5.0  # 兜底轮询周期（IPC 唤醒之外的第二通道）

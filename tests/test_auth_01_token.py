@@ -70,7 +70,8 @@ def test_dev_token_sysadmin_issue_for_other_ok(app_env) -> None:
 
 def test_dev_token_prod_404(tmp_path) -> None:
     """④ 生产配置：路由不注册 → 404（P1-7/T16——非 401/403）。"""
-    settings = Settings(environment="prod", data_dir=tmp_path, probe_interval_s=0)
+    settings = Settings(environment="prod", data_dir=tmp_path, probe_interval_s=0,
+                     worker_mode="inline")
     app = create_app(settings, run_startup_probe=False)
     with TestClient(app) as client:
         resp = client.post(

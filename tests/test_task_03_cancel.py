@@ -306,3 +306,197 @@ def test_cancel_endpoint_full_chain(app_env) -> None:
     # 不存在 → 404
     resp = client.post("/api/orgs/org:tax/tasks/tsk_nope/cancel", headers=headers)
     assert resp.status_code == 404
+
+
+# ============ P1-1（M2.1 R2）取消×切换竞态守卫——在用版本块不得误删 ============
+
+
+def test_set_doc_pending_failed_stale_version_keeps_active_blocks(ver_env) -> None:
+    """P1-1 回归①：版本已切换收编（pending 清空）后，以旧版本号调
+    set_doc_pending_failed → UPDATE 零行 → **不删块**（在用块保留、状态不变）。
+    旧实现无条件 DELETE——active searchable_full 但全文零块的数据丢失。"""
+    backend, service = ver_env["backend"], ver_env["service"]
+    doc_id, task_id = _mk_doc(ver_env)
+    service.run_task(task_id)  # → active v1 searchable_full（pending 已清）
+
+    # 以已切换的 v1（现 active、pending=None）调用——stale pending 场景的等效直达
+    backend.set_doc_pending_failed(doc_id, 1, "stale cancel race")
+
+    doc = backend.get_document(doc_id)
+    assert doc["active_version"] == 1
+    assert doc["active_status"] == "searchable_full"  # 在用状态不被破坏
+    # v1 块保留（dbwrap execute：qmark → pg 自动翻译）
+    n = ver_env["db"].execute(
+        "SELECT count(*) FROM chunks WHERE doc_id = ? AND version = 1", (doc_id,)
+    ).fetchone()[0]
+    assert n >= 1, "在用版本块被误删（P1-1）"
+    # pending 字段未被伪造（pending 仍空）
+    assert doc["pending_version"] is None
+
+
+def test_cancel_vs_switch_race_active_blocks_survive(ver_env, monkeypatch) -> None:
+    """P1-1 回归②（确定性交错）：切换事务先行提交、取消的文档侧失败后到——
+    在用块保留、任务 failed（取消终态不被覆盖）。"""
+    backend, service = ver_env["backend"], ver_env["service"]
+    doc_id, t1 = _mk_doc(ver_env, title="p1-race")
+    service.run_task(t1)  # v1 active full
+    # 覆盖上传 v2（pending v2 + T2 target=2）
+    _, t2 = service.create_document(
+        org_id="org:tax", dataset_id="ds:vat_lib", title="p1-race-v2",
+        dims={"region": ["CN"]}, owner_user_id="u_full",
+        file_bytes=HTML, mime_type="text/html", filename="v2.html", doc_id=doc_id,
+    )
+    # 阻塞切换：T2 跑到 switch 前发信号并阻塞 → 取消 T2 → 切换放行（先行提交）
+    import threading
+
+    from knowledge_lattice.store.backend import VersionConflictError
+
+    switch_entered = threading.Event()
+    release_switch = threading.Event()
+
+    def make_blocking_switch(target_backend):
+        real_switch = target_backend.switch_active_version
+
+        def blocking_switch(doc_id_, expected_pending):
+            switch_entered.set()
+            release_switch.wait(timeout=10)
+            return real_switch(doc_id_, expected_pending)
+
+        return blocking_switch
+
+    monkeypatch.setattr(backend, "switch_active_version", make_blocking_switch(backend))
+    # T2 直跑到 embed 完成（v2 pending searchable_full）后在切换处阻塞
+    # ——直接构造该态更快：v2 已 searchable_full（index_fts 直插 + 状态推进）
+    backend.set_doc_pending_status(doc_id, 2, "searchable_lexical")
+    from knowledge_lattice.core.docs.ingest import new_ulid
+
+    drafts = [{
+        "id": new_ulid("chk"), "seq": 1, "content": "v2 块内容",
+        "title_seg": "", "content_seg": "v2 块 内容", "token_count": 4,
+    }]
+    backend.insert(doc_id, 2, drafts)
+    backend.set_doc_pending_status(doc_id, 2, "searchable_full")
+
+    done = threading.Event()
+    error: list[BaseException] = []
+
+    # 线程安全形态（sqlite check_same_thread）：ThreadLocal backend + 同配置 service
+    from knowledge_lattice.core.docs.ingest import IngestService
+    from knowledge_lattice.store.sqlite.threaded import ThreadLocalBackend
+
+    if ver_env["db"].is_sqlite:
+        thread_backend = ThreadLocalBackend(
+            ver_env["settings"].data_dir / "lattice.db"
+        )
+    else:
+        thread_backend = backend
+    monkeypatch.setattr(
+        thread_backend, "switch_active_version", make_blocking_switch(thread_backend),
+    )
+    thread_service = IngestService(
+        thread_backend, ver_env["embedder"], ver_env["settings"], ver_env["gate"],
+        ver_env["objects_dir"],
+    )
+
+    def _run() -> None:
+        try:
+            thread_service.run_task(t2)  # 续跑：index_fts 已完成 → embed → switch
+        except BaseException as exc:  # noqa: BLE001
+            error.append(exc)
+        finally:
+            done.set()
+
+    threading.Thread(target=_run, daemon=True).start()
+    assert switch_entered.wait(timeout=10)
+    # 取消先行落账：任务 failed + （target=2 → pending v2 failed → 删 v2 块）
+    task = service.cancel_task(org_id="org:tax", task_id=t2, actor_user_id="u_full")
+    assert task["status"] == "failed"
+    # 切换放行：pending 已 failed → 乐观校验零行 → VersionConflictError 被
+    # run_task 的「并发取消让位」守卫吞下（终态归取消所有——静默退出）
+    release_switch.set()
+    assert done.wait(timeout=10)
+    assert error == []  # 不冒泡（取消让位语义）
+
+    # P1-1 断言核心：v1 在用块保留、active 状态未被破坏
+    n_v1 = ver_env["db"].execute(
+        "SELECT count(*) FROM chunks WHERE doc_id = ? AND version = 1", (doc_id,)
+    ).fetchone()[0]
+    assert n_v1 >= 1, "在用 v1 块被取消竞态误删（P1-1）"
+    doc = backend.get_document(doc_id)
+    assert doc["active_version"] == 1
+    assert doc["active_status"] == "searchable_full"
+    # v2 块已被取消删除（T8）；v2 pending failed
+    n_v2 = ver_env["db"].execute(
+        "SELECT count(*) FROM chunks WHERE doc_id = ? AND version = 2", (doc_id,)
+    ).fetchone()[0]
+    assert n_v2 == 0
+
+
+# ============ P2-3（M2.1 R2）取消按任务目标版本——不误杀新版本上传 ============
+
+
+def test_cancel_old_task_spares_new_pending_version(ver_env) -> None:
+    """P2-3 主场景：T1 running（target=1，v1 已切 active）+ 覆盖上传 v2 pending →
+    取消 T1 → v2 保持 parsing 不受触碰、T2 照常可执行至切换。旧实现按文档当前
+    pending（v2）落失败——新版本上传被旧任务取消误杀。"""
+    backend, service = ver_env["backend"], ver_env["service"]
+    doc_id, t1 = _mk_doc(ver_env, title="p2-3")
+    service.run_task(t1, stop_after="index_fts")  # v1 active lexical、T1 running
+    _, t2 = service.create_document(
+        org_id="org:tax", dataset_id="ds:vat_lib", title="p2-3-v2",
+        dims={"region": ["CN"]}, owner_user_id="u_full",
+        file_bytes=HTML, mime_type="text/html", filename="v2.html", doc_id=doc_id,
+    )
+    assert backend.get_task(t2)["target_version"] == 2
+
+    # 取消 T1（旧任务）——不得触碰 v2
+    task = service.cancel_task(org_id="org:tax", task_id=t1, actor_user_id="u_full")
+    assert task["status"] == "failed"
+    assert task["error"] == "cancelled: by user request"
+    doc = backend.get_document(doc_id)
+    assert doc["pending_version"] == 2
+    assert doc["pending_status"] == "parsing"  # v2 原封不动（不滞留也不误杀）
+    assert doc["active_status"] == "searchable_lexical"  # v1 在用不受触碰
+
+    # T2 照常可执行至完成（v2 full + 切换）
+    service.run_task(t2)
+    doc = backend.get_document(doc_id)
+    assert doc["active_version"] == 2
+    assert doc["active_status"] == "searchable_full"
+    assert backend.get_task(t2)["status"] == "done"
+
+
+def test_cancel_overwrite_with_blocks_fails_pending_and_keeps_v1(ver_env) -> None:
+    """P2-3/P3-10：覆盖上传 index_fts 完成后（v2 pending 有块）取消 T2 →
+    v2 pending failed + v2 块物理删除（T8 直断言）+ v1 在用块与状态不动。"""
+    backend, service = ver_env["backend"], ver_env["service"]
+    doc_id, t1 = _mk_doc(ver_env, title="p3-10")
+    service.run_task(t1)  # v1 active full
+    _, t2 = service.create_document(
+        org_id="org:tax", dataset_id="ds:vat_lib", title="p3-10-v2",
+        dims={"region": ["CN"]}, owner_user_id="u_full",
+        file_bytes=HTML, mime_type="text/html", filename="v2.html", doc_id=doc_id,
+    )
+    service.run_task(t2, stop_after="index_fts")  # v2 pending lexical（有块）
+    n_v2 = ver_env["db"].execute(
+        "SELECT count(*) FROM chunks WHERE doc_id = ? AND version = 2", (doc_id,)
+    ).fetchone()[0]
+    assert n_v2 >= 1  # 前置：v2 块在场
+
+    backend.update_task(t2, status="pending")  # stop_after 留 running——回可取消态
+    task = service.cancel_task(org_id="org:tax", task_id=t2, actor_user_id="u_full")
+    assert task["status"] == "failed"
+
+    doc = backend.get_document(doc_id)
+    assert doc["pending_version"] == 2
+    assert doc["pending_status"] == "failed"  # 按任务 target（2）落失败
+    n_v2_after = ver_env["db"].execute(
+        "SELECT count(*) FROM chunks WHERE doc_id = ? AND version = 2", (doc_id,)
+    ).fetchone()[0]
+    assert n_v2_after == 0  # T8：v2 块物理删除（不留检索残留）
+    n_v1 = ver_env["db"].execute(
+        "SELECT count(*) FROM chunks WHERE doc_id = ? AND version = 1", (doc_id,)
+    ).fetchone()[0]
+    assert n_v1 >= 1  # v1 在用块不动
+    assert doc["active_version"] == 1
+    assert doc["active_status"] == "searchable_full"

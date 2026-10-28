@@ -1,7 +1,7 @@
 """TC-TASK-04 子进程隔离【集成｜M2】——OOM 只杀 worker、主进程检索可用、自动拉起。
 
-真实 subprocess 形态（design §2 部署图）：create_app(worker_mode="subprocess") →
-lifespan 拉起 worker 子进程；经 LATTICE_WORKER_SERVICES 工厂注入 fake 栈与
+真实 subprocess 形态（design §2 部署图）：Settings(worker_mode="subprocess")
+经 create_app → lifespan 拉起 worker 子进程；经 LATTICE_WORKER_SERVICES 工厂注入 fake 栈与
 崩溃桩（见 tests/m2_worker_services.py——跨进程无法传对象，import 钩子注入）。
 
 链路：上传崩溃文档（executor 内 SIGKILL 自杀——OOM killer 信号形态）→
@@ -38,6 +38,7 @@ def subprocess_app(tmp_path, monkeypatch):
     )
     settings = Settings(
         environment="test", data_dir=tmp_path, embed_dim=8,
+        embed_model="fake-embed",  # P3-9：与 worker fake 标签对齐——向量路真实验证
         probe_interval_s=0, maintenance_interval_s=0,
         worker_mode="subprocess", worker_lease_s=2.0, worker_poll_s=0.3,
         worker_heartbeat_s=0.5, worker_startup_probe=False,

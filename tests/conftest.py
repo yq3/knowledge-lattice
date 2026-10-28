@@ -398,6 +398,7 @@ def app_env(tmp_path):
         embed_dim=2560,
         probe_interval_s=0,
         mcp_timeout_s=60.0,
+        worker_mode="inline",  # M2.1 R2 A 裁定：默认 subprocess——测试显式 inline
     )
     embedder = FakeEmbedder(dim=2560)
     gate = EmbeddingGate()

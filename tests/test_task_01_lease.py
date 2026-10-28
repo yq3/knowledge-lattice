@@ -86,13 +86,13 @@ def test_expired_lease_reclaimable_no_double_run(bk) -> None:
     task_id = _mk_task(bk)
     first = bk.claim_next_task("wk-A", lease_s=CLAIM_LEASE_S, now=NOW_TS)
     assert first is not None
-    bk.update_task(task_id, status="running")  # attempts → 1
+    bk.update_task(task_id, status="running")  # M2.1 R2 口径：attempts 随 claim 认领递增（running 不再重复计）
 
     # 未过期：他人不可抢
     assert bk.claim_next_task(
         "wk-B", lease_s=CLAIM_LEASE_S, now="2026-06-01 12:00:59"
     ) is None
-    # 过期（> 60s）：重认领成功（crash 后任务不丢）+ attempts 随下一次 running 递增
+    # 过期（> 60s）：重认领成功（crash 后任务不丢；attempts 已随本次 claim 递增）
     second = bk.claim_next_task(
         "wk-B", lease_s=CLAIM_LEASE_S, now="2026-06-01 13:01:00"
     )

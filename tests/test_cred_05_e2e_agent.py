@@ -93,6 +93,7 @@ def agent_env(tmp_path):
 
     settings = Settings(
         environment="test", data_dir=tmp_path, embed_dim=2560, probe_interval_s=0,
+        worker_mode="inline",
     )
     embedder = BlockingEmbedder(dim=2560)
     app = create_app(

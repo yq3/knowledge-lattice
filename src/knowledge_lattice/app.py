@@ -39,14 +39,8 @@ from knowledge_lattice.config import Settings, get_settings
 from knowledge_lattice.core.docs.acl import AclDeniedError
 from knowledge_lattice.core.docs.credentials import CredentialError, CredentialService
 from knowledge_lattice.core.docs.ingest import IngestService
-from knowledge_lattice.core.docs.quality import (
-    NoopKeywordGenerator,
-    QualityService,
-)
 from knowledge_lattice.domain.auth import AuthError, OrgContextError
 from knowledge_lattice.mcp.server import build_mcp_server
-from knowledge_lattice.store.sqlite import connect, migrate_db
-from knowledge_lattice.store.sqlite.threaded import ThreadLocalBackend
 
 logger = logging.getLogger(__name__)
 
@@ -91,12 +85,15 @@ class InlineWorkerHandle:
       调用——保持 M1「响应返回前摄取已推进」的时序语义；重试回队随 attempts
       上限天然收敛）；
     - wake()：仅唤醒兜底循环（maintenance 调度器投递后调用——异步领取）；
-    - 兜底循环线程：只领 maintenance（与 kick 的 ingest 认领不竞争——保上传
-      时序无竞态），空闲轮询（worker_poll_s）+ 事件唤醒（IPC 双通道的进程内
-      等价形态；ingest 的租约过期重认领主通道在 subprocess 模式——TC-E2E-03）。
+    - 兜底循环线程（P2-7，M2.1 R2）：**全类型认领**——maintenance 即时领（调度
+      器低延迟）+ ingest 以「陈旧任务」口径领（created_at ≤ now−poll_s：重启
+      遗留/超量滞留/租约过期的 ingest 任务在 poll 周期内被领，与 subprocess 主
+      循环语义一致）；新鲜 ingest 恒由投递方 kick 的同步消化先抢到（claim
+      原子性 + 陈旧过滤——上传时序语义无竞态）。空闲轮询（worker_poll_s）+
+      事件唤醒（IPC 双通道的进程内等价形态）。
     """
 
-    def __init__(self, runner, *, poll_s: float, max_drain: int = 64) -> None:
+    def __init__(self, runner, *, poll_s: float, max_drain: int = 1024) -> None:
         self._runner = runner
         self._poll_s = poll_s
         self._max_drain = max_drain
@@ -122,10 +119,22 @@ class InlineWorkerHandle:
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
+    def _aged_before(self) -> str:
+        """ingest 陈旧口径时点：now − poll_s（claim 的 created_before 参数）。"""
+        from knowledge_lattice.store.taskclock import add_seconds, utc_now_ts
+
+        return add_seconds(utc_now_ts(), -max(self._poll_s, 0.0))
+
     def _loop(self) -> None:
         while not self._stop.is_set():
             try:
+                # ① maintenance 即时认领（调度器 wake 后毫秒级领取）
                 if self._runner.run_once(task_types=("maintenance",)):
+                    continue
+                # ② ingest 陈旧认领（P2-7：重启遗留/超量滞留/租约过期——poll 内收口）
+                if self._runner.run_once(
+                    task_types=("ingest",), created_before=self._aged_before()
+                ):
                     continue
             except Exception:  # noqa: BLE001
                 logger.exception("inline worker loop failed")
@@ -171,12 +180,19 @@ def create_app(
 ) -> FastAPI:
     """构建 FastAPI 应用（测试可注入 embedder/gate/reranker/enhancer、跳过启动探针）。"""
     settings = settings or get_settings()
+    if settings.worker_mode not in ("inline", "subprocess"):
+        raise ValueError(
+            f"invalid worker_mode {settings.worker_mode!r}（合法值：inline | subprocess"
+            "——fail-closed，不静默回退）"
+        )
     settings.data_dir.mkdir(parents=True, exist_ok=True)
 
-    bootstrap_conn = connect(settings.db_path)
-    migrate_db(bootstrap_conn)
-    bootstrap_conn.close()
-    backend = ThreadLocalBackend(settings.db_path)
+    # P2-4/P2-5（M2.1 R2）：backend/quality 经共享工厂装配——与 worker 子进程
+    # build_default_services 同源（杜绝主/子进程装配分叉）
+    from knowledge_lattice.core.docs.quality import build_quality_service
+    from knowledge_lattice.store.factory import build_backend
+
+    backend = build_backend(settings)
 
     gate = gate or EmbeddingGate()
     embedder = embedder or OpenAICompatEmbedder(settings)
@@ -205,16 +221,8 @@ def create_app(
         ),
     }
     credentials = CredentialService(backend, settings, settings.data_dir / "objects")
-    # LLM 兜底 provider（quality_llm=none 默认 noop——不发网关调用；D12 同款形态）
-    from knowledge_lattice.adapters.enhancer import OpenAICompatKeywordGenerator
-
-    quality = QualityService(
-        backend, settings,
-        keyword_client=(
-            NoopKeywordGenerator() if settings.quality_llm == "none"
-            else OpenAICompatKeywordGenerator(settings)
-        ),
-    )
+    # LLM 兜底 provider 经共享工厂（quality_llm=none 默认 noop——不发网关调用）
+    quality = build_quality_service(backend, settings)
     ingest = IngestService(
         backend, embedder, settings, gate, settings.data_dir / "objects",
         quality=quality,
