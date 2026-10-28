@@ -6,12 +6,22 @@
 >
 > **知识层定位（2026-10-18 D23 修订，取代 2026-10-16「双层分立」口径）**：文档知识层与业务语义层（术语 + 业务对象的类型化对象图）**同服务归一**——术语层原定的独立 glossary-agent MCP server 部署形态取消，并入本系统 `core/semantic/` 模块（[requirements.md D17/D23](docs/requirements.md)）；[glossary-agent（lab 仓）](https://github.com/yq3/lab/tree/main/glossary-agent) 转为调研与设计沉淀，其结论是 semantic 模块的设计输入。
 
-- 需求文档：[docs/requirements.md](docs/requirements.md)（先读这份）
-- 方案设计：[docs/design.md](docs/design.md)（架构 / 数据模型 DDL（含 `sem_*`）/ ACL 编译 / MCP 契约（docs + semantic 两组）/ 里程碑分解）
-- 验收用例：[docs/TEST-CASES.md](docs/TEST-CASES.md)（v1.5，2026-10-22——design §9 冻结编号 T1~T23 / T-S1~T-S12 的展开层（编号沿用）+ 模块 TC-* 用例（含 TC-EMB 嵌入服务与模型治理组、TC-UI 界面国际化组——FR-8，v1.5）+ 标准矩阵 fixture + 里程碑验收对照表；176 条覆盖 M0a~M3 与 M2-S1~S3；v1.1 吸收评审 [issue #38](https://github.com/yq3/lab/issues/38)、v1.2/v1.2.1 吸收复审 [issue #40](https://github.com/yq3/lab/issues/40)、v1.3 随正文 v0.7/ [#41](https://github.com/yq3/lab/issues/41) 增补、v1.3.1/v1.3.2/v1.4 吸收 [issue #42](https://github.com/yq3/lab/issues/42)（必修 2/3/4 + P1/P2，新增 TC-ACL-08 / TC-EMB-07）；测试按存储后端参数化（D24）；活文档、随实现回写口径，附录 A（A-1~A-17，A-7~A-9 已随正文 v0.6.1 闭环）登记待澄清口径；v1.4.1/v1.4.2 仅同步依据区版本引用——待决-6 关闭与运行时口径登记，无用例影响）
-- 已预见问题登记：[docs/known-gaps.md](docs/known-gaps.md)（活文档——已接受缺口与规格开放点：语义层不可达窗口 G-1 / fuzzy 层闭环 G-2 / restricted 静默缺失 G-3 / L0 陈旧性 G-4 / 容器化易失 G-5 / PG 后端差异 G-6 / 嵌入模型治理 G-8 / 间接注入 G-9 / 网关留存未确认 G-10 / 目标机 Python 运行时 G-11（G-7 rerank 端点已闭环：网关提供 Cohere 风格 /rerank，2026-10-22）；与需求 §9、设计 §10「有对策的风险」分工，不受设计冻结纪律约束）
-- 交互原型：[prototype/index.html](prototype/index.html)（v0.5，issue [#36](https://github.com/yq3/lab/issues/36)；浏览器直接打开、mock 数据；**信息结构与 UI 风格均为前端实现基准**，含语义层视图——实体浏览按 10⁴~10⁵ 节点规模设计：类型总览落地 + 搜索优先 + 全宽结果表 top-N + 详情独立成页，无常驻实体列表；关系图 / 关系列表按（关系类型 × 方向）分组、每组最多 3 个端点，超出以 +N 计数占位——宽扇出不成毛球；**v0.5.1（2026-10-22，#42 对齐）**：补「嵌入与存储」只读卡片（模型/维度/覆盖率 + 重索引入口挂 M2）、实体召回权重与展开关系对齐 §5.10（0.5、不含 uses）、任务类型 reembed、MCP 身份文案对齐 D18、移除 Google Fonts 外链）
-- 调研基础：[enterprise-rag 调研·lab 仓](https://github.com/yq3/lab/tree/main/research/enterprise-rag/)（22 仓源码级调研 + 四厂商第一方实践）；术语层调研沉淀见 [glossary-agent·lab 仓](https://github.com/yq3/lab/tree/main/glossary-agent)
+## 文档地图
+
+| 文档 / 目录 | 角色 |
+|---|---|
+| [docs/requirements.md](docs/requirements.md) | 需求正文（FR / NFR / D 编号源头——**先读这份**） |
+| [docs/design.md](docs/design.md) | 方案设计（架构 / DDL / ACL 编译 / MCP 契约 / §8 里程碑分解） |
+| [docs/TEST-CASES.md](docs/TEST-CASES.md) | 验收用例展开层：design §9 冻结 T / T-S 编号展开 + 模块 TC-\* 用例 + §六里程碑验收对照表；活文档 |
+| [docs/known-gaps.md](docs/known-gaps.md) | 已预见问题登记（G-n）：对策之后仍残留的缺口与规格开放点；活文档 |
+| [prototype/index.html](prototype/index.html) | 交互原型（浏览器直接打开、mock 数据）：信息结构与 UI 风格**双基准** |
+| [RUNBOOK.md](RUNBOOK.md) | 运维手册（重嵌入蓝绿 / 审计分区回溯 / 双方言迁移注意）；运行侧活文档 |
+| [AGENTS.md](AGENTS.md) | 工作规范（冻结纪律 / 分层纪律 / 工具链 / 多 Agent 工作流与提交约定） |
+| `benchmarks/` | 实验 / 压测脚本与报告归档（report-\*.md，结论回写 known-gaps 或正文） |
+| `eval/` | 评测语料（corpus.jsonl）与黄金集（golden.jsonl） |
+| lab 仓 | 调研基础：[enterprise-rag 调研](https://github.com/yq3/lab/tree/main/research/enterprise-rag/)（22 仓源码级调研 + 四厂商第一方实践）、[glossary-agent](https://github.com/yq3/lab/tree/main/glossary-agent)（术语层调研沉淀） |
+
+**版本口径**：需求 / 设计两正文随实现勘误高频升版，**具体版本号与变更史以各文档头部为准**，本 README 不复述；里程碑完成态以 [TEST-CASES §六对照表](docs/TEST-CASES.md) 为准。**设计冻结纪律**：`docs/` 需求与设计正文仅在决策变化时修改（决策变更走 issue + D 编号），实现问题走测试用例与 issue；TEST-CASES / known-gaps / RUNBOOK 为活文档、随实现回写。拆仓前的设计评审 issue（#31~#42）均在 lab 仓，本文链接为绝对地址。
 
 ## 一句话定位
 
@@ -19,4 +29,57 @@
 
 ## 项目状态
 
-POC 阶段（lab 仓库先行，验证后拆仓演进）。当前：需求 v0.9 / 设计 v0.9（两文档版本号自 v0.6 起统一；v0.8.3~v0.8.5＝§3 结构澄清 / core 对称分包 / 运行日志落点——均非决策变更；**v0.9＝新增 FR-8 界面国际化（轻量决策变更，对话决策：`web/` 前端薄壳中/英双语——只译 UI 文案、业务数据不译、服务端不感知语言，机制随 M0a 静态页壳；用例 TC-UI-01~04）**）——v0.4 **冻结版**（历轮评审 [#31](https://github.com/yq3/lab/issues/31) → [#32](https://github.com/yq3/lab/issues/32) → [#33](https://github.com/yq3/lab/issues/33)（收口）→ [#34](https://github.com/yq3/lab/issues/34)（冻结复审）全部吸收，决策 D1~D22）+ **v0.4 冻结后决策变更 ×2**：D23 业务语义层并入（[#35](https://github.com/yq3/lab/issues/35)，2026-10-18——取代 D17 部署形态；新增 FR-S1~S6 / NFR-11 / M2-S1~S3 / T-S1~T-S12；不影响冻结的必修 1~3 任何结论）与 **D12 修订 + D24 存储后端双实现**（[#41](https://github.com/yq3/lab/issues/41)，2026-10-21——嵌入/重排外置 OpenAI 兼容 API（现网 qwen3-embedding-4b@2560）+ provider 接口、`embed_model` 查询谓词与指纹探针、StorageBackend（SQLite 默认 / PostgreSQL+pgvector）与 AclPlan 方言无关计划、源系统 MCP 可选传输、ES 召回引擎登记演进缝）+ v0.5.1 原型基线更新（[#36](https://github.com/yq3/lab/issues/36)，2026-10-19——非决策变更）+ 术语修订（2026-10-19，非决策变更）+ [#37](https://github.com/yq3/lab/issues/37) 吸收（2026-10-20，非决策变更）+ [#39](https://github.com/yq3/lab/issues/39) 吸收（2026-10-20，非决策变更；验收用例 [TEST-CASES.md](docs/TEST-CASES.md) v1.1~v1.2.1 经 [#38](https://github.com/yq3/lab/issues/38)→[#40](https://github.com/yq3/lab/issues/40) 评审、v1.3 随 #41 增补、v1.3.1 随 v0.7.1 同步）+ [#42](https://github.com/yq3/lab/issues/42) 复审（2026-10-21——必修 1 随 v0.7.1 回写、三项拍板随 v0.7.2 落档、必修 2/3/4 与 P1/P2 随 v0.8/v1.4/原型 v0.5.1 **全量吸收完毕**）。**设计冻结纪律不变：此后仅在决策变化时修改文档，实现问题走测试用例与 issue**；下一步 M0a（骨架周）开工（**M0a/M0b/M1 不含语义层**），待决-2（SSO 协议）与待决-3（委托 token / 可信子系统）随 M0a 并行敲定，待决-5（网关 rerank 能力）已确认——网关提供 Cohere 风格 /rerank（2026-10-22，G-7 闭环）、待决-6（公司 PG 扩展）已确认——公司 PG 16 + pgvector 0.8.x（2026-10-22，G-6 收窄①闭环，M0b PG spike 验收环境规格已确认）；运行时口径登记——目标机系统 Python 3.9.9 不满足 §7 3.11+（docling/FastMCP 均 ≥3.10），部署带 uv 托管 CPython 3.12、系统解释器不作为依赖（2026-10-22，G-11）；业务语义按 M2 并行轨道推进，M2 之前 agent 侧以「同 schema 的 Git YAML + 本地 AC 自动机」过渡。
+POC 阶段，独立仓库演进——2026-10-28 自 lab 仓拆仓。
+
+- **M0a / M0b / M1 已交付**（完成态与证据指针见 [TEST-CASES §六对照表](docs/TEST-CASES.md)；M1 里程碑达成宣告待 TC-UI 手动走查执行）。
+- **下一步 M2**：业务语义层并行轨道（M2-S1~S3）；M2 之前 agent 侧以「同 schema 的 Git YAML + 本地 AC 自动机」过渡。
+- **仍开放的待决项**（[requirements §9](docs/requirements.md)）：待决-1（真实样例语料与业务问题）、待决-2（企业 SSO 协议与 token 属性）、待决-3（agent 侧 token 换取 / 可信子系统）；待决-5（网关 rerank 能力）与待决-6（公司 PG 16 + pgvector 0.8.x）已关闭。
+
+## 仓库结构
+
+```
+src/knowledge_lattice/
+├── app.py            # FastAPI 入口（create_app 工厂：路由 + MCP 挂载 + 静态页壳 + 指纹探针）
+├── config.py / log.py
+├── core/docs/        # 文档域业务（ingest / chunking / retrieve / acl / quality / credentials…）
+├── core/semantic/    # 业务语义域（D23 并入，M2-S 起）——与 core/docs 包级互斥
+├── store/            # StorageBackend 协议 + sqlite/ postgres/ 双方言包（迁移 / FTS / 向量 / ACL 渲染 / 审计）
+├── adapters/         # 外置依赖适配（embedder / reranker / parser_docling / tokenizer / breaker…）
+├── api/              # REST 端点（upload / documents / tasks / search / quality / admin）
+├── mcp/              # MCP server（docs + semantic 两组工具）
+├── web/              # 前端薄壳（原生 HTML/JS/CSS + i18n.js 中英双语——FR-8，无构建链）
+└── worker/           # 任务子进程（任务循环 + IPC 唤醒；M2 子进程化，当前占位）
+tests/                # 按模块前缀命名（acl_/ing_/fts_/emb_/e2e_/pg_…），双后端参数化（[pg] 条目）
+```
+
+分层纪律（core 不写方言 SQL、core 两包互斥）与模块边界的权威定义见 design §3，速览见 [AGENTS.md](AGENTS.md)。
+
+## 快速开始
+
+前置：Python 3.11+（本仓以 `.python-version` 钉版本，开发 = 部署同版本——G-11）与 [uv](https://docs.astral.sh/uv/)。
+
+```bash
+uv sync                                                       # 安装依赖（uv.lock 锁定、必须提交）
+cp .env.example .env                                          # 按需启用嵌入网关 / PG DSN（sqlite 默认无需设置）
+uv run uvicorn "knowledge_lattice.app:create_app" --factory  # 起在 http://127.0.0.1:8000
+```
+
+- 页面壳 `http://127.0.0.1:8000/`：上传与检索测试页（中/英双语切换）
+- REST API 文档 `http://127.0.0.1:8000/docs`；MCP 端点 `/mcp`
+- 开发 JWT：dev 环境下 `POST /api/dev/token` 签发（生产 404）
+
+测试：
+
+```bash
+uv run pytest                    # sqlite 默认后端，无需容器（TC-UI 手动走查组带 manual 标记、默认跳过）
+# 全量门禁（双后端 + 常规/python -O 双模式，skip=失败——不建 CI，本地承接）：
+docker start lattice-pg
+export LATTICE_PG_DSN=postgresql://postgres:lattice@localhost:5432/lattice
+scripts/test_gate.sh
+```
+
+TC-UI 手动走查步骤见 [tests/test_ui_01_manual.py](tests/test_ui_01_manual.py) 文件头。
+
+## License
+
+[MIT](LICENSE)
