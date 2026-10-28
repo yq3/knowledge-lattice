@@ -155,7 +155,7 @@ def get_settings() -> Settings:
         upload_credential_ttl_s=float(_num("LATTICE_UPLOAD_TTL_S", 900.0)),
         upload_max_bytes=int(_num("LATTICE_UPLOAD_MAX_BYTES", 200 * 1024 * 1024)),
         maintenance_interval_s=float(_num("LATTICE_MAINTENANCE_INTERVAL_S", 300.0)),
-        worker_mode=env("LATTICE_WORKER_MODE", "inline"),
+        worker_mode=env("LATTICE_WORKER_MODE", "subprocess"),
         worker_heartbeat_s=float(_num("LATTICE_WORKER_HEARTBEAT_S", 5.0)),
         worker_lease_s=float(_num("LATTICE_WORKER_LEASE_S", 60.0)),
         worker_poll_s=float(_num("LATTICE_WORKER_POLL_S", 5.0)),

@@ -89,7 +89,7 @@ def test_inline_loop_completes_unkicked_task(inline_app) -> None:
     )
     # 不 kick——只 wake 循环（等价投递方只投不消化 / app 重启遗留）
     service.worker.wake()
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + 60  # P3-x：组合跑负载停顿预算放宽（原 10s ~4% 超时）
     doc = None
     while time.monotonic() < deadline:
         doc = service.backend.get_document(doc_id)
@@ -117,7 +117,7 @@ def test_inline_loop_reclaims_expired_leased_ingest(inline_app) -> None:
     assert claimed is not None and claimed["id"] == task_id
     time.sleep(0.5)  # 租约过期
 
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + 60  # P3-x：组合跑负载停顿预算放宽（原 15s ~4% 超时）
     row = doc = None
     while time.monotonic() < deadline:
         row = service.backend.get_task(task_id)
@@ -205,3 +205,53 @@ def test_build_quality_service_branches(tmp_path) -> None:
     q_llm = build_quality_service(None, settings_llm)
     assert isinstance(q_llm._keywords, OpenAICompatKeywordGenerator), \
         "worker subprocess 部署下 LATTICE_QUALITY_LLM=openai 仍 Noop（P2-5）"
+
+
+# ============ P2-A / P3-y / P3-z（M2.1 R3） ============
+
+
+def test_get_settings_worker_mode_default_subprocess(monkeypatch) -> None:
+    """P2-A（R3 唯一 FAIL 根因）：A(a) 裁定的 env 路径默认值——get_settings 在
+    LATTICE_WORKER_MODE 未设时须回退 subprocess（与 Settings 数据类默认一致；
+    R2 只改了数据类默认，env 路径 fallback 漂移为 inline——生产 env 部署下
+    OOM 隔离保证失效）。get_settings 无进程内缓存（每次调用现读 env），
+    monkeypatch 删 env 后直接断言。"""
+    monkeypatch.delenv("LATTICE_WORKER_MODE", raising=False)
+    from knowledge_lattice.config import get_settings
+
+    assert get_settings().worker_mode == "subprocess"  # A(a) 裁定：env 路径默认 subprocess
+
+
+def test_invalid_worker_mode_fail_closed(tmp_path) -> None:
+    """P3-y：非法 worker_mode → create_app fail-closed（ValueError，不静默回退）。"""
+    import pytest
+
+    from knowledge_lattice.app import create_app
+    from knowledge_lattice.config import Settings
+
+    with pytest.raises(ValueError, match="invalid worker_mode.*bogus"):
+        create_app(Settings(environment="test", data_dir=tmp_path,
+                            worker_mode="bogus"))
+
+
+def test_run_task_null_target_version_falls_back(ver_env) -> None:
+    """P3-z：存量行（0005 前）target_version=NULL → run_task 回退
+    _effective_version（文档当前有效版本——M1 口径），照常完成。"""
+    backend, service = ver_env["backend"], ver_env["service"]
+    doc_id, task_id = service.create_document(
+        org_id="org:tax", dataset_id="ds:vat_lib", title="legacy-null-tv",
+        dims={"region": ["CN"]}, owner_user_id="u_full",
+        file_bytes=HTML, mime_type="text/html", filename="legacy.html",
+    )
+    # 造存量形态：抹掉 target_version（0005 前的任务行）
+    ver_env["db"].execute(
+        "UPDATE tasks SET target_version = NULL WHERE id = ?", (task_id,)
+    )
+    assert backend.get_task(task_id)["target_version"] is None
+
+    service.run_task(task_id)  # NULL → _effective_version 兜底（M1 直调口径）
+
+    assert backend.get_task(task_id)["status"] == "done"
+    doc = backend.get_document(doc_id)
+    assert doc["active_version"] == 1
+    assert doc["active_status"] == "searchable_full"
