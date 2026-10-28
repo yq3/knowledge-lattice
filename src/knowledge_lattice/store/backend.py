@@ -12,7 +12,7 @@ Acl 域的 read_membership / read_grants 把 §5.1 第 0/2 步的授权展开与
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -198,6 +198,28 @@ class IngestBackend(Protocol):
         文档可见 ⇔ 在 CTE 内；块可 fetch ⇔ 文档可见 + version=active + tombstone=0）。"""
         ...
 
+    def visible_documents(
+        self,
+        plan: AclPlan,
+        *,
+        dataset_ids: Sequence[str] | None = None,
+        active_status: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """按调用者权限的文档清单（M1-5 MCP list_documents 数据源——§6.1 docs
+        组）：行集经 visible_docs CTE（一切统计按调用者权限——TC-AZ-02）；
+        行含 doc_id/dataset_id/dataset_name/title/active·pending 双态四字段/
+        source_uri/updated_at/chunk_count（在用块计数）/dims（document_dimensions
+        聚合——D22）。"""
+        ...
+
+    def visible_dataset_counts(
+        self, plan: AclPlan, *, dataset_ids: Sequence[str] | None = None
+    ) -> list[dict]:
+        """datasets 统计（§6.1：组织内全部库列出（库元数据非 ACL 客体），
+        doc_count 按 visible_docs CTE 权限计数——不可见文档计入 0 不泄露）。"""
+        ...
+
     def pending_embeddings(self, batch_label: str) -> list[dict]:
         """已钉标签未回写的待嵌入块（embed_model=:label AND chunk_vectors 无该
         (rid,label) 行 AND tombstone=0——v1.1 分表口径）。"""
@@ -372,10 +394,12 @@ class QualityBackend(Protocol):
 
     def org_active_chunk_vectors(
         self, org_id: str, embed_model: str
-    ) -> list[tuple[int, list[float]]]:
-        """组织内全部在用块的 (rid, 向量浮点列表)——numpy 批量重算的数据源
-        （§5.4「分块载入 numpy」；序列化还原收口各方言侧：sqlite=vec_f32
-        unpack / pg=vector 文本解析）。"""
+    ) -> Iterator[tuple[int, bytes]]:
+        """组织内全部在用块的 (rid, **packed float32 bytes**)——numpy 批量重算的
+        流式数据源（§5.4「分块载入 numpy」；M1-4 P2-4 / M1-5 改造：**惰性迭代
+        器**、不物化全量行——100k×2560 档 Python float 对象 >1GB 根因消除；
+        序列化收口各方言侧：sqlite=vec_f32 BLOB 原样 bytes / pg=vector 文本
+        parse_vector_bytes 直转 packed）。"""
         ...
 
     def org_active_chunk_segs(self, org_id: str | None) -> list[str]:

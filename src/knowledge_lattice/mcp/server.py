@@ -1,5 +1,5 @@
-"""FastMCP 单一 server（design §3 mcp/server.py + §6.1 docs 组——search/fetch 已落，
-upload 随 M1-3）。
+"""FastMCP 单一 server（design §3 mcp/server.py + §6.1 docs 组——search/fetch/
+upload/list_documents 全四工具就位，M1-5 收口）。
 
 - `search` 工具：M1-1 完整配方（core/docs/retrieve——双路 + RRF + rerank + 增强
   + 归一）；工具描述「写给 LLM 看」纪律（§6.1）；`top_k ≤ 20` 服务端硬上限；
@@ -14,12 +14,18 @@ upload 随 M1-3）。
   `ingest.create_document` 同一 code path（版本制/ACL 写校验不旁路）；凭证在
   摄取成功入队后置已用（v1.4 口径）；摄取由进程内执行器异步执行（M0a 口径，
   子进程 worker 随 M2）——工具立即返回 queued；
+- `list_documents` 工具（M1-5，design §6.1）：列出权限内可见的知识库与文档及
+  处理状态——input datasets/active_status/limit；output datasets（doc_count
+  **按调用者权限统计**——TC-AZ-02：不可见文档的存在与数量不泄露）+ documents
+  （双态四字段 + dims + chunk_count + source + updated_at）；与 TC-AZ-03 管理
+  列表为**两个端点两个口径**（MCP 按调用者 ACL / 管理面 M2）；统计与清单复用
+  visible_docs CTE（compile_acl 产物）与 _attach_dims（D22 真相源）；
 - 组织上下文（D18/TC-AUTH-02）：token org claim 优先 / 运行时注入 X-Org-Id 头兜底；
   并存且不一致 → 400（ToolError）；缺失 → 400；**工具参数 org 一律忽略并记审计**；
 - 60s 超时中间件（ragflow 纪律——超时请求不悬挂，TC-E2E-06）；超时值随
   settings.mcp_timeout_s（默认 60，测试可注入短值）。
 
-list_documents 随 M1-4；semantic 组随 M2-S。
+semantic 组随 M2-S。
 """
 
 from __future__ import annotations
@@ -35,7 +41,7 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 
 from knowledge_lattice.config import Settings
-from knowledge_lattice.core.docs.acl import AclDeniedError
+from knowledge_lattice.core.docs.acl import AclDeniedError, compile_acl
 from knowledge_lattice.core.docs.credentials import CredentialError
 from knowledge_lattice.core.docs.fetch import FetchNotFoundError, fetch_chunks
 from knowledge_lattice.core.docs.ingest import (
@@ -72,6 +78,18 @@ UPLOAD_TOOL_DESCRIPTION = (
     "路径/URL 一律拒绝。"
 )
 
+LIST_DOCUMENTS_TOOL_DESCRIPTION = (
+    "列出权限内可见的知识库与文档及处理状态。先了解库里有什么，再决定搜什么；"
+    "全部统计按调用者权限计算（不可见文档不出现）。datasets 可按库收窄、"
+    "active_status 可按处理状态过滤、limit 控制返回条数（缺省 50）。"
+)
+
+# 文档 active_status 合法值（DDL 口径——#33 P0-2.2 列注释：
+# searchable_lexical | searchable_full | degraded；`failed` 属 pending_status 域
+# ——P2-3：非法值 400 而非静默空列表误导 LLM）
+_ACTIVE_STATUSES = frozenset({"searchable_lexical", "searchable_full", "degraded"})
+LIST_DOCUMENTS_HARD_LIMIT = 200  # limit 服务端硬上限（§6.1 缺省 50；防大响应）
+
 
 class ToolTimeoutMiddleware(Middleware):
     """60s 超时中间件（挂载即生效——超时 ToolError 返回、不悬挂）。"""
@@ -94,7 +112,7 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
 
     mcp: FastMCP = FastMCP(
         name="knowledge-lattice",
-        instructions="企业知识层 docs 组工具（search + fetch + upload；list_documents 随 M1-4）。",
+        instructions="企业知识层 docs 组工具（search + fetch + upload + list_documents）。",
     )
     mcp.add_middleware(ToolTimeoutMiddleware(timeout_s=settings.mcp_timeout_s))
 
@@ -220,5 +238,51 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
 
         threading.Thread(target=_run, args=(result["task_id"],), daemon=True).start()
         return result
+
+    @mcp.tool(name="list_documents", description=LIST_DOCUMENTS_TOOL_DESCRIPTION)
+    def list_documents(
+        datasets: list[str] | None = None,
+        active_status: str | None = None,
+        limit: int = 50,
+        ctx: Context = None,
+    ) -> dict:
+        """list_documents（§6.1）：权限内知识库与文档清单——datasets 统计
+        （doc_count 按调用者权限）+ documents（双态四字段 + dims + chunk_count +
+        source + updated_at）。T17：owner 经此看处理中/在用文档（管理面，无块
+        内容）；TC-AZ-02：统计按调用者 ACL；TC-AZ-03：与管理列表（M2）两个
+        端点两个口径。"""
+        auth, org_id = _auth_and_org(ctx, param_org=None)
+        if active_status is not None and active_status not in _ACTIVE_STATUSES:
+            raise ToolError(
+                f"400: invalid active_status {active_status!r}"
+                f"（合法值：{sorted(_ACTIVE_STATUSES)}）"
+            )
+        limit = max(1, min(limit, LIST_DOCUMENTS_HARD_LIMIT))
+        try:
+            plan = compile_acl(service.backend, auth.user_id, org_id, dataset_ids=datasets)
+            counts = service.backend.visible_dataset_counts(plan, dataset_ids=datasets)
+            rows = service.backend.visible_documents(
+                plan, dataset_ids=datasets, active_status=active_status, limit=limit
+            )
+        except AclDeniedError as exc:  # P2-4：与 search/fetch/upload 同款 403 映射
+            raise ToolError(f"403: {exc}（code={exc.code}）") from exc
+        documents = [
+            {
+                "doc_id": r["doc_id"],
+                "dataset": r["dataset_id"],
+                "dataset_name": r.get("dataset_name"),
+                "title": r.get("title"),
+                "active_version": r["active_version"],
+                "active_status": r["active_status"],
+                "pending_version": r["pending_version"],
+                "pending_status": r["pending_status"],
+                "dims": r.get("dims") or {},
+                "chunk_count": r["chunk_count"],
+                "source": r.get("source_uri"),
+                "updated_at": r.get("updated_at"),
+            }
+            for r in rows
+        ]
+        return {"datasets": counts, "documents": documents}
 
     return mcp

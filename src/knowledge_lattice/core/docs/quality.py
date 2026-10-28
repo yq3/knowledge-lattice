@@ -393,35 +393,96 @@ class QualityService:
         logger.info("quality recompute org=%s %s", org_id, result)
         return result
 
+    # 流式分块参数（M1-4 P2-4 / M1-5 改造）：池块宽 / sims 分块行宽
+    # （sims 峰值 = 8192×4096 float32 ≈ 128MB；候选驻留矩阵 = n_cand×dim×4B
+    # ——抽样档 ~50MB / 全量重算 100k 档 ≈1GB 单块 ndarray，§5.4「载入 numpy」同口径）
+    _CROWDING_POOL_BLOCK = 4096
+    _CROWDING_SIM_ROWS = 8192
+
     def _crowding_means(self, np, org_id: str, label: str, cand_rids: Sequence[int]) -> dict[int, float]:
-        """候选行 top-N 近邻均值（numpy 分块矩阵乘——近邻池=组织内全部在用块）。"""
-        rows = self._backend.org_active_chunk_vectors(org_id, label)
-        if len(rows) < 2:
+        """候选行 top-N 近邻均值（**流式池 + 候选驻留 + running top-k**——M1-4
+        P2-4 / M1-5 改造）。
+
+        近邻池 = 组织内全部在用块向量，经 org_active_chunk_vectors **两次惰性流**
+        （packed bytes，不物化 Python float 对象——100k×2560 档 >1GB 根因消除）：
+        ① 取候选行 → 驻留 float32 矩阵（归一化一次）+ 顺带数出池规模；
+        ② 池分块流过（单遍）：块归一化 → 与候选驻留矩阵分块乘 → running top-k
+        （concat+partition，自身按 rid 定位置 -1 排除——与全行扫描语义等价）。
+        维度异行防御两遍同口径（P3-1：只计同维行——pool_n/k 与池块实际行数
+        对齐；标签谓词（cv.embed_model = label）正常保证同维，防御面为手工行/
+        异常数据）。峰值私有内存 ≈ 候选矩阵 + sims 块 + 池块（实测见
+        benchmarks/report-m1-5.md §4）。"""
+        cand_set = set(cand_rids)
+        cand_packed: dict[int, bytes] = {}
+        dim = 0
+        pool_n = 0
+        for rid, packed in self._backend.org_active_chunk_vectors(org_id, label):
+            if not packed:
+                continue
+            d = len(packed) // 4
+            if dim == 0:
+                dim = d
+            elif d != dim:
+                continue  # 维度异行不计池——与第二遍 _pool_blocks 同口径（P3-1）
+            pool_n += 1
+            if rid in cand_set:
+                cand_packed[rid] = packed
+        if pool_n < 2 or not cand_packed or dim == 0:
             return {}
-        rids = [r for r, _ in rows]
-        index = {r: i for i, r in enumerate(rids)}
-        wanted = [index[r] for r in cand_rids if r in index]
-        if not wanted:
+        kept = [r for r in cand_rids if r in cand_packed]
+        cand_mat = np.empty((len(kept), dim), dtype=np.float32)
+        # pop 逐行腾挪：转填期 packed 字典与 ndarray 短暂共存（全量档 ≈2×候选
+        # 数据——实测见 report-m1-5.md §4；抽样档候选小、窗口可忽略）
+        for i, rid in enumerate(kept):
+            cand_mat[i] = np.frombuffer(cand_packed.pop(rid), dtype=np.float32)
+        norms = np.linalg.norm(cand_mat, axis=1, keepdims=True)
+        cand_mat /= np.clip(norms, 1e-12, None)  # P3-2：原地除——免临时副本减半峰值
+        cand_pos = {rid: i for i, rid in enumerate(kept)}
+
+        k = min(self._settings.quality_neighbors, pool_n - 1)
+        if k <= 0:
             return {}
-        x = np.asarray([v for _, v in rows], dtype=np.float32)
-        if x.ndim == 1:
-            x = x.reshape(1, -1)
-        norms = np.linalg.norm(x, axis=1, keepdims=True)
-        xn = x / np.clip(norms, 1e-12, None)
-        k = min(self._settings.quality_neighbors, len(rids) - 1)
-        out: dict[int, float] = {}
-        block = 1024
-        for start in range(0, len(wanted), block):
-            chunk_rows = wanted[start : start + block]
-            sims = xn[chunk_rows] @ xn.T  # (b, n) 余弦（已归一化）
-            for bi, gi in enumerate(chunk_rows):
-                sims[bi, gi] = -1.0  # 排除自身
-                if 0 < k < len(rids):
-                    top = np.partition(sims[bi], len(rids) - k)[len(rids) - k :]
-                else:
-                    top = sims[bi]
-                out[rids[gi]] = float(top.mean())
-        return out
+        topk = np.full((len(kept), k), -2.0, dtype=np.float32)
+        sim_rows = self._CROWDING_SIM_ROWS
+        pblock = self._CROWDING_POOL_BLOCK
+        for block_rids, block_mat in self._pool_blocks(np, org_id, label, pblock, dim):
+            for cstart in range(0, len(kept), sim_rows):  # sims 分块（内存上界）
+                sims = cand_mat[cstart : cstart + sim_rows] @ block_mat.T
+                for j, rid in enumerate(block_rids):  # 自身排除（rid 定位——与流序无关）
+                    ci = cand_pos.get(rid)
+                    if ci is not None and cstart <= ci < cstart + sim_rows:
+                        sims[ci - cstart, j] = np.float32(-1.0)
+                merged = np.concatenate([topk[cstart : cstart + sim_rows], sims], axis=1)
+                topk[cstart : cstart + sim_rows] = np.partition(
+                    merged, merged.shape[1] - k, axis=1
+                )[:, -k:]
+        return {rid: float(topk[i].mean()) for i, rid in enumerate(kept)}
+
+    def _pool_blocks(self, np, org_id: str, label: str, block_n: int, dim: int):
+        """池流 → (rid 列表, 归一化 float32 块) 生成器（块用即弃——峰值 = 单块）。
+        dim 为期望维度（第一遍定标）：异维行跳过——与第一遍 pool_n 计数同口径
+        （P3-1：防御统一，防 reshape 撞维）。"""
+        buf_rids: list[int] = []
+        buf: list[bytes] = []
+        for rid, packed in self._backend.org_active_chunk_vectors(org_id, label):
+            if not packed or len(packed) // 4 != dim:
+                continue
+            buf_rids.append(rid)
+            buf.append(packed)
+            if len(buf_rids) == block_n:
+                yield self._normalized_block(np, buf_rids, buf)
+                buf_rids, buf = [], []
+        if buf_rids:
+            yield self._normalized_block(np, buf_rids, buf)
+
+    @staticmethod
+    def _normalized_block(np, rids: list[int], packed: list[bytes]):
+        dim = len(packed[0]) // 4
+        mat = np.empty((len(rids), dim), dtype=np.float32)
+        for i, row in enumerate(packed):
+            mat[i] = np.frombuffer(row, dtype=np.float32)
+        norms = np.linalg.norm(mat, axis=1, keepdims=True)
+        return rids, mat / np.clip(norms, 1e-12, None)
 
     # ---- 报告页（TC-QUAL-05——近邻过同一套 ACL） ----
 

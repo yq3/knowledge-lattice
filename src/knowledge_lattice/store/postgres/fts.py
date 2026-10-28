@@ -39,9 +39,20 @@ TS_MATCH_ANY = " OR ".join(
 )
 
 
+# to_tsquery 引号内仍具语法义的字元（实测 PG 16：`! ():<` + 空白——NOT/分组/
+# 权重前缀/FOLLOWED BY 词法在引号内仍被切分，`"a:b"`/`"(a)"` 直接 syntax error
+# in tsquery——P3-11 畸形参数 500 根因）；token 内出现即剥离（字面量化）
+_TSQUERY_HOSTILE = re.compile(r"[!():<>\s]+")
+
+
 def escape_tsquery_token(token: str) -> str:
-    """token → to_tsquery 字面量短语（引号包裹、内部 `"` 剥离）。"""
-    return '"' + token.replace('"', "") + '"'
+    """token → to_tsquery 字面量短语（引号包裹、内部 `"` 剥离 + 敌意字元剥离）。
+
+    P3-11（m1-1 顺延，M1-5）：`:`/`(`/`)`/`!`/`<`/`>`/空白在引号内仍是
+    to_tsquery 语法字元（如查询切出 `org:tax` 这类 token）——不剥离则整条
+    tsquery syntax error → 检索 500；剥离后降级为字面量（空召回或正常匹配）。
+    """
+    return '"' + _TSQUERY_HOSTILE.sub("", token.replace('"', "")) + '"'
 
 
 def build_tsquery(tokens: Sequence[str]) -> str:

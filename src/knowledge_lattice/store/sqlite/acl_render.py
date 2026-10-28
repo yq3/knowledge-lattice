@@ -187,6 +187,70 @@ def render_visible_doc_ids(plan: AclPlan) -> tuple[str, dict[str, object]]:
     return sql, renderer.params
 
 
+def render_documents_select(
+    plan: AclPlan,
+    *,
+    dataset_ids: list[str] | None = None,
+    active_status: str | None = None,
+    limit: int = 50,
+) -> tuple[str, dict[str, object]]:
+    """文档清单 SQL（M1-5 MCP list_documents——§6.1 docs 组）：visible_docs CTE
+    （按调用者权限计算，TC-AZ-02）+ 文档双态四字段 + chunk_count（在用块计数
+    ——version=active AND tombstone=0）；dims 由 backend._attach_dims 聚合回填
+    （D22 真相源同源）。dataset 过滤可经 plan 下推（CTE 内）+ 本层外过滤双保险
+    （与召回路同款纪律）；active_status/limit 绑定参数。"""
+    renderer = _Renderer()
+    sql = (
+        f"{_CTE_PREFIX}{renderer.expr(_build_cte_where_neutral(plan))})"
+        " SELECT d.id AS doc_id, d.dataset_id, ds.name AS dataset_name, d.title,"
+        " d.active_version, d.active_status, d.pending_version, d.pending_status,"
+        " d.source_uri, d.updated_at,"
+        " (SELECT count(*) FROM chunks c WHERE c.doc_id = d.id"
+        "   AND c.version = d.active_version AND c.tombstone = 0) AS chunk_count"
+        " FROM visible_docs vd"
+        " JOIN documents d ON d.id = vd.doc_id"
+        " JOIN datasets ds ON ds.id = d.dataset_id"
+    )
+    params = renderer.params
+    conds: list[str] = []
+    if dataset_ids:
+        names = ", ".join(f":lds{i}" for i in range(len(dataset_ids)))
+        conds.append(f"d.dataset_id IN ({names})")
+        params.update({f"lds{i}": v for i, v in enumerate(dataset_ids)})
+    if active_status is not None:
+        conds.append("d.active_status = :lastatus")
+        params["lastatus"] = active_status
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
+    sql += " ORDER BY d.updated_at DESC, d.id LIMIT :llimit"
+    params["llimit"] = limit
+    return sql, params
+
+
+def render_dataset_counts_select(
+    plan: AclPlan, *, dataset_ids: list[str] | None = None
+) -> tuple[str, dict[str, object]]:
+    """datasets 统计 SQL（§6.1 list_documents）：组织内全部库均列出（库元数据非
+    ACL 客体——名称/存在不敏感），**doc_count 经 visible_docs CTE 按调用者权限
+    计数**（不可见文档计入 0 而非从统计面消失——TC-AZ-02 数量不泄露）。"""
+    renderer = _Renderer()
+    sql = (
+        f"{_CTE_PREFIX}{renderer.expr(_build_cte_where_neutral(plan))})"
+        " SELECT ds.id, ds.name,"
+        " (SELECT count(*) FROM visible_docs vd"
+        "   JOIN documents d ON d.id = vd.doc_id"
+        "   WHERE d.dataset_id = ds.id) AS doc_count"
+        " FROM datasets ds WHERE ds.org_id = :org"
+    )
+    params = renderer.params
+    if dataset_ids:
+        names = ", ".join(f":cds{i}" for i in range(len(dataset_ids)))
+        sql += f" AND ds.id IN ({names})"
+        params.update({f"cds{i}": v for i, v in enumerate(dataset_ids)})
+    sql += " ORDER BY ds.id"
+    return sql, params
+
+
 def render_fts_select(plan: AclPlan, *, query: str) -> tuple[str, dict[str, object]]:
     """FTS 路召回 SQL：visible_docs CTE + chunks_fts MATCH + 版本条件在 JOIN 上（T9）。"""
     renderer = _Renderer()

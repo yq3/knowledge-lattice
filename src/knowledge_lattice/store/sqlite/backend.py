@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 
 from knowledge_lattice.store.backend import AclPlan, VersionConflictError
 from knowledge_lattice.store.sqlite.fts import build_match_expr
@@ -28,6 +28,10 @@ __all__ = ["SqliteBackend", "pack_f32", "unpack_f32"]
 
 class SqliteBackend:
     """持有单个主库连接的 SQLite 后端（线程模型：每线程一连接——design §2）。"""
+
+    # delete_open_flags 的 rid 分批上限（M1-5：sqlite SQL 参数上限 32766——
+    # 预留 reasons 位后 32000 安全；PG 侧同款数值）
+    _DELETE_FLAG_BATCH = 32_000
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
@@ -613,6 +617,39 @@ class SqliteBackend:
         visible = {r[0] for r in self._conn.execute(sql, params)}
         return visible & set(doc_ids)
 
+    def visible_documents(
+        self,
+        plan: AclPlan,
+        *,
+        dataset_ids: list[str] | None = None,
+        active_status: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """按调用者权限的文档清单（M1-5 MCP list_documents 数据源——TC-AZ-02：
+        行集经 visible_docs CTE；dims 经 _attach_dims 聚合回填（D22 同源））。"""
+        from knowledge_lattice.store.sqlite.acl_render import render_documents_select
+
+        sql, params = render_documents_select(
+            plan, dataset_ids=dataset_ids, active_status=active_status, limit=limit
+        )
+        cursor = self._conn.execute(sql, params)
+        cols = [d[0] for d in cursor.description]
+        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+        self._attach_dims(rows)
+        return rows
+
+    def visible_dataset_counts(
+        self, plan: AclPlan, *, dataset_ids: list[str] | None = None
+    ) -> list[dict]:
+        """datasets 统计（§6.1：doc_count 按调用者权限计算——不可见文档计入 0）。"""
+        from knowledge_lattice.store.sqlite.acl_render import render_dataset_counts_select
+
+        sql, params = render_dataset_counts_select(plan, dataset_ids=dataset_ids)
+        return [
+            {"id": r[0], "name": r[1], "doc_count": r[2]}
+            for r in self._conn.execute(sql, params)
+        ]
+
     # ============ Quality 域（design §5.4 / FR-3——M1-4） ============
     # 近邻范围铁律：组织内 + 仅在用版本（#33 P1-10）——下方 SQL 的
     # c2.version = d2.active_version AND c2.tombstone = 0 三处一致。
@@ -696,16 +733,19 @@ class SqliteBackend:
 
     def org_active_chunk_vectors(
         self, org_id: str, embed_model: str
-    ) -> list[tuple[int, list[float]]]:
-        rows = self._conn.execute(
+    ) -> Iterator[tuple[int, bytes]]:
+        """组织内全部在用块的 (rid, packed float32 bytes)——**惰性流**
+        （M1-4 P2-4 / M1-5 改造：cursor 逐行产出、不物化全量行；vec_f32 BLOB
+        本即小端 float32 packed 形态，bytes 原样透出——消费侧 np.frombuffer）。"""
+        cursor = self._conn.execute(
             "SELECT c.rid, cv.embedding FROM chunks c"
             " JOIN documents d ON d.id = c.doc_id"
             " JOIN chunk_vectors cv ON cv.rid = c.rid AND cv.embed_model = :label"
             " WHERE d.org_id = :org AND c.tombstone = 0"
             "   AND c.version = d.active_version AND d.active_version > 0",
             {"org": org_id, "label": embed_model},
-        ).fetchall()
-        return [(r[0], unpack_f32(r[1])) for r in rows]
+        )
+        return ((r[0], bytes(r[1])) for r in cursor)
 
     def org_active_chunk_segs(self, org_id: str | None) -> list[str]:
         """org_id=None = 全局语料（冷启动重算兜底——P2-1，TC-QUAL-02 同构口径）。"""
@@ -833,20 +873,29 @@ class SqliteBackend:
         return flag_id
 
     def delete_open_flags(self, rids: Sequence[int], reasons: Sequence[str]) -> int:
+        """给定块的 open flags 删除（reason 限定）——**rid 分批**（M1-4 P2-4 /
+        M1-5：SQL 参数上限 sqlite 32766 / PG 65535，~6.5 万候选单语句超限失败；
+        每批 ≤_DELETE_FLAG_BATCH 行参数化删除，计数累加）。"""
         if not rids or not reasons:
             return 0
-        rmarks = ", ".join(f":r{i}" for i in range(len(rids)))
-        vmarks = ", ".join(f":v{i}" for i in range(len(reasons)))
-        params: dict[str, object] = {f"r{i}": rid for i, rid in enumerate(rids)}
-        params.update({f"v{i}": reason for i, reason in enumerate(reasons)})
-        cur = self._conn.execute(
-            f"DELETE FROM quality_flags WHERE state = 'open'"
-            f" AND reason IN ({vmarks})"
-            f" AND chunk_id IN (SELECT id FROM chunks WHERE rid IN ({rmarks}))",
-            params,
-        )
+        deleted = 0
+        for start in range(0, len(rids), self._DELETE_FLAG_BATCH):
+            batch = rids[start : start + self._DELETE_FLAG_BATCH]
+            rmarks = ", ".join(f":r{start + i}" for i in range(len(batch)))
+            vmarks = ", ".join(f":v{i}" for i in range(len(reasons)))
+            params: dict[str, object] = {
+                f"r{start + i}": rid for i, rid in enumerate(batch)
+            }
+            params.update({f"v{i}": reason for i, reason in enumerate(reasons)})
+            cur = self._conn.execute(
+                f"DELETE FROM quality_flags WHERE state = 'open'"
+                f" AND reason IN ({vmarks})"
+                f" AND chunk_id IN (SELECT id FROM chunks WHERE rid IN ({rmarks}))",
+                params,
+            )
+            deleted += cur.rowcount
         self._conn.commit()
-        return cur.rowcount
+        return deleted
 
     def get_quality_flag(self, flag_id: str) -> dict | None:
         row = self._conn.execute(
