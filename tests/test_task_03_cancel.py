@@ -500,3 +500,161 @@ def test_cancel_overwrite_with_blocks_fails_pending_and_keeps_v1(ver_env) -> Non
     assert n_v1 >= 1  # v1 在用块不动
     assert doc["active_version"] == 1
     assert doc["active_status"] == "searchable_full"
+
+
+# ============ P2-N1（M2.1 R4）_record_doc_error 按任务目标版本收口 ============
+
+
+def _thread_ingest(ver_env, tmp_path):
+    """线程安全 IngestService（sqlite check_same_thread——ThreadLocal backend；
+    共享 ver_env 的 embedder/gate：失败/阻塞注入对两线程同源生效）。"""
+    from knowledge_lattice.core.docs.ingest import IngestService
+
+    backend = _thread_safe_backend(ver_env, tmp_path)
+    return IngestService(
+        backend, ver_env["embedder"], ver_env["settings"], ver_env["gate"],
+        ver_env["objects_dir"],
+    )
+
+
+def test_record_doc_error_spares_concurrent_new_pending(ver_env, tmp_path, monkeypatch) -> None:
+    """P2-N1 场景 A：首传 T1 越过 index_fts（D20 切换 active v1、pending=NULL）
+    进 embed 长阶段失败——并发覆盖上传的 pending v2 **不被旧任务失败杀死**
+    （v2 保持 parsing、无块被删），v1 落 active_error；T2 随后可完成至切换。"""
+    import threading
+
+    backend, service = ver_env["backend"], ver_env["service"]
+    doc_id, t1 = _mk_doc(ver_env, title="p2-n1-a")
+
+    entered = threading.Event()
+    release = threading.Event()
+    real_embed = ver_env["embedder"].embed
+    state = {"first": True}
+
+    def embed_block_then_raise(texts):
+        if state["first"]:  # T1 的 embed 批次：阻塞 → 放行后 raise
+            state["first"] = False
+            entered.set()
+            release.wait(timeout=10)
+            raise RuntimeError("embed exploded (P2-N1-A)")
+        return real_embed(texts)
+
+    monkeypatch.setattr(ver_env["embedder"], "embed", embed_block_then_raise)
+    thread_service = _thread_ingest(ver_env, tmp_path)
+
+    done = threading.Event()
+    error: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            thread_service.run_task(t1)
+        except BaseException as exc:  # noqa: BLE001
+            error.append(exc)
+        finally:
+            done.set()
+
+    threading.Thread(target=_run, daemon=True).start()
+    assert entered.wait(timeout=10)  # T1 已进 embed（index_fts 已提交：D20 切换在用）
+    assert backend.get_document(doc_id)["active_version"] == 1
+
+    # 并发覆盖上传 v2（pending 为 NULL → start_overwrite 放行；T2 target=2）
+    _, t2 = service.create_document(
+        org_id="org:tax", dataset_id="ds:vat_lib", title="p2-n1-a-v2",
+        dims={"region": ["CN"]}, owner_user_id="u_full",
+        file_bytes=HTML, mime_type="text/html", filename="v2.html", doc_id=doc_id,
+    )
+    assert backend.get_document(doc_id)["pending_version"] == 2
+
+    release.set()  # T1 的 embed 放行 → raise → 失败路径
+    assert done.wait(timeout=10)
+    assert any("embed exploded" in str(e) for e in error)
+
+    row = backend.get_task(t1)
+    assert row["status"] == "failed"
+    assert "embed exploded" in row["error"]  # T1 原始失败原因保留
+    doc = backend.get_document(doc_id)
+    assert doc["active_version"] == 1
+    assert doc["active_error"] and "embed exploded" in doc["active_error"]  # v1 落 active_error
+    assert doc["pending_version"] == 2
+    assert doc["pending_status"] == "parsing"  # v2 原封不动（不滞留失败也不被删）
+    assert doc["pending_error"] is None
+    n_v2 = ver_env["db"].execute(
+        "SELECT count(*) FROM chunks WHERE doc_id = ? AND version = 2", (doc_id,)
+    ).fetchone()[0]
+    assert n_v2 == 0  # 无 v2 块被误删（本就未写——直断言防未来回归）
+
+    # T2 随后正常完成：v2 full + 切换（restore embed 为真实实现）
+    monkeypatch.setattr(ver_env["embedder"], "embed", real_embed)
+    service.run_task(t2)
+    doc = backend.get_document(doc_id)
+    assert doc["active_version"] == 2
+    assert doc["active_status"] == "searchable_full"
+    assert backend.get_task(t2)["status"] == "done"
+
+
+def test_record_doc_error_spares_new_active_after_switch(ver_env, tmp_path, monkeypatch) -> None:
+    """P2-N1 场景 B（反向）：T1 在 embed 长阶段失败时 v2 已完成切换（active v2）
+    ——旧任务失败不得把 active_error 写到新在用版本上（v2 的 active_error 保持
+    None、状态 searchable_full 不动；v1 块保持切换时的 tombstone 形态）。"""
+    import threading
+
+    backend, service = ver_env["backend"], ver_env["service"]
+    doc_id, t1 = _mk_doc(ver_env, title="p2-n1-b")
+
+    entered = threading.Event()
+    release = threading.Event()
+    real_embed = ver_env["embedder"].embed
+    state = {"first": True}
+
+    def embed_block_then_raise(texts):
+        if state["first"]:
+            state["first"] = False
+            entered.set()
+            release.wait(timeout=10)
+            raise RuntimeError("embed exploded (P2-N1-B)")
+        return real_embed(texts)
+
+    monkeypatch.setattr(ver_env["embedder"], "embed", embed_block_then_raise)
+    thread_service = _thread_ingest(ver_env, tmp_path)
+
+    done = threading.Event()
+    error: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            thread_service.run_task(t1)
+        except BaseException as exc:  # noqa: BLE001
+            error.append(exc)
+        finally:
+            done.set()
+
+    threading.Thread(target=_run, daemon=True).start()
+    assert entered.wait(timeout=10)
+
+    # v2 完成全链并切换（embed 用后续真实批次）——active v2 full
+    _, t2 = service.create_document(
+        org_id="org:tax", dataset_id="ds:vat_lib", title="p2-n1-b-v2",
+        dims={"region": ["CN"]}, owner_user_id="u_full",
+        file_bytes=HTML, mime_type="text/html", filename="v2.html", doc_id=doc_id,
+    )
+    service.run_task(t2)
+    assert backend.get_document(doc_id)["active_version"] == 2
+
+    release.set()  # T1 embed 放行 → raise → except（version=1）
+    assert done.wait(timeout=10)
+    assert any("embed exploded" in str(e) for e in error)
+
+    row = backend.get_task(t1)
+    assert row["status"] == "failed"
+    assert "embed exploded" in row["error"]
+    doc = backend.get_document(doc_id)
+    assert doc["active_version"] == 2
+    assert doc["active_status"] == "searchable_full"  # 新在用状态不被污染
+    assert doc["active_error"] is None  # 旧任务失败不写新 active（P2-N1 核心断言）
+    assert doc["pending_version"] is None
+    # v1 块保持切换事务的 tombstone 形态（未被错误路径触碰）
+    n_v1_tomb = ver_env["db"].execute(
+        "SELECT count(*) FROM chunks WHERE doc_id = ? AND version = 1 AND tombstone = 1",
+        (doc_id,),
+    ).fetchone()[0]
+    assert n_v1_tomb >= 1

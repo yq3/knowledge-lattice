@@ -90,15 +90,20 @@ def test_inline_loop_completes_unkicked_task(inline_app) -> None:
     # 不 kick——只 wake 循环（等价投递方只投不消化 / app 重启遗留）
     service.worker.wake()
     deadline = time.monotonic() + 60  # P3-x：组合跑负载停顿预算放宽（原 10s ~4% 超时）
-    doc = None
+    row = doc = None
     while time.monotonic() < deadline:
+        # P3-x′（R4）：task 读入轮询体内 + 双条件 AND 退出——防「doc 先达 full、
+        # task 终态写尚未落库」读序竞态提前退出（终态与文档态一致才算完成）
+        row = service.backend.get_task(task_id)
         doc = service.backend.get_document(doc_id)
-        if doc and doc["active_status"] == "searchable_full":
+        if (row is not None and row["status"] == "done"
+                and doc is not None and doc["active_status"] == "searchable_full"):
             break
         time.sleep(0.1)
+    assert row is not None and row["status"] == "done", \
+        f"兜底循环未领取非 kick 任务（task={row}）"
     assert doc is not None and doc["active_status"] == "searchable_full", \
-        f"兜底循环未领取非 kick 任务（doc={doc}）"
-    assert service.backend.get_task(task_id)["status"] == "done"
+        f"任务完成但文档未达 full（doc={doc}）"
 
 
 def test_inline_loop_reclaims_expired_leased_ingest(inline_app) -> None:
@@ -122,7 +127,10 @@ def test_inline_loop_reclaims_expired_leased_ingest(inline_app) -> None:
     while time.monotonic() < deadline:
         row = service.backend.get_task(task_id)
         doc = service.backend.get_document(doc_id)
-        if row["status"] == "done" or (doc and doc["active_status"] == "searchable_full"):
+        # P3-x′（R4）：双条件 AND 退出——原「done OR full」在 task 终态写与文档
+        # 状态推进间存在读序竞态（full 先见、done 后落），单边条件可提前退出
+        if (row is not None and row["status"] == "done"
+                and doc is not None and doc["active_status"] == "searchable_full"):
             break
         time.sleep(0.1)
     assert row is not None and row["status"] == "done", \

@@ -624,25 +624,36 @@ class IngestService:
                 return
             logger.exception("ingest task failed: %s", task_id)
             self._backend.update_task(task_id, status="failed", error=str(exc))
-            self._record_doc_error(doc, exc)
+            self._record_doc_error(doc, exc, version=version)
             raise
 
-    def _record_doc_error(self, doc: dict, exc: Exception) -> None:
-        """失败写文档侧：首次上传已切换 → active_error；pending 版本 →
-        pending_status=failed + pending_error + **立即物理删块**（T8，同一事务）。
+    def _record_doc_error(
+        self, doc: dict, exc: Exception, *, version: int | None = None
+    ) -> None:
+        """失败写文档侧：**按任务目标版本**（P2-N1，M2.1 R4）——pending 版本 →
+        pending_status=failed + pending_error + **立即物理删块**（T8，同一事务）；
+        已切在用版本 → active_error；版本已被切换收编/被新版本取代 → 不触碰
+        当前 pending/active（旧任务失败不得静默杀死并发新版本上传）。
 
         P2-1：同次执行内 index_fts 的 D20 切换已改写 DB（pending 清空、
         active_version=1），调用方传入的 doc 快照是切换前的——按 id 重读后再判定
         落点，否则 UPDATE 零行、失败态整体丢失。
+        version=None（legacy 直调无 target）→ 回退文档当前有效版本（M1 口径）；
+        store 层 P1 rowcount 守卫保留为第二道防线。
         """
         fresh = self._backend.get_document(doc["id"])
         if fresh is not None:
             doc = fresh
-        version = doc.get("pending_version") or doc.get("active_version")
-        if doc.get("pending_version") == version and version is not None:
+        if version is None:
+            version = doc.get("pending_version") or doc.get("active_version")
+        if version is None:
+            return
+        if doc.get("pending_version") == version:
             self._backend.set_doc_pending_failed(doc["id"], version, str(exc))
-        else:
+        elif doc.get("active_version") == version:
             self._backend.set_doc_active_error(doc["id"], version, str(exc))
+        # else：目标版本已被切换收编/被新版本取代——不得触碰当前 pending/active
+        # （如首传 T1 失败时并发覆盖上传已开 pending v2——v2 归 T2 所有）
 
     def _effective_version(self, doc: dict) -> int:
         return doc.get("pending_version") or doc["active_version"]
