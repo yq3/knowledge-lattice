@@ -32,7 +32,7 @@ def regress_dirs(tmp_path: Path) -> list[Path]:
 
     extra = tmp_path / "regress_migrations"
     extra.mkdir()
-    (extra / "0006_regress_probe.sql").write_text(REGRESS_V3_SQL, encoding="utf-8")
+    (extra / "0007_regress_probe.sql").write_text(REGRESS_V3_SQL, encoding="utf-8")
     return [BUILTIN_DIRS["docs"], BUILTIN_DIRS["semantic"], extra]
 
 
@@ -55,7 +55,7 @@ def test_fk_off_in_transaction_raises_migration_error(conn, regress_dirs) -> Non
         conn.execute("ROLLBACK")
     assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1  # 仍为 ON
     assert "regress_probe" not in table_names(conn)  # 迁移未生效
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 5  # v1.4 基线（M1-3 uploads + M2.1 tombstoned_at + M2.1 R2 target_version）
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6  # 基线 + M2-S1 semantic_v1（0006）
 
 
 # ============ ② P3-2：`:memory:` journal 失败 → RuntimeError + 连接关闭 ============

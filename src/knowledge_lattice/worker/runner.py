@@ -53,9 +53,10 @@ from knowledge_lattice.store.taskclock import utc_now_ts
 
 logger = logging.getLogger(__name__)
 
-# 本段 runner 认领的任务类型（reindex/reembed/delete/semantic_* 为预留分发位，
-# 归后续段——不认领不误伤：未知类型的任务行原地留 pending）
-CLAIMABLE_TASK_TYPES = ("ingest", "maintenance")
+# 本段 runner 认领的任务类型（semantic_sync 于 M2-S1 接入——payload {org, adapter}
+# 经 core.semantic.sync.run_sync_task 执行；reindex/reembed/delete 仍为预留分发位，
+# 不认领不误伤：未知类型的任务行原地留 pending）
+CLAIMABLE_TASK_TYPES = ("ingest", "maintenance", "semantic_sync")
 
 
 @dataclass
@@ -97,6 +98,7 @@ class TaskRunner:
         self._executors: dict[str, object] = {
             "ingest": self._exec_ingest,
             "maintenance": self._exec_maintenance,
+            "semantic_sync": self._exec_semantic_sync,
         }
         if executors:
             self._executors.update(executors)
@@ -236,6 +238,16 @@ class TaskRunner:
             raise RuntimeError("credentials service not wired in worker services")
         run_maintenance(
             self._backend, self._services.credentials, self._settings, task["id"]
+        )
+
+    def _exec_semantic_sync(self, task: dict, claim_id: str) -> None:
+        """semantic_sync 任务体（M2-S1——§5.8 一个适配器一次 run；错峰限速 =
+        分批天然限速，夜间窗口配置项本段仅登记不强制）。"""
+        from knowledge_lattice.core.semantic.sync import run_sync_task
+
+        run_sync_task(
+            self._backend, self._settings, task["id"],
+            should_continue=self._should_continue(task["id"], claim_id),
         )
 
     # ---- 失败处置（重试上限——TC-TASK-02） ----
@@ -425,6 +437,13 @@ class WorkerSupervisor:
             "LATTICE_MAINTENANCE_KEEP_DAYS": str(settings.maintenance_keep_days),
             "LATTICE_MAINTENANCE_KEEP_COUNT": str(settings.maintenance_keep_count),
             "LATTICE_TOMBSTONE_KEEP_DAYS": str(settings.tombstone_keep_days),
+            # 语义层同步（M2-S1）：per-org 源连接与阈值——worker 子进程执行
+            # semantic_sync 任务时经 get_settings 读取（P3-N5 同族：不映射则漂移）
+            "LATTICE_SEM_SOURCES_JSON": settings.semantic_sources_json,
+            "LATTICE_SEM_DELETE_GUARD": str(settings.semantic_delete_guard),
+            "LATTICE_SEM_GRACE_DAYS": str(settings.semantic_grace_days),
+            "LATTICE_SEM_BATCH_ROWS": str(settings.semantic_batch_rows),
+            "LATTICE_SEM_NIGHT_WINDOW": settings.semantic_night_window,
         }
 
 

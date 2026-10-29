@@ -611,18 +611,77 @@ class QualityBackend(Protocol):
 class SemanticBackend(Protocol):
     """M2-S：sync 分批 upsert / missing·retired 推进 / 构建产物与 sem_vec 读写 / L0 导出。
 
-    种子方法签名（P3-17——M0b-1 随 PG backend 实作补齐；实现随 M2-S1 经
-    store/<dialect>/migrations/semantic/ 落库，D23/§5.8）。
+    种子方法签名（P3-17——M0b-1 随 PG backend 实作补齐）；m2s-1 扩充同步编排
+    所需读写面（run 记录 / 引用面解析 / 别名重建 / 填充率统计）——SQL 全部
+    下沉双方言实现（D24/v0.7.2 拍板3）。
     """
 
-    def upsert_entities_batch(self, org_id: str, rows: Sequence[dict]) -> int:
+    def upsert_entities_batch(self, org_id: str, rows: Sequence[dict]) -> dict:
         """同步分批 upsert（只写事实列 name/attrs_json/parent_id/status/synced_at，
-        分批 ≤1000 行/批——NFR-11 写锁治理）；返回本批 inserted/updated 计数。"""
+        分批 ≤1000 行/批——NFR-11 写锁治理；单批单事务）。
+
+        rows 按父先子后有序；row = {type, key, name, attrs_json, parent_key,
+        source_system, synced_at}（parent_key="type:key"——方法内解析 id，批内
+        父行先落建 id 映射）。返回 {"inserted": n, "updated": n}——**事实列变更**
+        计数（synced_at 刷新不计入——T-S3）。"""
+        ...
+
+    def resolve_entity_ids(
+        self, org_id: str, keys: Sequence[tuple[str, str]]
+    ) -> dict[tuple[str, str], int]:
+        """(type, key) → 实体 id 解析（关系端点/missing 标记的读取面）。"""
+        ...
+
+    def sem_active_source_keys(
+        self, org_id: str, source_system: str
+    ) -> set[tuple[str, str]]:
+        """库内该来源 active 实体键集（source='sync' AND source_system=本适配器
+        AND status='active'——删除比例保护基数口径 #38 P2/T-S2）。"""
+        ...
+
+    def sem_source_fill_stats(self, org_id: str, source_system: str) -> dict:
+        """该来源 active 实体的维度携带统计（attrs_json.dims 非空 = filled）——
+        填充率骤降告警的库内基线（TC-SYNC-06②）。返回 {total, filled}。"""
+        ...
+
+    def mark_entities_missing(self, org_id: str, entity_ids: Sequence[int]) -> int:
+        """快照消失实体 → status='missing'（宽限期状态机入口——T-S4①）。返回行数。"""
+        ...
+
+    def upsert_relations_batch(self, org_id: str, rows: Sequence[dict]) -> dict:
+        """关系分批 upsert（ON CONFLICT(org,src,rel,dst) 只更新 attrs_json/
+        status/synced_at；端点不可变由 trg_sem_rel_noupdate 保证）。row =
+        {src_id, rel_type, dst_id, attrs_json, synced_at}。返回 inserted/updated。"""
+        ...
+
+    def rebuild_sync_aliases(self, org_id: str, rows: Sequence[dict]) -> int:
+        """别名三 kind 重建（单事务先删后插——只动 kind IN ('name','code','sync')，
+        manual/abbr 原样——T-S1 列级分工/TC-SYNC-05）。row = {type, key,
+        aliases: [(alias, alias_norm, kind)]}。返回插入行数。"""
         ...
 
     def advance_status(self, org_id: str, *, missing_before: str) -> dict:
         """missing 宽限期推进（超期 missing → retired，关系一并 retired——T-S4）；
-        返回 {missing, retired} 计数。"""
+        返回 {missing, retired, relations_retired} 计数。"""
+        ...
+
+    def sem_start_run(self, org_id: str, adapter: str, *, now: str) -> int:
+        """sem_sync_runs 插入 running 记录（§5.8 流程第 1 步）。返回 run id。"""
+        ...
+
+    def sem_finish_run(
+        self, org_id: str, run_id: int, *, status: str, stats_json: str,
+        error: str | None = None, now: str | None = None,
+    ) -> None:
+        """run 终态落库（succeeded / failed / aborted_guard + stats_json）。"""
+        ...
+
+    def sem_list_sync_runs(self, org_id: str, *, limit: int = 50) -> list[dict]:
+        """同步记录与冲突报告（GET /semantic/sync-runs——stats_json 已解析）。"""
+        ...
+
+    def sem_list_builds(self, org_id: str) -> list[dict]:
+        """构建记录（GET /semantic/builds——m2s-2 前恒空）。"""
         ...
 
     def save_build(self, org_id: str, dict_rev: str, stats_json: str) -> int:
@@ -634,7 +693,8 @@ class SemanticBackend(Protocol):
         ...
 
     def export_l0(self, org_id: str) -> str:
-        """L0 术语片段导出（1500 token 预算——§6.3/agent 中间件注入源）。"""
+        """L0 术语片段导出（1500 token 预算——§6.3/agent 中间件注入源；
+        构建产物落地归 m2s-2——本段返回空串占位）。"""
         ...
 
 

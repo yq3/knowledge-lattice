@@ -117,6 +117,15 @@ class Settings:
     audit_keep_months: int = 12  # 保留 12 个月（13 个月前整文件/分区删除——FR-6）
     backup_interval_s: float = 86400.0  # 快照最小间隔（RPO ≤24h 口径；0=每轮 maintenance 都跑）
 
+    # 语义层同步（M2-S1——design §5.8；D23 语义轨道）
+    semantic_sources_json: str = ""  # per-org 源连接 JSON：{org: {adapter: {endpoint, api_key, timeout_s}}}（#37 前置条件③——部署时配置、重启生效）
+    semantic_delete_guard: float = 0.20  # 删除比例保护阈值（快照相对库内该来源 active 实体消失比例 > 阈值 → aborted_guard 零写入——T-S2）
+    semantic_grace_days: int = 7  # missing 宽限期（天）——超期转 retired 且关系一并 retired（T-S4）
+    semantic_batch_rows: int = 1000  # 同步分批行数上限（每批提交——NFR-11 写锁治理）
+    semantic_dim_alert_baseline: float = 0.8  # 维度填充率骤降告警：库内基线携带率 ≥ 此值才参与判定（口径注记见 core/semantic/sync.py）
+    semantic_dim_alert_drop: float = 0.5  # 快照携带率 < 基线 × 此值 → 告警（防缺值静默变宽——TC-SYNC-06②）
+    semantic_night_window: str = ""  # 错峰窗口登记（如 "01:00-05:00"——本段不强制生效，分批即天然限速）
+
     # 运行日志（v0.8.5：结构化 JSON→stdout；本地开发可切人读格式）
     log_level: str = "INFO"
     log_format: str = "json"  # json | human
@@ -129,6 +138,20 @@ class Settings:
     def embed_model_label(self) -> str:
         """模型标签 model:dim——写入 chunks.embed_model 兼作查询谓词（D12）。"""
         return f"{self.embed_model}:{self.embed_dim}"
+
+    @property
+    def semantic_sources(self) -> dict[str, dict[str, dict]]:
+        """per-org 源系统连接（JSON 解析——畸形配置 fail-closed，TC-SYNC-01）。"""
+        import json
+
+        if not self.semantic_sources_json:
+            return {}
+        parsed = json.loads(self.semantic_sources_json)
+        if not isinstance(parsed, dict):
+            raise ValueError(
+                "LATTICE_SEM_SOURCES_JSON 必须是 {org: {adapter: {...}}} JSON 对象"
+            )
+        return parsed
 
 
 def get_settings() -> Settings:
@@ -187,6 +210,13 @@ def get_settings() -> Settings:
         tombstone_keep_days=int(_num("LATTICE_TOMBSTONE_KEEP_DAYS", 90)),
         audit_keep_months=int(_num("LATTICE_AUDIT_KEEP_MONTHS", 12)),
         backup_interval_s=float(_num("LATTICE_BACKUP_INTERVAL_S", 86400.0)),
+        semantic_sources_json=_f("LATTICE_SEM_SOURCES_JSON", ""),
+        semantic_delete_guard=float(_num("LATTICE_SEM_DELETE_GUARD", 0.20)),
+        semantic_grace_days=int(_num("LATTICE_SEM_GRACE_DAYS", 7)),
+        semantic_batch_rows=int(_num("LATTICE_SEM_BATCH_ROWS", 1000)),
+        semantic_dim_alert_baseline=float(_num("LATTICE_SEM_DIM_ALERT_BASELINE", 0.8)),
+        semantic_dim_alert_drop=float(_num("LATTICE_SEM_DIM_ALERT_DROP", 0.5)),
+        semantic_night_window=_f("LATTICE_SEM_NIGHT_WINDOW", ""),
         log_level=env("LATTICE_LOG_LEVEL", "INFO"),
         log_format=env("LATTICE_LOG_FORMAT", "json"),
     )
@@ -213,6 +243,15 @@ def _validate(s: Settings) -> None:
             numeric_failures.append(f"{name}={value!r}")
     if s.task_max_attempts < 1:
         numeric_failures.append(f"task_max_attempts={s.task_max_attempts!r}（须 ≥1）")
+    if not 0.0 <= s.semantic_delete_guard <= 1.0:
+        numeric_failures.append(
+            f"semantic_delete_guard={s.semantic_delete_guard!r}（须 ∈ [0,1]）"
+        )
+    if s.semantic_grace_days < 0 or s.semantic_batch_rows < 1:
+        numeric_failures.append(
+            f"semantic_grace_days={s.semantic_grace_days!r}（须 ≥0）/"
+            f"semantic_batch_rows={s.semantic_batch_rows!r}（须 ≥1）"
+        )
     if numeric_failures:
         raise ValueError(
             "invalid config values (must be >= 0): " + "; ".join(numeric_failures)
