@@ -109,12 +109,12 @@ deploy 场景注意：
 ### 4.1 SQLite 后端（VACUUM INTO）
 
 ```bash
-# 快照（主库 + objects 一并）
-#   产物：主库快照 lattice-snap-<ts>.db + objects-<ts>.tar
-LATTICE_BACKUP_DIR=/backup lattice-服务运行中由 maintenance 周期执行
+# 快照（主库 + objects 一并）——maintenance backup_snapshot 任务体周期执行
+#   产物目录：data/backups/（固定路径，无独立配置项；G-5 快照目的地缺口维持登记）
+#   产物：lattice-snap-<ts>.db（主库 VACUUM INTO）+ objects-<ts>.tar
 # 手动等价（脚本 benchmarks/dr_ops05_drill.py 演练同款路径）
-#   sqlite3 data/lattice.db "VACUUM INTO '/backup/lattice-snap.db'"
-#   tar -cf /backup/objects.tar -C data objects
+#   sqlite3 data/lattice.db "VACUUM INTO 'data/backups/lattice-snap.db'"
+#   tar -cf data/backups/objects.tar -C data objects
 
 # 恢复（新环境）
 #   1) 释放快照与 tar 至目标 data/ 目录
@@ -134,7 +134,8 @@ LATTICE_BACKUP_DIR=/backup lattice-服务运行中由 maintenance 周期执行
 ```bash
 # 快照（自定义格式 -Fc；容器形态经 LATTICE_PG_DUMP_CMD 注入）
 LATTICE_PG_DUMP_CMD="docker exec lattice-pg pg_dump"   # .env 注入示例
-#   内部等价：pg_dump -Fc -d $LATTICE_PG_DSN -f /backup/lattice-<ts>.dump
+#   实现形态：pg_dump --format=custom --no-owner --no-privileges [-d DSN]
+#             经 stdout 流写 data/backups/lattice-pg-<ts>.dump（-f 直写非实现路径）
 #   objects 目录同 sqlite（tar）
 
 # 恢复（新库——需 pgvector 预装）
@@ -158,5 +159,5 @@ LATTICE_PG_DUMP_CMD="docker exec lattice-pg pg_dump"   # .env 注入示例
   `backup_snapshot: "unavailable: …"` + WARNING 日志、任务 done（部署面
   显式状态）。
 - 工具**在但失败**（DSN 错/磁盘满）→ 任务 **failed**（error 前缀
-  `backup_snapshot`）——任务列表/日志可发现，`LATTICE_BACKUP_DIR` 异常
+  `backup_snapshot`）——任务列表/日志可发现，`data/backups/` 快照产物异常
   应纳入例行巡检。
