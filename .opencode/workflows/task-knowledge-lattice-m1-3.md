@@ -79,7 +79,7 @@ updatedAt: 2026-10-25T20:33:00+0800
 
 - [x] **移交 M1-4 docs 批——✅ 2026-10-25T20:03 已落笔（supervised-coding 执笔，工作区未 commit，待 coder 纳入交付批）**：L1080「单次使用」→「成功消费后单次；失败 PUT 可修正重传直至消费/过期」（design §6.1）+ requirements FR-1 同源措辞 + design/requirements 联动升 **v0.9.4**；uploads DDL 登记口径「实现细节不入 §4、以迁移 0003 为准」（design §6.2）+ PUT「截断/拒绝」二义定拒绝（附录 A-13）；D18 claim-first 澄清（design §6.2 非 org 路径 resolve_org 口径）；NFR-6 shared-storage 登记 **known-gaps G-12**（活文档，不受冻结纪律约束）
 - [ ] **移交 M1-4 docs 批（doc-only 复核 P3 + A-13 独立登记，2026-10-25T20:15 补录）**：TEST-CASES 附录 A-13 旧措辞「design『按声明 size 截断/拒绝』二义……待实现固定后回写」→ M1-4 docs 批回写为已定拒绝（本批 3 文件范围外未动）；design/requirements「日期」历史行欠账（design 止 v0.9、requirements 止 v0.9.1——v0.9.2/3/4 未列入）；api/search.py docstring 与 domain/auth.py resolve_org docstring 仍写「X-Org-Id 例外/MCP/检索端点」旧口径（M1-4/M2 代码注释顺修）
-- [ ] **移交 M1-4/M2 登记（committer R1 §5 边界 6 条中 3 条 + P3 顺延）**：§6.2 line 1122「multipart 或携带 upload_id」实现仅 multipart——确认顺延后续段；NFR-6 shared-storage「只读/扩展名限制」未实现——登记 known-gap（本段只有不透明 upload_id 无共享存储分支）；RFC 8693 act 对象形态兼容——M2 SSO/JIT 落地必须项；P3-6/P3-10/P3-11（并发 PUT .part 共用/整体读内存/极窗口文档保留）→M2 并发与资源面收口（与 P3-7/P3-B 合并）；P3-9（create_document 先写对象，M1-2 既有）→M1-4；P3-19 maintenance 任务行无保留策略→M2 任务清理
+- [ ] **移交 M1-4/M2 登记（committer R1 §5 边界 6 条中 3 条 + P3 顺延）**：§6.2 line 1122「multipart 或携带 upload_id」实现仅 multipart——确认顺延后续段；NFR-6 shared-storage「只读/扩展名限制」未实现——登记 known-gap（本段只有不透明 upload_id 无共享存储分支）；RFC 8693 act 对象形态兼容——M2 SSO/JIT 落地必须项；P3-6/P3-10/P3-11（并发 PUT .part 共用/整体读内存/极窗口文档保留）→M2 并发与资源面收口（与 P3-7/P3-B 合并）（✅ 三项已清偿：来源 task-knowledge-lattice-m2-1〔PR #2，2026-10-29 合入〕——staging 随机后缀/consume 流式复验+64KB 拷贝/输家补偿删孤儿文档+联动取消）；P3-9（create_document 先写对象，M1-2 既有）→M1-4；P3-19 maintenance 任务行无保留策略→M2 任务清理（✅ 已清偿：来源 task-knowledge-lattice-m2-1——天数+条数截尾双策略双臂）
 
 ## 轮次记录
 
