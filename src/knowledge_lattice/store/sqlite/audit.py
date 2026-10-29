@@ -111,7 +111,10 @@ def open_monthly_ro(path: Path) -> sqlite3.Connection:
 
 
 def last_row_hash(db_dir: Path, month: str) -> str | None:
-    """指定月月库末行 row_hash（(created_at, id) 序末条；无行/无库 → None）。"""
+    """指定月月库末行 row_hash（**rowid 序末条**——P2-1/R2：链序=插入序，
+    audit_events 非 WITHOUT ROWID、隐式 rowid 即插入序；秒级 created_at +
+    uuid4 随机 id 的 (created_at,id) 全序与插入序在同秒并列时错位）。
+    无行/无库 → None。"""
     path = month_path(db_dir, month)
     if not path.is_file():
         return None
@@ -119,7 +122,7 @@ def last_row_hash(db_dir: Path, month: str) -> str | None:
     try:
         row = conn.execute(
             "SELECT row_hash FROM audit_events"
-            " WHERE row_hash IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT 1"
+            " WHERE row_hash IS NOT NULL ORDER BY rowid DESC LIMIT 1"
         ).fetchone()
         return row[0] if row else None
     finally:
@@ -154,13 +157,26 @@ def seal_monthly_audit(db_dir: Path, month: str) -> dict | None:
 
     封存语义（design §4 注）：过月只读——此后任何连接只能只读打开（无写位
     即 open rw 失败），append-only 由「文件权限 + 触发器」双保险。
+
+    崩溃窗防护（P3-5/R2——sidecar **最后**写）：先 chmod 月库 0444 → 再写
+    sidecar → chmod sidecar。若在两步间崩溃（半封存态=库 0444 但无 sidecar），
+    重放时检测 `库不可写且无 sidecar` → 只读读 rows/last_hash 补写 sidecar
+    （幂等早退路径也**重放 chmod**——防「早退检查与首次 chmod 间」的残留窗口）。
     """
     path = month_path(db_dir, month)
     if not path.is_file():
         return None
     sealed = read_seal(db_dir, month)
     if sealed is not None:
+        os.chmod(path, 0o444)  # P3-5：早退路径重放 chmod（幂等——防残留可写）
+        os.chmod(seal_path(db_dir, month), 0o444)
         return sealed  # 幂等
+    if not os.access(path, os.W_OK):
+        # 半封存态（P3-5）：库已 chmod、sidecar 未写（上次封存在两步间崩溃）——
+        # 只读读取补写 sidecar（不再 checkpoint/写库）
+        rows = monthly_rows(path)
+        last_hash = last_row_hash(db_dir, month)
+        return _write_seal(db_dir, month, rows, last_hash)
     # checkpoint WAL 进主文件（封存后 -wal 不可写，先行归档）并记末哈希
     conn = sqlite3.connect(path)
     try:
@@ -170,6 +186,18 @@ def seal_monthly_audit(db_dir: Path, month: str) -> dict | None:
         conn.close()
     rows = monthly_rows(path)
     last_hash = last_row_hash(db_dir, month)
+    os.chmod(path, 0o444)  # P3-5：库先只读——sidecar 后写（见 docstring）
+    sealed = _write_seal(db_dir, month, rows, last_hash)
+    for suffix in ("-wal", "-shm"):
+        side = Path(str(path) + suffix)
+        if side.exists():
+            side.unlink(missing_ok=True)  # checkpoint 后伴生文件可清（目录可写即允许）
+    _ensured.discard((path.resolve(), month))
+    return sealed
+
+
+def _write_seal(db_dir: Path, month: str, rows: int, last_hash: str | None) -> dict:
+    """写封存记录 sidecar（0444——P3-5：封存动作的最后一步）。"""
     sealed = {
         "month": month,
         "last_hash": last_hash,
@@ -178,13 +206,7 @@ def seal_monthly_audit(db_dir: Path, month: str) -> dict | None:
     }
     sp = seal_path(db_dir, month)
     sp.write_text(json.dumps(sealed, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.chmod(path, 0o444)
     os.chmod(sp, 0o444)
-    for suffix in ("-wal", "-shm"):
-        side = Path(str(path) + suffix)
-        if side.exists():
-            side.unlink(missing_ok=True)  # checkpoint 后伴生文件可清（目录可写即允许）
-    _ensured.discard((path.resolve(), month))
     return sealed
 
 

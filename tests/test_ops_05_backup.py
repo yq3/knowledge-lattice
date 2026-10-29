@@ -246,19 +246,18 @@ def test_maintenance_backup_body_sqlite(matrix, tmp_path, _pg_dump_tool) -> None
     assert backend.get_task(task_id)["status"] == "done"
 
 
-def test_maintenance_backup_throttle_and_unavailable(matrix, tmp_path) -> None:
-    """节流（interval 内二轮 skipped）+ pg 工具不可用语义（unavailable 状态、
-    任务不失败——部署面显式状态）。"""
+def test_maintenance_backup_throttle_and_unavailable(matrix, tmp_path, _pg_dump_tool) -> None:
+    """节流（interval 内二轮 throttled）+ 工具可用性**分支断言**（P3-8/R2：
+    无条件 skip——工具可用→真实快照+节流；不可用→unavailable 显式状态）。
+
+    P2-4/R2：真实快照**失败**（工具在但子进程非零）不再混入 unavailable——
+    落 errors 任务 failed（见 test_maintenance_backup_failure_fails_task）。
+    """
     from knowledge_lattice.adapters.embedder import EmbeddingGate
     from knowledge_lattice.core.docs.credentials import CredentialService
     from knowledge_lattice.worker.maintenance import run_maintenance
 
     backend = matrix.make_backend()
-    if matrix.is_pg:
-        # pg 臂默认测试环境无 pg_dump（本机 PATH 无、未注入 env）→ unavailable；
-        # 若环境注入了工具则跳过节流断言（与 dump 演练用例互补）
-        if os.environ.get(PG_DUMP_ENV):
-            pytest.skip("已注入 pg 备份工具——unavailable 语义无意义")
     settings = Settings(
         environment="test", data_dir=tmp_path, embed_dim=8,
         backup_interval_s=3600.0,  # 首轮跑、二轮节流
@@ -267,12 +266,78 @@ def test_maintenance_backup_throttle_and_unavailable(matrix, tmp_path) -> None:
     task1 = backend.create_task(None, task_type="maintenance")
     stats1 = run_maintenance(backend, creds, settings, task1)
     first = stats1["backup_snapshot"]
+
     if matrix.is_sqlite:
         assert isinstance(first, dict) and Path(first["database"]).is_file()
         task2 = backend.create_task(None, task_type="maintenance")
         stats2 = run_maintenance(backend, creds, settings, task2)
         assert stats2["backup_snapshot"] == "throttled"  # interval 内二轮跳过
         assert backend.get_task(task2)["status"] == "done"
+        return
+
+    # pg 臂：按工具可用性分支（_pg_dump_tool 已尽力注入 docker 形态）
+    from knowledge_lattice.store.postgres.backup import _resolve_command
+
+    try:
+        _resolve_command("LATTICE_PG_DUMP_CMD", "pg_dump")
+        tool_available = True
+    except Exception:
+        tool_available = False
+    if tool_available:
+        assert isinstance(first, dict) and Path(first["database"]).is_file()
+        task2 = backend.create_task(None, task_type="maintenance")
+        stats2 = run_maintenance(backend, creds, settings, task2)
+        assert stats2["backup_snapshot"] == "throttled"
+        assert backend.get_task(task2)["status"] == "done"
     else:
         assert str(first).startswith("unavailable")  # 工具缺失——显式状态非失败
         assert backend.get_task(task1)["status"] == "done"
+
+
+def test_maintenance_backup_failure_fails_task(matrix, tmp_path) -> None:
+    """P2-4/R2 回归：「工具在但失败」（pg 臂 LATTICE_PG_DUMP_CMD=false——命令
+    存在、退出码 1）→ BackupToolError 落 maintenance errors → 任务 **failed**
+    且 error 前缀 backup_snapshot（NFR-10 可发现信号）；工具缺失（命令二进制
+    不存在）维持 unavailable 不判失败。sqlite 臂恒真快照——本用例 pg 专属
+    语义由 matrix 参数化下的 pg 臂承载（sqlite 臂断言真快照路径）。"""
+    import pytest as _pytest
+
+    from knowledge_lattice.adapters.embedder import EmbeddingGate
+    from knowledge_lattice.config import Settings as _Settings
+    from knowledge_lattice.core.docs.credentials import CredentialService
+    from knowledge_lattice.worker.maintenance import run_maintenance
+
+    backend = matrix.make_backend()
+    settings = _Settings(environment="test", data_dir=tmp_path, embed_dim=8)
+    creds = CredentialService(backend, settings, tmp_path / "objects")
+    if matrix.is_sqlite:
+        # sqlite 无外部工具面：真快照路径（对照组——工具失败态不适用）
+        task = backend.create_task(None, task_type="maintenance")
+        stats = run_maintenance(backend, creds, settings, task)
+        assert isinstance(stats["backup_snapshot"], dict)
+        assert backend.get_task(task)["status"] == "done"
+        return
+
+    import os
+
+    old = os.environ.get("LATTICE_PG_DUMP_CMD")
+    try:
+        # ① 工具在但失败：false 命令退出码 1 → 任务 failed + errors 前缀
+        os.environ["LATTICE_PG_DUMP_CMD"] = "false"
+        task = backend.create_task(None, task_type="maintenance")
+        with _pytest.raises(RuntimeError, match="backup_snapshot"):
+            run_maintenance(backend, creds, settings, task)
+        row = backend.get_task(task)
+        assert row["status"] == "failed"
+        assert "backup_snapshot" in (row["error"] or "")
+        # ② 工具缺失：命令二进制不存在 → unavailable、任务 done
+        os.environ["LATTICE_PG_DUMP_CMD"] = "no-such-backup-binary"
+        task2 = backend.create_task(None, task_type="maintenance")
+        stats2 = run_maintenance(backend, creds, settings, task2)
+        assert str(stats2["backup_snapshot"]).startswith("unavailable")
+        assert backend.get_task(task2)["status"] == "done"
+    finally:
+        if old is None:
+            os.environ.pop("LATTICE_PG_DUMP_CMD", None)
+        else:
+            os.environ["LATTICE_PG_DUMP_CMD"] = old

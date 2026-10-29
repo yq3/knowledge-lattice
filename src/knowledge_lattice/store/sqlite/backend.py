@@ -596,6 +596,7 @@ class SqliteBackend:
                 {"doc": doc_id},
             )
             conn.execute("DELETE FROM documents WHERE id = :doc", {"doc": doc_id})
+            # M2-S3：sem_chunk_entities 随删清挂此事务位（untag——语义轨道段补齐）
             if audit is not None:
                 self._outbox_insert(conn, *audit)
             conn.execute("COMMIT")
@@ -1114,10 +1115,13 @@ class SqliteBackend:
         防在途执行器覆盖取消/新持有者的终态。
         """
         if status == "running":
+            # P2-3/R2：running 写入限非终态——取消落账（failed+'cancelled:'）后
+            # 在途执行器的 running 写零行生效，防「取消被复活 → 永久滞留 running
+            # / 直调跑完写 done」（TC-TASK-03；与 done/第三分支守卫三分支一致）
             self._conn.execute(
                 "UPDATE tasks SET status = :s,"
                 " heartbeat_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP"
-                " WHERE id = :id",
+                " WHERE id = :id AND status IN ('pending','leased','running')",
                 {"s": status, "id": task_id},
             )
         elif status == "done":
@@ -1615,6 +1619,18 @@ class SqliteBackend:
             Path(objects_dir) if objects_dir is not None else None, when=when_dt,
         )
 
+    def trim_shipped_outbox(self, *, before_ts: str) -> int:
+        """已搬运 outbox 行保留期清理（R2 P3-1——只删 shipped_at 非 NULL 且
+        早于 before_ts 的行；未搬运行永不删——「业务改了就一定有审计」的
+        未落地承诺）。返回删除行数。"""
+        cur = self._conn.execute(
+            "DELETE FROM audit_outbox"
+            " WHERE shipped_at IS NOT NULL AND shipped_at < :before",
+            {"before": before_ts},
+        )
+        self._conn.commit()
+        return cur.rowcount
+
     def _db_dir(self) -> Path:
         """主库目录（PRAGMA database_list 的主库文件路径——月库与主库同目录）。"""
         for _seq, name, file in self._conn.execute("PRAGMA database_list").fetchall():
@@ -1653,7 +1669,11 @@ class SqliteBackend:
             ).fetchall()
             if not rows:
                 break
-            # 按事件月份分组插入（月内 (created_at,id) 全序逐行链式传递 prev）
+            # 按事件月份分组插入（批内 (created_at,id) 序迭代——写入追加到月库
+            # rowid 序尾部，链序=插入序自洽；P2-2/R2：**已落库行不重算不推进**
+            # ——崩溃重试（月库已插、回填未做）时批内仍含已存行，对其重算会把
+            # prev 污染成错误值，同月后续新事件必断链；已存行直接跳过、prev 保
+            # 持月库真实末行（rowid 序）即可正确衔接）
             by_month: dict[str, list[dict]] = {}
             for r in rows:
                 rec = dict(zip(cols, r))
@@ -1666,11 +1686,20 @@ class SqliteBackend:
                 mconn = sqlite3.connect(mpath)
                 try:
                     mconn.execute("PRAGMA busy_timeout = 5000")
+                    # P2-2：搬运前取本月已存在 id→row_hash（重试路径跳过依据）
+                    existed = {
+                        x[0]: x[1]
+                        for x in mconn.execute(
+                            "SELECT id, row_hash FROM audit_events"
+                        ).fetchall()
+                    }
                     prev = last_row_hash(db_dir, month)
-                    if prev is None and not _month_has_rows(mconn):
+                    if prev is None and not existed:
                         # 月库空：首条 prev = 上月末哈希（FR-6——跨空月向前找）
                         prev = chain_start_hash(db_dir, month)
                     for rec in recs:
+                        if rec["id"] in existed:
+                            continue  # P2-2：已落库行——不重算不推进（防 prev 污染）
                         event = outbox_row_to_event(rec)
                         event["prev_hash"] = prev
                         event["row_hash"] = compute_row_hash(event, prev)
@@ -1721,7 +1750,8 @@ class SqliteBackend:
             rows = conn.execute(
                 "SELECT id, org_id, actor, action, target_type, target_id, outcome,"
                 " request_id, detail_json, prev_hash, row_hash, created_at"
-                " FROM audit_events ORDER BY created_at, id"
+                # P2-1/R2：链序=插入序（rowid）——与写入/末哈希/封存四路同源
+                " FROM audit_events ORDER BY rowid"
             ).fetchall()
         finally:
             conn.close()
@@ -1830,7 +1860,4 @@ def _month_upper(month: str) -> str:
     nxt = month_shift(month, 1)
     return f"{nxt[:4]}-{nxt[4:6]}-01 00:00:00"
 
-
-def _month_has_rows(mconn: sqlite3.Connection) -> bool:
-    return mconn.execute("SELECT 1 FROM audit_events LIMIT 1").fetchone() is not None
 

@@ -570,6 +570,7 @@ class PgBackend:
                 {"doc": doc_id},
             )
             conn.execute("DELETE FROM documents WHERE id = %(doc)s", {"doc": doc_id})
+            # M2-S3：sem_chunk_entities 随删清挂此事务位（untag——语义轨道段补齐）
             if audit is not None:
                 self._outbox_insert(conn, *audit)
             conn.execute("COMMIT")
@@ -1076,10 +1077,11 @@ class PgBackend:
         P2-1 守卫（M2.1 R2）：done 仅非终态可入——已终态零行生效（sqlite 同构）。
         """
         if status == "running":
+            # P2-3/R2：running 写入限非终态（取消不复活——sqlite 同构）
             self._conn.execute(
                 "UPDATE tasks SET status = %(s)s,"
                 " heartbeat_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP"
-                " WHERE id = %(id)s",
+                " WHERE id = %(id)s AND status IN ('pending','leased','running')",
                 {"s": status, "id": task_id},
             )
         elif status == "done":
@@ -1556,6 +1558,15 @@ class PgBackend:
             schema=schema, when=when,
         )
 
+    def trim_shipped_outbox(self, *, before_ts: str) -> int:
+        """已搬运 outbox 行保留期清理（R2 P3-1——sqlite 同构，只删已搬运行）。"""
+        cur = self._conn.execute(
+            "DELETE FROM audit_outbox"
+            " WHERE shipped_at IS NOT NULL AND shipped_at < %(before)s",
+            {"before": before_ts},
+        )
+        return cur.rowcount
+
     # ============ Semantic 域种子签名（P3-17——实现随 M2-S1 经 semantic/ 迁移落库） ============
 
     def upsert_entities_batch(self, org_id: str, rows: list[dict]) -> int:
@@ -1684,11 +1695,13 @@ class PgBackend:
 
         month = when[:4] + when[5:7]
         start, end = month_bounds(month)
+        # P2-1/R2：链序=插入序（seq 单调；存量 NULL 段 NULLS FIRST 兜底）——
+        # 与写入（DEFAULT nextval）/末哈希/封存四路同源
         rows = self._conn.execute(
             "SELECT id, org_id, actor, action, target_type, target_id, outcome,"
             " request_id, detail_json, prev_hash, row_hash, created_at"
             " FROM audit_events WHERE created_at >= %(s)s AND created_at < %(e)s"
-            " ORDER BY created_at, id",
+            " ORDER BY (seq IS NULL) ASC, seq, created_at, id",
             {"s": start, "e": end},
         ).fetchall()
         cols = (
@@ -1839,4 +1852,5 @@ def _month_has_rows(conn, month: str) -> bool:
         ).fetchone()
         is not None
     )
+
 

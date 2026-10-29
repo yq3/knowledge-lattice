@@ -150,6 +150,11 @@ def get_settings() -> Settings:
         environment=env("LATTICE_ENV", "dev"),
         data_dir=Path(env("LATTICE_DATA_DIR", "data")),
         embed_dim=int(_num("LATTICE_EMBED_DIM", 2560)),
+        # P3-13/R2：_worker_env 映射的三字段在此**读取**——env→get_settings 往返
+        # 闭环（否则子进程映射了也不读，N12「防子进程漂移」不成立）
+        embed_model=_f("LATTICE_EMBED_MODEL", "qwen3-embedding-4b"),
+        embed_batch_size=int(_num("LATTICE_EMBED_BATCH_SIZE", 64)),
+        quality_llm=_f("LATTICE_QUALITY_LLM", "none"),
         embed_api_base=_f("LATTICE_EMBED_API_BASE", "http://127.0.0.1:11434/v1"),
         embed_api_key=_f("LATTICE_EMBED_API_KEY", "local-dev"),
         embed_timeout_s=float(_num("LATTICE_EMBED_TIMEOUT_S", 30.0)),

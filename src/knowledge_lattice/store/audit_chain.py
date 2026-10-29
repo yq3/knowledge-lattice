@@ -35,10 +35,16 @@ def outbox_row_to_event(row: dict) -> dict:
     """outbox 行 → audit_events 行（字段映射——搬运侧共用）。
 
     outbox 行：id / event_type / payload_json / created_at；audit_events 语义列
-    从 payload 提取（org_id / actor / target_type / target_id / outcome /
-    request_id），缺省口径：actor='system'、outcome='accepted'（治理动作落
+    从 payload 提取，缺省口径：actor='system'、outcome='accepted'（治理动作落
     outbox 时都已生效；拒绝类事件由写入方在 payload 显式携带 outcome=refused）。
     detail_json 存 payload 原文（不丢信息）。
+
+    语义列补齐（P3-2/R2——m2-3 审计访问分级按 actor/target 查询的前置）：
+    - actor：payload.actor → payload.user_id（凭证/上传事件用 user_id）→ 'system'；
+    - target_type/target_id：按事件类型从 payload 的 ``*_id`` 键映射
+      （document.*→doc_id / task.cancel→task_id / upload.*→upload_id /
+      dataset.delete→dataset_id / maintenance.run→无 target）；未匹配类型以
+      detail_json（payload 原文）为准——语义列是**投影**非真相源。
     """
     try:
         payload = json.loads(row["payload_json"])
@@ -46,18 +52,37 @@ def outbox_row_to_event(row: dict) -> dict:
             payload = {"_payload": payload}
     except (json.JSONDecodeError, TypeError):
         payload = {"_payload": row["payload_json"]}
+    action = row["event_type"]
+    target_type, target_id = _target_of(action, payload)
     return {
         "id": row["id"],
         "org_id": payload.get("org_id") or "",
-        "actor": payload.get("actor") or "system",
-        "action": row["event_type"],
-        "target_type": payload.get("target_type"),
-        "target_id": payload.get("target_id"),
+        "actor": payload.get("actor") or payload.get("user_id") or "system",
+        "action": action,
+        "target_type": target_type,
+        "target_id": target_id,
         "outcome": payload.get("outcome") or "accepted",
         "request_id": payload.get("request_id"),
         "detail_json": row["payload_json"],
         "created_at": row["created_at"],
     }
+
+
+def _target_of(action: str, payload: dict) -> tuple[str | None, str | None]:
+    """事件类型 → (target_type, target_id) 投影（payload 的 *_id 键映射）。"""
+    for prefix, target_type, key in (
+        ("document.", "document", "doc_id"),
+        ("task.", "task", "task_id"),
+        ("upload.", "upload", "upload_id"),
+        ("dataset.", "dataset", "dataset_id"),
+        ("grants.", "grants", "user_id"),
+        ("dimension.", "dimension", "target_id"),
+    ):
+        if action.startswith(prefix):
+            value = payload.get(key)
+            return (target_type, str(value) if value is not None else None)
+    # 未知类型（semantic.* 预留等）：以 detail_json 为准，语义列留空
+    return None, None
 
 
 def month_of(ts: str) -> str:

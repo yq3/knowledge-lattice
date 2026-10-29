@@ -6,7 +6,9 @@ pg_dump（custom format）+ pg_restore（stdin/stdout 流形态）——进程�
 1. `LATTICE_PG_DUMP_CMD` / `LATTICE_PG_RESTORE_CMD`（空格分隔的命令前缀——
    容器形态如 `docker exec lattice-pg pg_dump`：PG 跑容器时工具在容器内）；
 2. PATH 上的 `pg_dump` / `pg_restore`；
-3. 都不可得 → RuntimeError（明确指引——fail-closed，不静默假快照）。
+3. 都不可得 → **BackupToolUnavailable**（store/backup_common.py——中立模块，
+   P2-4/R2 两态拆分：工具缺失≠真实失败；子进程非零仍 BackupToolError 上抛
+   → maintenance errors → 任务 failed）。
 
 stdout/stdin 流形态对两种部署（本机安装 / docker exec）统一：dump 写本地
 文件不经容器文件系统、restore 从本地文件流入。
@@ -22,12 +24,10 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+from knowledge_lattice.store.backup_common import BackupToolError, BackupToolUnavailable
+
 DUMP_CMD_ENV = "LATTICE_PG_DUMP_CMD"
 RESTORE_CMD_ENV = "LATTICE_PG_RESTORE_CMD"
-
-
-class BackupToolError(RuntimeError):
-    """备份工具不可用 / 子进程失败（fail-closed——不静默假快照）。"""
 
 
 def _resolve_command(env_name: str, binary: str) -> list[str]:
@@ -37,7 +37,7 @@ def _resolve_command(env_name: str, binary: str) -> list[str]:
     found = shutil.which(binary)
     if found:
         return [found]
-    raise BackupToolError(
+    raise BackupToolUnavailable(
         f"{binary} 不可用：设 {env_name}（容器形态如 'docker exec lattice-pg"
         f" {binary}'）或将 {binary} 装入 PATH——备份快照 fail-closed"
     )
@@ -59,8 +59,15 @@ def snapshot_database(
     if schema is not None:
         cmd += ["--schema", schema]
     cmd.append(dsn)
-    with open(out, "wb") as fh:
-        proc = subprocess.run(cmd, stdout=fh, stderr=subprocess.PIPE)
+    try:
+        with open(out, "wb") as fh:
+            proc = subprocess.run(cmd, stdout=fh, stderr=subprocess.PIPE)
+    except FileNotFoundError as exc:
+        # P2-4/R2：命令二进制不存在（如 docker 未装）——工具缺失态非真实失败
+        out.unlink(missing_ok=True)
+        raise BackupToolUnavailable(
+            f"pg_dump command not found ({' '.join(cmd[:2])}…): {exc}"
+        ) from exc
     if proc.returncode != 0:
         out.unlink(missing_ok=True)
         raise BackupToolError(
@@ -74,8 +81,13 @@ def restore_database(dsn: str, dump_path: Path) -> None:
     cmd = _resolve_command(RESTORE_CMD_ENV, "pg_restore") + [
         "--no-owner", "--no-privileges", "--dbname", dsn,
     ]
-    with open(dump_path, "rb") as fh:
-        proc = subprocess.run(cmd, stdin=fh, stderr=subprocess.PIPE)
+    try:
+        with open(dump_path, "rb") as fh:
+            proc = subprocess.run(cmd, stdin=fh, stderr=subprocess.PIPE)
+    except FileNotFoundError as exc:
+        raise BackupToolUnavailable(
+            f"pg_restore command not found ({' '.join(cmd[:2])}…): {exc}"
+        ) from exc
     if proc.returncode != 0:
         raise BackupToolError(
             f"pg_restore failed ({proc.returncode}):"

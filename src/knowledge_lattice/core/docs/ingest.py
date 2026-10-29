@@ -484,6 +484,8 @@ class IngestService:
         doc = self._require_document(doc_id=doc_id, org_id=org_id)
         self._require_write_permission(doc=doc, actor_user_id=actor_user_id)
         object_key = doc["raw_object_key"]
+        # M2-S3：sem_chunk_entities（untag）随删清挂此编排位——语义轨道段在本
+        # 事务语义内补齐（TC-OPS-04①「（M2-S3 起 untag）同事务」半句）
         self._backend.delete_document(
             doc_id,
             audit=_audit_event(EVENT_DOCUMENT_DELETE, {

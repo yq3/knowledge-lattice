@@ -117,6 +117,26 @@ CREATE TABLE IF NOT EXISTS audit_month_seals (
 )
 """
 
+# ---- 插入序列（P2-1/R2：链序=插入序） ----
+#
+# (created_at,id) 全序在「同秒（CURRENT_TIMESTAMP 秒级依赖 / 测试造数）+ uuid4
+# 随机 id」下与插入序错位；µs 方案对「同事务批量（transaction_timestamp 恒定）」
+# 无效——**单调序列列**是唯一可靠插入序。幂等 ensure（非迁移——月库表不在主库
+# 迁移域）：
+#   · CREATE SEQUENCE IF NOT EXISTS（schema 内，各测试 schema 独立）；
+#   · ADD COLUMN IF NOT EXISTS seq BIGINT DEFAULT nextval(...)——分区父表 ALTER
+#     自动传播到全部分区；非常量 DEFAULT 不 rewrite、**既有行保持 NULL 不回填**
+#     （append-only BEFORE UPDATE 触发器拦 UPDATE；NULL 行在读序中 NULLS FIRST
+#     段按 (created_at,id) 兜底——R1 期存量近似插入序，衔接无洞）。
+SEQ_DDL = """\
+CREATE SEQUENCE IF NOT EXISTS audit_events_seq
+"""
+
+SEQ_COLUMN_DDL = """\
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS seq BIGINT
+  DEFAULT nextval('audit_events_seq')
+"""
+
 
 def month_bounds(month: str) -> tuple[str, str]:
     """'YYYYMM' → [当月首日 0 点, 次月首日 0 点)（RANGE 分区边界，UTC 月界——
@@ -151,7 +171,7 @@ def ensure_month_partition(conn: psycopg.Connection, when: datetime | None = Non
 
 def ensure_audit(conn: psycopg.Connection, when: datetime | None = None) -> None:
     """确保分区父表 + append-only 触发器（行级 + TRUNCATE statement 级）+
-    当月分区就绪（连接工厂滚动入口，幂等）。"""
+    插入序列（P2-1/R2——链序=插入序）+ 当月分区就绪（连接工厂滚动入口，幂等）。"""
     conn.execute(AUDIT_PARENT_DDL)
     _ensure_chain_columns(conn)
     conn.execute(APPEND_ONLY_FN_DDL)
@@ -159,6 +179,8 @@ def ensure_audit(conn: psycopg.Connection, when: datetime | None = None) -> None
     conn.execute(APPEND_ONLY_TRUNCATE_FN_DDL)
     conn.execute(APPEND_ONLY_TRIGGERS_DDL)
     conn.execute(APPEND_ONLY_TRUNCATE_TRIGGER_DDL.format(target="audit_events"))
+    conn.execute(SEQ_DDL)
+    conn.execute(SEQ_COLUMN_DDL)
     ensure_month_partition(conn, when)
 
 
@@ -176,13 +198,13 @@ def _ensure_chain_columns(conn: psycopg.Connection) -> None:
 
 
 def last_row_hash(conn: psycopg.Connection, month: str) -> str | None:
-    """指定月分区末行 row_hash（(created_at,id) 序末条；无行 → None）。"""
+    """指定月分区末行 row_hash（**插入序末条**——seq 单调；无行 → None）。"""
     start, end = month_bounds(month)
     row = conn.execute(
         "SELECT row_hash FROM audit_events"
         " WHERE created_at >= %(s)s AND created_at < %(e)s"
         "   AND row_hash IS NOT NULL"
-        " ORDER BY created_at DESC, id DESC LIMIT 1",
+        f" ORDER BY (seq IS NULL) ASC, seq DESC, created_at DESC, id DESC LIMIT 1",
         {"s": start, "e": end},
     ).fetchone()
     return row[0] if row else None
