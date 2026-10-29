@@ -27,6 +27,8 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Iterator, Sequence
+from datetime import UTC, datetime
+from pathlib import Path
 
 import psycopg
 
@@ -470,30 +472,58 @@ class PgBackend:
         self,
         *,
         doc_id: str,
-        pending_version: int,
         content_hash: str,
         mime_type: str,
         raw_object_key: str,
         pending_dims_json: str | None,
-    ) -> None:
-        """覆盖上传开新 pending 版本（写入级防并发——同 sqlite 口径）。"""
-        cur = self._conn.execute(
-            "UPDATE documents SET"
-            " pending_version = %(v)s, pending_status = 'parsing', pending_error = NULL,"
-            " pending_dims_json = %(dims)s, content_hash = %(hash)s, mime_type = %(mime)s,"
-            " raw_object_key = %(obj)s, updated_at = CURRENT_TIMESTAMP"
-            " WHERE id = %(doc)s"
-            "   AND (pending_version IS NULL OR pending_status = 'failed')",
-            {
-                "doc": doc_id, "v": pending_version, "dims": pending_dims_json,
-                "hash": content_hash, "mime": mime_type, "obj": raw_object_key,
-            },
-        )
-        if cur.rowcount == 0:
-            raise VersionConflictError(
-                f"overwrite rejected: doc={doc_id!r} 已有进行中 pending 版本"
-                "（同一时刻只有一个 pending——P0-2.3/T7）"
+        pending_version: int | None = None,
+        audit: tuple[str, str] | None = None,
+    ) -> int:
+        """覆盖上传开新 pending 版本（写入级防并发——同 sqlite 口径）。
+
+        pending_version=None = 事务内自算 max(历史)+1（P3-N5——读写同一事务，
+        MVCC 下并发窗口由 WHERE 零行兜底）；返回实际版本号。audit 同事务。
+        """
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            if pending_version is None:
+                pending_version = self._max_document_version_locked(conn, doc_id) + 1
+            cur = conn.execute(
+                "UPDATE documents SET"
+                " pending_version = %(v)s, pending_status = 'parsing', pending_error = NULL,"
+                " pending_dims_json = %(dims)s, content_hash = %(hash)s, mime_type = %(mime)s,"
+                " raw_object_key = %(obj)s, updated_at = CURRENT_TIMESTAMP"
+                " WHERE id = %(doc)s"
+                "   AND (pending_version IS NULL OR pending_status = 'failed')",
+                {
+                    "doc": doc_id, "v": pending_version, "dims": pending_dims_json,
+                    "hash": content_hash, "mime": mime_type, "obj": raw_object_key,
+                },
             )
+            if cur.rowcount == 0:
+                raise VersionConflictError(
+                    f"overwrite rejected: doc={doc_id!r} 已有进行中 pending 版本"
+                    "（同一时刻只有一个 pending——P0-2.3/T7）"
+                )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+            return pending_version
+        except BaseException:
+            self._rollback()
+            raise
+
+    def _max_document_version_locked(self, conn, doc_id: str) -> int:
+        row = conn.execute(
+            "SELECT MAX(m) FROM ("
+            "  SELECT active_version AS m FROM documents WHERE id = %(doc)s"
+            "  UNION ALL SELECT pending_version FROM documents WHERE id = %(doc)s"
+            "  UNION ALL SELECT MAX(version) FROM chunks WHERE doc_id = %(doc)s)"
+            " AS v(m)",
+            {"doc": doc_id},
+        ).fetchone()
+        return row[0] or 0
 
     def set_doc_pending_failed(self, doc_id: str, version: int, error: str) -> None:
         """pending 版本失败：failed + pending_error + 立即物理删块——同一事务。
@@ -526,8 +556,10 @@ class PgBackend:
                 pass
             raise
 
-    def delete_document(self, doc_id: str) -> None:
-        """删除文档（同事务：非终态任务取消 → 级联删文档——TC-VER-07/T19①）。"""
+    def delete_document(
+        self, doc_id: str, audit: tuple[str, str] | None = None
+    ) -> None:
+        """删除文档（同事务：任务取消 → 级联删 → outbox 治理事件——M2.4 收口）。"""
         conn = self._conn
         conn.execute("BEGIN")
         try:
@@ -538,12 +570,11 @@ class PgBackend:
                 {"doc": doc_id},
             )
             conn.execute("DELETE FROM documents WHERE id = %(doc)s", {"doc": doc_id})
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
             conn.execute("COMMIT")
         except BaseException:
-            try:
-                conn.execute("ROLLBACK")
-            except psycopg.Error:
-                pass
+            self._rollback()
             raise
 
     def get_document_dims(self, doc_id: str) -> dict[str, list[str]]:
@@ -559,8 +590,11 @@ class PgBackend:
             dims.setdefault(key, []).append(value)
         return dims
 
-    def set_document_dims(self, doc_id: str, dims: dict[str, list[str]]) -> None:
-        """按 key 全量替换文档维度行（PATCH 落点——与 sqlite 同构）。"""
+    def set_document_dims(
+        self, doc_id: str, dims: dict[str, list[str]],
+        audit: tuple[str, str] | None = None,
+    ) -> None:
+        """按 key 全量替换文档维度行（PATCH 落点——与 sqlite 同构；audit 同事务）。"""
         conn = self._conn
         conn.execute("BEGIN")
         try:
@@ -587,12 +621,11 @@ class PgBackend:
                             f"document dims resolution failed: ({dim_key!r}, {value!r})"
                             "（维度/取值不存在？）——事务回滚"
                         )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
             conn.execute("COMMIT")
         except BaseException:
-            try:
-                conn.execute("ROLLBACK")
-            except psycopg.Error:
-                pass
+            self._rollback()
             raise
 
     def get_chunk(self, chunk_id: str) -> dict | None:
@@ -986,11 +1019,12 @@ class PgBackend:
 
     def create_task(
         self, doc_id: str | None, *, task_type: str = "ingest",
-        target_version: int | None = None,
+        target_version: int | None = None, task_id: str | None = None,
     ) -> str:
         """target_version（0005/M2.1 R2 边界裁定 B(a)）：ingest 任务的目标文档
-        版本——取消与崩溃耗尽清扫按该版本落 pending failed（P2-3）；NULL=无版本任务。"""
-        task_id = f"tsk_{uuid.uuid4()}"
+        版本——取消与崩溃耗尽清扫按该版本落 pending failed（P2-3）；NULL=无版本
+        任务。task_id：预生成 id 显式携带（治理 outbox 事件同源关联——M2.4）。"""
+        task_id = task_id or f"tsk_{uuid.uuid4()}"
         self._conn.execute(
             "INSERT INTO tasks(id, doc_id, type, status, target_version)"
             " VALUES(%(id)s, %(doc)s, %(type)s, 'pending', %(tv)s)",
@@ -1056,10 +1090,13 @@ class PgBackend:
                 {"id": task_id},
             )
         elif error is not None or status is not None:
+            # P3-R4-1：failed 写入不覆盖取消终态（µs 窗口守卫——sqlite 同构）
             self._conn.execute(
                 "UPDATE tasks SET status = COALESCE(%(s)s, status), error = %(err)s,"
-                " updated_at = CURRENT_TIMESTAMP WHERE id = %(id)s",
-                {"s": status, "err": error, "id": task_id},
+                " updated_at = CURRENT_TIMESTAMP WHERE id = %(id)s"
+                "   AND NOT (status = 'failed' AND error LIKE %(pattern)s)",
+                {"s": status, "err": error, "id": task_id,
+                 "pattern": "cancelled:%"},
             )
 
     # ---- 任务队列（租约·心跳·认领——M2.1 worker 框架，design §5.3） ----
@@ -1072,6 +1109,15 @@ class PgBackend:
         from knowledge_lattice.store.taskclock import utc_now_ts
 
         now_ts = now or utc_now_ts()
+        # P3-N7 节流（与 sqlite 同构）：常态零行时先读后写——不进 UPDATE 事务
+        probe = self._conn.execute(
+            "SELECT 1 FROM tasks WHERE status IN ('leased','running')"
+            "   AND attempts >= %(max)s"
+            "   AND lease_until IS NOT NULL AND lease_until <= %(now)s LIMIT 1",
+            {"max": max_attempts, "now": now_ts},
+        ).fetchone()
+        if probe is None:
+            return []
         rows = self._conn.execute(
             "UPDATE tasks SET status = 'failed', lease_owner = NULL, lease_until = NULL,"
             " error = 'attempt limit exceeded (lease expired after ' || attempts"
@@ -1149,17 +1195,30 @@ class PgBackend:
         )
         return cur.rowcount == 1
 
-    def cancel_task(self, task_id: str, *, reason: str, now: str | None = None) -> dict | None:
+    def cancel_task(
+        self, task_id: str, *, reason: str, now: str | None = None,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
         from knowledge_lattice.store.taskclock import utc_now_ts
 
         now_ts = now or utc_now_ts()
-        cur = self._conn.execute(
-            "UPDATE tasks SET status = 'failed', error = %(reason)s, lease_owner = NULL,"
-            " lease_until = NULL, updated_at = %(now)s"
-            " WHERE id = %(id)s AND status IN ('pending','leased','running')",
-            {"reason": reason, "now": now_ts, "id": task_id},
-        )
-        if cur.rowcount == 0:
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'failed', error = %(reason)s, lease_owner = NULL,"
+                " lease_until = NULL, updated_at = %(now)s"
+                " WHERE id = %(id)s AND status IN ('pending','leased','running')",
+                {"reason": reason, "now": now_ts, "id": task_id},
+            )
+            cancelled = cur.rowcount > 0
+            if cancelled and audit is not None:
+                self._outbox_insert(conn, *audit)  # 取消生效才记（TC-OPS-01）
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        if not cancelled:
             return None  # 已终态（幂等不复活——TC-TASK-03）
         return self.get_task(task_id)
 
@@ -1237,20 +1296,31 @@ class PgBackend:
         owner_user_id: str,
         raw_object_key: str,
         pending_dims_json: str | None,
+        audit: tuple[str, str] | None = None,
     ) -> None:
-        """首次上传的文档行（pending_version=1、pending_status='parsing'——§5.3 阶段编排）。"""
-        self._conn.execute(
-            "INSERT INTO documents(id, org_id, dataset_id, title, source_uri, content_hash,"
-            " mime_type, parser, active_version, pending_version, pending_status,"
-            " pending_dims_json, owner_user_id, raw_object_key)"
-            " VALUES(%(id)s, %(org)s, %(ds)s, %(title)s, %(src)s, %(hash)s, %(mime)s,"
-            " %(parser)s, 0, 1, 'parsing', %(dims)s, %(owner)s, %(obj)s)",
-            {
-                "id": doc_id, "org": org_id, "ds": dataset_id, "title": title, "src": source_uri,
-                "hash": content_hash, "mime": mime_type, "parser": parser, "dims": pending_dims_json,
-                "owner": owner_user_id, "obj": raw_object_key,
-            },
-        )
+        """首次上传的文档行（audit 同事务——M2.4 m2-2，sqlite 同构）。"""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "INSERT INTO documents(id, org_id, dataset_id, title, source_uri, content_hash,"
+                " mime_type, parser, active_version, pending_version, pending_status,"
+                " pending_dims_json, owner_user_id, raw_object_key)"
+                " VALUES(%(id)s, %(org)s, %(ds)s, %(title)s, %(src)s, %(hash)s, %(mime)s,"
+                " %(parser)s, 0, 1, 'parsing', %(dims)s, %(owner)s, %(obj)s)",
+                {
+                    "id": doc_id, "org": org_id, "ds": dataset_id, "title": title,
+                    "src": source_uri, "hash": content_hash, "mime": mime_type,
+                    "parser": parser, "dims": pending_dims_json,
+                    "owner": owner_user_id, "obj": raw_object_key,
+                },
+            )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
 
     def set_doc_pending_status(self, doc_id: str, version: int, status: str) -> None:
         # M2.1 并发面收口：failed 是 pending 版本的吸收态（P0-2.3 版本亡故）——
@@ -1364,18 +1434,28 @@ class PgBackend:
         sha256: str,
         content_type: str,
         expires_at: str,
+        audit: tuple[str, str] | None = None,
     ) -> None:
-        self._conn.execute(
-            "INSERT INTO uploads(id, org_id, user_id, service_id, filename, size,"
-            " sha256, content_type, status, expires_at)"
-            " VALUES(%(id)s, %(org)s, %(uid)s, %(svc)s, %(fn)s, %(size)s, %(sha)s,"
-            " %(ct)s, 'issued', %(exp)s)",
-            {
-                "id": upload_id, "org": org_id, "uid": user_id, "svc": service_id,
-                "fn": filename, "size": size, "sha": sha256, "ct": content_type,
-                "exp": expires_at,
-            },
-        )
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "INSERT INTO uploads(id, org_id, user_id, service_id, filename, size,"
+                " sha256, content_type, status, expires_at)"
+                " VALUES(%(id)s, %(org)s, %(uid)s, %(svc)s, %(fn)s, %(size)s, %(sha)s,"
+                " %(ct)s, 'issued', %(exp)s)",
+                {
+                    "id": upload_id, "org": org_id, "uid": user_id, "svc": service_id,
+                    "fn": filename, "size": size, "sha": sha256, "ct": content_type,
+                    "exp": expires_at,
+                },
+            )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
 
     def get_upload_credential(self, upload_id: str) -> dict | None:
         row = self._conn.execute(
@@ -1403,14 +1483,27 @@ class PgBackend:
         )
         return cur.rowcount > 0
 
-    def mark_upload_consumed(self, upload_id: str, *, doc_id: str, task_id: str) -> bool:
-        cur = self._conn.execute(
-            "UPDATE uploads SET status='consumed', doc_id=%(doc)s, task_id=%(task)s,"
-            " updated_at=CURRENT_TIMESTAMP"
-            " WHERE id=%(id)s AND status='uploaded'",
-            {"id": upload_id, "doc": doc_id, "task": task_id},
-        )
-        return cur.rowcount > 0
+    def mark_upload_consumed(
+        self, upload_id: str, *, doc_id: str, task_id: str,
+        audit: tuple[str, str] | None = None,
+    ) -> bool:
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE uploads SET status='consumed', doc_id=%(doc)s, task_id=%(task)s,"
+                " updated_at=CURRENT_TIMESTAMP"
+                " WHERE id=%(id)s AND status='uploaded'",
+                {"id": upload_id, "doc": doc_id, "task": task_id},
+            )
+            consumed = cur.rowcount > 0
+            if consumed and audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return consumed
 
     def list_expired_upload_credentials(self, now: str) -> list[dict]:
         rows = self._conn.execute(
@@ -1436,6 +1529,33 @@ class PgBackend:
         """审计月分区滚动（方言差异在包内吸收——SQLite 月库文件 / PG 按月分区表）。"""
         return ensure_month_partition(self._conn, when)  # type: ignore[arg-type]
 
+    # ---- 备份快照（D 组——NFR-10 / TC-OPS-05；pg_dump 属部署工具链不违 D2） ----
+
+    def backup_snapshot(
+        self, backup_dir, objects_dir=None, *, when=None, dsn: str | None = None,
+    ) -> dict:
+        """pg_dump -Fc 快照（+ objects tar）——dsn 缺省 env LATTICE_PG_DSN、
+        schema 缺省 current_schema()（单 schema 部署口径）。"""
+        import os as _os
+
+        from .backup import snapshot as _snapshot
+
+        if dsn is None:
+            dsn = _os.environ.get("LATTICE_PG_DSN")
+        if not dsn:
+            params = self._conn.info.get_dsn_parameters()
+            dsn = (
+                f"postgresql://{params.get('user', 'postgres')}"
+                f"@{params.get('host', 'localhost')}:{params.get('port', 5432)}"
+                f"/{params.get('dbname', 'postgres')}"
+            )
+        schema = self._conn.execute("SELECT current_schema()").fetchone()[0]
+        return _snapshot(
+            dsn, Path(backup_dir),
+            Path(objects_dir) if objects_dir is not None else None,
+            schema=schema, when=when,
+        )
+
     # ============ Semantic 域种子签名（P3-17——实现随 M2-S1 经 semantic/ 迁移落库） ============
 
     def upsert_entities_batch(self, org_id: str, rows: list[dict]) -> int:
@@ -1452,3 +1572,271 @@ class PgBackend:
 
     def export_l0(self, org_id: str) -> str:
         raise NotImplementedError("semantic L0 导出随 M2-S1（§6.3）")
+
+    # ============ Audit 域扩展（M2.4 m2-2：同事务接入 + 搬运/封存/保留） ============
+
+    def _rollback(self) -> None:
+        """事务回滚（连接可能已断——失败不得覆盖原始异常）。"""
+        try:
+            self._conn.execute("ROLLBACK")
+        except psycopg.Error:
+            pass
+
+    def _outbox_insert(self, conn, event_type: str, payload_json: str) -> None:
+        """outbox 行插入（**参与调用方事务**——TC-OPS-01 崩溃注入锚点）。"""
+        conn.execute(
+            "INSERT INTO audit_outbox(id, event_type, payload_json)"
+            " VALUES(%(id)s, %(t)s, %(p)s)",
+            {"id": f"aud_{uuid.uuid4()}", "t": event_type, "p": payload_json},
+        )
+
+    def ship_outbox(self, *, now: str | None = None, batch: int = 500) -> dict:
+        """搬运 outbox → audit_events 分区表（按事件原时刻 created_at 路由）+
+        回填 shipped_at——**同库单事务**（BEGIN…COMMIT：插入+回填原子，
+        sqlite 跨文件两步形态的方言对照，接口语义一致：不丢不重）。"""
+        from knowledge_lattice.store.audit_chain import (
+            compute_row_hash,
+            month_of,
+            outbox_row_to_event,
+        )
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        from .audit import ensure_month_partition, last_row_hash, month_bounds
+
+        now_ts = now or utc_now_ts()
+        cols = ("id", "event_type", "payload_json", "created_at")
+        total = 0
+        while True:
+            conn = self._conn
+            conn.execute("BEGIN")
+            try:
+                rows = conn.execute(
+                    "SELECT id, event_type, payload_json, created_at FROM audit_outbox"
+                    " WHERE shipped_at IS NULL ORDER BY created_at, id LIMIT %(n)s",
+                    {"n": batch},
+                ).fetchall()
+                if not rows:
+                    conn.execute("COMMIT")
+                    break
+                by_month: dict[str, list[dict]] = {}
+                for r in rows:
+                    rec = dict(zip(cols, r))
+                    # 时间列归一化：TIMESTAMP → 'YYYY-MM-DD HH:MM:SS'（UTC——连接工厂钉死）
+                    rec["created_at"] = rec["created_at"].strftime("%Y-%m-%d %H:%M:%S")
+                    by_month.setdefault(month_of(rec["created_at"]), []).append(rec)
+                for month, recs in by_month.items():
+                    ensure_month_partition(
+                        conn, datetime(int(month[:4]), int(month[4:6]), 1, tzinfo=UTC)
+                    )
+                    prev = last_row_hash(conn, month)
+                    if prev is None and not _month_has_rows(conn, month):
+                        prev = self._chain_start_hash(conn, month)
+                    for rec in recs:
+                        event = outbox_row_to_event(rec)
+                        event["prev_hash"] = prev
+                        event["row_hash"] = compute_row_hash(event, prev)
+                        conn.execute(
+                            "INSERT INTO audit_events(id, org_id, actor, action,"
+                            " target_type, target_id, outcome, request_id, detail_json,"
+                            " prev_hash, row_hash, created_at)"
+                            " VALUES(%(id)s, %(org_id)s, %(actor)s, %(action)s,"
+                            " %(target_type)s, %(target_id)s, %(outcome)s, %(request_id)s,"
+                            " %(detail_json)s, %(prev_hash)s, %(row_hash)s, %(created_at)s)"
+                            " ON CONFLICT (id, created_at) DO NOTHING",
+                            event,
+                        )
+                        prev = event["row_hash"]
+                self._mark_shipped(conn, [r[0] for r in rows], now_ts)
+                conn.execute("COMMIT")
+            except BaseException:
+                self._rollback()
+                raise
+            total += len(rows)
+            if len(rows) < batch:
+                break
+        return {"shipped": total}
+
+    def _chain_start_hash(self, conn, month: str) -> str | None:
+        """月首条 prev = 上月末哈希（向前找最近有行分区——FR-6，跨空月延续）。"""
+        from knowledge_lattice.store.audit_chain import prev_month
+
+        from .audit import last_row_hash
+
+        m = prev_month(month)
+        for _ in range(120):
+            h = last_row_hash(conn, m)
+            if h is not None:
+                return h
+            m = prev_month(m)
+        return None
+
+    def _mark_shipped(self, conn, ids: Sequence[str], now: str) -> None:
+        """outbox 回填 shipped_at（同事务步——崩溃注入锚点）。"""
+        conn.execute(
+            "UPDATE audit_outbox SET shipped_at = %(now)s"
+            " WHERE id = ANY(%(ids)s) AND shipped_at IS NULL",
+            {"now": now, "ids": list(ids)},
+        )
+
+    def read_monthly_events(self, *, when: str) -> list[dict]:
+        """读指定时点所在月的 audit_events（分区范围查询——(created_at,id) 序）。"""
+        from .audit import month_bounds, partition_name
+
+        month = when[:4] + when[5:7]
+        start, end = month_bounds(month)
+        rows = self._conn.execute(
+            "SELECT id, org_id, actor, action, target_type, target_id, outcome,"
+            " request_id, detail_json, prev_hash, row_hash, created_at"
+            " FROM audit_events WHERE created_at >= %(s)s AND created_at < %(e)s"
+            " ORDER BY created_at, id",
+            {"s": start, "e": end},
+        ).fetchall()
+        cols = (
+            "id", "org_id", "actor", "action", "target_type", "target_id", "outcome",
+            "request_id", "detail_json", "prev_hash", "row_hash", "created_at",
+        )
+        out = []
+        for r in rows:
+            d = dict(zip(cols, r))
+            if d.get("created_at") is not None:
+                d["created_at"] = d["created_at"].strftime("%Y-%m-%d %H:%M:%S")
+            out.append(d)
+        return out
+
+    def seal_audit_months(self, *, now: str | None = None) -> dict:
+        """封存过月分区：sealed 触发器（拦 INSERT/UPDATE/DELETE——owner 亦拦）+
+        记 audit_month_seals（month/last_hash/rows/sealed_at）；仍有未搬运行的
+        月份跳过（防「先封存后搬运」写入已封存分区死锁）。"""
+        from knowledge_lattice.store.audit_chain import month_of
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        from .audit import seal_month_partition
+
+        now_ts = now or utc_now_ts()
+        from .audit import SEALS_TABLE_DDL
+
+        self._conn.execute(SEALS_TABLE_DDL)  # 幂等——封存记录表（首封前 ensure）
+        cur_month = month_of(now_ts)
+        already_sealed = {
+            r[0]
+            for r in self._conn.execute(
+                "SELECT month FROM audit_month_seals"
+            ).fetchall()
+        }
+        months = [
+            r[0]
+            for r in self._conn.execute(
+                "SELECT substring(c.relname from 'audit_events_([0-9]{6})$')"
+                " FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
+                " WHERE c.relispartition AND n.nspname = current_schema()"
+                "   AND c.relname LIKE 'audit_events_%'"
+                " ORDER BY 1"
+            ).fetchall()
+            if r[0] and r[0] < cur_month and r[0] not in already_sealed
+        ]
+        sealed: list[str] = []
+        skipped: list[str] = []
+        for month in months:
+            upper = _month_upper(month)
+            pending = self._conn.execute(
+                "SELECT count(*) FROM audit_outbox"
+                " WHERE shipped_at IS NULL AND created_at < %(end)s",
+                {"end": upper},
+            ).fetchone()[0]
+            if pending:
+                skipped.append(month)
+                continue
+            seal_month_partition(self._conn, month)
+            sealed.append(month)
+        return {"sealed": sealed, "skipped_pending": skipped}
+
+    def prune_audit_months(
+        self, *, keep_months: int, now: str | None = None
+    ) -> dict:
+        """保留期分区删除（DROP 分区表——整文件删除的 PG 等价，TC-OPS-02③）。"""
+        from knowledge_lattice.store.audit_chain import month_of, month_shift
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        from .audit import SEALS_TABLE_DDL, partition_name
+
+        self._conn.execute(SEALS_TABLE_DDL)  # 幂等——prune 清封存记录前 ensure
+        now_ts = now or utc_now_ts()
+        cutoff = month_shift(month_of(now_ts), -keep_months)
+        months = [
+            r[0]
+            for r in self._conn.execute(
+                "SELECT substring(c.relname from 'audit_events_([0-9]{6})$')"
+                " FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
+                " WHERE c.relispartition AND n.nspname = current_schema()"
+                "   AND c.relname LIKE 'audit_events_%'"
+                " ORDER BY 1"
+            ).fetchall()
+            if r[0] and r[0] < cutoff
+        ]
+        for month in months:
+            self._conn.execute(f'DROP TABLE IF EXISTS "{partition_name(month)}"')
+            self._conn.execute(
+                "DELETE FROM audit_month_seals WHERE month = %(m)s", {"m": month}
+            )
+        return {"pruned": months}
+
+    # ---- 删库 RESTRICT（C 组——T19 半句收口，sqlite 同构） ----
+
+    def delete_dataset(
+        self, org_id: str, dataset_id: str,
+        audit: tuple[str, str] | None = None,
+    ) -> None:
+        from knowledge_lattice.store.backend import DatasetNotEmptyError
+
+        row = self._conn.execute(
+            "SELECT org_id, (SELECT count(*) FROM documents WHERE dataset_id = %(ds)s)"
+            " FROM datasets WHERE id = %(ds)s",
+            {"ds": dataset_id},
+        ).fetchone()
+        if row is None or row[0] != org_id:
+            raise KeyError(f"dataset not found in org: {dataset_id!r}")
+        if row[1]:
+            raise DatasetNotEmptyError(
+                f"dataset {dataset_id!r} 仍有 {row[1]} 篇文档——先删文档再删库"
+                "（RESTRICT，T19/TC-OPS-04②）"
+            )
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "DELETE FROM datasets WHERE id = %(ds)s AND org_id = %(org)s",
+                {"ds": dataset_id, "org": org_id},
+            )
+            if cur.rowcount == 0:
+                conn.execute("COMMIT")
+                raise KeyError(f"dataset not found in org: {dataset_id!r}")
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+
+
+def _month_upper(month: str) -> str:
+    """月排他上界（次月首日 0 点——'YYYY-MM-DD HH:MM:SS'）。"""
+    from knowledge_lattice.store.audit_chain import month_shift
+
+    nxt = month_shift(month, 1)
+    return f"{nxt[:4]}-{nxt[4:6]}-01 00:00:00"
+
+
+def _month_has_rows(conn, month: str) -> bool:
+    """指定月（'YYYYMM'）分区是否已有 audit_events 行。"""
+    from knowledge_lattice.store.postgres.audit import month_bounds
+
+    start, end = month_bounds(month)
+    return (
+        conn.execute(
+            "SELECT 1 FROM audit_events WHERE created_at >= %(s)s AND created_at < %(e)s"
+            " LIMIT 1",
+            {"s": start, "e": end},
+        ).fetchone()
+        is not None
+    )
+

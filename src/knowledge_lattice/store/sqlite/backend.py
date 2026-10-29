@@ -18,6 +18,8 @@ import json
 import sqlite3
 import uuid
 from collections.abc import Iterator, Sequence
+from datetime import UTC, datetime
+from pathlib import Path
 
 from knowledge_lattice.store.backend import AclPlan, VersionConflictError
 from knowledge_lattice.store.sqlite.fts import build_match_expr
@@ -483,35 +485,67 @@ class SqliteBackend:
         self,
         *,
         doc_id: str,
-        pending_version: int,
         content_hash: str,
         mime_type: str,
         raw_object_key: str,
         pending_dims_json: str | None,
-    ) -> None:
+        pending_version: int | None = None,
+        audit: tuple[str, str] | None = None,
+    ) -> int:
         """覆盖上传开新 pending 版本（不动 active_*——v1 全程服务到切换，D20）。
 
         WHERE 限定「无在途 pending 或 pending 已 failed」：写入级防并发（服务层
         409 校验已前置，此处为库级兜底——同刻另一 pending 在途时零行 raise）。
+
+        pending_version（M2.4 P3-N5 清偿）：缺省 None = **事务内自算**
+        max(历史)+1（BEGIN IMMEDIATE 写锁内计算——闭合「服务层 max 读取与写入
+        之间」的理论碰撞窗口）；返回实际写入的版本号（调用方 create_task 的
+        target_version 同源消费）。
+
+        audit（M2.4 m2-2）：治理事件与版本开启**同一事务**（TC-OPS-01）。
         """
-        cur = self._conn.execute(
-            "UPDATE documents SET"
-            " pending_version = :v, pending_status = 'parsing', pending_error = NULL,"
-            " pending_dims_json = :dims, content_hash = :hash, mime_type = :mime,"
-            " raw_object_key = :obj, updated_at = CURRENT_TIMESTAMP"
-            " WHERE id = :doc"
-            "   AND (pending_version IS NULL OR pending_status = 'failed')",
-            {
-                "doc": doc_id, "v": pending_version, "dims": pending_dims_json,
-                "hash": content_hash, "mime": mime_type, "obj": raw_object_key,
-            },
-        )
-        if cur.rowcount == 0:
-            raise VersionConflictError(
-                f"overwrite rejected: doc={doc_id!r} 已有进行中 pending 版本"
-                "（同一时刻只有一个 pending——P0-2.3/T7）"
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if pending_version is None:
+                pending_version = self._max_document_version_locked(conn, doc_id) + 1
+            cur = conn.execute(
+                "UPDATE documents SET"
+                " pending_version = :v, pending_status = 'parsing', pending_error = NULL,"
+                " pending_dims_json = :dims, content_hash = :hash, mime_type = :mime,"
+                " raw_object_key = :obj, updated_at = CURRENT_TIMESTAMP"
+                " WHERE id = :doc"
+                "   AND (pending_version IS NULL OR pending_status = 'failed')",
+                {
+                    "doc": doc_id, "v": pending_version, "dims": pending_dims_json,
+                    "hash": content_hash, "mime": mime_type, "obj": raw_object_key,
+                },
             )
-        self._conn.commit()
+            if cur.rowcount == 0:
+                raise VersionConflictError(
+                    f"overwrite rejected: doc={doc_id!r} 已有进行中 pending 版本"
+                    "（同一时刻只有一个 pending——P0-2.3/T7）"
+                )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+            return pending_version
+        except BaseException:
+            self._rollback()
+            raise
+
+    def _max_document_version_locked(
+        self, conn: sqlite3.Connection, doc_id: str
+    ) -> int:
+        """写锁内的版本号基线（P3-N5——与 max_document_version 同口径）。"""
+        row = conn.execute(
+            "SELECT MAX(m) FROM ("
+            "  SELECT active_version AS m FROM documents WHERE id = :doc"
+            "  UNION ALL SELECT pending_version FROM documents WHERE id = :doc"
+            "  UNION ALL SELECT MAX(version) FROM chunks WHERE doc_id = :doc)",
+            {"doc": doc_id},
+        ).fetchone()
+        return row[0] or 0
 
     def set_doc_pending_failed(self, doc_id: str, version: int, error: str) -> None:
         """pending 版本失败：failed + pending_error + 立即物理删除该版本全部块
@@ -547,8 +581,11 @@ class SqliteBackend:
                 pass
             raise
 
-    def delete_document(self, doc_id: str) -> None:
-        """删除文档（同事务：非终态任务取消 → 级联删文档——TC-VER-07/T19①）。"""
+    def delete_document(
+        self, doc_id: str, audit: tuple[str, str] | None = None
+    ) -> None:
+        """删除文档（同事务：非终态任务取消 → 级联删文档 → outbox 治理事件
+        ——TC-VER-07/T19①；audit 同事务为 M2.4 m2-2 收口，原事务外写废除）。"""
         conn = self._conn
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -559,12 +596,11 @@ class SqliteBackend:
                 {"doc": doc_id},
             )
             conn.execute("DELETE FROM documents WHERE id = :doc", {"doc": doc_id})
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
             conn.execute("COMMIT")
         except BaseException:
-            try:
-                conn.execute("ROLLBACK")
-            except sqlite3.Error:
-                pass
+            self._rollback()
             raise
 
     def get_document_dims(self, doc_id: str) -> dict[str, list[str]]:
@@ -580,9 +616,12 @@ class SqliteBackend:
             dims.setdefault(key, []).append(value)
         return dims
 
-    def set_document_dims(self, doc_id: str, dims: dict[str, list[str]]) -> None:
+    def set_document_dims(
+        self, doc_id: str, dims: dict[str, list[str]],
+        audit: tuple[str, str] | None = None,
+    ) -> None:
         """按 key 全量替换文档维度行（PATCH 落点——D6 刷维度不重嵌；逐值命中校验
-        同 pending_dims 口径，不符 raise 回滚）。"""
+        同 pending_dims 口径，不符 raise 回滚）。audit 同事务（M2.4 m2-2 收口）。"""
         conn = self._conn
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -608,12 +647,11 @@ class SqliteBackend:
                             f"document dims resolution failed: ({dim_key!r}, {value!r})"
                             "（维度/取值不存在？）——事务回滚"
                         )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
             conn.execute("COMMIT")
         except BaseException:
-            try:
-                conn.execute("ROLLBACK")
-            except sqlite3.Error:
-                pass
+            self._rollback()
             raise
 
     def get_chunk(self, chunk_id: str) -> dict | None:
@@ -1008,15 +1046,18 @@ class SqliteBackend:
 
     def create_task(
         self, doc_id: str | None, *, task_type: str = "ingest",
-        target_version: int | None = None,
+        target_version: int | None = None, task_id: str | None = None,
     ) -> str:
         """新建任务行（maintenance 等无文档任务 doc_id=None——P3-19 口径）。
 
         target_version（0005/M2.1 R2 边界裁定 B(a)）：ingest 任务的目标文档版本
         （v1/vN）——取消与崩溃耗尽清扫按该版本落 pending failed，防「按文档当前
         pending 落失败」误杀新版本上传（P2-3）；无版本任务 NULL。
+
+        task_id（M2.4 m2-2）：预生成 id 显式携带——治理事件的 outbox payload 与
+        任务行同源关联（上传/覆盖事件先于 create_task 落 outbox，需预生成）。
         """
-        task_id = f"tsk_{uuid.uuid4()}"
+        task_id = task_id or f"tsk_{uuid.uuid4()}"
         self._conn.execute(
             "INSERT INTO tasks(id, doc_id, type, status, target_version)"
             " VALUES(:id, :doc, :type, 'pending', :tv)",
@@ -1087,10 +1128,14 @@ class SqliteBackend:
                 {"id": task_id},
             )
         elif error is not None or status is not None:
+            # P3-R4-1（m2-1 移交→m2-2）：failed 写入不覆盖取消终态——取消与失败
+            # 落账的 µs 窗口里，迟来的执行器失败写不得抹掉 'cancelled:' 语义
             self._conn.execute(
                 "UPDATE tasks SET status = COALESCE(:s, status), error = :err,"
-                " updated_at = CURRENT_TIMESTAMP WHERE id = :id",
-                {"s": status, "err": error, "id": task_id},
+                " updated_at = CURRENT_TIMESTAMP WHERE id = :id"
+                "   AND NOT (status = 'failed' AND error LIKE :pattern)",
+                {"s": status, "err": error, "id": task_id,
+                 "pattern": "cancelled:%"},
             )
         self._conn.commit()
 
@@ -1107,6 +1152,16 @@ class SqliteBackend:
         from knowledge_lattice.store.taskclock import utc_now_ts
 
         now_ts = now or utc_now_ts()
+        # P3-N7 节流（m2-1 移交→m2-2）：常态零行时先读后写——不进 UPDATE 写事务
+        #（BEGIN/COMMIT 拿写锁的空转开销），有候选才走原子 UPDATE…RETURNING
+        probe = self._conn.execute(
+            "SELECT 1 FROM tasks WHERE status IN ('leased','running')"
+            "   AND attempts >= :max AND lease_until IS NOT NULL AND lease_until <= :now"
+            " LIMIT 1",
+            {"max": max_attempts, "now": now_ts},
+        ).fetchone()
+        if probe is None:
+            return []
         rows = self._conn.execute(
             "UPDATE tasks SET status = 'failed', lease_owner = NULL, lease_until = NULL,"
             " error = 'attempt limit exceeded (lease expired after ' || attempts"
@@ -1187,18 +1242,31 @@ class SqliteBackend:
         self._conn.commit()
         return cur.rowcount == 1
 
-    def cancel_task(self, task_id: str, *, reason: str, now: str | None = None) -> dict | None:
+    def cancel_task(
+        self, task_id: str, *, reason: str, now: str | None = None,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
         from knowledge_lattice.store.taskclock import utc_now_ts
 
         now_ts = now or utc_now_ts()
-        cur = self._conn.execute(
-            "UPDATE tasks SET status = 'failed', error = :reason, lease_owner = NULL,"
-            " lease_until = NULL, updated_at = :now"
-            " WHERE id = :id AND status IN ('pending','leased','running')",
-            {"reason": reason, "now": now_ts, "id": task_id},
-        )
-        self._conn.commit()
-        if cur.rowcount == 0:
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'failed', error = :reason, lease_owner = NULL,"
+                " lease_until = NULL, updated_at = :now"
+                " WHERE id = :id AND status IN ('pending','leased','running')",
+                {"reason": reason, "now": now_ts, "id": task_id},
+            )
+            cancelled = cur.rowcount > 0
+            if cancelled and audit is not None:
+                # 治理事件与取消**同一事务**（仅取消实际生效时记——TC-OPS-01）
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        if not cancelled:
             return None  # 已终态（幂等不复活——TC-TASK-03）
         return self.get_task(task_id)
 
@@ -1278,21 +1346,35 @@ class SqliteBackend:
         owner_user_id: str,
         raw_object_key: str,
         pending_dims_json: str | None,
+        audit: tuple[str, str] | None = None,
     ) -> None:
-        """首次上传的文档行（pending_version=1、pending_status='parsing'——§5.3 阶段编排）。"""
-        self._conn.execute(
-            "INSERT INTO documents(id, org_id, dataset_id, title, source_uri, content_hash,"
-            " mime_type, parser, active_version, pending_version, pending_status,"
-            " pending_dims_json, owner_user_id, raw_object_key)"
-            " VALUES(:id, :org, :ds, :title, :src, :hash, :mime, :parser, 0, 1, 'parsing',"
-            " :dims, :owner, :obj)",
-            {
-                "id": doc_id, "org": org_id, "ds": dataset_id, "title": title, "src": source_uri,
-                "hash": content_hash, "mime": mime_type, "parser": parser, "dims": pending_dims_json,
-                "owner": owner_user_id, "obj": raw_object_key,
-            },
-        )
-        self._conn.commit()
+        """首次上传的文档行（pending_version=1、pending_status='parsing'——§5.3 阶段编排）。
+
+        audit（M2.4 m2-2）：(event_type, payload_json)——治理事件与文档行
+        **同一事务**写 audit_outbox（「业务改了就一定有审计」，TC-OPS-01）。
+        """
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                "INSERT INTO documents(id, org_id, dataset_id, title, source_uri, content_hash,"
+                " mime_type, parser, active_version, pending_version, pending_status,"
+                " pending_dims_json, owner_user_id, raw_object_key)"
+                " VALUES(:id, :org, :ds, :title, :src, :hash, :mime, :parser, 0, 1, 'parsing',"
+                " :dims, :owner, :obj)",
+                {
+                    "id": doc_id, "org": org_id, "ds": dataset_id, "title": title,
+                    "src": source_uri, "hash": content_hash, "mime": mime_type,
+                    "parser": parser, "dims": pending_dims_json,
+                    "owner": owner_user_id, "obj": raw_object_key,
+                },
+            )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
 
     def set_doc_pending_status(self, doc_id: str, version: int, status: str) -> None:
         # M2.1 并发面收口：failed 是 pending 版本的吸收态（P0-2.3 版本亡故）——
@@ -1409,18 +1491,27 @@ class SqliteBackend:
         sha256: str,
         content_type: str,
         expires_at: str,
+        audit: tuple[str, str] | None = None,
     ) -> None:
-        self._conn.execute(
-            "INSERT INTO uploads(id, org_id, user_id, service_id, filename, size,"
-            " sha256, content_type, status, expires_at)"
-            " VALUES(:id, :org, :uid, :svc, :fn, :size, :sha, :ct, 'issued', :exp)",
-            {
-                "id": upload_id, "org": org_id, "uid": user_id, "svc": service_id,
-                "fn": filename, "size": size, "sha": sha256, "ct": content_type,
-                "exp": expires_at,
-            },
-        )
-        self._conn.commit()
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                "INSERT INTO uploads(id, org_id, user_id, service_id, filename, size,"
+                " sha256, content_type, status, expires_at)"
+                " VALUES(:id, :org, :uid, :svc, :fn, :size, :sha, :ct, 'issued', :exp)",
+                {
+                    "id": upload_id, "org": org_id, "uid": user_id, "svc": service_id,
+                    "fn": filename, "size": size, "sha": sha256, "ct": content_type,
+                    "exp": expires_at,
+                },
+            )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
 
     def get_upload_credential(self, upload_id: str) -> dict | None:
         row = self._conn.execute(
@@ -1441,15 +1532,27 @@ class SqliteBackend:
         self._conn.commit()
         return cur.rowcount > 0
 
-    def mark_upload_consumed(self, upload_id: str, *, doc_id: str, task_id: str) -> bool:
-        cur = self._conn.execute(
-            "UPDATE uploads SET status='consumed', doc_id=:doc, task_id=:task,"
-            " updated_at=CURRENT_TIMESTAMP"
-            " WHERE id=:id AND status='uploaded'",
-            {"id": upload_id, "doc": doc_id, "task": task_id},
-        )
-        self._conn.commit()
-        return cur.rowcount > 0
+    def mark_upload_consumed(
+        self, upload_id: str, *, doc_id: str, task_id: str,
+        audit: tuple[str, str] | None = None,
+    ) -> bool:
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = conn.execute(
+                "UPDATE uploads SET status='consumed', doc_id=:doc, task_id=:task,"
+                " updated_at=CURRENT_TIMESTAMP"
+                " WHERE id=:id AND status='uploaded'",
+                {"id": upload_id, "doc": doc_id, "task": task_id},
+            )
+            consumed = cur.rowcount > 0
+            if consumed and audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return consumed
 
     def list_expired_upload_credentials(self, now: str) -> list[dict]:
         rows = self._conn.execute(
@@ -1463,7 +1566,23 @@ class SqliteBackend:
         self._conn.execute("DELETE FROM uploads WHERE id = :id", {"id": upload_id})
         self._conn.commit()
 
-    # ============ Audit 域（M0a-3：outbox 写入实装） ============
+    # ============ Audit 域（M0a-3：outbox 写入实装；M2.4 m2-2：同事务接入 + 搬运/封存/保留） ============
+
+    def _rollback(self) -> None:
+        """事务回滚（SQLite 可能已自动回滚——失败不得覆盖原始异常）。"""
+        try:
+            self._conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+
+    def _outbox_insert(self, conn: sqlite3.Connection, event_type: str, payload_json: str) -> None:
+        """outbox 行插入（**参与调用方事务**——不自行 commit；TC-OPS-01 崩溃
+        注入测试的锚点方法：此步抛错 → 调用方业务写一并回滚）。"""
+        conn.execute(
+            "INSERT INTO audit_outbox(id, event_type, payload_json)"
+            " VALUES(:id, :t, :p)",
+            {"id": f"aud_{uuid.uuid4()}", "t": event_type, "p": payload_json},
+        )
 
     def append_outbox(self, event_type: str, payload_json: str) -> None:
         self._conn.execute(
@@ -1472,3 +1591,246 @@ class SqliteBackend:
             {"id": f"aud_{uuid.uuid4()}", "t": event_type, "p": payload_json},
         )
         self._conn.commit()
+
+    def roll_monthly(self, when: object | None = None) -> object:
+        """审计月库滚动（当月库 ensure——连接工厂同款幂等；方言差异包内吸收）。"""
+        from datetime import UTC, datetime
+
+        from .audit import ensure_monthly_audit
+
+        when_dt = when if isinstance(when, datetime) else None
+        return ensure_monthly_audit(self._db_dir(), when_dt)
+
+    # ---- 备份快照（D 组——NFR-10 / TC-OPS-05；方言差异包内吸收） ----
+
+    def backup_snapshot(
+        self, backup_dir, objects_dir=None, *, when=None, dsn: str | None = None,
+    ) -> dict:
+        """VACUUM INTO 主库快照 + objects 目录 tar（store/sqlite/backup.py）。"""
+        from .backup import snapshot as _snapshot
+
+        when_dt = when if isinstance(when, datetime) else None
+        return _snapshot(
+            self._conn, Path(backup_dir),
+            Path(objects_dir) if objects_dir is not None else None, when=when_dt,
+        )
+
+    def _db_dir(self) -> Path:
+        """主库目录（PRAGMA database_list 的主库文件路径——月库与主库同目录）。"""
+        for _seq, name, file in self._conn.execute("PRAGMA database_list").fetchall():
+            if name == "main" and file:
+                return Path(file).parent
+        raise RuntimeError("main database has no file path（:memory: 不支持月库）")
+
+    # ---- 搬运（A2：outbox → 月库 audit_events + 回填 shipped_at——TC-OPS-01） ----
+
+    def ship_outbox(self, *, now: str | None = None, batch: int = 500) -> dict:
+        """搬运待搬运行到月库 audit_events（按事件原时刻 created_at 路由月份，
+        含哈希链逐行计算——FR-6），并回填 shipped_at。
+
+        SQLite 跨文件无原子多库事务（WAL 模式 super-journal 不可用）——两步
+        崩溃安全形态：①月库 INSERT OR IGNORE（幂等）→ ②主库回填 shipped_at。
+        中断重跑：月库去重 + 回填补齐（at-least-once + 幂等 = 不丢不重）。
+        """
+        from knowledge_lattice.store.audit_chain import (
+            compute_row_hash,
+            month_of,
+            outbox_row_to_event,
+        )
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        from .audit import chain_start_hash, ensure_monthly_audit, last_row_hash
+
+        now_ts = now or utc_now_ts()
+        db_dir = self._db_dir()
+        cols = ("id", "event_type", "payload_json", "created_at")
+        total = 0
+        while True:
+            rows = self._conn.execute(
+                "SELECT id, event_type, payload_json, created_at FROM audit_outbox"
+                " WHERE shipped_at IS NULL ORDER BY created_at, id LIMIT :n",
+                {"n": batch},
+            ).fetchall()
+            if not rows:
+                break
+            # 按事件月份分组插入（月内 (created_at,id) 全序逐行链式传递 prev）
+            by_month: dict[str, list[dict]] = {}
+            for r in rows:
+                rec = dict(zip(cols, r))
+                by_month.setdefault(month_of(rec["created_at"]), []).append(rec)
+            for month, recs in by_month.items():
+                when_dt = datetime(
+                    int(month[:4]), int(month[4:6]), 1, tzinfo=UTC
+                )
+                mpath = ensure_monthly_audit(db_dir, when_dt)
+                mconn = sqlite3.connect(mpath)
+                try:
+                    mconn.execute("PRAGMA busy_timeout = 5000")
+                    prev = last_row_hash(db_dir, month)
+                    if prev is None and not _month_has_rows(mconn):
+                        # 月库空：首条 prev = 上月末哈希（FR-6——跨空月向前找）
+                        prev = chain_start_hash(db_dir, month)
+                    for rec in recs:
+                        event = outbox_row_to_event(rec)
+                        event["prev_hash"] = prev
+                        event["row_hash"] = compute_row_hash(event, prev)
+                        mconn.execute(
+                            "INSERT OR IGNORE INTO audit_events(id, org_id, actor,"
+                            " action, target_type, target_id, outcome, request_id,"
+                            " detail_json, prev_hash, row_hash, created_at)"
+                            " VALUES(:id, :org_id, :actor, :action, :target_type,"
+                            " :target_id, :outcome, :request_id, :detail_json,"
+                            " :prev_hash, :row_hash, :created_at)",
+                            event,
+                        )
+                        prev = event["row_hash"]
+                    mconn.commit()
+                finally:
+                    mconn.close()
+            # ②主库回填（中断重跑由 shipped_at IS NULL + 月库 IGNORE 收敛）
+            self._mark_shipped(self._conn, [r[0] for r in rows], now_ts)
+            total += len(rows)
+            if len(rows) < batch:
+                break
+        return {"shipped": total}
+
+    def _mark_shipped(
+        self, conn: sqlite3.Connection, ids: Sequence[str], now: str
+    ) -> None:
+        """outbox 回填 shipped_at（崩溃注入锚点——中断重跑幂等收敛的②步）。"""
+        marks = ", ".join(f":i{n}" for n in range(len(ids)))
+        conn.execute(
+            f"UPDATE audit_outbox SET shipped_at = :now"
+            f" WHERE id IN ({marks}) AND shipped_at IS NULL",
+            {"now": now, **{f"i{n}": i for n, i in enumerate(ids)}},
+        )
+        conn.commit()
+
+    def read_monthly_events(self, *, when: str) -> list[dict]:
+        """读指定时点所在月的 audit_events（(created_at,id) 序；封存月库只读打开）。
+        月库不存在 → []（读路径不建库）。"""
+        from knowledge_lattice.store.audit_chain import month_of
+
+        from .audit import month_path, open_monthly_ro
+
+        path = month_path(self._db_dir(), month_of(when))
+        if not path.is_file():
+            return []
+        conn = open_monthly_ro(path)
+        try:
+            rows = conn.execute(
+                "SELECT id, org_id, actor, action, target_type, target_id, outcome,"
+                " request_id, detail_json, prev_hash, row_hash, created_at"
+                " FROM audit_events ORDER BY created_at, id"
+            ).fetchall()
+        finally:
+            conn.close()
+        cols = (
+            "id", "org_id", "actor", "action", "target_type", "target_id", "outcome",
+            "request_id", "detail_json", "prev_hash", "row_hash", "created_at",
+        )
+        return [dict(zip(cols, r)) for r in rows]
+
+    # ---- 封存 / 保留期（B 组——TC-OPS-02） ----
+
+    def seal_audit_months(self, *, now: str | None = None) -> dict:
+        """封存所有已过月的未封存月库（记末哈希 + 0444 只读）；仍有未搬运行
+        （事件 created_at 落该月且 shipped_at IS NULL）的月份跳过——留待下轮
+        搬运后再封（防「先封存后搬运」写入已封存月库的死锁）。"""
+        from knowledge_lattice.store.audit_chain import month_of
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        from .audit import month_path, read_seal, seal_monthly_audit
+
+        now_ts = now or utc_now_ts()
+        cur_month = month_of(now_ts)
+        sealed: list[str] = []
+        skipped: list[str] = []
+        for db_file in sorted(self._db_dir().glob("audit_*.db")):
+            stem = db_file.stem
+            month = stem[6:]
+            if not stem.startswith("audit_") or not month.isdigit():
+                continue
+            if month >= cur_month or read_seal(self._db_dir(), month) is not None:
+                continue  # 当月不封 / 已封存幂等跳过
+            # 排他上界 = 次月首日（created_at < upper 即该月事件）
+            upper = _month_upper(month)
+            pending = self._conn.execute(
+                "SELECT count(*) FROM audit_outbox"
+                " WHERE shipped_at IS NULL AND created_at < :end",
+                {"end": upper},
+            ).fetchone()[0]
+            if pending:
+                skipped.append(month)
+                continue
+            seal_monthly_audit(self._db_dir(), month)
+            sealed.append(month)
+        return {"sealed": sealed, "skipped_pending": skipped}
+
+    def prune_audit_months(
+        self, *, keep_months: int, now: str | None = None
+    ) -> dict:
+        """保留期整文件删除（默认 12 个月——TC-OPS-02③）。"""
+        from knowledge_lattice.store.audit_chain import month_of
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        from .audit import prune_monthly_audit
+
+        now_ts = now or utc_now_ts()
+        removed = prune_monthly_audit(
+            self._db_dir(), keep_months=keep_months, now_month=month_of(now_ts)
+        )
+        return {"pruned": removed}
+
+    # ---- 删库 RESTRICT（C 组——T19 半句收口，TC-OPS-04②③） ----
+
+    def delete_dataset(
+        self, org_id: str, dataset_id: str,
+        audit: tuple[str, str] | None = None,
+    ) -> None:
+        """删除知识库（§6.2 服务层流程）：**仍有文档 → DatasetNotEmptyError
+        （RESTRICT 明确语义——非裸外键异常，T19 半句收口/TC-OPS-04②）**；
+        无文档 → 删行（audit 治理事件同事务）；不存在/跨组织 → KeyError（404）。"""
+        from knowledge_lattice.store.backend import DatasetNotEmptyError
+
+        row = self._conn.execute(
+            "SELECT org_id, (SELECT count(*) FROM documents WHERE dataset_id = :ds)"
+            " FROM datasets WHERE id = :ds",
+            {"ds": dataset_id},
+        ).fetchone()
+        if row is None or row[0] != org_id:
+            raise KeyError(f"dataset not found in org: {dataset_id!r}")
+        if row[1]:
+            raise DatasetNotEmptyError(
+                f"dataset {dataset_id!r} 仍有 {row[1]} 篇文档——先删文档再删库"
+                "（RESTRICT，T19/TC-OPS-04②）"
+            )
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = conn.execute(
+                "DELETE FROM datasets WHERE id = :ds AND org_id = :org",
+                {"ds": dataset_id, "org": org_id},
+            )
+            if cur.rowcount == 0:
+                conn.execute("COMMIT")
+                raise KeyError(f"dataset not found in org: {dataset_id!r}")
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+
+
+def _month_upper(month: str) -> str:
+    """月排他上界（次月首日 0 点——'YYYY-MM-DD HH:MM:SS'）。"""
+    from knowledge_lattice.store.audit_chain import month_shift
+
+    nxt = month_shift(month, 1)
+    return f"{nxt[:4]}-{nxt[4:6]}-01 00:00:00"
+
+
+def _month_has_rows(mconn: sqlite3.Connection) -> bool:
+    return mconn.execute("SELECT 1 FROM audit_events LIMIT 1").fetchone() is not None
+

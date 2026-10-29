@@ -24,8 +24,9 @@ TaskRunner（进程内库——inline 模式与子进程 main() 共用同一执�
 周期，POC 量级可忽略）→ IPC 唤醒 + 兜底轮询双通道主循环。
 
 写竞争治理口径（design §5.3 NFR-9——M2.1 落实 busy_timeout〔连接工厂既有〕+
-worker 短事务分批提交〔各阶段写入本就逐事务提交〕）：**查询级审计异步写、
-权限事件走 outbox 的本体归 m2-2**（本段仅此口径注记，不实现 outbox 搬运）。
+worker 短事务分批提交〔各阶段写入本就逐事务提交〕）；**查询级审计异步写、
+权限事件走 outbox 的本体已随 m2-2 落地**（治理动作 audit 参数同事务 +
+maintenance 的 audit_shipped 任务体搬运回填 shipped_at——TC-OPS-01）。
 
 服务装配扩展点：`LATTICE_WORKER_SERVICES=module:attr` 指向 build(settings) ->
 WorkerServices 的工厂（部署侧自定义 provider / 测试注入 fake embedder 与崩溃
@@ -109,15 +110,23 @@ class TaskRunner:
         - created_before（P2-7）：仅认领 created_at <= 该时点的「陈旧」任务——
           inline 兜底循环以此认领 ingest（投递方 kick 的同步消化恒先于循环抢到
           新任务，保 M1 上传时序语义；重启遗留/超量滞留任务照常被领）。
+          **粒度注记（P3-N6，m2-1 移交→m2-2 文档化）**：比较按 SQL 时间戳秒级
+          粒度生效（worker_poll_s < 1s 时按 ~1s 窗口起效——当前时戳生成同秒
+          精度，无亚秒穿透）。
 
         每轮先执行**崩溃耗尽清扫**（P2-2）：租约过期且 attempts ≥ max 的
         leased/running 任务 → failed 留人工（error 落原因），并按 target_version
         落文档侧 pending failed（经 ingest 服务，无版本关联行只落任务行）。
+
+        per-claim worker_id（P3-N4，m2-1 移交→m2-2）：每次认领生成 claim 级
+        id（<base>#<rand>）——inline 同 runner 的 kick/兜底循环两线程并发时
+        租约归属仍可区分（心跳/owner 守卫按 claim id 判定）。
         """
         self._sweep_exhausted()
+        claim_id = f"{self._worker_id}#{uuid.uuid4().hex[:6]}"
         try:
             task = self._backend.claim_next_task(
-                self._worker_id,
+                claim_id,
                 lease_s=self._settings.worker_lease_s,
                 task_types=task_types or CLAIMABLE_TASK_TYPES,
                 max_attempts=self._settings.task_max_attempts,
@@ -129,7 +138,7 @@ class TaskRunner:
             return False
         if task is None:
             return False
-        self._execute(task)
+        self._execute(task, claim_id)
         return True
 
     def _sweep_exhausted(self) -> None:
@@ -160,33 +169,35 @@ class TaskRunner:
 
     # ---- 执行与心跳 ----
 
-    def _execute(self, task: dict) -> None:
+    def _execute(self, task: dict, claim_id: str) -> None:
         task_id = task["id"]
         token = task_id_var.set(task_id)  # 日志贯通：task_id 进上下文（design §3）
         stop = threading.Event()
         hb = threading.Thread(
-            target=self._heartbeat_loop, args=(task_id, stop), daemon=True
+            target=self._heartbeat_loop, args=(task_id, stop, claim_id), daemon=True
         )
         hb.start()
         try:
             executor = self._executors.get(task["type"])
             if executor is None:  # 预留分发位兜底（type 过滤下理论不可达）
                 raise RuntimeError(f"no executor for task type: {task['type']!r}")
-            executor(task)
+            executor(task, claim_id)
         except Exception as exc:  # noqa: BLE001 —— 失败处置（重试预算内回 pending）
-            self._on_failure(task, exc)
+            self._on_failure(task, exc, claim_id)
         finally:
             stop.set()
             hb.join(timeout=self._settings.worker_heartbeat_s + 1.0)
             task_id_var.reset(token)
 
-    def _heartbeat_loop(self, task_id: str, stop: threading.Event) -> None:
+    def _heartbeat_loop(
+        self, task_id: str, stop: threading.Event, claim_id: str
+    ) -> None:
         interval = max(self._settings.worker_heartbeat_s, 0.05)
         lease_s = self._settings.worker_lease_s
         while not stop.wait(interval):
             try:
                 ok = self._backend.heartbeat_task(
-                    task_id, self._worker_id, lease_s=lease_s, now=self._clock()
+                    task_id, claim_id, lease_s=lease_s, now=self._clock()
                 )
             except Exception:  # noqa: BLE001 —— 心跳失败不杀执行（下轮再试）
                 logger.exception("heartbeat failed: %s", task_id)
@@ -196,12 +207,12 @@ class TaskRunner:
                 logger.warning("heartbeat lost lease (reclaimed/cancelled?): %s", task_id)
                 return
 
-    def _should_continue(self, task_id: str):
+    def _should_continue(self, task_id: str, claim_id: str):
         """阶段边界存活检查（run_task.should_continue）：心跳即探测（顺带续租）。"""
         def check() -> bool:
             try:
                 return self._backend.heartbeat_task(
-                    task_id, self._worker_id,
+                    task_id, claim_id,
                     lease_s=self._settings.worker_lease_s, now=self._clock(),
                 )
             except Exception:  # noqa: BLE001 —— 探测异常保守视作存活（下轮边界再探）
@@ -211,14 +222,14 @@ class TaskRunner:
 
     # ---- 内置 executors ----
 
-    def _exec_ingest(self, task: dict) -> None:
+    def _exec_ingest(self, task: dict, claim_id: str) -> None:
         if self._services.ingest is None:
             raise RuntimeError("ingest service not wired in worker services")
         self._services.ingest.run_task(
-            task["id"], should_continue=self._should_continue(task["id"])
+            task["id"], should_continue=self._should_continue(task["id"], claim_id)
         )
 
-    def _exec_maintenance(self, task: dict) -> None:
+    def _exec_maintenance(self, task: dict, claim_id: str) -> None:
         from knowledge_lattice.worker.maintenance import run_maintenance
 
         if self._services.credentials is None:
@@ -229,8 +240,9 @@ class TaskRunner:
 
     # ---- 失败处置（重试上限——TC-TASK-02） ----
 
-    def _on_failure(self, task: dict, exc: Exception) -> None:
-        """失败处置（重试上限——TC-TASK-02；P2-1 终态所有权守卫，M2.1 R2）。"""
+    def _on_failure(self, task: dict, exc: Exception, claim_id: str) -> None:
+        """失败处置（重试上限——TC-TASK-02；P2-1 终态所有权守卫，M2.1 R2；
+        owner 比较按 per-claim id〔P3-N4〕）。"""
         task_id = task["id"]
         logger.exception("task execution failed: %s", task_id)
         try:
@@ -244,8 +256,10 @@ class TaskRunner:
             logger.warning("failure ignored: task already done: %s", task_id)
             return
         # P2-1 守卫 2：租约已归他人（重认领后的旧执行器迟来失败）不覆盖新持有者
+        # ——per-claim id（P3-N4）：同 runner 的其他 claim 也算他人（inline 双
+        # 线程场景由 claim 级 id 精确区分）；base id 兼容手工造数形态
         owner = fresh.get("lease_owner")
-        if owner not in (None, self._worker_id):
+        if owner not in (None, claim_id, self._worker_id):
             logger.warning(
                 "failure ignored: lease owned by %r (lost to reclaimer): %s",
                 owner, task_id,
@@ -292,9 +306,21 @@ class WorkerSupervisor:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        # P3-N13（m2-1 移交→m2-2）：连续死亡指数退避 + 存活稳定重置
+        self._deaths = 0
+        self._last_start_monotonic: float | None = None
 
     def start(self) -> None:
         with self._lock:
+            # P3-N13：重启路径先释放旧子进程的 stdin fd（旧进程已死，句柄不显式
+            # 关闭则依赖 GC——高频崩溃循环下 fd 堆积）
+            old = self._proc
+            if old is not None:
+                try:
+                    if old.stdin is not None:
+                        old.stdin.close()
+                except OSError:
+                    pass
             env = dict(os.environ)
             env.update(self._worker_env(self._settings))
             self._proc = subprocess.Popen(
@@ -302,6 +328,9 @@ class WorkerSupervisor:
                 stdin=subprocess.PIPE, env=env,
             )
             self._wake = None if self._proc.stdin is None else _ParentWakeShim(self._proc)
+        import time as _time
+
+        self._last_start_monotonic = _time.monotonic()
         logger.info("worker subprocess started: pid=%s", self._proc.pid)
 
     def notify(self) -> None:
@@ -317,16 +346,31 @@ class WorkerSupervisor:
         self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self._thread.start()
 
+    def _next_backoff(self) -> float:
+        """指数退避（P3-N13）：base × 2^连续死亡数，上限 30s——确定性可测。"""
+        return min(self._backoff * (2 ** self._deaths), 30.0)
+
     def _monitor_loop(self) -> None:
+        import time as _time
+
+        stable_s = 60.0       # 存活稳定窗：超过则连续死亡计数重置
         while not self._stop.wait(0.5):
             proc = self._proc
             if proc is not None and proc.poll() is not None:
+                # 存活稳定重置：上次拉起后存活 ≥ stable_s 的死亡视为「新事故」
+                if (
+                    self._last_start_monotonic is not None
+                    and _time.monotonic() - self._last_start_monotonic >= stable_s
+                ):
+                    self._deaths = 0
+                backoff = self._next_backoff()
+                self._deaths += 1
                 logger.error(
-                    "worker subprocess died (code=%s)——%ss 后自动拉起"
-                    "（在途任务经租约过期重认领，TC-TASK-04/TC-E2E-03）",
-                    proc.returncode, self._backoff,
+                    "worker subprocess died (code=%s, consecutive=%s)——%.1fs 后"
+                    "自动拉起（在途任务经租约过期重认领，TC-TASK-04/TC-E2E-03）",
+                    proc.returncode, self._deaths, backoff,
                 )
-                if self._stop.wait(self._backoff):
+                if self._stop.wait(backoff):
                     return
                 try:
                     self.start()
@@ -336,13 +380,17 @@ class WorkerSupervisor:
     def stop(self, timeout_s: float = 5.0) -> None:
         self._stop.set()
         proc = self._proc
-        if proc is None:
-            return
+        thread = self._thread
         try:
-            if proc.stdin is not None:
+            if proc is not None and proc.stdin is not None:
                 proc.stdin.close()  # EOF → 子进程干净退出
         except OSError:
             pass
+        # P3-N13：join monitor 线程——stop 返回时不再有重启竞态在途
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=timeout_s + 1.0)
+        if proc is None:
+            return
         try:
             proc.wait(timeout=timeout_s)
         except subprocess.TimeoutExpired:
@@ -355,11 +403,19 @@ class WorkerSupervisor:
     @staticmethod
     def _worker_env(settings: Settings) -> dict[str, str]:
         """worker 相关 Settings 字段 → 环境变量（子进程 get_settings 读取）。
-        其余 LATTICE_*（embed 网关、日志等）经 os.environ 继承。"""
+
+        其余 LATTICE_*（embed 网关、日志等）经 os.environ 继承。P3-N12 收窄
+        （m2-1 移交→m2-2 顺手）：embed_model / embed_batch_size / quality_llm
+        为程序化 Settings 高频 override 字段（测试 fake 标签、LLM 档位）——
+        不映射则子进程静默漂移（P3-5 同族问题），显式带上。
+        """
         return {
             "LATTICE_DATA_DIR": str(settings.data_dir),
             "LATTICE_ENV": settings.environment,
             "LATTICE_EMBED_DIM": str(settings.embed_dim),
+            "LATTICE_EMBED_MODEL": settings.embed_model,
+            "LATTICE_EMBED_BATCH_SIZE": str(settings.embed_batch_size),
+            "LATTICE_QUALITY_LLM": settings.quality_llm,
             "LATTICE_WORKER_LEASE_S": str(settings.worker_lease_s),
             "LATTICE_WORKER_HEARTBEAT_S": str(settings.worker_heartbeat_s),
             "LATTICE_WORKER_POLL_S": str(settings.worker_poll_s),
@@ -428,10 +484,12 @@ def _load_services_factory(spec: str):
 def main() -> None:
     """子进程入口（`python -m knowledge_lattice.worker`）——装配/日志/探针/双通道循环。"""
     settings = get_settings()
-    if settings.worker_mode not in ("inline", "subprocess"):
+    from knowledge_lattice.config import WORKER_MODES
+
+    if settings.worker_mode not in WORKER_MODES:
         raise ValueError(
-            f"invalid worker_mode {settings.worker_mode!r}（合法值：inline | subprocess"
-            "——fail-closed，不静默回退）"
+            f"invalid worker_mode {settings.worker_mode!r}（合法值："
+            f" {' | '.join(WORKER_MODES)}——fail-closed，不静默回退）"
         )
     setup_logging(settings.log_level, settings.log_format)  # log.py 同套 handler
 

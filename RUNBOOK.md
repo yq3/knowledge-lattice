@@ -88,7 +88,13 @@ deploy 场景注意：
   场景，需人工核对连接态）。
 - v1.1（0002）迁移内做了存量向量搬运（`INSERT..SELECT` chunks→chunk_vectors），
   空库/有库两形态均可跑；搬运幂等性由版本记录保证（已应用不重放）。
-- **0004（tombstoned_at）升级注意（M2-1，2026-10-28）**：新增列回填取
+- **0004（tombstoned_at）升级注意（M2.1，2026-10-28）**：新增列回填取
   **迁移执行时点**为存量 `tombstone=1` 行的 90 天清理起点（保守窗口——存量
   tombstone 实际延后清理，无提前删除风险）；升级后首 90 天内清理量低于理论值
   属预期。新切换事务即时写入 `tombstoned_at` 不受影响。
+- **0005（target_version）存量行为注记（M2.4 m2-2，2026-10-29）**：迁移前的
+  存量任务行 `target_version=NULL`——取消（cancel）与崩溃耗尽清扫
+  （fail_exhausted_tasks → fail_document_version）对 NULL 行**只落任务行
+  failed、文档侧不触碰**（可能残留 `pending_status='parsing'` 文档——需人工
+  核对或重传新版本）；执行侧 `run_task` 对 NULL 行回退 `_effective_version`
+  （文档当前有效版本——M1 口径）。新任务（0005 后创建）恒写目标版本，无此窗口。

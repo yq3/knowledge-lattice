@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS audit_events (
   outcome     TEXT NOT NULL,
   request_id  TEXT,
   detail_json TEXT,
+  prev_hash   TEXT,             -- 哈希链：前一条 row_hash（月首条=上月末，FR-6）
+  row_hash    TEXT,             -- 本行哈希（canonical 拼接见 store/audit_chain.py）
   created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id, created_at)
 ) PARTITION BY RANGE (created_at)
@@ -85,6 +87,36 @@ CREATE TRIGGER audit_no_truncate BEFORE TRUNCATE ON {target}
   FOR EACH STATEMENT EXECUTE FUNCTION lattice_audit_append_only_truncate()
 """
 
+# ---- 封存（M2.4 m2-2——TC-OPS-02①：过月分区只读） ----
+#
+# PG 的「只读打开 + 文件权限」等价物 = 分区上落 sealed 触发器（BEFORE
+# INSERT OR UPDATE OR DELETE——owner 亦拦，比 REVOKE 更强）+ REVOKE PUBLIC
+# 写权限（纵深）。封存记录入 audit_month_seals（month PK / last_hash /
+# rows / sealed_at——「封存记末哈希」，FR-6）。
+SEALED_FN_DDL = """\
+CREATE OR REPLACE FUNCTION lattice_audit_month_sealed() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'audit_events month % is sealed (read-only)', TG_TABLE_NAME;
+END
+$$
+"""
+
+SEALED_TRIGGER_DDL = """\
+DROP TRIGGER IF EXISTS audit_month_sealed ON {target};
+CREATE TRIGGER audit_month_sealed BEFORE INSERT OR UPDATE OR DELETE ON {target}
+  FOR EACH ROW EXECUTE FUNCTION lattice_audit_month_sealed()
+"""
+
+SEALS_TABLE_DDL = """\
+CREATE TABLE IF NOT EXISTS audit_month_seals (
+  month     TEXT PRIMARY KEY,
+  last_hash TEXT,
+  rows      INTEGER NOT NULL,
+  sealed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
 
 def month_bounds(month: str) -> tuple[str, str]:
     """'YYYYMM' → [当月首日 0 点, 次月首日 0 点)（RANGE 分区边界，UTC 月界——
@@ -121,9 +153,64 @@ def ensure_audit(conn: psycopg.Connection, when: datetime | None = None) -> None
     """确保分区父表 + append-only 触发器（行级 + TRUNCATE statement 级）+
     当月分区就绪（连接工厂滚动入口，幂等）。"""
     conn.execute(AUDIT_PARENT_DDL)
+    _ensure_chain_columns(conn)
     conn.execute(APPEND_ONLY_FN_DDL)
     conn.execute(APPEND_ONLY_DELETE_FN_DDL)
     conn.execute(APPEND_ONLY_TRUNCATE_FN_DDL)
     conn.execute(APPEND_ONLY_TRIGGERS_DDL)
     conn.execute(APPEND_ONLY_TRUNCATE_TRIGGER_DDL.format(target="audit_events"))
     ensure_month_partition(conn, when)
+
+
+def _ensure_chain_columns(conn: psycopg.Connection) -> None:
+    """存量父表补哈希链列（幂等——ALTER 自动传播到全部既有分区）。"""
+    rows = conn.execute(
+        "SELECT column_name FROM information_schema.columns"
+        " WHERE table_schema = current_schema() AND table_name = 'audit_events'"
+        "   AND column_name IN ('prev_hash', 'row_hash')"
+    ).fetchall()
+    have = {r[0] for r in rows}
+    for col in ("prev_hash", "row_hash"):
+        if col not in have:
+            conn.execute(f"ALTER TABLE audit_events ADD COLUMN {col} TEXT")
+
+
+def last_row_hash(conn: psycopg.Connection, month: str) -> str | None:
+    """指定月分区末行 row_hash（(created_at,id) 序末条；无行 → None）。"""
+    start, end = month_bounds(month)
+    row = conn.execute(
+        "SELECT row_hash FROM audit_events"
+        " WHERE created_at >= %(s)s AND created_at < %(e)s"
+        "   AND row_hash IS NOT NULL"
+        " ORDER BY created_at DESC, id DESC LIMIT 1",
+        {"s": start, "e": end},
+    ).fetchone()
+    return row[0] if row else None
+
+
+def month_row_count(conn: psycopg.Connection, month: str) -> int:
+    start, end = month_bounds(month)
+    return conn.execute(
+        "SELECT count(*) FROM audit_events"
+        " WHERE created_at >= %(s)s AND created_at < %(e)s",
+        {"s": start, "e": end},
+    ).fetchone()[0]
+
+
+def seal_month_partition(conn: psycopg.Connection, month: str) -> dict:
+    """封存分区（幂等）：sealed 触发器 + REVOKE 写权限 + audit_month_seals
+    记录（末哈希——FR-6「封存记末哈希」）。"""
+    conn.execute(SEALED_FN_DDL)
+    conn.execute(SEALED_TRIGGER_DDL.format(target=partition_name(month)))
+    conn.execute(
+        f"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON {partition_name(month)} FROM PUBLIC"
+    )
+    conn.execute(SEALS_TABLE_DDL)
+    conn.execute(
+        "INSERT INTO audit_month_seals(month, last_hash, rows)"
+        " VALUES(%(m)s, %(h)s, %(n)s)"
+        " ON CONFLICT (month) DO NOTHING",
+        {"m": month, "h": last_row_hash(conn, month),
+         "n": month_row_count(conn, month)},
+    )
+    return {"month": month, "last_hash": last_row_hash(conn, month)}

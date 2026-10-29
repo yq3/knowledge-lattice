@@ -21,6 +21,11 @@ class VersionConflictError(Exception):
     """版本切换乐观校验失败（WHERE pending_version=:expected 零行——并发切换/取消
     竞态；409 语义，P0-2.3/T7）。"""
 
+
+class DatasetNotEmptyError(Exception):
+    """删库被拒：库内仍有文档（RESTRICT 明确语义——非裸外键异常，T19 半句收口/
+    TC-OPS-04②；「先删文档再删库」服务层流程，§6.2）。"""
+
 # ============ AclPlan：方言无关的维度 ACL 编译产物（D24） ============
 #
 # 由编译器（core/docs/acl.py，M0a-2）产出，各后端 acl_render.py 渲染为目标 SQL。
@@ -387,6 +392,11 @@ class AdminBackend(Protocol):
     def list_datasets(self, org_id: str) -> list[dict]:
         ...
 
+    def delete_dataset(self, org_id: str, dataset_id: str) -> None:
+        """删除知识库（§6.2 服务层流程——T19 半句收口/TC-OPS-04②③）：
+        仍有文档 → DatasetNotEmptyError（RESTRICT 明确报错——非裸外键异常）；
+        不存在/跨组织 → KeyError（404）。"""
+
     def find_user_by_token_hash(self, token_hash: str) -> dict | None:
         """静态 token 查 user（sha256——仅 dev/test，D18）。"""
         ...
@@ -593,12 +603,42 @@ class SemanticBackend(Protocol):
 class AuditBackend(Protocol):
     def append_outbox(self, event_type: str, payload_json: str) -> None:
         """outbox 写入（与业务写同事务——「业务改了就一定有审计」；M0a-3 起实装：
-        探针两档告警 / 工具参数 org 忽略等事件）。"""
-        ...
+        探针两档告警 / 工具参数 org 忽略等事件）。
+
+        M2.4 m2-2 起治理动作（上传/覆盖/删除/取消/维度 PATCH/凭证签发与消费）
+        不再走本方法，而是经各 Admin/Ingest 域方法的 ``audit=(event_type,
+        payload_json)`` 参数**同事务**写入（TC-OPS-01）；本方法保留给查询级
+        审计等独立事件（检索/maintenance.run 沿用）。
+        """
+
+    def ship_outbox(self, *, now: str | None = None, batch: int = 500) -> dict:
+        """搬运 shipped_at IS NULL 的 outbox 行 → 月库 audit_events（哈希链逐行
+        计算——FR-6）+ 回填 shipped_at（A2/TC-OPS-01；挂 maintenance executor）。
+
+        方言形态：pg 同库真同事务（BEGIN…COMMIT）；sqlite 跨文件两步幂等
+        （月库 INSERT OR IGNORE → 回填）——不丢不重语义等价。
+        """
+
+    def read_monthly_events(self, *, when: str) -> list[dict]:
+        """读指定时点所在月的 audit_events 行（(created_at,id) 序——搬运/链
+        验证数据源；sqlite 封存月库只读打开 / pg 分区查询）。"""
+
+    def seal_audit_months(self, *, now: str | None = None) -> dict:
+        """封存过月月库（sqlite：末哈希 sidecar + 0444 只读；pg：分区 sealed
+        触发器 + REVOKE + audit_month_seals 记录）——B 组/TC-OPS-02①。"""
+
+    def prune_audit_months(self, *, keep_months: int, now: str | None = None) -> dict:
+        """保留期整文件/分区删除（默认 12 个月——TC-OPS-02③）。"""
 
     def roll_monthly(self, when: object | None = None) -> object:
         """月库/分区滚动（方言差异在包内吸收——SQLite 月库文件 / PG 按月分区）。"""
-        ...
+
+    def backup_snapshot(
+        self, backup_dir, objects_dir=None, *, when=None, dsn: str | None = None,
+    ) -> dict:
+        """备份快照（NFR-10 / TC-OPS-05——挂 maintenance 任务族）：SQLite
+        `VACUUM INTO` / PG `pg_dump -Fc`（部署工具链，不违 D2）+ objects 目录
+        tar 一并备份；返回 {database, objects, created_at}。"""
 
 
 @runtime_checkable

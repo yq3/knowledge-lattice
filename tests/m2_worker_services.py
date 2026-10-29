@@ -7,10 +7,15 @@
   worker 自杀（SIGKILL——OOM killer 的真实信号形态；一次性：data_dir 下标记文件防
   崩溃循环，重启后的 worker 重认领同任务正常完成——租约重认领链路同时被验证）；
 - LATTICE_TEST_SLOW_FLAG=<文件路径> + LATTICE_TEST_SLOW_S=<秒>：执行前 sleep
-  （制造"running 中被外部 kill -9"的窗口；一次性同上）。
+  （制造"running 中被外部 kill -9"的窗口；一次性同上）；
+- **LATTICE_TEST_SLOW_FIRST=1** + LATTICE_TEST_SLOW_S=<秒>（P3-N14，m2-2）：
+  **首任务必慢**——首次 run_task 无条件 sleep，消除「测试进程 202 响应后才写
+  flag、worker 已认领跑完」的写入竞态（flag 写入永远追不上已认领的任务）；
+  一次性同 flag 模式（data_dir 标记防慢循环）。
 
 标志走文件（而非 env）：worker 子进程已在 lifespan 拉起，测试进程事后仍能经
-文件系统精确指认目标文档（env 在子进程内不可变）。
+文件系统精确指认目标文档（env 在子进程内不可变）；SLOW_FIRST 是唯一例外
+（无需指认目标——首个任务即慢，env 读取发生在 run_task 时点已足够早）。
 """
 
 from __future__ import annotations
@@ -53,6 +58,7 @@ def build_services(settings) -> WorkerServices:
     credentials = CredentialService(backend, settings, settings.data_dir / "objects")
 
     slow_s = float(os.environ.get("LATTICE_TEST_SLOW_S", "3"))
+    slow_first = os.environ.get("LATTICE_TEST_SLOW_FIRST", "") in ("1", "true", "yes")
     marker_dir = settings.data_dir
 
     class _InstrumentedIngest:
@@ -69,6 +75,9 @@ def build_services(settings) -> WorkerServices:
                 _mark(marker_dir, "crash")
                 os.kill(os.getpid(), signal.SIGKILL)  # OOM killer 信号形态
             if (
+                slow_first
+                and not _fired(marker_dir, "slow")  # P3-N14：首任务必慢（无 flag 竞态）
+            ) or (
                 doc_id is not None
                 and doc_id == _flag_target(os.environ.get("LATTICE_TEST_SLOW_FLAG"))
                 and not _fired(marker_dir, "slow")

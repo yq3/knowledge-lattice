@@ -41,6 +41,10 @@ import ulid as _ulid
 
 from knowledge_lattice.config import Settings
 from knowledge_lattice.core.docs.acl import AclDeniedError
+from knowledge_lattice.domain.audit_events import (
+    EVENT_UPLOAD_CONSUME,
+    EVENT_UPLOAD_CREDENTIAL_ISSUED,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -306,18 +310,17 @@ class CredentialService:
             "%Y-%m-%d %H:%M:%S",
             time.gmtime(time.time() + self._settings.upload_credential_ttl_s),
         )
+        # M2.4 m2-2（TC-OPS-01）：治理事件与凭证行**同一事务**（原事务外
+        # append_outbox 废除）
         self._backend.create_upload_credential(
             upload_id=upload_id, org_id=org_id, user_id=user_id, service_id=service_id,
             filename=filename, size=size, sha256=sha256, content_type=content_type,
             expires_at=expires_at,
-        )
-        self._backend.append_outbox(
-            "upload.credential_issued",
-            json.dumps(
+            audit=(EVENT_UPLOAD_CREDENTIAL_ISSUED, json.dumps(
                 {"upload_id": upload_id, "org_id": org_id, "user_id": user_id,
                  "service_id": service_id, "size": size},
                 ensure_ascii=False,
-            ),
+            )),
         )
         # upload_url 形态（M1-3 择型）：同源相对路径——运行时拼服务基址（口径申报）
         return {
@@ -459,9 +462,15 @@ class CredentialService:
             doc_id=doc_id,
             source_uri=source_uri,
         )
-        # 摄取成功入队 → 置已用（失败路径在上面抛错、凭证不动——可重传）
+        # 摄取成功入队 → 置已用（失败路径在上面抛错、凭证不动——可重传）；
+        # M2.4 m2-2：consume 治理事件与置已用**同一事务**（原事务外写废除）
         if not self._backend.mark_upload_consumed(
-            upload_id, doc_id=doc_id_new, task_id=task_id
+            upload_id, doc_id=doc_id_new, task_id=task_id,
+            audit=(EVENT_UPLOAD_CONSUME, json.dumps(
+                {"upload_id": upload_id, "org_id": org_id, "user_id": user_id,
+                 "service_id": service_id, "doc_id": doc_id_new, "task_id": task_id},
+                ensure_ascii=False,
+            )),
         ):
             # M2.1 P3-11 清偿（并发消费极窗口）：输家（并发竞态 409）不得留下
             # 已建文档+已入队任务——worker 会把孤儿任务真跑成重复文档。补偿 =
@@ -494,14 +503,7 @@ class CredentialService:
             logger.warning("credential object cleanup failed: %s", obj_path)
         doc = self._backend.get_document(doc_id_new)
         pending_version = doc["pending_version"] if doc else None
-        self._backend.append_outbox(
-            "upload.consume",
-            json.dumps(
-                {"upload_id": upload_id, "org_id": org_id, "user_id": user_id,
-                 "service_id": service_id, "doc_id": doc_id_new, "task_id": task_id},
-                ensure_ascii=False,
-            ),
-        )
+        # upload.consume 事件已随 mark_upload_consumed 同事务落 outbox（M2.4）
         return {
             "doc_id": doc_id_new,
             "task_id": task_id,

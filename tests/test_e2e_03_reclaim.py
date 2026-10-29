@@ -27,9 +27,11 @@ def reclaim_app(tmp_path, monkeypatch):
     from knowledge_lattice.config import Settings
     from fake_providers import FakeEmbedder
 
-    slow_flag = tmp_path / "slow_flag"
+    # P3-N14（m2-2）：首任务必慢（SLOW_FIRST）——原「202 后写 flag 再 notify」
+    # 存在写入竞态（worker 兜底轮询可在 flag 写入前认领跑完，慢桩不触发、
+    # kill 窗口丢失——m2-1 R4 首轮门禁偶发根因）
     monkeypatch.setenv("LATTICE_WORKER_SERVICES", "m2_worker_services:build_services")
-    monkeypatch.setenv("LATTICE_TEST_SLOW_FLAG", str(slow_flag))
+    monkeypatch.setenv("LATTICE_TEST_SLOW_FIRST", "1")
     monkeypatch.setenv("LATTICE_TEST_SLOW_S", "6")  # 制造 kill -9 窗口
     tests_dir = str(Path(__file__).resolve().parent)
     monkeypatch.setenv(
@@ -47,7 +49,7 @@ def reclaim_app(tmp_path, monkeypatch):
         settings, embedder=FakeEmbedder(dim=8), gate=EmbeddingGate(),
         run_startup_probe=False,
     )
-    return {"app": app, "settings": settings, "slow_flag": slow_flag}
+    return {"app": app, "settings": settings, "slow_flag": None}
 
 
 def test_kill_worker_lease_reclaim_completes(reclaim_app) -> None:
@@ -92,8 +94,8 @@ def test_kill_worker_lease_reclaim_completes(reclaim_app) -> None:
         assert resp.status_code == 202
         body = resp.json()
         doc_id, task_id = body["doc_id"], body["task_id"]
-        # 慢执行指认：worker 认领后 sleep 6s——制造 running 窗口
-        reclaim_app["slow_flag"].write_text(doc_id, encoding="utf-8")
+        # 首任务必慢（SLOW_FIRST——P3-N14）：worker 首次认领即 sleep 6s，
+        # 无「flag 写入追不上认领」竞态；投递 kick 已唤醒
         supervisor.notify()
 
         # 等 worker 认领（running + lease/heartbeat 落位）
@@ -108,6 +110,14 @@ def test_kill_worker_lease_reclaim_completes(reclaim_app) -> None:
             time.sleep(0.1)
         assert row is not None and row[0] == "running" and row[1], \
             f"worker 未认领任务（row={row}）"
+
+        # P3-N14 观察窗收紧：认领者（lease_owner = wk-<pid>）必须就是当前
+        # supervisor.proc——不一致说明 monitor 已重启过（kill 错对象），等齐再杀
+        owner_pid = int(row[1].split("#")[0].removeprefix("wk-"))
+        assert owner_pid == supervisor.proc.pid, (
+            f"lease_owner {row[1]!r} ≠ supervisor.proc.pid {supervisor.proc.pid}"
+            "（观察窗错位）"
+        )
 
         # kill -9 运行中的 worker（OOM/人工杀进程的真实信号形态）
         victim_pid = supervisor.proc.pid
@@ -128,9 +138,13 @@ def test_kill_worker_lease_reclaim_completes(reclaim_app) -> None:
             time.sleep(0.1)
         assert supervisor.proc.poll() is None and supervisor.proc.pid != victim_pid
 
-        # 租约过期（2s）→ 新 worker 兜底轮询重认领续跑 → searchable_full
+        # 租约过期（2s）→ 新 worker 兜底轮询重认领续跑 → searchable_full。
+        # 退出条件 AND + 轮询体内重读（P3-x′ 同族读序竞态修正——「切换已提交
+        # full 可见、done 未落库」的毫秒窗口采到 (running, full) 时 OR 提前
+        # break，m2-1 R4 首轮门禁偶发根因；AND 保证两读都达终态）
         deadline = time.monotonic() + 40
         final = None
+        doc = {}
         while time.monotonic() < deadline:
             final = conn.execute(
                 "SELECT status, attempts, error FROM tasks WHERE id = ?", (task_id,)
@@ -138,7 +152,7 @@ def test_kill_worker_lease_reclaim_completes(reclaim_app) -> None:
             doc = client.get(
                 f"/api/orgs/org:tax/documents/{doc_id}", headers=headers
             ).json()
-            if final[0] in ("done", "failed") or doc.get("active_status") == "searchable_full":
+            if final[0] in ("done", "failed") and doc.get("active_status") == "searchable_full":
                 break
             time.sleep(0.2)
         doc = client.get(f"/api/orgs/org:tax/documents/{doc_id}", headers=headers).json()

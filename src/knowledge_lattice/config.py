@@ -11,6 +11,12 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+# ---- worker 模式枚举（M2.4 m2-2 必做 3：两处字面量收敛——dataclass 默认与
+# get_settings env fallback 同源，防同类漂移〔m2-1 R3 P2-A 半完成状态的收口〕） ----
+WORKER_MODE_INLINE = "inline"        # 进程内 TaskRunner（测试/最小部署显式选项）
+WORKER_MODE_SUBPROCESS = "subprocess"  # 子进程隔离（默认——M2.1 R2 裁定 A(a)）
+WORKER_MODES = (WORKER_MODE_INLINE, WORKER_MODE_SUBPROCESS)
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -94,7 +100,9 @@ class Settings:
     # 默认 subprocess（M2.1 R2 边界裁定 A(a)：生产 fail-safe——OOM 只杀 worker 子
     # 进程 + 自动拉起，NFR-1/§2「主进程 ×1（内含 worker 子进程）」默认成立；
     # 测试/最小部署显式 inline——进程内同一 TaskRunner 执行体）
-    worker_mode: str = "subprocess"  # inline=进程内 TaskRunner | subprocess=子进程隔离（§2）
+    # 常量收敛（M2.4 m2-2 必做 3）：默认值引用模块级常量（下方 get_settings
+    # env fallback 同源——m2-1 R3 移交项 P3-N10 附带收口）
+    worker_mode: str = WORKER_MODE_SUBPROCESS  # inline=进程内 | subprocess=子进程隔离（§2）
     worker_heartbeat_s: float = 5.0  # running 任务心跳周期（heartbeat_at/lease_until 刷新）
     worker_lease_s: float = 60.0  # 租约时长（过期任务可被重认领——worker 崩溃不丢任务）
     worker_poll_s: float = 5.0  # 兜底轮询周期（IPC 唤醒之外的第二通道）
@@ -105,6 +113,9 @@ class Settings:
     maintenance_keep_days: int = 7
     maintenance_keep_count: int = 500
     tombstone_keep_days: int = 90  # tombstone 块物理清理窗口（design §4 chunks 行注释）
+    # 审计月库（M2.4 m2-2——TC-OPS-02）：保留期（月）与备份节流
+    audit_keep_months: int = 12  # 保留 12 个月（13 个月前整文件/分区删除——FR-6）
+    backup_interval_s: float = 86400.0  # 快照最小间隔（RPO ≤24h 口径；0=每轮 maintenance 都跑）
 
     # 运行日志（v0.8.5：结构化 JSON→stdout；本地开发可切人读格式）
     log_level: str = "INFO"
@@ -121,7 +132,11 @@ class Settings:
 
 
 def get_settings() -> Settings:
-    """读取配置（LATTICE_* 环境变量覆盖默认值）。"""
+    """读取配置（LATTICE_* 环境变量覆盖默认值）。
+
+    数值校验（P3-N10，m2-1 移交→m2-2 顺手清偿）：任务框架数值配置负值/
+    非法 worker_mode 即刻 raise（fail-closed——不带着自相矛盾的配置起服务）。
+    """
     env = os.environ.get
 
     def _f(name: str, default: str) -> str:
@@ -131,7 +146,7 @@ def get_settings() -> Settings:
         raw = env(name)
         return type(default)(raw) if raw is not None else default
 
-    return Settings(
+    settings = Settings(
         environment=env("LATTICE_ENV", "dev"),
         data_dir=Path(env("LATTICE_DATA_DIR", "data")),
         embed_dim=int(_num("LATTICE_EMBED_DIM", 2560)),
@@ -155,7 +170,7 @@ def get_settings() -> Settings:
         upload_credential_ttl_s=float(_num("LATTICE_UPLOAD_TTL_S", 900.0)),
         upload_max_bytes=int(_num("LATTICE_UPLOAD_MAX_BYTES", 200 * 1024 * 1024)),
         maintenance_interval_s=float(_num("LATTICE_MAINTENANCE_INTERVAL_S", 300.0)),
-        worker_mode=env("LATTICE_WORKER_MODE", "subprocess"),
+        worker_mode=env("LATTICE_WORKER_MODE", WORKER_MODE_SUBPROCESS),
         worker_heartbeat_s=float(_num("LATTICE_WORKER_HEARTBEAT_S", 5.0)),
         worker_lease_s=float(_num("LATTICE_WORKER_LEASE_S", 60.0)),
         worker_poll_s=float(_num("LATTICE_WORKER_POLL_S", 5.0)),
@@ -165,6 +180,35 @@ def get_settings() -> Settings:
         maintenance_keep_days=int(_num("LATTICE_MAINTENANCE_KEEP_DAYS", 7)),
         maintenance_keep_count=int(_num("LATTICE_MAINTENANCE_KEEP_COUNT", 500)),
         tombstone_keep_days=int(_num("LATTICE_TOMBSTONE_KEEP_DAYS", 90)),
+        audit_keep_months=int(_num("LATTICE_AUDIT_KEEP_MONTHS", 12)),
+        backup_interval_s=float(_num("LATTICE_BACKUP_INTERVAL_S", 86400.0)),
         log_level=env("LATTICE_LOG_LEVEL", "INFO"),
         log_format=env("LATTICE_LOG_FORMAT", "json"),
     )
+    _validate(settings)
+    return settings
+
+
+def _validate(s: Settings) -> None:
+    """数值/枚举校验（P3-N10）——负值与非法枚举 fail-closed。"""
+    if s.worker_mode not in WORKER_MODES:
+        raise ValueError(
+            f"invalid worker_mode {s.worker_mode!r}（合法值："
+            f" {' | '.join(WORKER_MODES)}——fail-closed，不静默回退）"
+        )
+    numeric_failures = []
+    for name in (
+        "worker_heartbeat_s", "worker_lease_s", "worker_poll_s",
+        "worker_restart_backoff_s", "task_max_attempts",
+        "maintenance_keep_days", "maintenance_keep_count", "tombstone_keep_days",
+        "audit_keep_months", "upload_credential_ttl_s", "maintenance_interval_s",
+    ):
+        value = getattr(s, name)
+        if value < 0:
+            numeric_failures.append(f"{name}={value!r}")
+    if s.task_max_attempts < 1:
+        numeric_failures.append(f"task_max_attempts={s.task_max_attempts!r}（须 ≥1）")
+    if numeric_failures:
+        raise ValueError(
+            "invalid config values (must be >= 0): " + "; ".join(numeric_failures)
+        )
