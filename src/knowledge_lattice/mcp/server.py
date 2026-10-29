@@ -12,8 +12,8 @@ upload/list_documents 全四工具就位，M1-5 收口）。
 - `upload` 工具（M1-3，三步③）：inputSchema 只收不透明 `upload_id`（§6.1 line
   1071-1078——路径/URL 一律拒绝，P0-D）；三一致校验（T11）+ 哈希复验 → 走
   `ingest.create_document` 同一 code path（版本制/ACL 写校验不旁路）；凭证在
-  摄取成功入队后置已用（v1.4 口径）；摄取由进程内执行器异步执行（M0a 口径，
-  子进程 worker 随 M2）——工具立即返回 queued；
+  摄取成功入队后置已用（v1.4 口径）；摄取经 worker 框架异步执行（M2.1——工具
+  立即返回 queued）；
 - `list_documents` 工具（M1-5，design §6.1）：列出权限内可见的知识库与文档及
   处理状态——input datasets/active_status/limit；output datasets（doc_count
   **按调用者权限统计**——TC-AZ-02：不可见文档的存在与数量不泄露）+ documents
@@ -230,13 +230,12 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
         except UploadNotFoundError as exc:
             raise ToolError(f"404: {exc}") from exc
 
-        def _run(task_id: str) -> None:  # 进程内执行器（M0a 口径；子进程 worker 随 M2）
-            try:
-                service.ingest.run_task(task_id)
-            except Exception:  # noqa: BLE001 —— 任务级失败已落 failed+error
-                logger.exception("background ingest failed: %s", task_id)
+        def _run() -> None:  # 投递 worker（M2.1：inline 同步认领 / subprocess 唤醒
+            #             字节——任务级失败已落 failed+error，不冒泡）
+            if service.worker is not None:
+                service.worker.kick()
 
-        threading.Thread(target=_run, args=(result["task_id"],), daemon=True).start()
+        threading.Thread(target=_run, daemon=True).start()
         return result
 
     @mcp.tool(name="list_documents", description=LIST_DOCUMENTS_TOOL_DESCRIPTION)

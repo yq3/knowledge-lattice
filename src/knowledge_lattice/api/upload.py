@@ -195,11 +195,10 @@ async def upload_document(
 
     pending_version = service.backend.get_document(new_doc_id)["pending_version"]
 
-    def _run() -> None:  # 后台执行摄取（任务级失败已落 failed+error——不冒泡响应）
-        try:
-            service.ingest.run_task(task_id)
-        except Exception:  # noqa: BLE001
-            logger.exception("background ingest failed: %s", task_id)
+    def _run() -> None:  # 投递 worker（M2.1：inline 同步认领 / subprocess 唤醒字节；
+        #             任务级失败已落 failed+error——不冒泡响应）
+        if service.worker is not None:
+            service.worker.kick()
 
     background.add_task(_run)
     return JSONResponse(

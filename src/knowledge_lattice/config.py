@@ -90,6 +90,22 @@ class Settings:
     upload_max_bytes: int = 200 * 1024 * 1024  # 全局上限（PUT 独立生效——413，P3-13）
     maintenance_interval_s: float = 300.0  # 调度器周期投递 maintenance 任务（0=关闭）
 
+    # worker 任务框架（M2.1——design §5.3 任务状态机/心跳/租约/重试 + §2 部署形态）
+    # 默认 subprocess（M2.1 R2 边界裁定 A(a)：生产 fail-safe——OOM 只杀 worker 子
+    # 进程 + 自动拉起，NFR-1/§2「主进程 ×1（内含 worker 子进程）」默认成立；
+    # 测试/最小部署显式 inline——进程内同一 TaskRunner 执行体）
+    worker_mode: str = "subprocess"  # inline=进程内 TaskRunner | subprocess=子进程隔离（§2）
+    worker_heartbeat_s: float = 5.0  # running 任务心跳周期（heartbeat_at/lease_until 刷新）
+    worker_lease_s: float = 60.0  # 租约时长（过期任务可被重认领——worker 崩溃不丢任务）
+    worker_poll_s: float = 5.0  # 兜底轮询周期（IPC 唤醒之外的第二通道）
+    worker_startup_probe: bool = True  # worker 子进程启动指纹探针（写入侧 gate——TC-EMB-03 拒绝档）
+    worker_restart_backoff_s: float = 1.0  # 子进程死亡后自动拉起的退避
+    task_max_attempts: int = 3  # 重试上限（attempts ≥ 3 转 failed 留人工——TC-TASK-02）
+    # maintenance 任务行保留策略（m1-3 P3-19——done/failed 行不无限累积）
+    maintenance_keep_days: int = 7
+    maintenance_keep_count: int = 500
+    tombstone_keep_days: int = 90  # tombstone 块物理清理窗口（design §4 chunks 行注释）
+
     # 运行日志（v0.8.5：结构化 JSON→stdout；本地开发可切人读格式）
     log_level: str = "INFO"
     log_format: str = "json"  # json | human
@@ -118,6 +134,7 @@ def get_settings() -> Settings:
     return Settings(
         environment=env("LATTICE_ENV", "dev"),
         data_dir=Path(env("LATTICE_DATA_DIR", "data")),
+        embed_dim=int(_num("LATTICE_EMBED_DIM", 2560)),
         embed_api_base=_f("LATTICE_EMBED_API_BASE", "http://127.0.0.1:11434/v1"),
         embed_api_key=_f("LATTICE_EMBED_API_KEY", "local-dev"),
         embed_timeout_s=float(_num("LATTICE_EMBED_TIMEOUT_S", 30.0)),
@@ -138,6 +155,16 @@ def get_settings() -> Settings:
         upload_credential_ttl_s=float(_num("LATTICE_UPLOAD_TTL_S", 900.0)),
         upload_max_bytes=int(_num("LATTICE_UPLOAD_MAX_BYTES", 200 * 1024 * 1024)),
         maintenance_interval_s=float(_num("LATTICE_MAINTENANCE_INTERVAL_S", 300.0)),
+        worker_mode=env("LATTICE_WORKER_MODE", "subprocess"),
+        worker_heartbeat_s=float(_num("LATTICE_WORKER_HEARTBEAT_S", 5.0)),
+        worker_lease_s=float(_num("LATTICE_WORKER_LEASE_S", 60.0)),
+        worker_poll_s=float(_num("LATTICE_WORKER_POLL_S", 5.0)),
+        worker_startup_probe=env("LATTICE_WORKER_STARTUP_PROBE", "1") not in ("0", "false", "no"),
+        worker_restart_backoff_s=float(_num("LATTICE_WORKER_RESTART_BACKOFF_S", 1.0)),
+        task_max_attempts=int(_num("LATTICE_TASK_MAX_ATTEMPTS", 3)),
+        maintenance_keep_days=int(_num("LATTICE_MAINTENANCE_KEEP_DAYS", 7)),
+        maintenance_keep_count=int(_num("LATTICE_MAINTENANCE_KEEP_COUNT", 500)),
+        tombstone_keep_days=int(_num("LATTICE_TOMBSTONE_KEEP_DAYS", 90)),
         log_level=env("LATTICE_LOG_LEVEL", "INFO"),
         log_format=env("LATTICE_LOG_FORMAT", "json"),
     )

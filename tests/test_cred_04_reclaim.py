@@ -114,6 +114,7 @@ def test_maintenance_scheduler_enqueues_and_runs(tmp_path) -> None:
     settings = Settings(
         environment="test", data_dir=tmp_path, embed_dim=8,
         probe_interval_s=0, maintenance_interval_s=0.05,
+        worker_mode="inline",
     )
     app = create_app(
         settings, embedder=FakeEmbedder(dim=8), gate=EmbeddingGate(), run_startup_probe=False

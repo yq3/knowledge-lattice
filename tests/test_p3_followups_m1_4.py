@@ -270,7 +270,7 @@ def test_p2_3_create_task_failure_keeps_object(ingest_env, monkeypatch) -> None:
     env = ingest_env
     svc = env["make_service"](FakeEmbedder(dim=8))
 
-    def _boom(doc_id, *, task_type="ingest"):
+    def _boom(doc_id, *, task_type="ingest", **kwargs):  # M2.1 R2：create_task 增 target_version
         raise RuntimeError("task insert failed (simulated)")
 
     monkeypatch.setattr(env["backend"], "create_task", _boom)

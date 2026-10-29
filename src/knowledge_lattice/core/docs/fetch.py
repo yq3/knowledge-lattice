@@ -25,6 +25,11 @@ class FetchNotFoundError(Exception):
     """chunk 不存在或文档对调用者不可见（404 语义——不泄漏存在性）。"""
 
 
+# fetch 窗口宽度服务端硬上限（m1-2 P3-8 清偿——窗口 = 前后各 N 块，N ∈ [0, 10]；
+# 防超大 window 拉全文档：fetch 的 §6.1 语义是"上下文窗口"而非导出）
+FETCH_WINDOW_MAX = 10
+
+
 def fetch_chunks(
     backend,
     *,
@@ -38,7 +43,9 @@ def fetch_chunks(
 
     返回 {"chunks": [{chunk_id, seq, content, page_no}], "replaced_by": None |
     {doc_id, active_version}}；chunk 不存在 / 文档不可见 → FetchNotFoundError。
+    window 钳制到 [0, FETCH_WINDOW_MAX]（P3-8——负值取 0、超限取 10）。
     """
+    window = max(0, min(window, FETCH_WINDOW_MAX))
     plan = compile_acl(backend, user_id, org_id, now=now)  # AclDeniedError 由调用方转 403
     chunk = backend.get_chunk(chunk_id)
     if chunk is None:

@@ -114,6 +114,21 @@ class NoopKeywordGenerator:
 # ============ 服务 ============
 
 
+def build_quality_service(backend, settings: Settings) -> QualityService:
+    """quality 服务装配工厂（M2.1 R2 / Committer R1 P2-5——app 与 worker 共用）。
+
+    LLM 兜底 client 按 settings.quality_llm 选择（none=Noop 显式降级、
+    openai=内部网关 chat completions）——此前 worker 侧硬编码 Noop 与 app 装配
+    分叉，subprocess 部署下 LATTICE_QUALITY_LLM=openai 永不生效。"""
+    from knowledge_lattice.adapters.enhancer import OpenAICompatKeywordGenerator
+
+    client = (
+        NoopKeywordGenerator() if settings.quality_llm == "none"
+        else OpenAICompatKeywordGenerator(settings)
+    )
+    return QualityService(backend, settings, keyword_client=client)
+
+
 class QualityService:
     """区分度检测 / LLM 兜底 / 批量重算 / 报告（ACL 过滤）/ 人工补标。"""
 

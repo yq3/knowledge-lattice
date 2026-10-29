@@ -251,9 +251,15 @@ class AdminBackend(Protocol):
     嵌入指纹基线（embedding_fingerprints）、维度/取值只读（页壳上传表单所需）。
     """
 
-    def create_task(self, doc_id: str | None, *, task_type: str = "ingest") -> str:
+    def create_task(
+        self, doc_id: str | None, *, task_type: str = "ingest",
+        target_version: int | None = None,
+    ) -> str:
         """新建任务行（maintenance 等无文档任务 doc_id=None——P3-19 注解口径；
-        tasks.doc_id ON DELETE SET NULL 允许 NULL）。"""
+        tasks.doc_id ON DELETE SET NULL 允许 NULL）。
+
+        target_version（0005/M2.1 R2 边界裁定 B(a)）：ingest 任务的目标文档版本
+        ——取消与崩溃耗尽清扫按该版本落 pending failed（P2-3）；NULL=无版本任务。"""
         ...
 
     def get_task(self, task_id: str) -> dict | None:
@@ -265,8 +271,77 @@ class AdminBackend(Protocol):
     def update_task(
         self, task_id: str, *, status: str | None = None, error: str | None = None
     ) -> None:
-        """任务状态机推进（leased/running 由执行器调用；attempts 随 running 递增）。"""
+        """任务状态机推进（leased/running 由执行器调用；attempts 随 claim 认领递增）。
+
+        P2-1 守卫（M2.1 R2）：done 仅非终态（pending/leased/running）可入——
+        已终态零行生效（防在途执行器覆盖取消 failed / 新持有者终态）。"""
         ...
+
+    # ---- 任务队列（租约·心跳·认领——M2.1 worker 框架，design §5.3） ----
+
+    def claim_next_task(
+        self,
+        worker_id: str,
+        *,
+        lease_s: float,
+        task_types: Sequence[str] = ("ingest", "maintenance"),
+        max_attempts: int = 3,
+        now: str | None = None,
+        created_before: str | None = None,
+    ) -> dict | None:
+        """原子认领一个任务（pending，或租约过期的 leased/running——worker 崩溃后
+        重认领，TC-TASK-01/TC-E2E-03）：status→leased + lease_owner/lease_until/
+        heartbeat_at 落位；无可认领任务 → None。
+
+        并发语义（真实并发窗口——两执行器竞争同任务恰好一人认领）：单语句
+        UPDATE…WHERE id=(SELECT …)（sqlite 单写序列化）/ FOR UPDATE SKIP LOCKED
+        （PG）——第二个认领者的候选子查询在首者提交后重估、不再命中。
+        **attempts 随认领递增**（一次认领 = 一次执行尝试——认领后即崩也计数，
+        防无限崩溃循环）；attempts ≥ max_attempts 的行不认领（重试上限，
+        TC-TASK-02）。created_before 非 None 时仅认领 created_at <= 该时点的
+        任务（inline 兜底循环的「陈旧任务」口径，P2-7）。"""
+
+    def fail_exhausted_tasks(
+        self, *, max_attempts: int, now: str | None = None
+    ) -> list[dict]:
+        """崩溃耗尽清扫（P2-2，M2.1 R2）：租约已过期且 attempts ≥ max 的
+        leased/running 任务 → failed + error 原因（worker 反复崩溃后不滞留
+        leased——「attempts ≥ 3 转 failed 留人工」的崩溃侧收口）。返回被清扫
+        任务行（含 target_version——调用方按该版本落文档侧 pending failed）。"""
+        ...
+
+    def heartbeat_task(
+        self, task_id: str, worker_id: str, *, lease_s: float, now: str | None = None
+    ) -> bool:
+        """心跳（每 worker_heartbeat_s）：刷新 heartbeat_at + lease_until。
+
+        仅当 lease_owner=worker_id 且 status IN (leased, running) 时生效（租约
+        被重认领/任务被取消/已终态 → False——执行器在阶段边界据此停止，
+        TC-TASK-03）。"""
+
+    def cancel_task(self, task_id: str, *, reason: str, now: str | None = None) -> dict | None:
+        """任务取消（TC-TASK-03）：非终态（pending/leased/running）→ failed +
+        error=reason + 清租约，返回取消后的任务行；已终态 → None（幂等不复活）。
+
+        文档侧一致性（不滞留 parsing）由调用方（core 摄取消编排）在同一时刻
+        落 pending 版本失败。"""
+
+    def delete_expired_memberships(self, *, now: str | None = None) -> int:
+        """过期成员关系物理清理（maintenance 任务体——design §3/§5.1：读路径只
+        过滤不删除，物理删除交定时任务，触发 trg_membership_delete_cleanup 级联
+        清授权）。返回删除行数。"""
+
+    def delete_aged_tombstones(self, *, before_ts: str) -> int:
+        """tombstone 块到期物理清理（maintenance 任务体——design §4「保留 90 天后
+        物理删除」；时点基准 = chunks.tombstoned_at〔0004 迁移新增，切换事务写入〕
+        <= before_ts；chunk_vectors 经 FK CASCADE 同步消失）。返回删除行数。"""
+
+    def trim_finished_tasks(
+        self, *, keep_days: int, keep_count: int, task_type: str = "maintenance",
+        now: str | None = None,
+    ) -> int:
+        """maintenance 任务行保留策略（m1-3 P3-19）：done/failed 行先按天数截尾、
+        再按条数上限保留最新 keep_count 行。返回删除行数。"""
 
     def get_document(self, doc_id: str) -> dict | None:
         ...

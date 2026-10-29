@@ -5,6 +5,13 @@
 - embedder：OpenAI 兼容客户端（测试可注入 fake）；gate：探针结果进程内状态；
 - reranker/enhancer/breakers（M1-1 检索配方）：按 config 档位构造（none=显式
   降级路径）+ 查询侧熔断共享态（NFR-8）；
+- worker（M2.1）：任务执行迁入 worker 框架——settings.worker_mode 二选一：
+  `subprocess`（生产 §2 部署形态：WorkerSupervisor 拉起 `python -m
+  knowledge_lattice.worker` 子进程，IPC 唤醒 + 兜底轮询，OOM 只杀子进程 +
+  自动拉起）/ `inline`（进程内 TaskRunner 同一执行体——测试与最小部署捷径）；
+  upload / MCP upload / maintenance 调度器只投递任务行 + kick，不再进程内直跑；
+- maintenance 调度器（§3 v0.8.3）：周期投递 maintenance 任务行（执行体进 worker
+  ——三任务体 + 保留策略见 worker/maintenance.py）；
 - MCP：FastMCP 单一 server（docs 组 search），http_app 挂载在根（/mcp 路径）、
   lifespan 由本 app 接管（StreamableHTTPSessionManager 初始化——fastmcp ASGI 集成）；
 - 静态页壳：GET / 返回 index.html、/static/* 托管 web/（无构建工具——§5.7）；
@@ -15,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -31,14 +39,8 @@ from knowledge_lattice.config import Settings, get_settings
 from knowledge_lattice.core.docs.acl import AclDeniedError
 from knowledge_lattice.core.docs.credentials import CredentialError, CredentialService
 from knowledge_lattice.core.docs.ingest import IngestService
-from knowledge_lattice.core.docs.quality import (
-    NoopKeywordGenerator,
-    QualityService,
-)
 from knowledge_lattice.domain.auth import AuthError, OrgContextError
 from knowledge_lattice.mcp.server import build_mcp_server
-from knowledge_lattice.store.sqlite import connect, migrate_db
-from knowledge_lattice.store.sqlite.threaded import ThreadLocalBackend
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +48,7 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 
 
 class ServiceContext:
-    """依赖容器（backend/settings/gate/ingest/credentials/quality/embedder/reranker/enhancer/breakers）。"""
+    """依赖容器（backend/settings/gate/ingest/credentials/quality/embedder/reranker/enhancer/breakers/worker）。"""
 
     def __init__(
         self,
@@ -61,6 +63,7 @@ class ServiceContext:
         reranker=None,
         enhancer=None,
         breakers=None,
+        worker=None,
     ) -> None:
         self.settings = settings
         self.backend = backend
@@ -72,6 +75,98 @@ class ServiceContext:
         self.reranker = reranker
         self.enhancer = enhancer
         self.breakers = breakers
+        self.worker = worker
+
+
+class InlineWorkerHandle:
+    """inline 模式 worker 句柄（app 侧投递口 → TaskRunner）：
+
+    - kick()：同步消化任务队列（upload 响应后的 BackgroundTask / MCP 上传线程
+      调用——保持 M1「响应返回前摄取已推进」的时序语义；重试回队随 attempts
+      上限天然收敛）；
+    - wake()：仅唤醒兜底循环（maintenance 调度器投递后调用——异步领取）；
+    - 兜底循环线程（P2-7，M2.1 R2）：**全类型认领**——maintenance 即时领（调度
+      器低延迟）+ ingest 以「陈旧任务」口径领（created_at ≤ now−poll_s：重启
+      遗留/超量滞留/租约过期的 ingest 任务在 poll 周期内被领，与 subprocess 主
+      循环语义一致）；新鲜 ingest 恒由投递方 kick 的同步消化先抢到（claim
+      原子性 + 陈旧过滤——上传时序语义无竞态）。空闲轮询（worker_poll_s）+
+      事件唤醒（IPC 双通道的进程内等价形态）。
+    """
+
+    def __init__(self, runner, *, poll_s: float, max_drain: int = 1024) -> None:
+        self._runner = runner
+        self._poll_s = poll_s
+        self._max_drain = max_drain
+        self._wake = threading.Event()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def kick(self) -> None:
+        """同步消化任务队列（投递方调用）：反复认领执行至队列空——重试回队（attempts
+        有界）也被本轮消化；保持 M1「响应返回前摄取已推进」的时序语义。"""
+        self._wake.set()
+        try:
+            for _ in range(self._max_drain):  # 有界防护（attempts 上限天然收敛）
+                if not self._runner.run_once():
+                    break
+        except Exception:  # noqa: BLE001 —— run_once 不抛；防御
+            logger.exception("inline worker kick failed")
+
+    def wake(self) -> None:
+        self._wake.set()
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def _aged_before(self) -> str:
+        """ingest 陈旧口径时点：now − poll_s（claim 的 created_before 参数）。"""
+        from knowledge_lattice.store.taskclock import add_seconds, utc_now_ts
+
+        return add_seconds(utc_now_ts(), -max(self._poll_s, 0.0))
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                # ① maintenance 即时认领（调度器 wake 后毫秒级领取）
+                if self._runner.run_once(task_types=("maintenance",)):
+                    continue
+                # ② ingest 陈旧认领（P2-7：重启遗留/超量滞留/租约过期——poll 内收口）
+                if self._runner.run_once(
+                    task_types=("ingest",), created_before=self._aged_before()
+                ):
+                    continue
+            except Exception:  # noqa: BLE001
+                logger.exception("inline worker loop failed")
+            self._wake.wait(self._poll_s)
+            self._wake.clear()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._wake.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5.0)
+
+
+class SubprocessWorkerHandle:
+    """subprocess 模式 worker 句柄：kick/wake 同为 stdin 唤醒字节（worker 侧
+    双通道循环领取；supervisor 监控死亡自动拉起——TC-TASK-04）。"""
+
+    def __init__(self, supervisor) -> None:
+        self._supervisor = supervisor
+
+    def kick(self) -> None:
+        self._supervisor.notify()
+
+    def wake(self) -> None:
+        self._supervisor.notify()
+
+    def start(self) -> None:
+        self._supervisor.start()
+        self._supervisor.start_monitor()
+
+    def stop(self) -> None:
+        self._supervisor.stop()
 
 
 def create_app(
@@ -85,12 +180,19 @@ def create_app(
 ) -> FastAPI:
     """构建 FastAPI 应用（测试可注入 embedder/gate/reranker/enhancer、跳过启动探针）。"""
     settings = settings or get_settings()
+    if settings.worker_mode not in ("inline", "subprocess"):
+        raise ValueError(
+            f"invalid worker_mode {settings.worker_mode!r}（合法值：inline | subprocess"
+            "——fail-closed，不静默回退）"
+        )
     settings.data_dir.mkdir(parents=True, exist_ok=True)
 
-    bootstrap_conn = connect(settings.db_path)
-    migrate_db(bootstrap_conn)
-    bootstrap_conn.close()
-    backend = ThreadLocalBackend(settings.db_path)
+    # P2-4/P2-5（M2.1 R2）：backend/quality 经共享工厂装配——与 worker 子进程
+    # build_default_services 同源（杜绝主/子进程装配分叉）
+    from knowledge_lattice.core.docs.quality import build_quality_service
+    from knowledge_lattice.store.factory import build_backend
+
+    backend = build_backend(settings)
 
     gate = gate or EmbeddingGate()
     embedder = embedder or OpenAICompatEmbedder(settings)
@@ -119,24 +221,39 @@ def create_app(
         ),
     }
     credentials = CredentialService(backend, settings, settings.data_dir / "objects")
-    # LLM 兜底 provider（quality_llm=none 默认 noop——不发网关调用；D12 同款形态）
-    from knowledge_lattice.adapters.enhancer import OpenAICompatKeywordGenerator
-
-    quality = QualityService(
-        backend, settings,
-        keyword_client=(
-            NoopKeywordGenerator() if settings.quality_llm == "none"
-            else OpenAICompatKeywordGenerator(settings)
-        ),
-    )
+    # LLM 兜底 provider 经共享工厂（quality_llm=none 默认 noop——不发网关调用）
+    quality = build_quality_service(backend, settings)
     ingest = IngestService(
         backend, embedder, settings, gate, settings.data_dir / "objects",
         quality=quality,
     )
+
+    # ---- worker 框架（M2.1）与 maintenance 调度器（design §3 v0.8.3） ----
+    #      投递侧统一形态：写任务行 + kick worker（执行体在 worker——inline 为
+    #      TaskRunner、subprocess 为子进程；主进程不再进程内直跑任务）
+
+    if settings.worker_mode == "subprocess":
+        from knowledge_lattice.worker.runner import WorkerSupervisor
+
+        supervisor = WorkerSupervisor(settings)
+        worker_handle = SubprocessWorkerHandle(supervisor)
+    else:
+        from knowledge_lattice.worker.runner import TaskRunner, WorkerServices
+
+        runner = TaskRunner(
+            backend, settings,
+            services=WorkerServices(
+                backend=backend, settings=settings, ingest=ingest,
+                credentials=credentials,
+            ),
+        )
+        worker_handle = InlineWorkerHandle(runner, poll_s=settings.worker_poll_s)
+
     service = ServiceContext(
         settings=settings, backend=backend, gate=gate, ingest=ingest,
         credentials=credentials, quality=quality, embedder=embedder,
         reranker=reranker, enhancer=enhancer, breakers=breakers,
+        worker=worker_handle,
     )
 
     mcp_server = build_mcp_server(service, settings)
@@ -153,27 +270,17 @@ def create_app(
             except Exception:  # noqa: BLE001 —— 周期探针失败不杀任务
                 logger.exception("periodic fingerprint probe failed")
 
-    # ---- 内嵌调度器：周期投递 maintenance 任务（design §3 v0.8.3——M1-3 落
-    #      「未消费凭证回收」一项；子进程 worker 随 M2，当前主进程内执行） ----
-
-    def _run_maintenance_once() -> None:
-        task_id = backend.create_task(None, task_type="maintenance")
-        try:
-            backend.update_task(task_id, status="running")
-            stats = credentials.purge_expired()
-            backend.update_task(task_id, status="done")
-            logger.info("maintenance done: %s", stats)
-        except Exception as exc:  # noqa: BLE001 —— 任务级失败落 failed+error
-            backend.update_task(task_id, status="failed", error=str(exc))
-            raise
+    def _enqueue_maintenance() -> None:
+        backend.create_task(None, task_type="maintenance")
+        worker_handle.wake()
 
     async def _periodic_maintenance() -> None:
         while True:
             await asyncio.sleep(settings.maintenance_interval_s)
             try:
-                await asyncio.to_thread(_run_maintenance_once)
-            except Exception:  # noqa: BLE001 —— 周期任务失败不杀循环
-                logger.exception("periodic maintenance failed")
+                await asyncio.to_thread(_enqueue_maintenance)
+            except Exception:  # noqa: BLE001 —— 周期投递失败不杀循环
+                logger.exception("periodic maintenance enqueue failed")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -191,6 +298,8 @@ def create_app(
             probe_task = asyncio.create_task(_periodic_probe())
         if settings.maintenance_interval_s > 0:
             maintenance_task = asyncio.create_task(_periodic_maintenance())
+        worker_handle.start()  # worker：inline 兜底循环 / subprocess 子进程 + 监控
+        app.state.worker = worker_handle
         try:
             async with mcp_app.lifespan(mcp_app):  # MCP session manager 交给父 app
                 yield
@@ -198,6 +307,7 @@ def create_app(
             for task in (probe_task, maintenance_task):
                 if task is not None:
                     task.cancel()
+            worker_handle.stop()
 
     app = FastAPI(title="knowledge-lattice", lifespan=lifespan)
     app.state.service = service
