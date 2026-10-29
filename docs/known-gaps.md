@@ -22,6 +22,8 @@
 | [G-10](#g-10-网关侧请求留存策略未确认嵌入rerank-外发内容可能落-acl-管辖之外的存储) | 已接受（同信任域——用户决策 2026-10-22） | 网关日志/正文留存策略未确认；若留存，受限维度内容落本服务 ACL 管辖之外 | NFR-6 / D12 / 需求风险表（#42 必修1） | 2026-10-22 |
 | [G-11](#g-11-目标机系统-python-399-低于运行时口径doclingfastmcp-硬性要求-310) | 已接受（对冲已定——uv 托管 CPython 3.12；M0a 断言与部署 runbook 待落） | 目标机系统 Python 3.9.9 装不上 docling/FastMCP（均 ≥3.10）——自带解释器对冲，系统解释器不作为依赖 | NFR-1 / D1 / D2 / D11 / design §7 | 2026-10-22 |
 | [G-12](#g-12-nfr-6-shared-storage-场景的只读与扩展名限制未实现) | 已接受（当前无共享存储入口；登记防误读为已实现） | file_ref 的「白名单根 + realpath + 只读 + 大小/扩展名限制」中，只读与扩展名限制两防线未实现——M1-3 只落地不透明 upload_id 面（9 形态拒绝 + realpath 纵深），共享存储路径分支产品不存在 | NFR-6 / FR-1 / design §6.1 · M1-3 | 2026-10-25 |
+| [G-13](#g-13-sqlite-审计月库-rowid-跨-vacuum-不保证保留按读序的链验证在恢复产物上理论可断) | 已接受（现码无月库 VACUUM 路径；m2-3 审计读路径按 prev_hash 链遍历对冲） | sqlite 月库表无 INTEGER PRIMARY KEY，rowid 不保证跨 VACUUM 保留——若月库纳入备份/压缩（VACUUM/VACUUM INTO），恢复产物按读序（rowid）做链验证可断（row_hash/prev_hash 内容自洽不受影响） | FR-6 / design §4 注 · M2-2 | 2026-10-29 |
+| [G-14](#g-14-pg-audit_events-seq-列首次部署触发全表-rewrite-的运维窗口) | 已接受（POC 量级可忽略；RUNBOOK 注记升级序列） | pg 侧 `audit_events` 加 seq 列（volatile DEFAULT nextval）首次 ensure 时触发全表 rewrite（ACCESS EXCLUSIVE）；ensure_audit 每连接 DDL 并发面同族 | FR-6 / design §4 注 · M2-2 | 2026-10-29 |
 
 ---
 
@@ -153,3 +155,18 @@
 - **残留缺口**（接受的）：`只读` 与 `扩展名限制` 两防线无实现载体；`file_ref` 语义仅在 MCP 工具描述中声明「不接受路径/URL」，无共享存储变体用例。
 - **收窄动作**（引入共享存储场景时，未排期）：①只读打开（`O_RDONLY` + 写权限拒绝）；②扩展名白名单（与解析器支持面对齐）；③补 SSRF/穿越/链接三防线的共享存储变体用例（TC-CRED-04 扩展）。
 - **重开条件**：产品决策引入共享存储 file_ref 入口。
+
+## G-13 sqlite 审计月库 rowid 跨 VACUUM 不保证保留：按读序的链验证在恢复产物上理论可断
+
+- **状态**：已接受（2026-10-29 随 M2-2 登记——Committer R2 裁定 + Tester R2 新观察）。
+- **问题**：M2-2 哈希链读序/链尾/封存末哈希四路同源取 **sqlite rowid**（`audit_events` 月库表无 INTEGER PRIMARY KEY）；SQLite 语义上 rowid 不保证跨 `VACUUM` 保留——若月库文件纳入 `VACUUM INTO` 备份或未来做压缩，恢复产物 rowid 序可能 ≠ 原插入序，按读序（rowid）做链验证/末哈希取值会与链序错位。`row_hash`/`prev_hash` 字段内容自洽（canonical 序冻结、不含排序键），链本身不断——断的是「以读序替代链遍历」的验证方式。
+- **触发场景**：现码无任何月库 VACUUM 路径（`VACUUM INTO` 仅主库快照，audit_*.db 不在其内——见 RUNBOOK 备份节月库口径）；仅当未来把月库纳入 VACUUM 类备份/压缩时浮现。
+- **对冲**：m2-3 审计读路径按 **prev_hash 链遍历**验证（不依赖读序）；若届时月库引入 VACUUM，需给月库表加显式稳定插入键（如 `INSERT_SEQ INTEGER PRIMARY KEY AUTOINCREMENT` 或复用 outbox 单调序）。
+- **重开条件**：月库文件纳入 VACUUM/压缩路径，或 m2-3 审计读路径实现时选用读序验证。
+
+## G-14 pg audit_events seq 列首次部署触发全表 rewrite 的运维窗口
+
+- **状态**：已接受（2026-10-29 随 M2-2 登记——POC 量级可忽略，运维序列注记）。
+- **问题**：M2-2 哈希链 pg 侧链序取 `seq BIGINT DEFAULT nextval(audit_events_seq)`；PG 16 对 volatile DEFAULT 的 `ADD COLUMN` 触发**全表 rewrite（ACCESS EXCLUSIVE 锁）**——既有 `audit_events` 分区的首次 `ensure_audit` 会锁表重写（实测逐行求值填连续 seq，行为正确但有一次性的锁窗口）。另：`CREATE SEQUENCE/ALTER` 加入每连接 `ensure_audit` 后，并发首次建连的目录竞态面略增（与 m2-1 记录的 `setup_connection` DDL 并发问题同族——advisory lock 内序列化）。
+- **对冲**：RUNBOOK 升级序列注记——**升级后先单独跑一次连接工厂（或任意单连接初始化）完成 rewrite，再放开并发服务**；量级在 POC（月库行数 ≤ 万级）完全可忽略。
+- **重开条件**：月库行数达显著量级（rewrite 窗口分钟级）或 PG app 接线段（m2-3+）引入连接池并发首连场景。

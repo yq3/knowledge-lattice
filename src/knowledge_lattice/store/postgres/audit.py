@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS audit_events (
   outcome     TEXT NOT NULL,
   request_id  TEXT,
   detail_json TEXT,
+  prev_hash   TEXT,             -- 哈希链：前一条 row_hash（月首条=上月末，FR-6）
+  row_hash    TEXT,             -- 本行哈希（canonical 拼接见 store/audit_chain.py）
   created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id, created_at)
 ) PARTITION BY RANGE (created_at)
@@ -85,6 +87,64 @@ CREATE TRIGGER audit_no_truncate BEFORE TRUNCATE ON {target}
   FOR EACH STATEMENT EXECUTE FUNCTION lattice_audit_append_only_truncate()
 """
 
+# ---- 封存（M2.4 m2-2——TC-OPS-02①：过月分区只读） ----
+#
+# PG 的「只读打开 + 文件权限」等价物 = 分区上落 sealed 触发器（BEFORE
+# INSERT OR UPDATE OR DELETE——owner 亦拦，比 REVOKE 更强）+ REVOKE PUBLIC
+# 写权限（纵深）。封存记录入 audit_month_seals（month PK / last_hash /
+# rows / sealed_at——「封存记末哈希」，FR-6）。
+SEALED_FN_DDL = """\
+CREATE OR REPLACE FUNCTION lattice_audit_month_sealed() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'audit_events month % is sealed (read-only)', TG_TABLE_NAME;
+END
+$$
+"""
+
+SEALED_TRIGGER_DDL = """\
+DROP TRIGGER IF EXISTS audit_month_sealed ON {target};
+CREATE TRIGGER audit_month_sealed BEFORE INSERT OR UPDATE OR DELETE ON {target}
+  FOR EACH ROW EXECUTE FUNCTION lattice_audit_month_sealed()
+"""
+
+SEALS_TABLE_DDL = """\
+CREATE TABLE IF NOT EXISTS audit_month_seals (
+  month     TEXT PRIMARY KEY,
+  last_hash TEXT,
+  rows      INTEGER NOT NULL,
+  sealed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
+# ---- 插入序列（P2-1/R2：链序=插入序；注释 P3-新②/R3 按实测口径改写） ----
+#
+# (created_at,id) 全序在「同秒（测试造数 / CURRENT_TIMESTAMP 秒级依赖）+
+# uuid4 随机 id」下与插入序错位；µs 方案对「同事务批量（transaction_timestamp
+# 恒定）」无效——**单调序列列**是唯一可靠插入序。幂等 ensure（非迁移——月库
+# 表不在主库迁移域）：
+#   · CREATE SEQUENCE IF NOT EXISTS（schema 内，各测试 schema 独立）；
+#   · ADD COLUMN IF NOT EXISTS seq BIGINT DEFAULT nextval(...)——分区父表
+#     ALTER 自动传播到全部分区。
+#
+# **既有行回填（PG 16 实测——与 PG 11「常量默认免 rewrite」条款相补）**：
+# volatile DEFAULT（nextval）触发全表 rewrite **逐行求值**——加列时既有行即
+# 获连续 seq（物理序=插入序），无需 UPDATE 回填（append-only 触发器本就拦
+# UPDATE）；幂等二跑不 rewrite。首次部署大分区的一次性 rewrite 运维口径见
+# P3-新③（登记 RUNBOOK/PG 接线段——编排侧）。
+#   · NULL 防御分支：正常路径不可达（rewrite 已填既有行、INSERT 走 DEFAULT），
+#     仅「显式 INSERT NULL 造数」可达——读序分支将其排最前（时间语义上早于
+#     一切 seq 行，保守归位；见 read_monthly_events / last_row_hash 的
+#     `(seq IS NULL) DESC`）。
+SEQ_DDL = """\
+CREATE SEQUENCE IF NOT EXISTS audit_events_seq
+"""
+
+SEQ_COLUMN_DDL = """\
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS seq BIGINT
+  DEFAULT nextval('audit_events_seq')
+"""
+
 
 def month_bounds(month: str) -> tuple[str, str]:
     """'YYYYMM' → [当月首日 0 点, 次月首日 0 点)（RANGE 分区边界，UTC 月界——
@@ -119,11 +179,69 @@ def ensure_month_partition(conn: psycopg.Connection, when: datetime | None = Non
 
 def ensure_audit(conn: psycopg.Connection, when: datetime | None = None) -> None:
     """确保分区父表 + append-only 触发器（行级 + TRUNCATE statement 级）+
-    当月分区就绪（连接工厂滚动入口，幂等）。"""
+    插入序列（P2-1/R2——链序=插入序）+ 当月分区就绪（连接工厂滚动入口，幂等）。"""
     conn.execute(AUDIT_PARENT_DDL)
+    _ensure_chain_columns(conn)
     conn.execute(APPEND_ONLY_FN_DDL)
     conn.execute(APPEND_ONLY_DELETE_FN_DDL)
     conn.execute(APPEND_ONLY_TRUNCATE_FN_DDL)
     conn.execute(APPEND_ONLY_TRIGGERS_DDL)
     conn.execute(APPEND_ONLY_TRUNCATE_TRIGGER_DDL.format(target="audit_events"))
+    conn.execute(SEQ_DDL)
+    conn.execute(SEQ_COLUMN_DDL)
     ensure_month_partition(conn, when)
+
+
+def _ensure_chain_columns(conn: psycopg.Connection) -> None:
+    """存量父表补哈希链列（幂等——ALTER 自动传播到全部既有分区）。"""
+    rows = conn.execute(
+        "SELECT column_name FROM information_schema.columns"
+        " WHERE table_schema = current_schema() AND table_name = 'audit_events'"
+        "   AND column_name IN ('prev_hash', 'row_hash')"
+    ).fetchall()
+    have = {r[0] for r in rows}
+    for col in ("prev_hash", "row_hash"):
+        if col not in have:
+            conn.execute(f"ALTER TABLE audit_events ADD COLUMN {col} TEXT")
+
+
+def last_row_hash(conn: psycopg.Connection, month: str) -> str | None:
+    """指定月分区末行 row_hash（**插入序末条**——seq 单调；NULL 防御分支
+    排最前→末条取非 NULL 最大 seq；无行 → None）。"""
+    start, end = month_bounds(month)
+    row = conn.execute(
+        "SELECT row_hash FROM audit_events"
+        " WHERE created_at >= %(s)s AND created_at < %(e)s"
+        "   AND row_hash IS NOT NULL"
+        f" ORDER BY (seq IS NULL) DESC, seq DESC, created_at DESC, id DESC LIMIT 1",
+        {"s": start, "e": end},
+    ).fetchone()
+    return row[0] if row else None
+
+
+def month_row_count(conn: psycopg.Connection, month: str) -> int:
+    start, end = month_bounds(month)
+    return conn.execute(
+        "SELECT count(*) FROM audit_events"
+        " WHERE created_at >= %(s)s AND created_at < %(e)s",
+        {"s": start, "e": end},
+    ).fetchone()[0]
+
+
+def seal_month_partition(conn: psycopg.Connection, month: str) -> dict:
+    """封存分区（幂等）：sealed 触发器 + REVOKE 写权限 + audit_month_seals
+    记录（末哈希——FR-6「封存记末哈希」）。"""
+    conn.execute(SEALED_FN_DDL)
+    conn.execute(SEALED_TRIGGER_DDL.format(target=partition_name(month)))
+    conn.execute(
+        f"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON {partition_name(month)} FROM PUBLIC"
+    )
+    conn.execute(SEALS_TABLE_DDL)
+    conn.execute(
+        "INSERT INTO audit_month_seals(month, last_hash, rows)"
+        " VALUES(%(m)s, %(h)s, %(n)s)"
+        " ON CONFLICT (month) DO NOTHING",
+        {"m": month, "h": last_row_hash(conn, month),
+         "n": month_row_count(conn, month)},
+    )
+    return {"month": month, "last_hash": last_row_hash(conn, month)}

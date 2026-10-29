@@ -40,13 +40,36 @@ def bk(backend):
 @pytest.fixture()
 def claim_factory(backend, tmp_path):
     """并发臂的 backend 工厂：sqlite 每线程一连接（check_same_thread 纪律）、
-    pg 共享单连接（psycopg3 线程安全）。"""
+    pg **每线程独立连接**（P3-N2/P3-c——psycopg 连接非线程安全且共享单连接
+    时两认领线程被驱动串行化，SKIP LOCKED 的真实并发窗口从未被触达；独立
+    连接 + 同 schema + 工厂纪律（setup_connection 幂等）恢复真并发保真度）。"""
     if backend.is_sqlite:
         from knowledge_lattice.store.sqlite.threaded import ThreadLocalBackend
 
         proxy = ThreadLocalBackend(tmp_path / "lattice.db")
         return lambda: proxy
-    return lambda: backend.make_backend()
+
+    import psycopg
+
+    from knowledge_lattice.store.postgres.backend import PgBackend
+
+    dsn, schema = backend.dsn, backend.schema
+
+    def _new_conn_backend():
+        # 最小初始化：只 SET search_path——**不跑 setup_connection**（其内
+        # ensure_audit 是 DDL（CREATE/DROP TRIGGER），两线程同时建连接会并发
+        # 撞 pg_class/pg_trigger 目录行（InternalError: tuple concurrently
+        # updated）；审计表已由 fixture 主连接 ensure 就绪，并发臂纯 DML）
+        conn = psycopg.connect(dsn, autocommit=True)
+        try:
+            conn.execute(f'SET search_path TO "{schema}", public')
+            conn.execute("SET TIME ZONE 'UTC'")
+        except BaseException:
+            conn.close()
+            raise
+        return PgBackend(conn)
+
+    return _new_conn_backend
 
 
 def _mk_task(bk, *, task_type: str = "ingest") -> str:

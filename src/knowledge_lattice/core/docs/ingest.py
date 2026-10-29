@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
@@ -50,6 +51,13 @@ from knowledge_lattice.core.docs.quality import (
     MojibakeQualityError,
     QualityService,
     mojibake_tier,
+)
+from knowledge_lattice.domain.audit_events import (
+    EVENT_DOCUMENT_DELETE,
+    EVENT_DOCUMENT_DIMS_CHANGE,
+    EVENT_DOCUMENT_OVERWRITE,
+    EVENT_DOCUMENT_UPLOAD,
+    EVENT_TASK_CANCEL,
 )
 from knowledge_lattice.store.backend import VersionConflictError
 
@@ -89,6 +97,12 @@ class _LostLeaseError(Exception):
 
 def new_ulid(prefix: str) -> str:
     return f"{prefix}_{str(_ulid.ULID()).lower()}"
+
+
+def _audit_event(event_type: str, payload: dict) -> tuple[str, str]:
+    """治理事件 → backend audit 参数（(event_type, payload_json)——同事务写
+    audit_outbox，TC-OPS-01）。"""
+    return event_type, json.dumps(payload, ensure_ascii=False)
 
 
 def _copy_streaming(src: Path, dst: Path) -> str:
@@ -251,6 +265,10 @@ class IngestService:
         # 磁盘满等）。补偿范围限定 create_document/_start_overwrite 本身——
         # **create_task 失败保留对象**（文档行已在库并引用该对象，删了反而
         # 造成「文档引用缺失对象」的不一致；任务缺失可由重试/维护面补）
+        #
+        # M2.4 m2-2（TC-OPS-01）：治理事件与业务写**同一事务**——task_id 预生成
+        #（outbox payload 与任务行同源关联；backend.create_task 收显式 id）。
+        task_id = f"tsk_{uuid.uuid4()}"
         task_version: int | None = None
         try:
             if doc_id is None:
@@ -267,11 +285,15 @@ class IngestService:
                     owner_user_id=owner_user_id,
                     raw_object_key=obj_name,
                     pending_dims_json=json.dumps(dims, ensure_ascii=False) if dims else None,
+                    audit=_audit_event(EVENT_DOCUMENT_UPLOAD, {
+                        "org_id": org_id, "doc_id": doc_id, "actor": owner_user_id,
+                        "task_id": task_id, "version": 1,
+                        "title": title or (filename or doc_id),
+                    }),
                 )
                 task_version = 1  # 首传：pending v1（create_document 置 1）
             else:
-                task_version = self._backend.max_document_version(doc_id) + 1
-                self._start_overwrite(
+                task_version = self._start_overwrite(
                     doc_id=doc_id,
                     org_id=org_id,
                     actor_user_id=owner_user_id,
@@ -281,8 +303,8 @@ class IngestService:
                     mime_type=mime_type or "application/octet-stream",
                     raw_object_key=obj_name,
                     pending_dims_json=json.dumps(dims, ensure_ascii=False) if dims else None,
-                    pending_version=task_version,  # 与 _start_overwrite 同源版本号
                     grants=grants,  # B-1①：复用已读授权展开（同一 actor，不二次读）
+                    task_id=task_id,  # 治理事件 outbox payload 同源（M2.4）
                 )
         except BaseException:
             try:
@@ -293,10 +315,10 @@ class IngestService:
         # create_task 在补偿范围外（P2-3）：文档行已引用对象——失败上抛但对象保留；
         # target_version（0005）：首传=1 / 覆盖上传=新 pending 版本号——取消与
         # 崩溃耗尽清扫按任务目标版本落失败（不误杀新版本上传，P2-3）
-        task_id = self._backend.create_task(
-            doc_id, task_type="ingest", target_version=task_version
+        created = self._backend.create_task(
+            doc_id, task_type="ingest", target_version=task_version, task_id=task_id
         )
-        return doc_id, task_id
+        return doc_id, created
 
     def _require_document(self, *, doc_id: str, org_id: str) -> dict:
         """覆盖/删除/改维度共用前置：存在 + org 一致（否则 404——存在性敏感）。"""
@@ -331,16 +353,19 @@ class IngestService:
         pending_dims_json: str | None,
         pending_version: int | None = None,
         grants: dict[str, tuple[str, ...]] | None = None,
-    ) -> None:
+        task_id: str | None = None,
+    ) -> int:
         """覆盖上传入口（§5.3 文档更新）：操作权限 → **旧维度值校验**（B-1①，
         FR-4 严格口径——文档当前全部维度值 ∈ 操作者 grants，与新值共用同一
         公共校验 `_require_values_in_grants`，防两处漂移）→ pending 409 →
-        新版本号 max(历史)+1（失败版本号不复用——P0-2.3）→ 开新 pending
-        （不动 active_*）。
+        **新版本号事务内自算**（max(历史)+1——失败版本号不复用 P0-2.3；store
+        层 BEGIN 内计算，闭合「服务层 max 读取与写入间」的理论碰撞窗口，P3-N5）
+        → 开新 pending（不动 active_*）→ 返回实际版本号（P3-N5：调用方
+        create_task 的 target_version 与之同源——移入本方法并返回）。
 
-        pending_version（M2.1 R2）：调用方已计算的新版本号（与 create_task 的
-        target_version 同源——一次读取两处消费，防「任务目标版本 ≠ 实开 pending
-        版本」的错位）；缺省时本方法自算（兼容旧调用形态）。
+        治理事件（M2.4 m2-2）：document.overwrite 与版本开启同事务（TC-OPS-01）
+        ——payload 记 task_id（预生成，与任务行同源）；新版本号由任务行
+        target_version 承载（事件 → task_id → target_version 可追溯闭环）。
 
         旧值校验理由：切换事务将**整体替换** document_dimensions（pending_dims_json
         覆盖），操作者须对现行状态有写权限——防「把文档拉回自己可见域而不曾
@@ -362,16 +387,22 @@ class IngestService:
                 key=key, values=old_values, grants=grants,
                 actor_user_id=actor_user_id, what="current",
             )
-        if pending_version is None:
-            pending_version = self._backend.max_document_version(doc_id) + 1
+        audit = (
+            _audit_event(EVENT_DOCUMENT_OVERWRITE, {
+                "org_id": org_id, "doc_id": doc_id, "actor": actor_user_id,
+                "task_id": task_id,
+            })
+            if task_id is not None else None
+        )
         try:
-            self._backend.start_overwrite(
+            return self._backend.start_overwrite(
                 doc_id=doc_id,
-                pending_version=pending_version,
                 content_hash=content_hash,
                 mime_type=mime_type,
                 raw_object_key=raw_object_key,
                 pending_dims_json=pending_dims_json,
+                pending_version=pending_version,
+                audit=audit,
             )
         except VersionConflictError as exc:
             # R2 P2-2：库级兜底（start_overwrite WHERE 零行）映射 409 语义——
@@ -433,7 +464,12 @@ class IngestService:
         self._require_write_permission(doc=doc, actor_user_id=actor_user_id)
 
         cancelled = self._backend.cancel_task(
-            task_id, reason="cancelled: by user request"
+            task_id, reason="cancelled: by user request",
+            audit=_audit_event(EVENT_TASK_CANCEL, {
+                "org_id": org_id, "task_id": task_id, "doc_id": task["doc_id"],
+                "actor": actor_user_id,
+                "target_version": task.get("target_version"),
+            }),
         )
         if cancelled is not None and task.get("target_version") is not None:
             self._fail_doc_version(
@@ -442,23 +478,24 @@ class IngestService:
         return self._backend.get_task(task_id)
 
     def delete_document(self, *, org_id: str, doc_id: str, actor_user_id: str) -> None:
-        """删除文档：操作权限 → 同事务取消任务 + 级联删（TC-VER-07/T19①）→
-        对象文件清理（best effort）。管理动作入 outbox 审计。"""
+        """删除文档：操作权限 → 同事务（取消任务 + 级联删 + **outbox 治理事件**
+        ——M2.4 m2-2 收口，原事务外 append_outbox 废除）→ 对象文件清理
+        （best effort）。"""
         doc = self._require_document(doc_id=doc_id, org_id=org_id)
         self._require_write_permission(doc=doc, actor_user_id=actor_user_id)
         object_key = doc["raw_object_key"]
-        self._backend.delete_document(doc_id)
+        # M2-S3：sem_chunk_entities（untag）随删清挂此编排位——语义轨道段在本
+        # 事务语义内补齐（TC-OPS-04①「（M2-S3 起 untag）同事务」半句）
+        self._backend.delete_document(
+            doc_id,
+            audit=_audit_event(EVENT_DOCUMENT_DELETE, {
+                "org_id": org_id, "doc_id": doc_id, "actor": actor_user_id,
+            }),
+        )
         try:
             (self._objects_dir / object_key).unlink(missing_ok=True)
         except OSError:
             logger.warning("object file cleanup failed: %s", object_key)
-        self._backend.append_outbox(
-            "document.delete",
-            json.dumps(
-                {"org_id": org_id, "doc_id": doc_id, "actor": actor_user_id},
-                ensure_ascii=False,
-            ),
-        )
 
     def patch_document_dims(
         self,
@@ -511,18 +548,12 @@ class IngestService:
                 actor_user_id=actor_user_id, what="current",
             )
 
-        self._backend.set_document_dims(doc_id, dims)
-        self._backend.append_outbox(
-            "document.dims_change",
-            json.dumps(
-                {
-                    "org_id": org_id,
-                    "doc_id": doc_id,
-                    "actor": actor_user_id,
-                    "dims": dims,
-                },
-                ensure_ascii=False,
-            ),
+        self._backend.set_document_dims(
+            doc_id, dims,
+            audit=_audit_event(EVENT_DOCUMENT_DIMS_CHANGE, {
+                "org_id": org_id, "doc_id": doc_id, "actor": actor_user_id,
+                "dims": dims,
+            }),
         )
 
     # ============ 执行器（M2.1 起经 worker TaskRunner 驱动；直调保留为单测捷径） ============

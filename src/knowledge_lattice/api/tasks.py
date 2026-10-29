@@ -27,6 +27,8 @@ def _task_payload(t: dict) -> dict:
         "type": t["type"],
         "status": t["status"],
         "attempts": t["attempts"],
+        "target_version": t.get("target_version"),  # P3-N8（m2-1 移交→m2-2）：
+        # 任务目标版本入 payload——取消/清扫语义（0005）对调用方可观测
         "error": t["error"],
         "lease_owner": t.get("lease_owner"),
         "lease_until": t.get("lease_until"),
