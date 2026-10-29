@@ -80,28 +80,28 @@ updatedAt: 2026-10-29T09:36:37+0800
 - [x] m1-3 P3-6/P3-10/P3-11 并发与资源面（staging 随机后缀/流式复验+64KB 拷贝/输家补偿删孤儿——全修）
 - [x] m1-3 P3-19 maintenance 任务行保留策略（天数+条数截尾）
 
-**新移交 m2-2**（来源 = 本任务 R1~R4 各轮 Committer/Tester 意见，Committer R4 §四 终态清单）：
-- [ ] **e2e_03 同族轮询**：`test_e2e_03_reclaim.py:141` 的 `done/failed OR full` → AND；与 P3-N14（subprocess flag 竞态 + supervisor.proc 观察窗）合并改造（工厂「首任务必 crash/必慢」或 flag 先写）——R4 首轮门禁一次负载偶发、历史 8+ 次全量零复现，方向明确成本极低（**m2-2 首个 commit 顺带**）
-- [ ] **RUNBOOK 0005 注记**：存量 `target_version=NULL` 任务取消/耗尽清扫只落任务行、文档侧不触碰（可能残留 parsing，需人工/重传）；run_task 回退 `_effective_version`（P3-N3）
-- [ ] worker_mode 两处字面量（config.py:97/:158）收敛模块级常量（P3-N10 附带）
-- [ ] P3-N2：P1 集成测试 real_switch 线程绑定/静默吞错——补强测试保真度
-- [ ] P3-N4：per-claim worker_id（inline 同 runner kick/loop 共享 id）
-- [ ] P3-N5：create_document 目标版本计算移入 _start_overwrite 并返回（闭合 pending==active 理论碰撞窗口）
-- [ ] P3-N6：created_before 秒级粒度文档化（poll<1s 按 ~1s 生效）
-- [ ] P3-N7：fail_exhausted_tasks 每轮零行 UPDATE 的 SQLite 写事务开销（可节流）
-- [ ] P3-N8：target_version 入 API payload
-- [ ] P3-N9：PG 后端 app/worker 接线归 m2-2（.env.example/RUNBOOK 注明当前仅 sqlite）
-- [ ] P3-N10：数值配置校验（poll/lease/attempts/keep 负值）
-- [ ] P3-N11：MAINTENANCE_BODIES 注册表/措辞
-- [ ] P3-N12：_worker_env 完整性（embed_model/batch/quality_llm/upload_*/log_*）
-- [ ] P3-N13：supervisor 指数退避 + stop join monitor + 旧 stdin fd 释放
-- [ ] P3-N15：流式拷贝孤儿（P3-12）/ overwrite 输家残余（P3-13）/ trim 事务+tiebreaker（P3-14）/ maintenance 大 DELETE（P3-15）/ 取消审计事件（P3-17）/ 调度去重投递（P3-18）
-- [ ] P3-N16：_write_extra_v4 名实更正；P3-N17：main() 非法 worker_mode 专测；P3-N18：inline 测试 claim 竞态
-- [ ] P3-R4-1：update_task(failed) 条件写/owner 守卫（取消 vs 失败落账 µs 窗口）
-- [ ] P3-R4-2：completed 路径清 active_error（full active 残留 error）
-- [ ] P3-R4-3（可选）：P2-N1 场景 A 的 v2 块强断言
-- [ ] R1 接受的记录项维持：双探针 2×/周期（m2-2 可 gate 共享）、outbox/其余 executor 分发位、Tester P3-c/P3-d（pg 单连接并发/顺序交错）
-- [ ] P3-R4-4：本检查点 R4 轮次记录「P3-N 零触碰」措辞应读作「P3-N2~N18 零触碰 + N1(=P3-x′) 授权修复」（存档不改原文，以此更正）
+**新移交 m2-2**（来源 = 本任务 R1~R4 各轮 Committer/Tester 意见，Committer R4 §四 终态清单）——**清偿状态回写（2026-10-29，来源 task-knowledge-lattice-m2-2〔PR #3 mergeCommit 27d2a17〕：必做 4 项 + P3-N2/N4/N5/N6/N7/N8/N10/N11/N12/N13 + P3-R4-1/R4-2 + P3-N17〔取消审计随 outbox 接入〕+ outbox 分发位兑现 + Tester P3-c 已清偿；P3-N9 以 .env.example 注记形态清偿；未清偿项转 m2-2 检查点「遗留事项」节 m2-3 去向）**：
+- [x] **e2e_03 同族轮询**：`test_e2e_03_reclaim.py:141` 的 `done/failed OR full` → AND；与 P3-N14（subprocess flag 竞态 + supervisor.proc 观察窗）合并改造（工厂「首任务必 crash/必慢」或 flag 先写）——R4 首轮门禁一次负载偶发、历史 8+ 次全量零复现，方向明确成本极低（**m2-2 首个 commit 顺带**）（✅ 已清偿：m2-2 R1——OR→AND + SLOW_FIRST + owner-pid 观察窗断言）
+- [x] **RUNBOOK 0005 注记**：存量 `target_version=NULL` 任务取消/耗尽清扫只落任务行、文档侧不触碰（可能残留 parsing，需人工/重传）；run_task 回退 `_effective_version`（P3-N3）（✅ 已清偿：m2-2 R1 落笔 RUNBOOK §3）
+- [x] worker_mode 两处字面量（config.py:97/:158）收敛模块级常量（P3-N10 附带）（✅ 已清偿：m2-2 R1——WORKER_MODE 常量 + 专测）
+- [x] P3-N2：P1 集成测试 real_switch 线程绑定/静默吞错——补强测试保真度（✅ 已清偿：m2-2 R1——pg 双连接真并发顺带修复）
+- [x] P3-N4：per-claim worker_id（inline 同 runner kick/loop 共享 id）（✅ 已清偿：m2-2 R1）
+- [x] P3-N5：create_document 目标版本计算移入 _start_overwrite 并返回（闭合 pending==active 理论碰撞窗口）（✅ 已清偿：m2-2 R1——事务内自算+返回）
+- [x] P3-N6：created_before 秒级粒度文档化（poll<1s 按 ~1s 生效）（✅ 已清偿：m2-2 R1——run_once docstring）
+- [x] P3-N7：fail_exhausted_tasks 每轮零行 UPDATE 的 SQLite 写事务开销（可节流）（✅ 已清偿：m2-2 R1——先读后写节流）
+- [x] P3-N8：target_version 入 API payload（✅ 已清偿：m2-2 R1）
+- [x] P3-N9：PG 后端 app/worker 接线归 m2-2（.env.example/RUNBOOK 注明当前仅 sqlite）（✅ 注记形态清偿：m2-2 R1 .env.example；完整接线转 m2-3+〔m2-2 遗留 P3-N9 维持记录〕）
+- [x] P3-N10：数值配置校验（poll/lease/attempts/keep 负值）（✅ 已清偿：m2-2 R1——_validate fail-closed）
+- [x] P3-N11：MAINTENANCE_BODIES 注册表/措辞（✅ 已清偿：m2-2 R1——注册表兑现）
+- [x] P3-N12：_worker_env 完整性（embed_model/batch/quality_llm/upload_*/log_*）（✅ 已清偿：m2-2 R1 收窄 + R2 完整闭环〔get_settings 补读取+往返断言〕；upload_*/log_* 余量转 m2-2 记录项）
+- [x] P3-N13：supervisor 指数退避 + stop join monitor + 旧 stdin fd 释放（✅ 已清偿：m2-2 R1）
+- [ ] P3-N15：流式拷贝孤儿（P3-12）/ overwrite 输家残余（P3-13）/ trim 事务+tiebreaker（P3-14）/ maintenance 大 DELETE（P3-15）/ 取消审计事件（P3-17）/ 调度去重投递（P3-18）（◐ 部分清偿：P3-17 取消审计已随 m2-2 outbox 接入清偿〔cancel_task 同事务〕；余 5 项转 m2-2 检查点 C 组记录不修）
+- [ ] P3-N16：_write_extra_v4 名实更正；P3-N17：main() 非法 worker_mode 专测；P3-N18：inline 测试 claim 竞态（◐ 部分清偿：N16/N18 维持记录；**N17 注**——create_app 侧已有专测、main() 侧未补，转 m2-2 C 组）
+- [x] P3-R4-1：update_task(failed) 条件写/owner 守卫（取消 vs 失败落账 µs 窗口）（✅ 已清偿：m2-2 R1——LIKE 参数化 + 取消终态零行强化）
+- [x] P3-R4-2：completed 路径清 active_error（full active 残留 error）（✅ 已核销：m2-2 R1——双方言既有「成功态顺带清 error」核实无需改动）
+- [ ] P3-R4-3（可选）：P2-N1 场景 A 的 v2 块强断言（维持可选——转 m2-2 C 组）
+- [ ] R1 接受的记录项维持：双探针 2×/周期（m2-2 可 gate 共享）、outbox/其余 executor 分发位、Tester P3-c/P3-d（pg 单连接并发/顺序交错）（◐ 部分清偿：**outbox 分发位已随 m2-2 兑现**〔搬运/封存/保留/备份/trim 五任务体〕、**Tester P3-c 已清偿**〔m2-2 R1 pg 双连接真并发落地〕；双探针 gate 共享与 P3-d 维持记录——转 m2-2 遗留）
+- [ ] P3-R4-4：本检查点 R4 轮次记录「P3-N 零触碰」措辞应读作「P3-N2~N18 零触碰 + N1(=P3-x′) 授权修复」（存档不改原文，以此更正）（维持存档注记）
 
 ## 轮次记录
 

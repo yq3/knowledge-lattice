@@ -5,7 +5,7 @@ target: knowledge-lattice
 coderTaskId: ses_e7aa92652ffelY4GKwStpEK3Zv
 testerTaskId: ses_e7a664ca0ffeUizUfw9UtN65Nm
 committerTaskId: ses_e7a4cd604ffe7I3RsgppN609Bz
-status: approved
+status: done
 round: 3
 maxRounds: 3
 testVerdict: PASS
@@ -16,7 +16,7 @@ reviewedSha: 8f385dc5321045849a82ef42f67e94c44e757507
 filesChanged: [RUNBOOK.md, .env.example, src/knowledge_lattice/domain/audit_events.py, src/knowledge_lattice/store/audit_chain.py, src/knowledge_lattice/store/sqlite/backup.py, src/knowledge_lattice/store/postgres/backup.py, src/knowledge_lattice/store/backend.py, src/knowledge_lattice/store/sqlite/backend.py, src/knowledge_lattice/store/sqlite/audit.py, src/knowledge_lattice/store/postgres/backend.py, src/knowledge_lattice/store/postgres/audit.py, src/knowledge_lattice/core/docs/ingest.py, src/knowledge_lattice/core/docs/credentials.py, src/knowledge_lattice/worker/maintenance.py, src/knowledge_lattice/worker/runner.py, src/knowledge_lattice/config.py, src/knowledge_lattice/api/admin.py, src/knowledge_lattice/api/tasks.py, src/knowledge_lattice/store/backup_common.py, tests/test_ops_01_outbox.py, tests/test_ops_02_monthly.py, tests/test_ops_04_delete_dataset.py, tests/test_ops_05_backup.py, tests/test_p3_followups_m2_2.py, tests/test_r2_p2_fixes.py, tests/m2_worker_services.py, tests/test_e2e_03_reclaim.py, tests/test_task_01_lease.py, benchmarks/dr_ops05_drill.py, benchmarks/report-m2-2-ops05.md]
 endReason: null
 createdAt: 2026-10-29T09:40:22+0800
-updatedAt: 2026-10-29T14:52:54+0800
+updatedAt: 2026-10-29T15:05:17+0800
 ---
 
 # task-knowledge-lattice-m2-2: M2.4+M2.5 审计 outbox 一致性 + 月库滚动/封存 + 删除级联收口 + 备份恢复演练（M2 主线第二段）
@@ -114,6 +114,10 @@ updatedAt: 2026-10-29T14:52:54+0800
 - **Committer R3 最终闭环（2026-10-29 14:48，续接会话）：APPROVED**。P2-新① 修法与 R2 处方①逐字吻合（成员断言+介质实断言），Tester 11 月击穿形态双向实测采信（R3 绿/R2 旧断言红）；P3-新⑤②⑦ 落地属实；R3 支持路径语义零改动逐 hunk 核实（唯一行为面=不可达 NULL-seq 分支）；**Tester 保留 P3（last_row_hash NULLS 防御分支与 docstring 矛盾）裁定登记 m2-3 不阻断**（不可达零行为差异、maxRounds 终态不成比例、m2-3 审计读路径一并修）。**双通过达成：testVerdict=PASS（R3）+ reviewVerdict=APPROVED（R3）、双 SHA=8f385dc → status=approved。**编排侧交付前置三件 + 遗留清单终态（known-gaps A1 rowid/VACUUM+A2 seq rewrite / m2-3 收编 B1~B6 / 记录不修 C 组）见其报告 §④⑤。意见原文存「最新验证意见原文」节。
 - **编排侧交付前置落笔完成（2026-10-29 14:52，supervised-coding 执笔——工作区 3+1 文件）**：①TEST-CASES v1.8.3（TC-OPS-01 搬运侧方言口径 / TC-OPS-02 链序插入序 / TC-OPS-05 备份范围——偏差①终态回写）②known-gaps G-13（rowid/VACUUM）+ G-14（seq 首次部署 rewrite）③RUNBOOK §4 备份恢复 Runbook（双后端 + sqlite 月库口径〔B3〕+ seq rewrite 注记〔A2〕+ 失败可发现性）④检查点自身更新（证据小节 + filesChanged 30 项 + 遗留清单）。**随交付 docs 批原样 commit。**
 - **交付确认（2026-10-29 14:52 用户「同意」）**：交付链启动——①Coder docs 批 commit + push + PR ②Committer 评审留痕 ③manifest 入 PR ④汇报合入请求（不自动合入）。
+- **交付①完成（Coder，2026-10-29 14:5x）**：docs 批 `1a272f9`（1a272f90c7b1792792f84d666785654cac9c8e4e，4 文件 +677/−18 原样、未含 supervised-coding.md）→ 同步 Already up to date → push `830d6a7..1a272f9`（SSH）→ **PR #3** 开立（https://github.com/yq3/knowledge-lattice/pull/3，base=develop，MERGEABLE，commits=5 逐一对应；body 含验证/偏差①终态/裁定/遗留 + Evidence Manifest 占位节）。
+- **交付②完成（Committer，2026-10-29 14:57）**：`--approve` 平台拒绝（self-approve——PR 作者=gh 用户 yq3，沿 PR #2 先例）；**回退 COMMENTED 留痕**：review id `PRR_kwDOVZ9dhM8AAAABU2LQEA`（2026-10-29T06:57:30Z，锚定 PR HEAD 1a272f9、正文注明代码终态 reviewedSha=8f385dc），正文首行 APPROVED（R3 结论）+ 全链闭环/验收证据/裁定记录。**留痕中发现 RUNBOOK §4 两处 doc 侧非阻断项**（LATTICE_BACKUP_DIR 臆造配置名/§4.2 命令形态与实现不符）→ 已转交付③勘误。
+- **交付③完成（Coder，2026-10-29 15:03）**：①RUNBOOK §4 勘误 commit `6d223c0`（supervised-coding 修正 3 处原样入库——§4.1 臆造配置名改固定路径 data/backups/、§4.2 stdout 流实现形态、§4.3 巡检引用；push 1a272f9..6d223c0）②Evidence Manifest JSON 入 PR #3 description（docsErrata=6d223c0 实填、JSON 解析通过、双 SHA 对齐、body 其余逐字节未动）。**PR #3 终态：OPEN/MERGEABLE、commits=6。交付链完成——待用户合入（不自动合入）。合入后：supervised-coding 落 §六 M2 行 m2-2 段完成态（v1.9）+ 检查点 done + 来源清偿回写 + 下一段 m2s-1（语义轨道首段——按段序 m2-2 后为 m2s-1，检查点另建）。**
+- **合入完成（2026-10-29 15:05 用户指令「合入」）**：PR #3 state=**MERGED**，mergedAt=2026-10-29T07:05:03Z，mergeCommit=`27d2a17516121ad045523a05420d2e959bf91ef0`；origin/develop 前进 `739bbf3..27d2a17`（6 commits 全量入库）。**m2-2 正式完成（done）。**收尾：①§六 M2 行 m2-2 段完成态落笔（TEST-CASES v1.9——工作区，随下段 chore 归档批入库）②m2-1 检查点遗留清偿回写。下一段 m2s-1（语义轨道首段）。
 
 ## 最新验证意见原文
 
