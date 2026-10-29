@@ -1690,18 +1690,20 @@ class PgBackend:
         )
 
     def read_monthly_events(self, *, when: str) -> list[dict]:
-        """读指定时点所在月的 audit_events（分区范围查询——(created_at,id) 序）。"""
+        """读指定时点所在月的 audit_events（分区范围查询——**插入序**〔seq
+        单调，P2-1/R2；NULL 防御分支排最前〕）。"""
         from .audit import month_bounds, partition_name
 
         month = when[:4] + when[5:7]
         start, end = month_bounds(month)
-        # P2-1/R2：链序=插入序（seq 单调；存量 NULL 段 NULLS FIRST 兜底）——
-        # 与写入（DEFAULT nextval）/末哈希/封存四路同源
+        # P2-1/R2：链序=插入序（seq 单调；NULL 防御分支排最前——仅显式 NULL
+        # 造数可达，见 audit.py SEQ 注释 P3-新②）——与写入（DEFAULT nextval）/
+        # 末哈希/封存四路同源
         rows = self._conn.execute(
             "SELECT id, org_id, actor, action, target_type, target_id, outcome,"
             " request_id, detail_json, prev_hash, row_hash, created_at"
             " FROM audit_events WHERE created_at >= %(s)s AND created_at < %(e)s"
-            " ORDER BY (seq IS NULL) ASC, seq, created_at, id",
+            " ORDER BY (seq IS NULL) DESC, seq, created_at, id",
             {"s": start, "e": end},
         ).fetchall()
         cols = (

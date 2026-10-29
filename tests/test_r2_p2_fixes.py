@@ -73,10 +73,21 @@ def test_chain_same_second_id_reorder_two_ships(matrix) -> None:
     rows = backend.read_monthly_events(when=NOV)
     assert [r["id"] for r in rows] == ["aud_aaa", "aud_bbb", "aud_000"]  # 插入序
     _verify_chain(rows, None)  # 修前：此行断链（aud_000 prev 错接 bbb→重算不符）
-    # 封存末哈希=插入序末条（非排序序「最大 id」）
+    # 封存末哈希=插入序末条（非排序序「最大 id」）——P2-新①/R3：目标月成员
+    # 断言（不依赖连接工厂当前月——时间炸弹根除）+ **存储介质实断言**（sqlite
+    # sidecar / pg audit_month_seals——不再与 read_monthly_events 同义反复）
     sealed = backend.seal_audit_months(now="2026-12-01 00:00:00")
-    assert sealed["sealed"] == ["202610", "202611"]  # 无行当月库照封（幂等语义）
-    assert rows[-1]["row_hash"] == backend.read_monthly_events(when=NOV)[-1]["row_hash"]
+    assert "202611" in sealed["sealed"]
+    if matrix.is_sqlite:
+        from knowledge_lattice.store.sqlite.audit import read_seal
+
+        assert read_seal(backend._db_dir(), "202611")["last_hash"] == \
+            rows[-1]["row_hash"]
+    else:
+        got = matrix.execute(
+            "SELECT last_hash FROM audit_month_seals WHERE month = '202611'"
+        ).fetchone()
+        assert got is not None and got[0] == rows[-1]["row_hash"]
 
 
 # ============ P2-2：搬运重试不污染 prev（崩溃窗口 + 同月新事件） ============
@@ -154,9 +165,13 @@ def test_update_task_running_guard_after_cancel(matrix) -> None:
 # ============ P3-1：已搬运 outbox 保留期清理 ============
 
 
-def test_trim_shipped_outbox_only_old_shipped(matrix, tmp_path) -> None:
+def test_trim_shipped_outbox_only_old_shipped(matrix, tmp_path, monkeypatch) -> None:
     """P3-1 回归：已搬运行过期删、未搬运/新行不动、幂等——「业务改了就一定
-    有审计」的未落地承诺（shipped_at IS NULL）永不删。"""
+    有审计」的未落地承诺（shipped_at IS NULL）永不删。
+
+    P3-新⑦/R3：固定 maintenance 墙钟（monkeypatch utc_now_ts——run_maintenance
+    的 now 单一来源）为 2026-11-30——cutoff 恒为 2025-11-01，2026-11 造数行
+    相对 cutoff 永新，断言不随真实时间推进漂移（2027-12 起红线根除）。"""
     backend = matrix.make_backend()
     # 已搬运·过期（2025-10——早于 cutoff 2025-11）
     backend.append_outbox("document.upload", json.dumps({"org_id": "o"}))
@@ -194,11 +209,15 @@ def test_trim_shipped_outbox_only_old_shipped(matrix, tmp_path) -> None:
     )
 
     assert "audit_outbox_trimmed" in MAINTENANCE_BODIES
+    monkeypatch.setattr(
+        "knowledge_lattice.worker.maintenance.utc_now_ts",
+        lambda: "2026-11-30 00:00:00",  # P3-新⑦：固定时点（cutoff=2025-11-01）
+    )
     settings = Settings(environment="test", data_dir=tmp_path, embed_dim=8)
     creds = CredentialService(backend, settings, tmp_path / "objects")
     task = backend.create_task(None, task_type="maintenance")
     stats = run_maintenance(backend, creds, settings, task)
-    assert stats["audit_outbox_trimmed"] == 0  # 已清空——幂等零行
+    assert stats["audit_outbox_trimmed"] == 0  # 已清空 + 新行相对固定 cutoff 永新
 
 
 # ============ P3-2：outbox→audit_events 语义列投影 ============
@@ -269,9 +288,10 @@ def test_seal_completes_half_sealed_state(matrix) -> None:
         seal_monthly_audit(db_dir, "202611")  # 早退路径重放 chmod（P3-5）
         assert not seal_path(db_dir, "202611").stat().st_mode & 0o222
     else:
-        # pg：seals 表幂等 + 已封存分区再 seal 不重复记录
+        # pg：seals 表幂等 + 已封存分区再 seal 不重复记录——P2-新①/R3：目标月
+        # 成员断言（不依赖连接工厂当前月）
         first = backend.seal_audit_months(now="2026-12-01 00:00:00")
-        assert first["sealed"] == ["202610", "202611"]
+        assert "202611" in first["sealed"]
         again = backend.seal_audit_months(now="2026-12-01 00:00:00")
         assert again["sealed"] == []
         rows = matrix.execute(

@@ -1736,7 +1736,8 @@ class SqliteBackend:
         conn.commit()
 
     def read_monthly_events(self, *, when: str) -> list[dict]:
-        """读指定时点所在月的 audit_events（(created_at,id) 序；封存月库只读打开）。
+        """读指定时点所在月的 audit_events（**插入序**〔rowid——P2-1/R2 与
+        写入/末哈希/封存四路同源〕；封存月库只读打开）。
         月库不存在 → []（读路径不建库）。"""
         from knowledge_lattice.store.audit_chain import month_of
 

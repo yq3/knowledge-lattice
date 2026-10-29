@@ -659,8 +659,9 @@ class AuditBackend(Protocol):
         """
 
     def read_monthly_events(self, *, when: str) -> list[dict]:
-        """读指定时点所在月的 audit_events 行（(created_at,id) 序——搬运/链
-        验证数据源；sqlite 封存月库只读打开 / pg 分区查询）。"""
+        """读指定时点所在月的 audit_events 行（**插入序**——P2-1/R2 定链序=
+        插入序：sqlite rowid / pg seq 单调；搬运/链验证数据源；sqlite 封存月库
+        只读打开 / pg 分区查询）。"""
 
     def seal_audit_months(self, *, now: str | None = None) -> dict:
         """封存过月月库（sqlite：末哈希 sidecar + 0444 只读；pg：分区 sealed

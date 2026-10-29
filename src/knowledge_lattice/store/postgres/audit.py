@@ -117,17 +117,25 @@ CREATE TABLE IF NOT EXISTS audit_month_seals (
 )
 """
 
-# ---- 插入序列（P2-1/R2：链序=插入序） ----
+# ---- 插入序列（P2-1/R2：链序=插入序；注释 P3-新②/R3 按实测口径改写） ----
 #
-# (created_at,id) 全序在「同秒（CURRENT_TIMESTAMP 秒级依赖 / 测试造数）+ uuid4
-# 随机 id」下与插入序错位；µs 方案对「同事务批量（transaction_timestamp 恒定）」
-# 无效——**单调序列列**是唯一可靠插入序。幂等 ensure（非迁移——月库表不在主库
-# 迁移域）：
+# (created_at,id) 全序在「同秒（测试造数 / CURRENT_TIMESTAMP 秒级依赖）+
+# uuid4 随机 id」下与插入序错位；µs 方案对「同事务批量（transaction_timestamp
+# 恒定）」无效——**单调序列列**是唯一可靠插入序。幂等 ensure（非迁移——月库
+# 表不在主库迁移域）：
 #   · CREATE SEQUENCE IF NOT EXISTS（schema 内，各测试 schema 独立）；
-#   · ADD COLUMN IF NOT EXISTS seq BIGINT DEFAULT nextval(...)——分区父表 ALTER
-#     自动传播到全部分区；非常量 DEFAULT 不 rewrite、**既有行保持 NULL 不回填**
-#     （append-only BEFORE UPDATE 触发器拦 UPDATE；NULL 行在读序中 NULLS FIRST
-#     段按 (created_at,id) 兜底——R1 期存量近似插入序，衔接无洞）。
+#   · ADD COLUMN IF NOT EXISTS seq BIGINT DEFAULT nextval(...)——分区父表
+#     ALTER 自动传播到全部分区。
+#
+# **既有行回填（PG 16 实测——与 PG 11「常量默认免 rewrite」条款相补）**：
+# volatile DEFAULT（nextval）触发全表 rewrite **逐行求值**——加列时既有行即
+# 获连续 seq（物理序=插入序），无需 UPDATE 回填（append-only 触发器本就拦
+# UPDATE）；幂等二跑不 rewrite。首次部署大分区的一次性 rewrite 运维口径见
+# P3-新③（登记 RUNBOOK/PG 接线段——编排侧）。
+#   · NULL 防御分支：正常路径不可达（rewrite 已填既有行、INSERT 走 DEFAULT），
+#     仅「显式 INSERT NULL 造数」可达——读序分支将其排最前（时间语义上早于
+#     一切 seq 行，保守归位；见 read_monthly_events / last_row_hash 的
+#     `(seq IS NULL) DESC`）。
 SEQ_DDL = """\
 CREATE SEQUENCE IF NOT EXISTS audit_events_seq
 """
@@ -198,13 +206,14 @@ def _ensure_chain_columns(conn: psycopg.Connection) -> None:
 
 
 def last_row_hash(conn: psycopg.Connection, month: str) -> str | None:
-    """指定月分区末行 row_hash（**插入序末条**——seq 单调；无行 → None）。"""
+    """指定月分区末行 row_hash（**插入序末条**——seq 单调；NULL 防御分支
+    排最前→末条取非 NULL 最大 seq；无行 → None）。"""
     start, end = month_bounds(month)
     row = conn.execute(
         "SELECT row_hash FROM audit_events"
         " WHERE created_at >= %(s)s AND created_at < %(e)s"
         "   AND row_hash IS NOT NULL"
-        f" ORDER BY (seq IS NULL) ASC, seq DESC, created_at DESC, id DESC LIMIT 1",
+        f" ORDER BY (seq IS NULL) DESC, seq DESC, created_at DESC, id DESC LIMIT 1",
         {"s": start, "e": end},
     ).fetchone()
     return row[0] if row else None
