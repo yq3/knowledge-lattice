@@ -33,7 +33,9 @@ store Semantic 域）。
   `semantic_dim_alert_baseline`（默认 0.8）且快照携带率 < 基线 ×
   `semantic_dim_alert_drop`（默认 0.5）→ WARNING + stats.dims_fill.alert
   （参照删除比例保护的对冲——防缺值静默变宽，TC-SYNC-06②）。
-- 步骤⑤后 design 还有「投递 semantic_build」——构建归 m2s-2（本段无动作）。
+- 步骤⑤后 design「投递 semantic_build」——m2s-2 起接入：**任务体** run_sync_task
+  在 run 成功（succeeded）后投递 semantic_build 任务（run_sync 直调面不投递
+  ——测试/重放路径零副作用；aborted_guard/failed 不触发）。
 """
 
 from __future__ import annotations
@@ -89,11 +91,15 @@ def run_sync(
         logger.exception(
             "semantic sync failed: org=%s adapter=%s", org_id, adapter.name
         )
+        # P3-r1（m2s-1 移交）：失败路径 stats 补 forced 键——run 行与审计事件
+        # 都保留 force 语义（此前仅 stats_json="{}" + error，forced 语义丢失）
+        fail_stats = {"error": str(exc), "forced": bool(force)}
         backend.sem_finish_run(
-            org_id, run_id, status="failed", stats_json="{}",
+            org_id, run_id, status="failed",
+            stats_json=json.dumps(fail_stats, ensure_ascii=False, default=str),
             error=str(exc), now=finish_now,
         )
-        _audit_sync(backend, org_id, adapter.name, run_id, "failed", {"error": str(exc)})
+        _audit_sync(backend, org_id, adapter.name, run_id, "failed", fail_stats)
         raise
     backend.sem_finish_run(
         org_id, run_id, status=status,
@@ -133,8 +139,11 @@ def _sync_records(backend, org_id, adapter, records, settings, now, should_conti
     guard_hit = bool(
         active_keys and len(vanished) > settings.semantic_delete_guard * len(active_keys)
     )
+    guard_info: dict | None = None
     if guard_hit:
         ratio = len(vanished) / len(active_keys)
+        guard_info = {"active": len(active_keys), "vanished": len(vanished),
+                      "ratio": ratio, "threshold": settings.semantic_delete_guard}
         logger.warning(  # 告警恒发（force 放行也告警——引用面收缩的可见信号）
             "semantic sync delete-guard %s: org=%s adapter=%s active=%d"
             " vanished=%d ratio=%.3f > %.2f%s",
@@ -147,8 +156,7 @@ def _sync_records(backend, org_id, adapter, records, settings, now, should_conti
             return "aborted_guard", {
                 "inserted": 0, "updated": 0, "missing": 0, "retired": 0,
                 "conflicts": [], "forced": False,
-                "guard": {"active": len(active_keys), "vanished": len(vanished),
-                          "ratio": ratio, "threshold": settings.semantic_delete_guard},
+                "guard": guard_info,
             }
 
     # 维度填充率库内基线（本 run 写入前——骤降判定基准）
@@ -231,6 +239,10 @@ def _sync_records(backend, org_id, adapter, records, settings, now, should_conti
         "relations_retired": advanced["relations_retired"],
         "batches": batches, "dims_fill": dims_fill, "forced": bool(force),
     }
+    if guard_info is not None:
+        # P3-r2（m2s-1 移交）：force 覆盖 guard 的 stats 补 guard 明细——
+        # 引用面收缩幅度（active/vanished/ratio/threshold）随 run 留痕
+        stats["guard"] = guard_info
     return "succeeded", stats
 
 
@@ -266,6 +278,14 @@ def run_sync_task(backend, settings: Settings, task_id: str, *,
         should_continue=should_continue, force=bool(payload.get("force")),
     )
     backend.update_task(task_id, status="done")
+    if result["status"] == "succeeded":
+        # design §5.8「同步或 YAML 合并后触发构建」——成功 run 后投递
+        # semantic_build 任务（worker 循环/kick 顺带消化；dict_rev 相同则
+        # 构建侧自跳过——TC-BUILD-01，不产冗余 build 行）
+        backend.create_task(
+            None, task_type="semantic_build",
+            payload=json.dumps({"org": org_id}),
+        )
     return result
 
 

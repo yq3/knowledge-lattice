@@ -55,9 +55,10 @@ from knowledge_lattice.store.taskclock import utc_now_ts
 logger = logging.getLogger(__name__)
 
 # 本段 runner 认领的任务类型（semantic_sync 于 M2-S1 接入——payload {org, adapter}
-# 经 core.semantic.sync.run_sync_task 执行；reindex/reembed/delete 仍为预留分发位，
-# 不认领不误伤：未知类型的任务行原地留 pending）
-CLAIMABLE_TASK_TYPES = ("ingest", "maintenance", "semantic_sync")
+# 经 core.semantic.sync.run_sync_task 执行；semantic_build 于 m2s-2 接入——payload
+# {org} 经 core.semantic.build.run_build_task 执行；reindex/reembed/delete 仍为
+# 预留分发位，不认领不误伤：未知类型的任务行原地留 pending）
+CLAIMABLE_TASK_TYPES = ("ingest", "maintenance", "semantic_sync", "semantic_build")
 
 
 @dataclass
@@ -100,6 +101,7 @@ class TaskRunner:
             "ingest": self._exec_ingest,
             "maintenance": self._exec_maintenance,
             "semantic_sync": self._exec_semantic_sync,
+            "semantic_build": self._exec_semantic_build,
         }
         if executors:
             self._executors.update(executors)
@@ -247,6 +249,16 @@ class TaskRunner:
         from knowledge_lattice.core.semantic.sync import run_sync_task
 
         run_sync_task(
+            self._backend, self._settings, task["id"],
+            should_continue=self._should_continue(task["id"], claim_id),
+        )
+
+    def _exec_semantic_build(self, task: dict, claim_id: str) -> None:
+        """semantic_build 任务体（m2s-2——§5.8 构建流程：dict_rev 计算 + 原子
+        切换；AC 自动机/模糊索引归后续段）。"""
+        from knowledge_lattice.core.semantic.build import run_build_task
+
+        run_build_task(
             self._backend, self._settings, task["id"],
             should_continue=self._should_continue(task["id"], claim_id),
         )

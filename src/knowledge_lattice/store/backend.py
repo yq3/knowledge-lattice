@@ -270,6 +270,7 @@ class AdminBackend(Protocol):
         self, doc_id: str | None, *, task_type: str = "ingest",
         target_version: int | None = None, task_id: str | None = None,
         payload: str | None = None,
+        audit: tuple[str, str] | None = None,
     ) -> str:
         """新建任务行（maintenance 等无文档任务 doc_id=None——P3-19 注解口径；
         tasks.doc_id ON DELETE SET NULL 允许 NULL）。
@@ -281,6 +282,10 @@ class AdminBackend(Protocol):
 
         payload（0006/M2-S1）：任务参数 JSON 文本（semantic_sync 携带
         {org, adapter, force?}——executor 分发面读取；NULL=无参数任务）。
+
+        audit（m2s-2，G-16 收口）：``(event_type, payload_json)``——治理事件与
+        任务行**同一事务**写入（沿 m2-2 outbox 先例；触发侧 create_task 与
+        append_outbox 两事务的崩溃丢审计窗口就此闭合）。None=无审计任务行。
         """
         ...
 
@@ -759,12 +764,53 @@ class SemanticBackend(Protocol):
         """run 终态落库（succeeded / failed / aborted_guard + stats_json）。"""
         ...
 
-    def sem_list_sync_runs(self, org_id: str, *, limit: int = 50) -> list[dict]:
-        """同步记录与冲突报告（GET /semantic/sync-runs——stats_json 已解析）。"""
+    def sem_list_sync_runs(
+        self, org_id: str, *, limit: int = 50,
+        adapter: str | None = None, status: str | None = None,
+    ) -> list[dict]:
+        """同步记录与冲突报告（GET /semantic/sync-runs——stats_json 已解析；
+        m2s-2 管理语义：limit 分页 + adapter/status 过滤——design §6.2）。"""
         ...
 
-    def sem_list_builds(self, org_id: str) -> list[dict]:
-        """构建记录（GET /semantic/builds——m2s-2 前恒空）。"""
+    def sem_list_builds(
+        self, org_id: str, *, limit: int = 200, status: str | None = None,
+    ) -> list[dict]:
+        """构建记录（GET /semantic/builds——stats_json 已解析；m2s-2 管理语义：
+        limit + status 过滤）。"""
+        ...
+
+    def sem_get_build(self, org_id: str, build_id: int) -> dict | None:
+        """单条构建记录（GET /semantic/builds/{id}——他组织/未知 → None=404）。"""
+        ...
+
+    def sem_current_build(self, org_id: str) -> dict | None:
+        """当前构建 = 最新 status='ready' 行（design §5.8：旧 ready 保留、服务按
+        (org, dict_rev) 懒加载取用——无 ready → None）。"""
+        ...
+
+    def sem_active_snapshot(self, org_id: str) -> dict:
+        """构建输入快照：active 实体 + 其全部别名（manual/abbr 含——dict_rev 覆盖
+        人工别名变更）+ active 关系（§5.8 构建流程第 1 步）。行按稳定序返回。"""
+        ...
+
+    def sem_insert_build(
+        self, org_id: str, dict_rev: str, stats_json: str, *,
+        yaml_rev: str | None = None, sync_run_id: int | None = None,
+    ) -> int:
+        """sem_builds 落 building 行（UNIQUE(org,dict_rev) upsert——失败行同 rev
+        重试复用同一行）。返回 build id。"""
+        ...
+
+    def sem_switch_build_ready(
+        self, org_id: str, build_id: int, stats_json: str
+    ) -> bool:
+        """原子切换：building → ready 单语句单事务（design §5.8 第 3 步——旧 ready
+        行不动、新行就位即当前；非 building 态零行生效返回 False）。"""
+        ...
+
+    def sem_fail_build(self, org_id: str, build_id: int, stats_json: str) -> None:
+        """构建失败收尾：building → failed + stats（error 载 stats_json.error——
+        失败不切指针，旧 ready 继续为当前——T-S12 骨架）。"""
         ...
 
     def save_build(self, org_id: str, dict_rev: str, stats_json: str) -> int:
@@ -778,6 +824,57 @@ class SemanticBackend(Protocol):
     def export_l0(self, org_id: str) -> str:
         """L0 术语片段导出（1500 token 预算——§6.3/agent 中间件注入源；
         构建产物落地归 m2s-2——本段返回空串占位）。"""
+        ...
+
+    # ---- m2s-2 首批语义工具读取面（get_entity / search_entities / describe_table
+    #      ——SQL 全部下沉本域，core 只做编排与校验；design §5.9/§6.3） ----
+
+    def sem_entity_by_id(self, org_id: str, entity_id: int) -> dict | None:
+        """按 id 取实体行（含 attrs_json/curated_json/sensitivity——T-S7 组织隔离
+        第一条件 org_id）。"""
+        ...
+
+    def sem_entity_by_key(self, org_id: str, type_: str, key: str) -> dict | None:
+        """按 (type, key) 取实体行（get_entity 的 key 定位路径——"type:key"）。"""
+        ...
+
+    def sem_entity_aliases(
+        self, org_id: str, entity_ids: Sequence[int]
+    ) -> list[dict]:
+        """实体别名行（include=['aliases'] 数据源——全部 kind，alias_norm 含）。"""
+        ...
+
+    def sem_expand_graph(
+        self, org_id: str, root_id: int, *,
+        outgoing: Sequence[str], incoming: Sequence[str],
+        depth: int, fanout_limit: int, node_limit: int,
+    ) -> dict:
+        """关系展开（design §5.9 递归展开的等价 SQL 实现——BFS 逐层批量查询，
+        语义与递归 CTE 等价；双方言同实现策略）：
+
+        - 只走 status='active' 关系与 active 端点；restricted 实体不出现
+          （fail-closed——T-S9，持权路径 M2-S3）；
+        - outgoing/incoming：rel_type 集合（方向后缀已在 core 解析）；
+        - fanout_limit：单节点每层出边截断；node_limit：总节点数截断——命中
+          任一 → truncated=True（T-S6）；
+        - 防环：visited 集合（节点只入一次——环图正常返回不死循环）。
+
+        返回 {"nodes": [{id,type,key,name,depth}], "edges": [{src,rel,dst,source}],
+        "truncated": bool}（nodes 不含 root）。"""
+        ...
+
+    def sem_search_entities(
+        self, org_id: str, q_norm: str, q_raw: str, *,
+        types: Sequence[str] | None, top_k: int,
+    ) -> list[dict]:
+        """实体检索（TC-SEM-05 前半——排序链「别名精确 > 别名前缀 > label 模糊」；
+        拼音/向量归 M2-S3）：三层 UNION（score 1.0/0.8/0.5）+ 实体去重保最优，
+        返回 [{id,type,key,name,attrs_json,curated_json,score,via}]。"""
+        ...
+
+    def sem_table_columns(self, org_id: str, table_id: int) -> list[dict]:
+        """表实体的本地轻量列节点（describe_table 降级路径——T-S11③：
+        元数据系统不可用时返回 [{key,name}]）。"""
         ...
 
 

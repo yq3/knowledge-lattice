@@ -25,7 +25,18 @@ upload/list_documents 全四工具就位，M1-5 收口）。
 - 60s 超时中间件（ragflow 纪律——超时请求不悬挂，TC-E2E-06）；超时值随
   settings.mcp_timeout_s（默认 60，测试可注入短值）。
 
-semantic 组随 M2-S。
+semantic 组（D23 §6.3——m2s-2 首批三工具：get_entity / search_entities /
+describe_table；annotate 归 M2-S2 后段、search 实体参数归 M2-S3）：
+
+- 权限（§6.3 权限口径）：组织隔离硬约束（org 作用域查询第一条件——T-S7）；
+  semantic:read = 组织成员默认具备（无成员关系 403）；**不复用维度 ACL 编译器**；
+  restricted 实体 fail-closed 静默（404/无命中/不出现——T-S9，持权路径 M2-S3）；
+- get_entity：key/id 二选一 + expand 方向后缀 + depth≤2/fanout≤200（超限 400
+  ——附录 A-11）；多跳由 Agent 迭代调用；
+- search_entities：alias 精确 > 前缀 > label 模糊（拼音/向量 M2-S3）；q≤200、
+  top_k≤50；
+- describe_table：只对已登记 table 实体开放（403 防枚举数仓）+ 3s 超时降级
+  degraded=true + 5min 缓存（T-S11）。
 """
 
 from __future__ import annotations
@@ -51,6 +62,12 @@ from knowledge_lattice.core.docs.ingest import (
     UploadValidationError,
 )
 from knowledge_lattice.core.docs.retrieve import search as run_search
+from knowledge_lattice.core.semantic.expand import EntityNotFound, get_entity
+from knowledge_lattice.core.semantic.lookup import (
+    DescribeTableDenied,
+    describe_table,
+    search_entities,
+)
 from knowledge_lattice.domain.auth import (
     AuthContext,
     AuthError,
@@ -84,6 +101,23 @@ LIST_DOCUMENTS_TOOL_DESCRIPTION = (
     "active_status 可按处理状态过滤、limit 控制返回条数（缺省 50）。"
 )
 
+GET_ENTITY_TOOL_DESCRIPTION = (
+    "读取业务实体详情并展开类型化关系（模板/字段/表/列/报表项/概念等）。"
+    "key 形如 'type:key'（如 template:TPL_VAT_INPUT），或用 id；expand 指定关系"
+    "类型可带方向后缀（'backed_by>' 出向、'derived_from<' 入向）；多跳场景请"
+    "对返回节点迭代调用本工具（depth ≤2、fanout_limit ≤200）。"
+)
+
+SEARCH_ENTITIES_TOOL_DESCRIPTION = (
+    "按名称、别名或描述片段查业务实体（先查到实体再用 get_entity 取详情）。"
+    "排序：别名精确命中 > 别名前缀 > 名称模糊；top_k ≤50、q ≤200。"
+)
+
+DESCRIBE_TABLE_TOOL_DESCRIPTION = (
+    "查数据表的列详情（列名/类型/注释/样例——透传元数据系统，只对已登记的表开放）。"
+    "回答「这张表有哪些列、某字段什么类型」时调用；columns 可按列名过滤。"
+)
+
 # 文档 active_status 合法值（DDL 口径——#33 P0-2.2 列注释：
 # searchable_lexical | searchable_full | degraded；`failed` 属 pending_status 域
 # ——P2-3：非法值 400 而非静默空列表误导 LLM）
@@ -112,7 +146,11 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
 
     mcp: FastMCP = FastMCP(
         name="knowledge-lattice",
-        instructions="企业知识层 docs 组工具（search + fetch + upload + list_documents）。",
+        instructions=(
+            "企业知识层 MCP 工具：docs 组（search + fetch + upload + "
+            "list_documents）+ semantic 组（get_entity + search_entities + "
+            "describe_table）。"
+        ),
     )
     mcp.add_middleware(ToolTimeoutMiddleware(timeout_s=settings.mcp_timeout_s))
 
@@ -141,6 +179,15 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
         except OrgContextError as exc:
             raise ToolError(f"400: {exc}") from exc
         return auth, org
+
+    def _sem_member(auth: AuthContext, org_id: str) -> None:
+        """semantic:read 门控（§6.3 权限口径：组织成员默认具备——无成员关系
+        403；语义层不复用维度 ACL 编译器）。"""
+        if service.backend.read_membership(auth.user_id, org_id) is None:
+            raise ToolError(
+                f"403: semantic:read 需组织成员（no active membership:"
+                f" user={auth.user_id!r} org={org_id!r}）"
+            )
 
     @mcp.tool(name="search", description=SEARCH_TOOL_DESCRIPTION)
     def search(
@@ -283,5 +330,68 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
             for r in rows
         ]
         return {"datasets": counts, "documents": documents}
+
+    # ---- semantic 组（D23 §6.3——m2s-2 首批三工具） ----
+
+    @mcp.tool(name="get_entity", description=GET_ENTITY_TOOL_DESCRIPTION)
+    def semantic_get_entity(
+        id: int | None = None,
+        key: str | None = None,
+        expand: list[str] | None = None,
+        depth: int = 1,
+        fanout_limit: int = 50,
+        include: list[str] | None = None,
+        ctx: Context = None,
+    ) -> dict:
+        """get_entity（§6.3）：实体详情 + 类型化关系展开（rel_type 分组邻接、
+        多跳迭代调用）；restricted 实体 404（fail-closed——T-S9）。"""
+        auth, org_id = _auth_and_org(ctx, param_org=None)
+        _sem_member(auth, org_id)
+        try:
+            return get_entity(
+                service.backend, org_id,
+                entity_id=id, key=key, expand=expand, depth=depth,
+                fanout_limit=fanout_limit, include=include,
+            )
+        except EntityNotFound as exc:
+            raise ToolError(f"404: {exc}") from exc
+        except ValueError as exc:
+            raise ToolError(f"400: {exc}") from exc
+
+    @mcp.tool(name="search_entities", description=SEARCH_ENTITIES_TOOL_DESCRIPTION)
+    def semantic_search_entities(
+        q: str,
+        types: list[str] | None = None,
+        top_k: int = 10,
+        ctx: Context = None,
+    ) -> dict:
+        """search_entities（§6.3）：别名精确 > 前缀 > 名称模糊三层排序
+        （拼音/向量归后续段）；q ≤200、top_k ≤50。"""
+        auth, org_id = _auth_and_org(ctx, param_org=None)
+        _sem_member(auth, org_id)
+        try:
+            return search_entities(
+                service.backend, org_id, q, types=types, top_k=top_k
+            )
+        except ValueError as exc:
+            raise ToolError(f"400: {exc}") from exc
+
+    @mcp.tool(name="describe_table", description=DESCRIBE_TABLE_TOOL_DESCRIPTION)
+    def semantic_describe_table(
+        table: str,
+        columns: list[str] | None = None,
+        ctx: Context = None,
+    ) -> dict:
+        """describe_table（§6.3/T-S11）：表/列详情透传元数据系统——只对已登记
+        table 实体开放（未登记 403）；元数据系统不可用返回轻量节点 +
+        degraded=true；5 分钟缓存。"""
+        auth, org_id = _auth_and_org(ctx, param_org=None)
+        _sem_member(auth, org_id)
+        try:
+            return describe_table(
+                service.backend, settings, org_id, table, columns=columns
+            )
+        except DescribeTableDenied as exc:
+            raise ToolError(f"403: {exc}") from exc
 
     return mcp

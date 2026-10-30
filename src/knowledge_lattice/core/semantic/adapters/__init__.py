@@ -99,7 +99,13 @@ ADAPTER_FACTORIES: dict[str, Callable[[str, Settings], SourceAdapter]] = {}
 
 
 def register_adapter_factory(name: str, factory: Callable[[str, Settings], SourceAdapter]) -> None:
-    """注册/覆盖适配器工厂（测试 fake 注入 / 部署侧自定义 provider）。"""
+    """注册/覆盖适配器工厂（测试 fake 注入 / 部署侧自定义 provider）。
+
+    **工厂自担配置解析**（P3-r4，m2s-1 移交注记）：注册工厂覆盖默认 per-org
+    配置校验（resolve_source_config 不再跑）——工厂内部自行解析所需配置并
+    fail-fast；测试替身通常直接闭包快照数据、无配置面。另注：m2s-2 起
+    describe_table 经 duck-typing 探测覆盖实例的 ``describe_table`` 方法
+    （有则用作透传通道——测试注入点）。"""
     ADAPTER_FACTORIES[name] = factory
 
 

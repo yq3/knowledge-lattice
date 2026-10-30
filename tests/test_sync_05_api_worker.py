@@ -125,12 +125,13 @@ def test_tc_sync_08_trigger_permission_matrix(sem_app) -> None:
                       headers=_h(member)).status_code == 403
 
 
-def test_builds_endpoint_empty_list_this_segment(sem_app) -> None:
-    """builds 本段恒空列表（构建接入归 m2s-2）。"""
+def test_builds_endpoint_empty_list_before_any_build(sem_app) -> None:
+    """m2s-2 起 builds 端点实装：空库（未触发任何构建）→ 空列表 + current=None
+    （原「本段恒空列表」占位断言随构建面接入升级——TC-SYNC-08③ 权限面不变）。"""
     resp = sem_app["client"].get(
         f"/api/orgs/{ORG}/semantic/builds", headers=_h(sem_app["static"]["admin_tax"]))
     assert resp.status_code == 200
-    assert resp.json() == {"builds": []}
+    assert resp.json() == {"builds": [], "current": None}
 
 
 # ---- semantic_sync 任务类型端到端（手动触发 → worker 执行 → sync-runs 可查） ----

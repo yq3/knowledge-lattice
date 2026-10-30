@@ -85,9 +85,10 @@ class InlineWorkerHandle:
       调用——保持 M1「响应返回前摄取已推进」的时序语义；重试回队随 attempts
       上限天然收敛）；
     - wake()：仅唤醒兜底循环（maintenance 调度器投递后调用——异步领取）；
-    - 兜底循环线程（P2-7，M2.1 R2）：全类型认领——maintenance / semantic_sync
-      即时领（调度器与手动触发 wake 后低延迟领取；semantic_sync 不设陈旧口径
-      ——kick 唤醒丢失时的兜底通道，P2-2/R2）+ ingest 以「陈旧任务」口径领
+    - 兜底循环线程（P2-7，M2.1 R2）：全类型认领——maintenance / semantic_sync /
+      semantic_build（m2s-2）即时领（调度器与手动触发 wake 后低延迟领取；
+      semantic_* 不设陈旧口径——kick 唤醒丢失时的兜底通道，P2-2/R2）+ ingest
+      以「陈旧任务」口径领
       （created_at ≤ now−poll_s：重启遗留/超量滞留/租约过期的 ingest 任务在
       poll 周期内被领，与 subprocess 主循环语义一致）；新鲜 ingest 恒由投递方
       kick 的同步消化先抢到（claim 原子性 + 陈旧过滤——上传时序语义无竞态）。
@@ -132,10 +133,13 @@ class InlineWorkerHandle:
                 # ① maintenance 即时认领（调度器 wake 后毫秒级领取）
                 if self._runner.run_once(task_types=("maintenance",)):
                     continue
-                # ② semantic_sync 即时认领（P2-2/R2：手动触发/调度任务不设陈旧
-                #    口径——kick 唤醒丢失（outbox 抛错/进程间崩溃）时的兜底通道，
-                #    防任务永久滞留 pending）
+                # ② semantic_sync / semantic_build 即时认领（P2-2/R2：手动触发/
+                #    同步后自动投递的构建任务不设陈旧口径——kick 唤醒丢失（outbox
+                #    抛错/进程间崩溃）时的兜底通道，防任务永久滞留 pending；
+                #    m2s-1 P2-2 教训：新任务类型必进本循环）
                 if self._runner.run_once(task_types=("semantic_sync",)):
+                    continue
+                if self._runner.run_once(task_types=("semantic_build",)):
                     continue
                 # ③ ingest 陈旧认领（P2-7：重启遗留/超量滞留/租约过期——poll 内收口；
                 #    新鲜 ingest 恒由投递方 kick 同步消化先抢，保上传时序语义）
