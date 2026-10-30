@@ -346,14 +346,39 @@ def test_walk_chain_multi_head_detected() -> None:
 
 
 def test_walk_chain_orphan_rows_detected() -> None:
-    """孤儿行：主链之外的独立环/尾段 → AuditChainError。"""
+    """孤儿行（R3 P3-6 改名+补真 orphan）：现指 multi-head 形态（孤立前向
+    引用构成第二链头——heads>1 路径）；**真 orphan**（主链外不相交环：环行
+    prev 均在批内 hash 集、不构成链头但不可达）见下方
+    test_walk_chain_unreachable_orphan_segment_detected。"""
     from knowledge_lattice.store.audit_chain import AuditChainError, walk_chain
 
     a = _evt("a", "")
     b = _evt("b", a["row_hash"])
-    x = _evt("x", "sha256:orphan")  # 孤儿（prev 指空集外——构成第二链头）
+    x = _evt("x", "sha256:orphan")  # 孤立前向引用——第二链头（multi-head）
     with pytest.raises(AuditChainError):
         walk_chain([a, b, x])
+
+
+def test_walk_chain_unreachable_orphan_segment_detected() -> None:
+    """真 orphan（R3 P3-6）：主链 a→b + 不相交环 x↔y——环行 prev 互指批内
+    hash（不构成链头）、主链 walk 到尾后 ordered<len(rows) → orphan 分支。"""
+    from knowledge_lattice.store.audit_chain import AuditChainError, walk_chain
+
+    a = _evt("a", "")
+    b = _evt("b", a["row_hash"])
+
+    def _raw(eid: str, prev: str) -> dict:
+        return {
+            "id": eid, "org_id": "org:tax", "actor": "u", "action": "x",
+            "target_type": None, "target_id": None, "outcome": "accepted",
+            "request_id": None, "detail_json": "{}", "prev_hash": prev,
+            "row_hash": f"sha256:{eid}", "created_at": "2026-10-30 00:00:00",
+        }
+
+    x = _raw("x", "sha256:y")
+    y = _raw("y", "sha256:x")  # 互指成环——prev 均在批内 hash 集、不可达
+    with pytest.raises(AuditChainError, match="orphan"):
+        walk_chain([a, b, x, y])
 
 
 def test_walk_chain_cycle_detected() -> None:

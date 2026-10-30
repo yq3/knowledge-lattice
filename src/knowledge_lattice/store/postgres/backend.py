@@ -1065,7 +1065,9 @@ class PgBackend:
         if doc_id is not None:
             sql += " AND t.doc_id = %(doc)s"
             params["doc"] = doc_id
-        # 次级排序键 id（ULID 时间有序）——created_at 并列下稳定「最近优先」
+        # 次级排序键 id——created_at 并列下的确定性 tiebreak（id 为 ULID
+        # 随机非单调、**不保证时间序**——只消除结果不确定性；并列内「最近」
+        # 歧义本身登记 m2-6（任务 id 加序号列或单调源））
         sql += " ORDER BY t.created_at DESC, t.id DESC"
         rows = self._conn.execute(sql, params).fetchall()
         cols = (
@@ -2302,7 +2304,11 @@ class PgBackend:
         return {"removed": removed, "inserted": inserted}
 
     def list_grants_for_export(self, org_id: str) -> list[dict]:
-        """组织全部授权行（CSV 导出 / 差异计算数据源——含 sync 标注）。"""
+        """组织全部授权行（CSV 导出 / 差异计算数据源——含 sync 标注）。
+
+        R3 P2-1：expires_at 双方言统一返回**库格式字符串**（pg TIMESTAMP 在
+        store 单点归一——diff/export/审计面同源比较，datetime 形态不外泄到
+        api 层；created_at 归一先例同款）。"""
         rows = self._conn.execute(
             "SELECT u.username, g.user_id, d.key, v.value, g.expires_at, g.source"
             " FROM user_dimension_grants g"
@@ -2312,11 +2318,16 @@ class PgBackend:
             " ORDER BY u.username, d.key, v.value",
             {"org": org_id},
         ).fetchall()
-        return [
-            {"username": r[0], "user_id": r[1], "dim_key": r[2], "value": r[3],
-             "expires_at": r[4], "source": r[5]}
-            for r in rows
-        ]
+        out = []
+        for r in rows:
+            expires = r[4]
+            if expires is not None and not isinstance(expires, str):
+                expires = expires.strftime("%Y-%m-%d %H:%M:%S")  # TIMESTAMP→str
+            out.append({
+                "username": r[0], "user_id": r[1], "dim_key": r[2],
+                "value": r[3], "expires_at": expires, "source": r[5],
+            })
+        return out
 
     def find_user_by_username(self, username: str) -> dict | None:
         """username → 用户行（CSV 导入解析）。"""

@@ -215,7 +215,8 @@ def test_audit_sysadmin_excludes_other_org_and_dual_role(_audit_env) -> None:
     client, conn = _audit_env["client"], _audit_env["conn"]
     headers = _audit_env["headers"]
 
-    # ① sysadmin（无 org:tax 成员关系）→ metadata 且不含他组织事件
+    # ① sysadmin（org:tax 普通 member、非 admin——app_env 造数形态）→ metadata
+    # 且不含他组织事件
     r = client.get(f"/api/orgs/{ORG}/audit", headers=headers["sysadmin"])
     assert r.status_code == 200
     body = r.json()

@@ -314,10 +314,10 @@ async def export_grants(
     for row in service.backend.list_grants_for_export(org):
         if row["source"] != "local":
             continue  # sync 授权经同步适配器管理——CSV 面不触碰
-        expires = row["expires_at"]
-        if expires is not None and not isinstance(expires, str):
-            expires = expires.strftime(_EXPIRES_LIB_FORMAT)  # pg TIMESTAMP 归一
-        writer.writerow([row["username"], row["dim_key"], row["value"], expires or ""])
+        # expires_at 已由 store 双方言归一为库格式字符串（R3 P2-1 单点收口）
+        writer.writerow(
+            [row["username"], row["dim_key"], row["value"], row["expires_at"] or ""]
+        )
     return PlainTextResponse(
         buf.getvalue(),
         media_type="text/csv",

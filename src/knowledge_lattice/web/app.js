@@ -170,7 +170,9 @@ async function doSearch() {
 
 /* ---------- 权限视图（m2-3：grants 管理 / CSV 导入导出 / expires_at） ---------- */
 
-const accessState = { rows: [], members: [], picked: {}, expires: {} };
+const accessState = { rows: [], members: [], picked: {}, expires: {}, fresh: new Set() };
+// fresh：用户本轮显式（重）选中的 key 集——保存时应用输入框 expires；
+// 未动过的既有 key（picked 值来自装载原值）沿用库内 expires（R3 P2-2）
 
 async function loadGrants() {
   if (!state.token || !state.org) return;
@@ -212,6 +214,7 @@ function renderGrantChips() {
   box.innerHTML = "";
   const mine = accessState.rows.filter((r) => r.username === member);
   accessState.picked = {};
+  accessState.fresh.clear();  // 装载态=无用户改动（保存沿用库内 expires）
   mine.forEach((r) => { accessState.picked[`${r.dimKey}=${r.value}`] = r.expiresAt; });
   state.dims.forEach((dim) => {
     const g = document.createElement("div");
@@ -228,8 +231,13 @@ function renderGrantChips() {
       chip.textContent = `${v.label} (${v.value})`;
       chip.onclick = () => {
         const key = `${dim.key}=${v.value}`;
-        if (key in accessState.picked) delete accessState.picked[key];
-        else accessState.picked[key] = $("#gExpires").value.trim();
+        if (key in accessState.picked) {
+          delete accessState.picked[key];
+          accessState.fresh.delete(key);
+        } else {
+          accessState.picked[key] = $("#gExpires").value.trim();
+          accessState.fresh.add(key);  // 显式新选——保存应用输入框值
+        }
         chip.classList.toggle("on", key in accessState.picked);
       };
       g.appendChild(chip);
@@ -241,12 +249,13 @@ function renderGrantChips() {
 async function saveGrants() {
   const member = $("#gMember").value;
   if (!member) return;
-  // P3-14/R2：expires 以**保存时点**输入框值统一应用（后填生效——选中早于
-  // 填写的行不再钉死点击时点旧值；清空输入框=转永久）
+  // R3 P2-2：expires 语义——**未动过的既有 key 沿用库内值**（防静默清除既有
+  // 临时授权）；仅**本轮显式（重）选中的 key** 应用输入框值（空=永久）。
   const expiresNow = $("#gExpires").value.trim();
   const grants = Object.keys(accessState.picked).map((k) => {
     const [dimKey, value] = k.split("=");
-    return { dim_key: dimKey, value, expires_at: expiresNow || null };
+    const expires = accessState.fresh.has(k) ? expiresNow : (accessState.picked[k] || "");
+    return { dim_key: dimKey, value, expires_at: expires || null };
   });
   const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/members/${encodeURIComponent(member)}/grants`, {
     method: "PUT",
@@ -353,7 +362,8 @@ async function askDisableValue(dim, v) {
   const imp = body.impact;
   showConfirm(
     t("dims.disable.ask", { value: v.value }),
-    `${t("dims.impact.docs")}: ${imp.docs} · ${t("dims.impact.grants")}: ${imp.grants} · ${t("dims.impact.users")}: ${imp.users}`,
+    `${t("dims.impact.docs")}: ${imp.docs} · ${t("dims.impact.grants")}: ${imp.grants}` +
+      ` · ${t("dims.impact.users")}: ${imp.users} · ${t("dims.impact.locked")}: ${imp.locked_docs}`,
     { action: "disable", dim, v }
   );
 }

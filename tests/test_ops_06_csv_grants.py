@@ -277,8 +277,34 @@ def test_csv_export_local_only_and_roundtrip(_csv_env) -> None:
     assert body["diff"]["changed"] == []
 
 
+def test_csv_import_users_absent_local_rows_untouched(_csv_env) -> None:
+    """D-1/R3（v1.9.3 口径裁定判别断言）：CSV 仅含 u_cn → **u_full 的 local
+    行原样保留**（按用户全量替换——未出现用户不动；「用户缺席=不动，清空
+    某用户全部 local 授权走 PUT 空清单」）。"""
+    client, conn = _csv_env["client"], _csv_env["conn"]
+    before = conn.execute(
+        "SELECT value_id, expires_at FROM user_dimension_grants"
+        " WHERE user_id = 'u_full' AND source = 'local' ORDER BY value_id"
+    ).fetchall()
+    assert len(before) == 2  # app_env 造数：u_full region CN+OS
+
+    csv_text = _make_csv([("u_cn", "region", "CN", "")])
+    r = client.post(
+        f"/api/orgs/{ORG}/grants/import",
+        headers=_csv_env["admin_headers"], content=csv_text,
+    )
+    assert r.status_code == 200 and r.json()["applied"] is True
+    after = conn.execute(
+        "SELECT value_id, expires_at FROM user_dimension_grants"
+        " WHERE user_id = 'u_full' AND source = 'local' ORDER BY value_id"
+    ).fetchall()
+    assert after == before, "CSV 外用户的 local 行原样保留（判别断言）"
+
+
 def test_csv_import_permission_and_org_scope(_csv_env) -> None:
-    """权限：非 org_admin → 403；他组织路径 → 403（org_scoped 成员校验）。"""
+    """权限：非 org_admin（本组织普通 member）→ 403（读写两面）；org_scoped
+    的他组织拦截由 org_scoped 单元/矩阵用例承载（app_env 造数无第二组织成员
+    token——此处不重复）。"""
     client = _csv_env["client"]
     member = {"Authorization": f"Bearer {_csv_env['static']['u_full']}"}
     r = client.post(

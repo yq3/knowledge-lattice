@@ -1100,7 +1100,9 @@ class SqliteBackend:
         if doc_id is not None:
             sql += " AND t.doc_id = :doc"
             params["doc"] = doc_id
-        # 次级排序键 id（ULID 时间有序）——created_at 秒级并列下稳定「最近优先」
+        # 次级排序键 id——created_at 秒级并列下的确定性 tiebreak（id 为 ULID
+        # 随机非单调、**不保证时间序**——只消除结果不确定性；同秒内「最近」
+        # 歧义本身登记 m2-6（任务 id 加序号列或单调源））
         sql += " ORDER BY t.created_at DESC, t.id DESC"
         rows = self._conn.execute(sql, params).fetchall()
         cols = (

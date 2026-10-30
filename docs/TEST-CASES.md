@@ -489,12 +489,12 @@
 #### TC-OPS-05 备份快照与恢复演练【集成｜M2】
 
 - **步骤**：`VACUUM INTO`/online backup 快照（含 `data/objects/`）→ 新环境恢复 → 跑迁移 → 抽查检索与矩阵子集。
-- **预期**：恢复后数据完整、检索正常、`user_version` 前进；RPO ≤24h / RTO ≤4h 口径记录（M2.6 验收「恢复演练通过」；G-5 快照目的地缺口见 known-gaps）。**v1.8.3 备份范围口径（M2-2）**：sqlite 快照 = 主库（VACUUM INTO）+ `data/objects/`（tar）；**审计月库 `audit_*.db` 文件备份方式见 RUNBOOK §4**（自动快照纳入随 m2-3）——恢复完整性验收以主库+objects 为准；pg `pg_dump -Fc`（分区同库天然含审计）。
+- **预期**：恢复后数据完整、检索正常、`user_version` 前进；RPO ≤24h / RTO ≤4h 口径记录（M2.6 验收「恢复演练通过」；G-5 快照目的地缺口见 known-gaps）。**v1.8.3 备份范围口径（M2-2）**：sqlite 快照 = 主库（VACUUM INTO）+ `data/objects/`（tar）；pg `pg_dump -Fc`（分区同库天然含审计）。**v1.9.3 更新（m2-3 B3 收编）**：sqlite 自动快照**已含审计月库**（`audit-months-<ts>.tar.gz`——audit_*.db+-wal/-shm+seal sidecar，RUNBOOK §4）；恢复完整性验收以主库+objects+月库 tar 为准；drill 脚本已含月库快照/恢复断言。
 
 #### TC-OPS-06 CSV 授权批量导入【集成｜M2】
 
 - **步骤**：① 导入 500 行 CSV（username, dim_key, values…, expires_at）；② CSV 含 org 列且与路径不一致；②' CSV 含 org 列且与路径**一致**（附录 A-12 口径：一律拒绝——CSV 不带 org 列）；③ CSV 混入 sync 维度行；④ 目标用户无有效成员关系；⑤ 重复导入同文件。
-- **预期**：① 幂等全量替换、差异预览后生效（M2.6 验收「批量导入 500 行正确」）；② 与 ②' 均整批拒绝（org 一律以路径为准）；③ sync 授权不动（T-CSV 主断言）；④ 拒绝该用户行（防孤儿授权）；⑤ 二跑零差异（幂等）。（v1.9.3 口径裁定：**「全量替换」= 按用户全量替换**——CSV 出现的用户按行集全量替换、**未出现用户 local 行原样保留**〔判别断言〕；**用户缺席=不动，清空某用户全部 local 授权走 PUT /members/{id}/grants 空清单**——增量文件安全语义，与 PUT 原语同构）
+- **预期**：① 幂等全量替换、差异预览后生效（M2.6 验收「批量导入 500 行正确」）；② 与 ②' 均整批拒绝（org 一律以路径为准）；③ sync 授权不动（T-CSV 主断言）；④ 拒绝该用户行（防孤儿授权）；⑤ 二跑零差异（幂等）。（v1.9.3 口径裁定：**「全量替换」= 按用户全量替换**——CSV 出现的用户按行集全量替换、**未出现用户 local 行原样保留**〔判别断言〕；**用户缺席=不动，清空某用户全部 local 授权走 PUT /members/{id}/grants 空清单**——增量文件安全语义，与 PUT 原语同构；重复行语义：CSV 同值同 expires 静默去重/不同 expires 400、PUT 行内重复一律 400〔API 严格/文件宽容〕；空字段行进 rejected、该用户其余行照常按用户替换〔dry_run 可见〕）
 
 #### TC-OPS-07 维度退役与取值停用治理【集成｜M2】
 

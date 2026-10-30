@@ -428,9 +428,12 @@ class AdminBackend(Protocol):
     def dimension_value_impact(
         self, org_id: str, dim_id: str, value_id: str,
     ) -> dict | None:
-        """取值停用影响面预估（dry_run 数据源——FR-4）：{docs, grants, users} =
-        引用该值的文档数 / 授权行数 / 持有者数（org 归属校验——不存在或跨
-        组织 → None）。只读零副作用。"""
+        """取值停用影响面预估（dry_run 数据源——FR-4）：{docs, grants, users,
+        locked_docs} = 引用该值的文档数 / 授权行数 / 持有者数 / **维度写锁
+        文档数**（R2 边界3——v1.6.3「维度写锁项」显式化：组织内引用了非 active
+        取值〔dry_run 视本值 disabled〕或 retired 维度取值的文档数——这些文档
+        的 PATCH/覆盖上传将被锁；org 归属校验——不存在或跨组织 → None）。
+        只读零副作用。"""
 
     def disable_dimension_value(
         self, org_id: str, dim_id: str, value_id: str, *,
@@ -439,9 +442,10 @@ class AdminBackend(Protocol):
     ) -> dict | None:
         """取值停用（TC-OPS-07①）：status→disabled（幂等——重复停用零新审计）；
         **T3 联动**：停用取值从授权展开消失（read_grants 的 v.status='active'
-        三重过滤既有机制——收紧进计算）。dry_run=True 只返回预估不落库；
-        audit 治理事件与停行**同一事务**（仅实际执行时记）。返回
-        {docs, grants, users, applied}。"""
+        三重过滤既有机制——收紧进计算）。dry_run=True 只返回预估（含
+        locked_docs——见 dimension_value_impact）不落库；audit 治理事件与停行
+        **同一事务**（仅实际执行时记）。返回 {docs, grants, users,
+        locked_docs, applied}。"""
 
     def dimension_retire_impact(self, org_id: str, dim_id: str) -> dict | None:
         """维度退役影响面预估（二次确认数据源）：{docs, grants, values} =
@@ -503,7 +507,9 @@ class AdminBackend(Protocol):
     ) -> dict:
         """备份快照（NFR-10 / TC-OPS-05——挂 maintenance 任务族）：SQLite
         `VACUUM INTO` / PG `pg_dump -Fc`（部署工具链，不违 D2）+ objects 目录
-        tar 一并备份；返回 {database, objects, created_at}。
+        tar 一并备份 + **审计月库 tar**（m2-3 B3——sqlite `audit_*.db` 月库
+        文件与 seal sidecar；pg 恒 None：月分区在库内、pg_dump 天然含）；
+        返回 {database, objects, audit_months, created_at}。
 
         语义归属（P3-3/R2）：运维管理面操作（与审计月库滚动无关）——Admin 域；
         异常两态见 store/backup_common.py（工具缺失≠真实失败）。"""
