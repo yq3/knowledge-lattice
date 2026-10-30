@@ -20,6 +20,7 @@ from conftest import ORG
 
 DIM_REGION = "dim:org:tax:region"
 VAL_CN = "val:dim:org:tax:region:CN"
+VAL_OS = "val:dim:org:tax:region:OS"
 
 
 # ============ ① 取值停用：dry_run 影响面 + 确认生效 + T3 联动 + 审计 ============
@@ -32,12 +33,12 @@ def test_disable_value_dry_run_returns_impact_without_applying(matrix) -> None:
     impact = backend.dimension_value_impact(ORG, DIM_REGION, VAL_CN)
     # matrix 造数：d_cn/d_multi 有 region=CN；CN 授权行 u_full/u_cn/u_cn_vat/
     # u_expired_grant/u_expired_member/admin_full 各一行（6 行 6 用户）
-    assert impact == {"docs": 2, "grants": 6, "users": 6}
+    assert impact == {"docs": 2, "grants": 6, "users": 6, "locked_docs": 2}
 
     result = backend.disable_dimension_value(
         ORG, DIM_REGION, VAL_CN, dry_run=True,
     )
-    assert result == {"docs": 2, "grants": 6, "users": 6, "applied": False}
+    assert result == {"docs": 2, "grants": 6, "users": 6, "locked_docs": 2, "applied": False}
     # 未生效：取值仍 active
     assert matrix.execute(
         "SELECT status FROM dimension_values WHERE id = ?", (VAL_CN,)
@@ -158,6 +159,39 @@ def test_retire_dimension_not_found(matrix) -> None:
     backend = matrix.make_backend()
     assert backend.dimension_retire_impact(ORG, "dim:nope") is None
     assert backend.retire_dimension(ORG, "dim:nope") is None
+
+
+def test_disable_value_impact_locked_docs(matrix) -> None:
+    """R2 边界3：影响面补 locked_docs（v1.6.3「维度写锁项」显式化）——组织内
+    引用了**已停用取值（含本次将停用值）或 retired 维度取值**的文档数：这些
+    文档的 PATCH / 覆盖上传将被 _require_values_in_grants 同锁（恢复路径=
+    重新启用取值）。"""
+    backend = matrix.make_backend()
+    # 基线：无任何 disabled 值/retired 维度；停用 region/CN——本值视作 disabled
+    # → 引用 CN 的文档 d_cn、d_multi 被锁
+    impact = backend.dimension_value_impact(ORG, DIM_REGION, VAL_CN)
+    assert impact["docs"] == 2 and impact["grants"] == 6
+    assert impact["locked_docs"] == 2, "本值视作 disabled：d_cn/d_multi 锁面"
+
+    # 退役 tax_type 后（retired 维度）：tax_type 有值文档（d_cn=VAT、d_cit=CIT）
+    # 也入锁面 → locked = {d_cn, d_multi} ∪ {d_cn, d_cit} = 3
+    backend.retire_dimension(
+        ORG, "dim:org:tax:tax_type",
+        audit=("dimension.retire", "{}"),
+    )
+    impact2 = backend.dimension_value_impact(ORG, DIM_REGION, VAL_CN)
+    assert impact2["locked_docs"] == 3, "retired 维度文档并入锁面（跨维度文档级）"
+
+    # 确认生效路径返回同口径
+    result = backend.disable_dimension_value(
+        ORG, DIM_REGION, VAL_CN,
+        audit=("dimension.value_disable", "{}"),
+    )
+    assert result["locked_docs"] == 3
+    # 已停用后的后续预估（对 VAL_OS）：存量 disabled（CN→d_cn/d_multi）+
+    # retired 维度（d_cn/d_cit）+ 本值 OS 视作 disabled（d_multi/d_os）→ 4 篇
+    impact3 = backend.dimension_value_impact(ORG, DIM_REGION, VAL_OS)
+    assert impact3["locked_docs"] == 4, "存量 disabled + retired + 本值锁面叠加"
 
 
 # ============ REST 端点（sqlite——app_env 惯例） ============

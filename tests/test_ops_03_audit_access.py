@@ -142,3 +142,100 @@ def test_audit_plain_member_rejected_and_filters(_audit_env) -> None:
     events = r.json()["events"]
     assert all(e["action"].startswith("search") for e in events)
     assert len(events) <= 5
+
+
+def test_audit_limit_validated(_audit_env) -> None:
+    """R2 P3-3：limit 边界校验——0/负数/超 500 → 422（limit=0 现返全量）。"""
+    client = _audit_env["client"]
+    for bad in (0, -1, 501):
+        r = client.get(
+            f"/api/orgs/{ORG}/audit", params={"limit": bad},
+            headers=_audit_env["headers"]["admin_tax"],
+        )
+        assert r.status_code == 422, f"limit={bad} 应 422"
+
+
+def test_audit_dual_source_dedup_by_id(_audit_env) -> None:
+    """R2 P3-2：双源合并按 id 去重（月库优先）——sqlite 两步搬运崩溃窗形态
+    （月库已插、outbox 回填未做）下同一事件不得出现两次。"""
+    from knowledge_lattice.store.audit_chain import compute_row_hash, month_of
+    from knowledge_lattice.store.taskclock import utc_now_ts
+
+    client, conn = _audit_env["client"], _audit_env["conn"]
+    # evt-dup：先搬入月库（直接插月库行），outbox 留 pending（崩溃窗形态）
+    month = month_of(utc_now_ts())
+    payload = json.dumps({"org_id": ORG, "user_id": "u_full", "doc_id": "d-dup"})
+    dup = {
+        "id": "evt-dup", "org_id": ORG, "actor": "u_full",
+        "action": "document.upload", "target_type": "document",
+        "target_id": "d-dup", "outcome": "accepted", "request_id": None,
+        "detail_json": payload, "prev_hash": None, "row_hash": None,
+        "created_at": utc_now_ts(),
+    }
+    dup["row_hash"] = compute_row_hash(dup, "")
+    import sqlite3
+
+    db_file = conn.execute("PRAGMA database_list").fetchall()[0][2]
+    mconn = sqlite3.connect(f"{db_file.rsplit('/', 1)[0]}/audit_{month}.db")
+    try:
+        # 无既有行时 prev=空串创世形态——直接 append（若月库已有行走链尾）
+        tail = mconn.execute(
+            "SELECT row_hash FROM audit_events ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+        dup["prev_hash"] = tail[0] if tail else ""
+        dup["row_hash"] = compute_row_hash(dup, dup["prev_hash"])
+        mconn.execute(
+            "INSERT INTO audit_events(id, org_id, actor, action, target_type,"
+            " target_id, outcome, request_id, detail_json, prev_hash, row_hash,"
+            " created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            tuple(dup[c] for c in (
+                "id", "org_id", "actor", "action", "target_type", "target_id",
+                "outcome", "request_id", "detail_json", "prev_hash", "row_hash",
+                "created_at")),
+        )
+        mconn.commit()
+    finally:
+        mconn.close()
+    conn.execute(
+        "INSERT INTO audit_outbox(id, event_type, payload_json) VALUES"
+        " ('evt-dup', 'document.upload', ?)",
+        (payload,),
+    )
+    conn.commit()
+
+    r = client.get(f"/api/orgs/{ORG}/audit", headers=_audit_env["headers"]["admin_tax"])
+    ids = [e["id"] for e in r.json()["events"]]
+    assert ids.count("evt-dup") == 1, "崩溃窗同事件双源只出现一次（月库优先）"
+
+
+def test_audit_sysadmin_excludes_other_org_and_dual_role(_audit_env) -> None:
+    """R2 P3-10：① sysadmin 查询只见目标组织事件（他组织 evt-a3 排除）；
+    ② sysadmin 兼任本组织 org_admin → 全量优先（口径裁定二：内容读取权来自
+    组织授权语境）；兼任 A 查他组织 B 仍 metadata。"""
+    client, conn = _audit_env["client"], _audit_env["conn"]
+    headers = _audit_env["headers"]
+
+    # ① sysadmin（无 org:tax 成员关系）→ metadata 且不含他组织事件
+    r = client.get(f"/api/orgs/{ORG}/audit", headers=headers["sysadmin"])
+    assert r.status_code == 200
+    body = r.json()
+    assert body["scope"] == "metadata"
+    ids = [e["id"] for e in body["events"]]
+    assert "evt-a3" not in ids, "他组织（org:gl）事件不得出现"
+    assert {"evt-a1", "evt-a2"} <= set(ids)
+
+    # ② sysadmin 兼任 org:tax org_admin → 全量优先（含 detail_json）
+    # （app_env 造 sysadmin 为 org:tax 普通 member——升角色模拟兼任）
+    conn.execute(
+        "UPDATE user_org_memberships SET role = 'org_admin'"
+        " WHERE user_id = 'sysadmin' AND org_id = ?",
+        (ORG,),
+    )
+    conn.commit()
+    r = client.get(f"/api/orgs/{ORG}/audit", headers=headers["sysadmin"])
+    body = r.json()
+    assert body["scope"] == "full", "兼任本组织 org_admin → 全量优先（裁定二）"
+    assert any(e.get("detail_json") for e in body["events"])
+    # 兼任 A（org:tax）查 B（org:gl）→ 仍 metadata（B 无授权语境）
+    r = client.get("/api/orgs/org:gl/audit", headers=headers["sysadmin"])
+    assert r.json()["scope"] == "metadata"

@@ -159,16 +159,30 @@ def test_api_reindex_and_reembed_task_enqueue(_mgmt_env) -> None:
 
 
 def test_api_embedding_coverage_readonly(_mgmt_env) -> None:
-    """覆盖率端点只读：embed_model=model:dim 形态、各库 done/total、reembed
-    窗口进度（任务行数据源）；非 org_admin 403；GET 语义零写入。"""
+    """覆盖率端点只读：embed_model=model:dim 形态、各库 done/total；reembed
+    窗口进度按**任务目标标签**（payload.embed_model——R2 P2-3）而非当前标签
+    ——蓝绿窗口旧标签覆盖率不冒充进度；非 org_admin 403。"""
     client, conn = _mgmt_env["client"], _mgmt_env["conn"]
 
-    # 先投一个 reembed（面板 reembed 窗口数据源）
+    # 先投一个 reembed（面板 reembed 窗口数据源——目标标签 new-model:1536）
     r = client.post(
         f"/api/orgs/{ORG}/documents/{_mgmt_env['doc_id']}/reindex",
         headers=_mgmt_env["admin"], params={"embed_model": "new-model:1536"},
     )
     reembed_task_id = r.json()["task_id"]
+
+    # 造目标标签部分向量（1 块）——reembed 进度=目标标签覆盖率
+    rid = conn.execute(
+        "SELECT rid FROM chunks WHERE doc_id = ?", (_mgmt_env["doc_id"],)
+    ).fetchone()[0]
+    from knowledge_lattice.store.sqlite.vec import pack_f32
+
+    conn.execute(
+        "INSERT INTO chunk_vectors(rid, embed_model, embedding)"
+        " VALUES(?, 'new-model:1536', ?)",
+        (rid, pack_f32([0.0] * 8)),
+    )
+    conn.commit()
 
     r = client.get(f"/api/orgs/{ORG}/embedding-coverage", headers=_mgmt_env["admin"])
     assert r.status_code == 200
@@ -180,11 +194,26 @@ def test_api_embedding_coverage_readonly(_mgmt_env) -> None:
         assert 0 <= c["done"] <= c["total"]
     assert body["totals"]["total"] == sum(c["total"] for c in body["coverage"])
     assert body["totals"]["done"] == sum(c["done"] for c in body["coverage"])
-    # reembed 窗口（任务行数据源 + 全局在用块进度）
+    # reembed 窗口（R2 P2-3）：按任务 payload.embed_model 目标标签算进度
     assert body["reembed"] is not None
     assert body["reembed"]["task_id"] == reembed_task_id
+    assert body["reembed"]["target_model"] == "new-model:1536"
     assert body["reembed"]["status"] == "pending"
-    assert body["reembed"]["total"] == body["totals"]["total"]
+    assert body["reembed"]["total"] >= 1
+    assert body["reembed"]["done"] == 1, "目标标签已有向量块计入 reembed 进度"
+    # 无目标标签向量时（执行体未认领起步）done=0——不冒充当前标签覆盖率
+    r2 = client.post(
+        f"/api/orgs/{ORG}/documents/{_mgmt_env['doc_id']}/reindex",
+        headers=_mgmt_env["admin"], params={"embed_model": "green:1536"},
+    )
+    task2 = r2.json()["task_id"]
+    # 清掉前一条 reembed（同秒并列下「最近一条」次序不判——单条无歧义）
+    conn.execute("DELETE FROM tasks WHERE id = ?", (reembed_task_id,))
+    conn.commit()
+    r = client.get(f"/api/orgs/{ORG}/embedding-coverage", headers=_mgmt_env["admin"])
+    body = r.json()
+    assert body["reembed"]["task_id"] == task2  # 唯一 reembed 任务
+    assert body["reembed"]["done"] == 0, "目标标签零向量 → done=0（非当前标签覆盖率）"
 
     # 非 org_admin → 403
     r = client.get(

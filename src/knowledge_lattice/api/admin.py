@@ -32,7 +32,7 @@ import csv
 import io
 import json
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
@@ -204,10 +204,19 @@ async def retire_dimension(
     return {"impact": result, "confirm_required": False, "applied": True}
 
 
+class GrantRow(BaseModel):
+    """单条授权行（TC-OPS-08 PUT / CSV 导入共用形态——R2 P2-1：pydantic 校验
+    缺键 422 而非 KeyError 500）。"""
+
+    dim_key: str
+    value: str
+    expires_at: str | None = None  # 严格校验见 _parse_expires_at（R2 P2-2）
+
+
 class GrantsReplaceRequest(BaseModel):
     """授权全量替换请求（TC-OPS-08）——目标全量态（local 授权清单）。"""
 
-    grants: list[dict]  # [{dim_key, value, expires_at?}]
+    grants: list[GrantRow]
 
 
 @router.put("/api/orgs/{org}/members/{user_id}/grants")
@@ -217,7 +226,8 @@ async def replace_member_grants(
 ) -> dict:
     """授权全量替换（TC-OPS-08——§6.2 端点语义）：**只替换 local 授权、sync
     不动**；支持行级 expires_at；grants.replace 审计与替换同事务。目标用户无
-    有效成员关系 → 400（防孤儿授权）。"""
+    有效成员关系 → 400（防孤儿授权）。R2 P2-1/P2-2：重复 (dim_key,value) 行
+    → 400（先删后插 PK 冲突的 500 根除）；expires_at 严格校验。"""
     org = org_scoped(request, org, auth)
     service = get_service(request)
     _require_org_admin(service, auth, org)
@@ -226,9 +236,21 @@ async def replace_member_grants(
             status_code=400,
             detail=f"目标用户在 {org!r} 无有效成员关系（防孤儿授权）",
         )
-    rows = [
-        (g["dim_key"], g["value"], g.get("expires_at")) for g in body.grants
-    ]
+    rows: list[tuple[str, str, str | None]] = []
+    seen: set[tuple[str, str]] = set()
+    for i, g in enumerate(body.grants, start=1):
+        key = (g.dim_key.strip(), g.value.strip())
+        if key in seen:
+            raise HTTPException(
+                status_code=400,
+                detail=f"grants 第 {i} 行重复: {key[0]}={key[1]}"
+                "（先删后插主键冲突——去重后重试）",
+            )
+        seen.add(key)
+        expires_at = _parse_expires_at(
+            g.expires_at, where=f"grants 第 {i} 行 expires_at",
+        )
+        rows.append((key[0], key[1], expires_at))
     audit = (EVENT_GRANTS_REPLACE, json.dumps(
         {"org_id": org, "user_id": user_id, "actor": auth.user_id,
          "via": "api", "rows": len(rows)}, ensure_ascii=False))
@@ -242,6 +264,39 @@ async def replace_member_grants(
 
 
 _GRANT_CSV_COLUMNS = ("username", "dim_key", "value", "expires_at")
+
+_EXPIRES_LIB_FORMAT = "%Y-%m-%d %H:%M:%S"  # 库内统一口径（CURRENT_TIMESTAMP 同格式）
+
+
+def _parse_expires_at(raw: str | None, *, where: str) -> str | None:
+    """expires_at 严格解析（R2 P2-2——sqlite 静默 fail-open 根除）：接受库格式
+    `YYYY-MM-DD HH:MM:SS` 与 ISO 8601（T 分隔，可选 Z/+00:00），归一化为库格式；
+    空/None → None（永久）；非法 → 400 带 where 定位（行号/字段）。"""
+    if raw is None or not str(raw).strip():
+        return None
+    text = str(raw).strip()
+    candidates = (
+        (text, _EXPIRES_LIB_FORMAT),
+        (text.replace("T", " ", 1), _EXPIRES_LIB_FORMAT),  # ISO T 分隔
+    )
+    if text.endswith("Z"):
+        candidates += ((text[:-1].replace("T", " ", 1), _EXPIRES_LIB_FORMAT),)
+    elif "+00:00" in text:
+        candidates += (
+            (text.replace("+00:00", "").replace("T", " ", 1), _EXPIRES_LIB_FORMAT),
+        )
+    for candidate, fmt in candidates:
+        try:
+            from datetime import datetime
+
+            return datetime.strptime(candidate, fmt).strftime(fmt)
+        except ValueError:
+            continue
+    raise HTTPException(
+        status_code=400,
+        detail=f"expires_at 非法（{where}）: {text!r}——须为"
+        f" 'YYYY-MM-DD HH:MM:SS' 或 ISO 8601（UTC）",
+    )
 
 
 @router.get("/api/orgs/{org}/grants/export")
@@ -259,9 +314,10 @@ async def export_grants(
     for row in service.backend.list_grants_for_export(org):
         if row["source"] != "local":
             continue  # sync 授权经同步适配器管理——CSV 面不触碰
-        writer.writerow(
-            [row["username"], row["dim_key"], row["value"], row["expires_at"] or ""]
-        )
+        expires = row["expires_at"]
+        if expires is not None and not isinstance(expires, str):
+            expires = expires.strftime(_EXPIRES_LIB_FORMAT)  # pg TIMESTAMP 归一
+        writer.writerow([row["username"], row["dim_key"], row["value"], expires or ""])
     return PlainTextResponse(
         buf.getvalue(),
         media_type="text/csv",
@@ -270,10 +326,18 @@ async def export_grants(
 
 
 def _parse_grant_csv(text: str) -> tuple[list[dict], list[str]]:
-    """解析导入 CSV：返回 (行集, 错误清单)。**org 列出现（无论与路径一致与否）
-    → 整批拒绝**（A-12——CSV 不带 org 列）；缺必需列 → 错误。"""
+    """解析导入 CSV：返回 (行集, 错误清单)。
+
+    - **org 列出现（无论与路径一致与否）→ 整批拒绝**（A-12——CSV 不带 org 列；
+      header 名规范化 lower()+strip——`Org`/` org ` 变体同拒，R2 P3-6）；
+    - **重复行检测（R2 P2-1）**：同 (username,dim_key,value) 重复——expires_at
+      相同 → 去重（幂等 CSV 单行语义）；不同 → 400 报两行号（显式拒绝优于
+      静默 last-wins）；
+    - expires_at 严格校验（R2 P2-2——`_parse_expires_at`）；
+    - 缺必需列 → 错误。
+    """
     reader = csv.DictReader(io.StringIO(text))
-    fields = reader.fieldnames or []
+    fields = [(f or "").strip().lower() for f in (reader.fieldnames or [])]
     if "org" in fields:
         raise HTTPException(
             status_code=400,
@@ -286,14 +350,33 @@ def _parse_grant_csv(text: str) -> tuple[list[dict], list[str]]:
             status_code=400, detail=f"CSV 缺少必需列: {missing}",
         )
     rows, errors = [], []
+    seen: dict[tuple[str, str, str], tuple[int, str | None]] = {}  # P2-1
     for i, raw in enumerate(reader, start=2):  # 2=数据首行（1 为 header）
-        username = (raw.get("username") or "").strip()
-        dim_key = (raw.get("dim_key") or "").strip()
-        value = (raw.get("value") or "").strip()
-        expires_at = (raw.get("expires_at") or "").strip() or None
+        def _col(name: str) -> str:
+            for key, value in raw.items():
+                if key is not None and key.strip().lower() == name:
+                    return (value or "").strip()
+            return ""
+
+        username = _col("username")
+        dim_key = _col("dim_key")
+        value = _col("value")
         if not username or not dim_key or not value:
             errors.append({"line": i, "username": username, "reason": "空字段"})
             continue
+        expires_at = _parse_expires_at(_col("expires_at") or None, where=f"第 {i} 行")
+        key = (username, dim_key, value)
+        if key in seen:
+            prev_line, prev_expires = seen[key]
+            if prev_expires != expires_at:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"CSV 重复行且 expires_at 冲突: 第 {prev_line} 行与"
+                    f" 第 {i} 行同为 {username}/{dim_key}={value}"
+                    f"（{prev_expires!r} ≠ {expires_at!r}）——显式二选一后重导",
+                )
+            continue  # 同值重复：去重（幂等）
+        seen[key] = (i, expires_at)
         rows.append({"line": i, "username": username, "dim_key": dim_key,
                      "value": value, "expires_at": expires_at})
     return rows, errors
@@ -313,7 +396,13 @@ async def import_grants(
     _require_org_admin(service, auth, org)
     backend = service.backend
 
-    text = (await request.body()).decode("utf-8-sig")
+    try:
+        text = (await request.body()).decode("utf-8-sig")
+    except UnicodeDecodeError as exc:  # R2 P3-7：非 UTF-8 → 400 非 500
+        raise HTTPException(
+            status_code=400,
+            detail=f"CSV 须为 UTF-8 编码（UnicodeDecodeError: {exc}）",
+        ) from exc
     rows, rejected = _parse_grant_csv(text)
 
     # 成员关系校验（逐用户——无有效行 → 该用户全部行拒绝）
@@ -450,14 +539,32 @@ async def embedding_coverage(
     done = sum(c["done"] for c in coverage)
     reembed = None
     for task in service.backend.list_tasks(org):  # 最近一条 reembed 任务行
-        if task["type"] == "reembed":
-            reembed = {
-                "task_id": task["id"], "status": task["status"],
-                "error": task["error"],
-                "created_at": task["created_at"],
-                "done": done, "total": total,  # 进度=全局在用块覆盖率
-            }
-            break
+        if task["type"] != "reembed":
+            continue
+        # R2 P2-3：窗口进度按**任务目标标签**（payload.embed_model）算——
+        # 蓝绿窗口旧（当前）标签覆盖率通常 100%，不得冒充迁移进度；执行体
+        # 未认领起步时目标标签零向量 → done=0（真实进度）。
+        full = service.backend.get_task(task["id"]) or {}
+        target_model = None
+        try:
+            payload = json.loads(full.get("payload") or "{}")
+            if isinstance(payload, dict):
+                target_model = payload.get("embed_model")
+        except (ValueError, TypeError):
+            payload = {}
+        r_done = r_total = 0
+        if target_model:
+            rows = service.backend.embedding_coverage(org, target_model)
+            r_total = sum(c["total"] for c in rows)
+            r_done = sum(c["done"] for c in rows)
+        reembed = {
+            "task_id": task["id"], "status": task["status"],
+            "error": task["error"],
+            "created_at": task["created_at"],
+            "target_model": target_model,
+            "done": r_done, "total": r_total,
+        }
+        break
     return {
         "embed_model": label,
         "dim": service.settings.embed_dim,
@@ -469,7 +576,8 @@ async def embedding_coverage(
 
 @router.get("/api/orgs/{org}/audit")
 async def query_audit(
-    org: str, request: Request, action: str | None = None, limit: int = 100,
+    org: str, request: Request, action: str | None = None,
+    limit: int = Query(100, ge=1, le=500),
     auth: AuthContext = Depends(get_auth),
 ) -> dict:
     """审计分级查询（TC-OPS-03——FR-6 分级）：
@@ -479,7 +587,9 @@ async def query_audit(
       确需内容走审批+临时授权）；
     - org_admin 查他组织 / 普通成员 → 403。
 
-    数据源 = 当月月库（链遍历读序——B2）+ 未搬运 outbox 行（当月事件双源合并）。
+    数据源 = 当月月库（链遍历读序——B2）+ 未搬运 outbox 行（当月事件双源
+    合并，**按 id 去重、月库优先**——R2 P3-2：sqlite 两步搬运崩溃窗形态下
+    同一事件不重复出现）。
     """
     resolved = check_path_org(path_org=org, org_header=request.headers.get("x-org-id"))
     service = get_service(request)
@@ -494,11 +604,14 @@ async def query_audit(
             "or system admin (metadata-only)——FR-6 分级",
         )
 
-    rows: list[dict] = [
-        outbox_row_to_event(r)  # 未搬运 outbox（投影同搬运侧）
-        for r in service.backend.read_pending_outbox_events()
-    ]
-    rows.extend(service.backend.read_monthly_events(when=utc_now_ts()))
+    monthly = service.backend.read_monthly_events(when=utc_now_ts())
+    monthly_ids = {r.get("id") for r in monthly}
+    rows: list[dict] = list(monthly)
+    for outbox_row in service.backend.read_pending_outbox_events():
+        event = outbox_row_to_event(outbox_row)  # 未搬运 outbox（投影同搬运侧）
+        if event.get("id") in monthly_ids:
+            continue  # P3-2：月库优先去重（崩溃窗同事件不重复）
+        rows.append(event)
     rows = [r for r in rows if r.get("org_id") == resolved]
     if action:
         rows = [r for r in rows if (r.get("action") or "").startswith(action)]

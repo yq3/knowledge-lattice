@@ -146,7 +146,6 @@ def test_b2_read_order_independent_and_chain_verified(matrix) -> None:
 
     events = backend.read_monthly_events(when=utc_now_ts())
     assert [e["id"] for e in events] == ids, "链序应等于插入序"
-    assert [e["id"] for e in events] == ids, "链序应等于插入序"
 
     # 乱序容忍：shuffle 后 walk_chain 恢复同一序 + 哈希重算全过
     shuffled = list(events)
@@ -274,3 +273,113 @@ def test_b6_last_row_hash_null_seq_probe(matrix) -> None:
     assert [e["id"] for e in events2] == [
         "evt-chain-000", "evt-chain-001", "evt-chain-002", "evt-null-seq",
     ]
+
+
+# ============ R2 P3-4：dimension.* 审计事件 target 投影对齐 ============
+
+
+def test_dimension_events_target_projection(matrix) -> None:
+    """P3-4：dimension.value_disable / dimension.retire 的 target 投影对齐写入
+    payload 键（dimension_id/value_id）——搬运后 target_type/target_id 不再空。"""
+    from knowledge_lattice.store.taskclock import utc_now_ts
+
+    backend = matrix.make_backend()
+    backend.append_outbox(
+        "dimension.retire",
+        json.dumps({"org_id": "org:tax", "dimension_id": "dim:org:tax:channel",
+                    "actor": "admin_tax"}, ensure_ascii=False),
+    )
+    backend.append_outbox(
+        "dimension.value_disable",
+        json.dumps({"org_id": "org:tax", "dimension_id": "dim:org:tax:region",
+                    "value_id": "val:dim:org:tax:region:CN",
+                    "actor": "admin_tax"}, ensure_ascii=False),
+    )
+    backend.ship_outbox()
+    events = backend.read_monthly_events(when=utc_now_ts())
+    by_action = {e["action"]: e for e in events}
+    retire = by_action["dimension.retire"]
+    assert retire["target_type"] == "dimension"
+    assert retire["target_id"] == "dim:org:tax:channel"
+    disable = by_action["dimension.value_disable"]
+    assert disable["target_type"] == "dimension"
+    assert disable["target_id"] == "dim:org:tax:region", (
+        "value_disable 主 target=维度（value_id 在 detail_json 保真）"
+    )
+
+
+# ============ R2 P3-5：walk_chain 破链边界永久回归（Tester 临时脚本转正式） ============
+
+
+def _evt(eid: str, prev: str, *, tamper: bool = False) -> dict:
+    from knowledge_lattice.store.audit_chain import compute_row_hash
+
+    row = {
+        "id": eid, "org_id": "org:tax", "actor": "u", "action": "x",
+        "target_type": None, "target_id": None, "outcome": "accepted",
+        "request_id": None, "detail_json": "{}", "prev_hash": prev,
+        "row_hash": None, "created_at": "2026-10-30 00:00:00",
+    }
+    row["row_hash"] = "sha256:" + "0" * 64 if tamper else compute_row_hash(row, prev)
+    return row
+
+
+def test_walk_chain_fork_detected() -> None:
+    """分叉：两行 prev 同指一行 → AuditChainError。"""
+    from knowledge_lattice.store.audit_chain import AuditChainError, walk_chain
+
+    a = _evt("a", "")
+    b = _evt("b", a["row_hash"])
+    c = _evt("c", a["row_hash"])  # 分叉
+    with pytest.raises(AuditChainError, match="fork"):
+        walk_chain([a, b, c])
+
+
+def test_walk_chain_multi_head_detected() -> None:
+    """多链头：两行 prev 均不在集合内 → AuditChainError。"""
+    from knowledge_lattice.store.audit_chain import AuditChainError, walk_chain
+
+    a = _evt("a", "")
+    b = _evt("b", "sha256:foreign")  # 另一链头（孤立前向引用）
+    with pytest.raises(AuditChainError, match="chain head"):
+        walk_chain([a, b])
+
+
+def test_walk_chain_orphan_rows_detected() -> None:
+    """孤儿行：主链之外的独立环/尾段 → AuditChainError。"""
+    from knowledge_lattice.store.audit_chain import AuditChainError, walk_chain
+
+    a = _evt("a", "")
+    b = _evt("b", a["row_hash"])
+    x = _evt("x", "sha256:orphan")  # 孤儿（prev 指空集外——构成第二链头）
+    with pytest.raises(AuditChainError):
+        walk_chain([a, b, x])
+
+
+def test_walk_chain_cycle_detected() -> None:
+    """环：节点 prev 互指成环（无任何链头——heads=0）→ AuditChainError。
+    （真数据形态下环必然伴随哈希不衔接：结构拦截先行，hash 验证兜底。）"""
+    from knowledge_lattice.store.audit_chain import AuditChainError, walk_chain
+
+    def _raw(eid: str, prev: str) -> dict:
+        return {
+            "id": eid, "org_id": "org:tax", "actor": "u", "action": "x",
+            "target_type": None, "target_id": None, "outcome": "accepted",
+            "request_id": None, "detail_json": "{}", "prev_hash": prev,
+            "row_hash": f"sha256:{eid}", "created_at": "2026-10-30 00:00:00",
+        }
+
+    p = _raw("p", "sha256:q")
+    q = _raw("q", "sha256:p")  # 互指成环——零链头
+    with pytest.raises(AuditChainError, match="chain head"):
+        walk_chain([p, q])
+
+
+def test_walk_chain_tampered_hash_detected() -> None:
+    """哈希篡改：row_hash 与 canonical 不符 → AuditChainError。"""
+    from knowledge_lattice.store.audit_chain import AuditChainError, walk_chain
+
+    a = _evt("a", "")
+    bad = _evt("bad", a["row_hash"], tamper=True)
+    with pytest.raises(AuditChainError, match="hash mismatch"):
+        walk_chain([a, bad])

@@ -175,3 +175,84 @@ def test_api_replace_grants_flow(app_env) -> None:
         "SELECT count(*) FROM user_dimension_grants WHERE user_id = 'u_cn'"
         " AND source = 'sync:hr'"
     ).fetchone()[0] == 1
+
+
+# ============ m2-3 R2：P2-1/P2-2 PUT 面 ============
+
+
+def test_api_put_grants_duplicate_rows_rejected(app_env) -> None:
+    """P2-1（PUT 面）：同 (dim_key,value) 重复行 → 400（先删后插 PK 冲突的
+    500 根除）；缺 dim_key/value 键 → 422（pydantic 校验，非 500）。"""
+    from helpers import seed_membership, seed_user
+    from knowledge_lattice.domain.auth import hash_token
+
+    client, conn = app_env["client"], app_env["conn"]
+    seed_user(conn, "admin_tax")
+    seed_membership(conn, "admin_tax", ORG, role="org_admin")
+    conn.execute(
+        "UPDATE users SET token_hash = ? WHERE id = 'admin_tax'",
+        (hash_token("dev-static-admin-tax"),),
+    )
+    conn.commit()
+    admin = {"Authorization": "Bearer dev-static-admin-tax"}
+
+    # 重复行 → 400
+    r = client.put(
+        "/api/orgs/org:tax/members/u_cn/grants",
+        headers=admin,
+        json={"grants": [
+            {"dim_key": "region", "value": "OS"},
+            {"dim_key": "region", "value": "OS"},  # PK 冲突形态
+        ]},
+    )
+    assert r.status_code == 400
+    assert "重复" in r.json()["detail"] or "duplicate" in r.json()["detail"].lower()
+
+    # 缺键 → 422（pydantic 校验——修复前 KeyError 500）
+    r = client.put(
+        "/api/orgs/org:tax/members/u_cn/grants",
+        headers=admin, json={"grants": [{"dim_key": "region"}]},
+    )
+    assert r.status_code == 422
+    r = client.put(
+        "/api/orgs/org:tax/members/u_cn/grants",
+        headers=admin, json={"grants": [{"value": "OS"}]},
+    )
+    assert r.status_code == 422
+    # 原授权未被破坏（失败零写入）
+    assert conn.execute(
+        "SELECT count(*) FROM user_dimension_grants WHERE user_id = 'u_cn'"
+        " AND source = 'local'"
+    ).fetchone()[0] == 1
+
+
+def test_api_put_grants_invalid_expires_rejected(app_env) -> None:
+    """P2-2（PUT 面）：非法 expires_at → 400（sqlite 静默 fail-open 根除：
+    修复前非法串原样写列、字符串比较恒真=临时授权永久化）。"""
+    from helpers import seed_membership, seed_user
+    from knowledge_lattice.domain.auth import hash_token
+
+    client, conn = app_env["client"], app_env["conn"]
+    seed_user(conn, "admin_tax")
+    seed_membership(conn, "admin_tax", ORG, role="org_admin")
+    conn.execute(
+        "UPDATE users SET token_hash = ? WHERE id = 'admin_tax'",
+        (hash_token("dev-static-admin-tax"),),
+    )
+    conn.commit()
+    admin = {"Authorization": "Bearer dev-static-admin-tax"}
+
+    for bad in ("abc", "forever", "2027-02-30 00:00:00"):
+        r = client.put(
+            "/api/orgs/org:tax/members/u_cn/grants",
+            headers=admin,
+            json={"grants": [
+                {"dim_key": "region", "value": "OS", "expires_at": bad},
+            ]},
+        )
+        assert r.status_code == 400, f"{bad!r} 应被拒绝"
+        assert bad in r.json()["detail"]
+    assert conn.execute(
+        "SELECT count(*) FROM user_dimension_grants WHERE user_id = 'u_cn'"
+        " AND source = 'local' AND value_id = 'val:dim:org:tax:region:OS'"
+    ).fetchone()[0] == 0, "非法串不得入列"

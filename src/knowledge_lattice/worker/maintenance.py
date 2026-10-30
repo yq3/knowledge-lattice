@@ -131,7 +131,13 @@ def _backup_body(backend, credentials, settings, now):
     except BackupToolUnavailable as exc:
         logger.warning("backup tool unavailable (snapshot skipped): %s", exc)
         return f"unavailable: {exc}"
-    return {"database": result["database"], "objects": result["objects"]}  # 真实失败上抛（P2-4）
+    # P3-8/R2：audit_months 入 stats（B3 可发现性——sqlite=月库 tar 路径；
+    # pg 恒 None：分区在库内、pg_dump 天然含）。真实失败上抛（P2-4）。
+    return {
+        "database": result["database"],
+        "objects": result["objects"],
+        "audit_months": result.get("audit_months"),
+    }
 
 
 @_register("audit_outbox_trimmed")

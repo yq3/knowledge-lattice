@@ -46,7 +46,7 @@ async function loadMeta() {
     dsSel.innerHTML = "";
     (dsRes.datasets || []).forEach((d) => {
       const o = document.createElement("option");
-      o.value = d.id; o.textContent = `${d.name}（${d.id}）`;
+      o.value = d.id; o.textContent = `${d.name} (${d.id})`;
       dsSel.appendChild(o);
     });
     const qDs = $("#qDataset");
@@ -56,7 +56,7 @@ async function loadMeta() {
     qDs.appendChild(all);
     (dsRes.datasets || []).forEach((d) => {
       const o = document.createElement("option");
-      o.value = d.id; o.textContent = `${d.name}（${d.id}）`;
+      o.value = d.id; o.textContent = `${d.name} (${d.id})`;
       qDs.appendChild(o);
     });
     state.dims = dimRes.dimensions || [];
@@ -74,13 +74,13 @@ function renderDimChips() {
     g.className = "dim-group";
     const label = document.createElement("div");
     label.className = "dim-label";
-    label.textContent = `${dim.name}（${dim.key}）${dim.required ? " · " + t("upload.required") : ""}`;
+    label.textContent = `${dim.name} (${dim.key})${dim.required ? " · " + t("upload.required") : ""}`;
     g.appendChild(label);
     (dim.values || []).forEach((v) => {
       const chip = document.createElement("button");
       chip.type = "button";
       chip.className = "chip" + (isPicked(dim.key, v.value) ? " on" : "");
-      chip.textContent = `${v.label}（${v.value}）`;
+      chip.textContent = `${v.label} (${v.value})`;
       chip.onclick = () => togglePick(dim.key, v.value, chip);
       g.appendChild(chip);
     });
@@ -130,7 +130,7 @@ async function refreshStatus() {
     [t("status.doc"), esc(state.docId)],
     [t("status.active"), `v${doc.active_version ?? "-"} · ${esc(doc.active_status ?? "-")}${doc.active_error ? " · " + esc(doc.active_error) : ""}`],
     [t("status.pending"), doc.pending_version ? `v${doc.pending_version} · ${esc(doc.pending_status)}` : "—"],
-    [t("status.task"), `${esc(task.status ?? "-")}（${t("status.attempts")} ${task.attempts ?? 0}）${task.error ? " · " + esc(task.error) : ""}`],
+    [t("status.task"), `${esc(task.status ?? "-")}(${t("status.attempts")} ${task.attempts ?? 0})${task.error ? " · " + esc(task.error) : ""}`],
   ].map(([k, v]) => `<dt>${k}</dt><dd class="mono">${v}</dd>`).join("");
 }
 
@@ -177,10 +177,16 @@ async function loadGrants() {
   const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/grants/export`);
   if (!resp.ok) { $("#gMsg").textContent = `${resp.status}`; return; }
   const lines = (await resp.text()).trim().split(/\r?\n/);
-  accessState.rows = lines.length > 1 ? lines.slice(1).map((l) => {
-    const [username, dimKey, value, expiresAt] = l.split(",");
-    return { username, dimKey, value, expiresAt: expiresAt || "" };
-  }) : [];
+  accessState.rows = lines.length > 1
+    ? lines.slice(1).map((l) => {
+        // P3-14/R2：引号形态 CSV 单行解析（值含逗号不错位——split(",") 弃用）
+        const cols = l.match(/("([^"]|"")*"|[^,]*)(,|$)/g)
+          .slice(0, 4)
+          .map((c) => c.replace(/,$/, "").replace(/^"(.*)"$/, "$1").replace(/""/g, '"'));
+        return { username: cols[0], dimKey: cols[1], value: cols[2],
+                 expiresAt: cols[3] || "" };
+      })
+    : [];
   accessState.members = [...new Set(accessState.rows.map((r) => r.username))].sort();
   const sel = $("#gMember");
   sel.innerHTML = "";
@@ -212,14 +218,14 @@ function renderGrantChips() {
     g.className = "dim-group";
     const label = document.createElement("div");
     label.className = "dim-label";
-    label.textContent = `${dim.name}（${dim.key}）`;
+    label.textContent = `${dim.name} (${dim.key})`;
     g.appendChild(label);
     (dim.values || []).forEach((v) => {
       const on = `${dim.key}=${v.value}` in accessState.picked;
       const chip = document.createElement("button");
       chip.type = "button";
       chip.className = "chip" + (on ? " on" : "");
-      chip.textContent = `${v.label}（${v.value}）`;
+      chip.textContent = `${v.label} (${v.value})`;
       chip.onclick = () => {
         const key = `${dim.key}=${v.value}`;
         if (key in accessState.picked) delete accessState.picked[key];
@@ -235,9 +241,12 @@ function renderGrantChips() {
 async function saveGrants() {
   const member = $("#gMember").value;
   if (!member) return;
-  const grants = Object.entries(accessState.picked).map(([k, exp]) => {
+  // P3-14/R2：expires 以**保存时点**输入框值统一应用（后填生效——选中早于
+  // 填写的行不再钉死点击时点旧值；清空输入框=转永久）
+  const expiresNow = $("#gExpires").value.trim();
+  const grants = Object.keys(accessState.picked).map((k) => {
     const [dimKey, value] = k.split("=");
-    return { dim_key: dimKey, value, expires_at: exp || null };
+    return { dim_key: dimKey, value, expires_at: expiresNow || null };
   });
   const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/members/${encodeURIComponent(member)}/grants`, {
     method: "PUT",
@@ -302,7 +311,7 @@ function renderGovernanceDims() {
     const vals = (dim.values || []).map((v) => {
       const chip = document.createElement("span");
       chip.className = "chip d";
-      chip.textContent = `${v.label}（${v.value}）`;
+      chip.textContent = `${v.label} (${v.value})`;
       const btn = document.createElement("button");
       btn.className = "btn ghost sm";
       btn.textContent = t("dims.disable");
@@ -437,7 +446,7 @@ async function loadCoverage() {
   $("#covKv").innerHTML = [
     [t("ops.cover.model"), `<span class="mono">${esc(body.embed_model)}</span>`],
     [t("ops.cover.dim"), esc(body.dim)],
-    [t("ops.cover.ratio"), `${body.totals.done}/${body.totals.total}（${pct}%）`],
+    [t("ops.cover.ratio"), `${body.totals.done}/${body.totals.total} (${pct}%)`],
     [t("ops.cover.progress"), esc(reembed)],
   ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
   $("#covBars").innerHTML = (body.coverage || []).map((c) => {

@@ -1065,7 +1065,8 @@ class PgBackend:
         if doc_id is not None:
             sql += " AND t.doc_id = %(doc)s"
             params["doc"] = doc_id
-        sql += " ORDER BY t.created_at DESC"
+        # 次级排序键 id（ULID 时间有序）——created_at 并列下稳定「最近优先」
+        sql += " ORDER BY t.created_at DESC, t.id DESC"
         rows = self._conn.execute(sql, params).fetchall()
         cols = (
             "id", "doc_id", "type", "status", "attempts", "error", "target_version",
@@ -2147,7 +2148,8 @@ class PgBackend:
     def dimension_value_impact(
         self, org_id: str, dim_id: str, value_id: str,
     ) -> dict | None:
-        """取值停用影响面预估（TC-OPS-07① dry_run 数据源）——只读。"""
+        """取值停用影响面预估（TC-OPS-07① dry_run 数据源）——只读。
+        locked_docs 口径见 sqlite 版 docstring（R2 边界3）。"""
         if self._value_row(org_id, dim_id, value_id) is None:
             return None
         docs = self._conn.execute(
@@ -2160,7 +2162,14 @@ class PgBackend:
             " FROM user_dimension_grants WHERE value_id = %(vid)s",
             {"vid": value_id},
         ).fetchone()
-        return {"docs": docs, "grants": grants, "users": users}
+        locked = self._conn.execute(
+            "SELECT count(DISTINCT dd.doc_id) FROM document_dimensions dd"
+            " JOIN dimension_values v ON v.id = dd.value_id"
+            " JOIN dimensions d ON d.id = v.dimension_id AND d.org_id = %(org)s"
+            " WHERE d.status != 'active' OR v.status != 'active' OR v.id = %(vid)s",
+            {"org": org_id, "vid": value_id},
+        ).fetchone()[0]
+        return {"docs": docs, "grants": grants, "users": users, "locked_docs": locked}
 
     def disable_dimension_value(
         self, org_id: str, dim_id: str, value_id: str, *,
@@ -2356,13 +2365,17 @@ class PgBackend:
         return out
 
     def read_last_maintenance_stats(self) -> dict | None:
-        """最近 maintenance.run 的 stats（B4——outbox 优先、月库兜底）。"""
+        """最近 maintenance.run 的 stats（B4——outbox 优先、月库兜底；P3-1/R2：
+        月库兜底取链序**最后一条**；P3-12/R2：事件名常量）。"""
         import json as _json
+
+        from knowledge_lattice.domain.audit_events import EVENT_MAINTENANCE_RUN
 
         row = self._conn.execute(
             "SELECT payload_json FROM audit_outbox"
-            " WHERE event_type = 'maintenance.run'"
-            " ORDER BY created_at DESC, id DESC LIMIT 1"
+            " WHERE event_type = %(evt)s"
+            " ORDER BY created_at DESC, id DESC LIMIT 1",
+            {"evt": EVENT_MAINTENANCE_RUN},
         ).fetchone()
         if row is not None:
             try:
@@ -2371,8 +2384,8 @@ class PgBackend:
                 return None
         from knowledge_lattice.store.taskclock import utc_now_ts
 
-        for event in self.read_monthly_events(when=utc_now_ts()):
-            if event.get("action") == "maintenance.run" and event.get("detail_json"):
+        for event in reversed(self.read_monthly_events(when=utc_now_ts())):
+            if event.get("action") == EVENT_MAINTENANCE_RUN and event.get("detail_json"):
                 try:
                     return _json.loads(event["detail_json"]).get("stats")
                 except (ValueError, AttributeError):

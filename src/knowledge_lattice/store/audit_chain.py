@@ -75,14 +75,17 @@ def outbox_row_to_event(row: dict) -> dict:
 
 
 def _target_of(action: str, payload: dict) -> tuple[str | None, str | None]:
-    """事件类型 → (target_type, target_id) 投影（payload 的 *_id 键映射）。"""
+    """事件类型 → (target_type, target_id) 投影（payload 的 *_id 键映射）。
+
+    dimension.* 映射 dimension_id（R2 P3-4——api/admin.py 写入 payload 用
+    dimension_id/value_id 键；value_id 保真在 detail_json，主 target=维度）。"""
     for prefix, target_type, key in (
         ("document.", "document", "doc_id"),
         ("task.", "task", "task_id"),
         ("upload.", "upload", "upload_id"),
         ("dataset.", "dataset", "dataset_id"),
         ("grants.", "grants", "user_id"),
-        ("dimension.", "dimension", "target_id"),
+        ("dimension.", "dimension", "dimension_id"),
     ):
         if action.startswith(prefix):
             value = payload.get(key)

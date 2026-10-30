@@ -112,7 +112,9 @@ def snapshot_objects(objects_dir: Path, backup_dir: Path, *,
 
 def snapshot(dsn: str, backup_dir: Path, objects_dir: Path | None = None, *,
              schema: str | None = None, when: datetime | None = None) -> dict:
-    """完整快照：pg_dump + 对象目录 → {database, objects, created_at}。"""
+    """完整快照：pg_dump + 对象目录 → {database, objects, audit_months,
+    created_at}。audit_months 恒 None——pg 审计月分区在库内、pg_dump 天然含
+    （无独立月库文件——B3 口径与 sqlite 形态对齐的显式占位）。"""
     when = when or datetime.now(UTC)
     db_out = snapshot_database(dsn, backup_dir, schema=schema, when=when)
     obj_out = (
@@ -122,6 +124,7 @@ def snapshot(dsn: str, backup_dir: Path, objects_dir: Path | None = None, *,
     return {
         "database": str(db_out),
         "objects": str(obj_out) if obj_out else None,
+        "audit_months": None,  # 分区在库内（pg_dump 天然含）——B3 口径
         "created_at": _tag(when),
     }
 

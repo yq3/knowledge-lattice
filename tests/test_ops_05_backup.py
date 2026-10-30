@@ -378,7 +378,9 @@ def test_pg_backup_scope_covers_audit_partitions(pg_db, tmp_path, _pg_dump_tool)
 
 def test_maintenance_backup_body_sqlite(matrix, tmp_path, _pg_dump_tool) -> None:
     """快照任务体挂 maintenance（D2）：backup_interval_s=0 每轮真快照 + audit
-    ship/seal/prune 三体出现在 stats（注册表 P3-N11——顺序 ship→seal→prune）。"""
+    ship/seal/prune 三体出现在 stats（注册表 P3-N11——顺序 ship→seal→prune）；
+    P3-8/R2：backup stats 含 audit_months 键（sqlite=月库 tar 路径 / pg=None
+    ——分区在库内口径）。"""
     from knowledge_lattice.adapters.embedder import EmbeddingGate
     from knowledge_lattice.core.docs.credentials import CredentialService
     from knowledge_lattice.worker.maintenance import MAINTENANCE_BODIES, run_maintenance
@@ -388,6 +390,9 @@ def test_maintenance_backup_body_sqlite(matrix, tmp_path, _pg_dump_tool) -> None
         environment="test", data_dir=tmp_path, embed_dim=8,
         backup_interval_s=0,  # 测试：每轮快照
     )
+    # 造月库行（B3 可发现性断言面——sqlite 臂月库 tar 非空的前提）
+    backend.append_outbox("maintenance.run", '{"stats": {}}')
+    backend.ship_outbox()
     creds = CredentialService(backend, settings, tmp_path / "objects")
     task_id = backend.create_task(None, task_type="maintenance")
     stats = run_maintenance(backend, creds, settings, task_id)
@@ -399,9 +404,26 @@ def test_maintenance_backup_body_sqlite(matrix, tmp_path, _pg_dump_tool) -> None
     assert "backup_snapshot" in names
     # 快照真实落盘（backup_interval_s=0 → 非 throttled）
     snap = stats["backup_snapshot"]
-    assert isinstance(snap, dict) and Path(snap["database"]).is_file()
-    assert Path(snap["database"]).parent == tmp_path / "backups"
-    assert stats["audit_shipped"] == {"shipped": 0}  # 无待搬运行
+    if matrix.is_sqlite:
+        assert isinstance(snap, dict) and Path(snap["database"]).is_file()
+        assert Path(snap["database"]).parent == tmp_path / "backups"
+        # P3-8：audit_months 键在场且月库 tar 落盘（B3 可发现性）
+        assert snap.get("audit_months") and Path(snap["audit_months"]).is_file()
+    else:
+        # pg 臂：工具可用性分支（_pg_dump_tool 已尽力注入 docker 形态）
+        from knowledge_lattice.store.postgres.backup import _resolve_command
+
+        try:
+            _resolve_command("LATTICE_PG_DUMP_CMD", "pg_dump")
+            tool_available = True
+        except Exception:
+            tool_available = False
+        if tool_available:
+            assert isinstance(snap, dict) and Path(snap["database"]).is_file()
+            assert snap.get("audit_months") is None  # 分区在库内——显式 None
+        else:
+            assert str(snap).startswith("unavailable")
+    assert stats["audit_shipped"] == {"shipped": 0}  # 无待搬运行（本函数已 ship）
     assert stats["audit_months_sealed"]["sealed"] == []
     assert backend.get_task(task_id)["status"] == "done"
 

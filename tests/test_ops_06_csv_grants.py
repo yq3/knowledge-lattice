@@ -10,7 +10,12 @@
 - ④ 目标用户无有效成员关系 → 拒绝该用户行（防孤儿授权）；
 - ⑤ 重复导入同文件 → 二跑零差异（幂等）。
 
-REST 端点为 sqlite（app_env 惯例）；diff 语义断言双后端经 store 方法承载。
+v1.9.3 口径裁定：「全量替换」= 按用户全量替换（与 PUT 原语同构）。
+
+执行形态：本组 REST 端点用例全部为 sqlite（app_env 惯例——TestClient 单后端
+装配）；store 层读路径（list_grants_for_export/replace_local_grants 等）的双
+后端覆盖由 tests/test_admin_store_reads.py 与 test_ops_08 的 matrix 参数化
+用例承载。
 """
 
 from __future__ import annotations
@@ -282,3 +287,115 @@ def test_csv_import_permission_and_org_scope(_csv_env) -> None:
     assert r.status_code == 403
     r = client.get(f"/api/orgs/{ORG}/grants/export", headers=member)
     assert r.status_code == 403
+
+
+# ============ m2-3 R2：P2-1 重复行 / P2-2 expires_at 校验 / P3-6/P3-7 ============
+
+
+def test_csv_duplicate_rows_same_value_deduped(_csv_env) -> None:
+    """P2-1①：同 (username,dim_key,value) 重复行且 expires_at 相同 → 解析期
+    去重、正常生效（单行语义——幂等 CSV 不炸主键）。"""
+    client, conn = _csv_env["client"], _csv_env["conn"]
+    csv_text = (
+        "username,dim_key,value,expires_at\n"
+        "u_bulk_000,region,OS,\n"
+        "u_bulk_000,region,OS,\n"
+    )
+    r = client.post(
+        f"/api/orgs/{ORG}/grants/import",
+        headers=_csv_env["admin_headers"], content=csv_text,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["applied"] is True
+    assert conn.execute(
+        "SELECT count(*) FROM user_dimension_grants WHERE user_id = 'u_bulk_000'"
+    ).fetchone()[0] == 1  # 去重后单行
+
+
+def test_csv_duplicate_rows_conflicting_expires_rejected(_csv_env) -> None:
+    """P2-1②：同键重复但 expires_at 不同 → 400 报行号（显式拒绝优于静默
+    last-wins）；零写入。"""
+    client, conn = _csv_env["client"], _csv_env["conn"]
+    csv_text = (
+        "username,dim_key,value,expires_at\n"
+        "u_bulk_000,region,OS,2027-01-01 00:00:00\n"
+        "u_bulk_000,region,OS,2028-01-01 00:00:00\n"
+    )
+    r = client.post(
+        f"/api/orgs/{ORG}/grants/import",
+        headers=_csv_env["admin_headers"], content=csv_text,
+    )
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert "2" in detail and "3" in detail, "报两个冲突行号"
+    assert conn.execute(
+        "SELECT count(*) FROM user_dimension_grants WHERE user_id = 'u_bulk_000'"
+    ).fetchone()[0] == 0
+
+
+def test_csv_invalid_expires_at_rejected(_csv_env) -> None:
+    """P2-2（sqlite fail-open 证伪）：非法时间串 → 400 带行号、不落库——
+    修复前 sqlite 原样写 TEXT 列、read_grants 字符串比较恒真=临时授权变永久。"""
+    client, conn = _csv_env["client"], _csv_env["conn"]
+    for bad in ("abc", "2027-13-99 00:00:00", "next friday", "2027/01/01"):
+        csv_text = f"username,dim_key,value,expires_at\nu_bulk_000,region,OS,{bad}\n"
+        r = client.post(
+            f"/api/orgs/{ORG}/grants/import",
+            headers=_csv_env["admin_headers"], content=csv_text,
+        )
+        assert r.status_code == 400, f"{bad!r} 应被拒绝"
+        assert "2" in r.json()["detail"], "报数据行号"
+    assert conn.execute(
+        "SELECT count(*) FROM user_dimension_grants WHERE user_id = 'u_bulk_000'"
+    ).fetchone()[0] == 0, "非法串不得入列（fail-open 根除）"
+
+
+def test_csv_valid_expires_formats_normalized(_csv_env) -> None:
+    """P2-2 正面：库格式与 ISO 8601（T 分隔/Z/+00:00）均接受、归一化入列。"""
+    client, conn = _csv_env["client"], _csv_env["conn"]
+    csv_text = (
+        "username,dim_key,value,expires_at\n"
+        "u_bulk_000,region,OS,2027-01-01 00:00:00\n"
+        "u_bulk_001,region,OS,2027-01-02T03:04:05\n"
+        "u_bulk_002,region,OS,2027-01-03T03:04:05Z\n"
+        "u_bulk_003,region,OS,2027-01-04T03:04:05+00:00\n"
+    )
+    r = client.post(
+        f"/api/orgs/{ORG}/grants/import",
+        headers=_csv_env["admin_headers"], content=csv_text,
+    )
+    assert r.status_code == 200, r.text
+    stored = dict(conn.execute(
+        "SELECT user_id, expires_at FROM user_dimension_grants"
+        " WHERE user_id LIKE 'u_bulk_00%'"
+    ).fetchall())
+    assert stored["u_bulk_001"] == "2027-01-02 03:04:05"
+    assert stored["u_bulk_002"] == "2027-01-03 03:04:05"
+    assert stored["u_bulk_003"] == "2027-01-04 03:04:05"
+
+
+def test_csv_org_column_header_normalized(_csv_env) -> None:
+    """P3-6：org 列头名大小写/空白变体（`Org`/` org `）同样整批拒绝——
+    header 规范化 lower()+strip。"""
+    client = _csv_env["client"]
+    for variant in ("Org", " org ", "ORG"):
+        csv_bad = f"username,{variant},dim_key,value,expires_at\nu_bulk_000,{ORG},region,OS,\n"
+        r = client.post(
+            f"/api/orgs/{ORG}/grants/import",
+            headers=_csv_env["admin_headers"], content=csv_bad,
+        )
+        assert r.status_code == 400, f"header {variant!r} 应规范化后拒绝"
+        assert "org" in r.json()["detail"]
+
+
+def test_csv_non_utf8_rejected(_csv_env) -> None:
+    """P3-7：非 UTF-8 字节流 → 400（UnicodeDecodeError 不裸 500）。"""
+    client = _csv_env["client"]
+    r = client.post(
+        f"/api/orgs/{ORG}/grants/import",
+        headers={**_csv_env["admin_headers"], "Content-Type": "text/csv"},
+        content=b"username,dim_key,value,expires_at\n\xff\xfe,region,OS,\n",
+    )
+    assert r.status_code == 400
+    assert "UTF-8" in r.json()["detail"] or "utf" in r.json()["detail"].lower()
