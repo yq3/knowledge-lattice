@@ -24,6 +24,8 @@
 | [G-12](#g-12-nfr-6-shared-storage-场景的只读与扩展名限制未实现) | 已接受（当前无共享存储入口；登记防误读为已实现） | file_ref 的「白名单根 + realpath + 只读 + 大小/扩展名限制」中，只读与扩展名限制两防线未实现——M1-3 只落地不透明 upload_id 面（9 形态拒绝 + realpath 纵深），共享存储路径分支产品不存在 | NFR-6 / FR-1 / design §6.1 · M1-3 | 2026-10-25 |
 | [G-13](#g-13-sqlite-审计月库-rowid-跨-vacuum-不保证保留按读序的链验证在恢复产物上理论可断) | 已接受（现码无月库 VACUUM 路径；m2-3 审计读路径按 prev_hash 链遍历对冲） | sqlite 月库表无 INTEGER PRIMARY KEY，rowid 不保证跨 VACUUM 保留——若月库纳入备份/压缩（VACUUM/VACUUM INTO），恢复产物按读序（rowid）做链验证可断（row_hash/prev_hash 内容自洽不受影响） | FR-6 / design §4 注 · M2-2 | 2026-10-29 |
 | [G-14](#g-14-pg-audit_events-seq-列首次部署触发全表-rewrite-的运维窗口) | 已接受（POC 量级可忽略；RUNBOOK 注记升级序列） | pg 侧 `audit_events` 加 seq 列（volatile DEFAULT nextval）首次 ensure 时触发全表 rewrite（ACCESS EXCLUSIVE）；ensure_audit 每连接 DDL 并发面同族 | FR-6 / design §4 注 · M2-2 | 2026-10-29 |
+| [G-15](#g-15-关系级消失流程未定义sem_relations-独立删边场景) | 已接受（M2-S1 无现实触发面；**M2-S3 承接**——用户 2026-10-29 拍板 B1=登记） | design §4 sem_relations 有 missing/retired 列但 §5.8 只定义实体消失——源端独立删边（两端实体仍在）旧关系永久 active；跨源 upsert 可能把指向 retired 端点的关系重新写回 active。M2-S1 两适配器关系均由实体结构派生（字段随模板/列随表消失——实体级已覆盖），scenario_config（uses/derived_from 独立删边大户）M2-S3 接入时补：关系级 missing + upsert 前端点状态过滤 | FR-S1 / design §4·§5.8 · M2-S1 | 2026-10-29 |
+| [G-16](#g-16-语义同步触发侧-create_task--append_outbox-两事务崩溃丢触发审计) | 已接受（run 行可追溯；**M2-S2/S3 承接**——m2s-1 R1 Committer N2 裁定） | api 触发路径 create_task 提交与 append_outbox 独立两事务——进程恰在两者间崩溃时丢触发审计事件（任务行仍在、可查）。修复口径：create_task 增 audit= 同事务参数（m2-2 outbox 先例），m2s-2/m2s-3 给任务创建面统一收口时一并落 | FR-6 / design §5.8·§6.2 · M2-S1 | 2026-10-29 |
 
 ---
 
@@ -170,3 +172,17 @@
 - **问题**：M2-2 哈希链 pg 侧链序取 `seq BIGINT DEFAULT nextval(audit_events_seq)`；PG 16 对 volatile DEFAULT 的 `ADD COLUMN` 触发**全表 rewrite（ACCESS EXCLUSIVE 锁）**——既有 `audit_events` 分区的首次 `ensure_audit` 会锁表重写（实测逐行求值填连续 seq，行为正确但有一次性的锁窗口）。另：`CREATE SEQUENCE/ALTER` 加入每连接 `ensure_audit` 后，并发首次建连的目录竞态面略增（与 m2-1 记录的 `setup_connection` DDL 并发问题同族——advisory lock 内序列化）。
 - **对冲**：RUNBOOK 升级序列注记——**升级后先单独跑一次连接工厂（或任意单连接初始化）完成 rewrite，再放开并发服务**；量级在 POC（月库行数 ≤ 万级）完全可忽略。
 - **重开条件**：月库行数达显著量级（rewrite 窗口分钟级）或 PG app 接线段（m2-3+）引入连接池并发首连场景。
+
+## G-15 关系级消失流程未定义（sem_relations 独立删边场景）
+
+- **状态**：已接受（2026-10-29 随 m2s-1 R1 登记——用户拍板 B1=登记演进缝，M2-S3 承接）。
+- **问题**：design §4 `sem_relations` 有 missing/retired 状态列，但 §5.8 同步流程只定义**实体**消失（missing 宽限→retired、端点 retired 关系联动）；源端删除一条边而两端实体仍在时，旧关系永久 active。跨源场景（scenario_config 的 uses/derived_from）还可能把指向已 retired 端点的关系再次 upsert 回 active。
+- **对冲**：M2-S1 两适配器（template_center/metadata）的关系均由实体结构派生——字段随模板消失、列随表消失，实体级覆盖即等效覆盖，无现实触发面；M2-S3 scenario_config 接入时补关系级 missing + upsert 前端点状态过滤。
+- **重开条件**：M2-S3 开工（scenario_config/report_center 适配器与 YAML 关系链接入）。
+
+## G-16 语义同步触发侧 create_task → append_outbox 两事务（崩溃丢触发审计）
+
+- **状态**：已接受（2026-10-29 随 m2s-1 R1 登记——Committer N2 裁定，M2-S2/S3 承接）。
+- **问题**：`POST /semantic/sync/{adapter}` 触发路径为 create_task 提交与 append_outbox **独立两事务**——进程恰在两者之间崩溃时丢触发审计事件（任务行本身仍在、可查可追溯，不丢执行）。
+- **对冲**：run 行（sem_sync_runs）可追溯执行事实；m2s-1 R2 起 force 放行同样落 outbox。修复口径：create_task 增 `audit=` 同事务参数（沿 m2-2 outbox 接入面先例），m2s-2/m2s-3 统一收口任务创建面时一并落。
+- **重开条件**：M2-S2 开工（semantic_build 任务创建面）或 M2-S3（yaml 同步触发面）。

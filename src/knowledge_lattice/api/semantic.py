@@ -2,7 +2,9 @@
 
 - POST /api/orgs/{org}/semantic/sync/{adapter}：手动触发同步——**semantic:admin**
   （org_admin 兼任，§6.3——普通成员 403）；入队 semantic_sync 任务（payload
-  {org, adapter}）+ kick worker + outbox 留痕（TC-SYNC-08①②）；
+  {org, adapter, force}）+ kick worker + outbox 留痕（TC-SYNC-08①②）；
+  `?force=true` = B2 运维放行（跳过删除比例保护——T-S2 v1.9.1）；
+  无工厂覆盖时 resolve_source_config fail-fast（P3-7——未配置/畸形 400）；
 - GET /api/orgs/{org}/semantic/sync-runs：同步记录与冲突报告（stats_json 内含
   conflicts 明细——TC-SYNC-04）；
 - GET /api/orgs/{org}/semantic/builds：构建记录（**本段恒空列表**——构建接入
@@ -45,30 +47,51 @@ async def trigger_semantic_sync(
     adapter: str,
     request: Request,
     background: BackgroundTasks,
+    force: bool = False,
     auth=Depends(get_auth),
 ) -> dict:
-    """手动触发同步（semantic:admin + outbox；立返任务标识——TC-SYNC-08①②）。"""
+    """手动触发同步（semantic:admin + outbox；立返任务标识——TC-SYNC-08①②）。
+
+    force=true（B2 运维放行，T-S2 v1.9.1 口径）：跳过删除比例保护执行同步
+    （引用面合法收缩 > 阈值时的运维路径）；guard 告警仍发、run stats 注记
+    forced、任务 payload 与 outbox 事件记录 forced。
+
+    P3-7：无注册工厂覆盖时先 resolve_source_config fail-fast——未配置/畸形
+    → 400（而非 202 后 worker 侧无声失败）。"""
     org = org_scoped(request, org, auth)
     service = get_service(request)
     _require_semantic_admin(service, org, auth)
 
-    from knowledge_lattice.core.semantic.adapters import ADAPTER_FACTORIES
+    from knowledge_lattice.core.semantic.adapters import (
+        ADAPTER_FACTORIES,
+        SemanticSourceNotConfigured,
+        resolve_source_config,
+    )
 
     if adapter not in (*SYNC_ADAPTERS, *ADAPTER_FACTORIES):
         raise HTTPException(
             status_code=404, detail=f"unknown semantic sync adapter: {adapter!r}"
         )
+    if adapter not in ADAPTER_FACTORIES:  # 注册工厂覆盖（测试 fake）跳过配置校验
+        try:
+            resolve_source_config(service.settings, org, adapter)
+        except SemanticSourceNotConfigured as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except ValueError as exc:  # sources JSON 畸形（fail-closed——TC-SYNC-01）
+            raise HTTPException(
+                status_code=400, detail=f"semantic sources config invalid: {exc}"
+            ) from exc
 
     backend = service.backend
     task_id = backend.create_task(
         None, task_type="semantic_sync",
-        payload=json.dumps({"org": org, "adapter": adapter}),
+        payload=json.dumps({"org": org, "adapter": adapter, "force": force}),
     )
     backend.append_outbox(
         EVENT_SEMANTIC_SYNC,
         json.dumps(
             {"org_id": org, "adapter": adapter, "task_id": task_id,
-             "phase": "triggered", "actor": auth.user_id},
+             "phase": "triggered", "actor": auth.user_id, "forced": force},
             ensure_ascii=False,
         ),
     )
@@ -78,7 +101,8 @@ async def trigger_semantic_sync(
             service.worker.kick()
 
     background.add_task(_kick)
-    return {"task_id": task_id, "status": "queued", "org": org, "adapter": adapter}
+    return {"task_id": task_id, "status": "queued", "org": org,
+            "adapter": adapter, "forced": force}
 
 
 @router.get("/api/orgs/{org}/semantic/sync-runs")

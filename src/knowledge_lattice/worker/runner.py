@@ -6,8 +6,9 @@ TaskRunner（进程内库——inline 模式与子进程 main() 共用同一执�
 - **心跳**：leased/running 期间独立线程每 worker_heartbeat_s 刷 heartbeat_at +
   lease_until；失守（重认领/取消）即停跳；
 - **执行**：按 tasks.type 分发 executor（ingest→IngestService.run_task〔阶段幂等
-  续跑原样迁移〕；maintenance→maintenance.run_maintenance；reindex/reembed/
-  delete/semantic_* 为预留分发位——本段不认领，claim 按 type 过滤）；
+  续跑原样迁移〕；maintenance→maintenance.run_maintenance；semantic_sync→
+  core.semantic.sync.run_sync_task〔M2-S1〕；reindex/reembed/delete 为预留分发位
+  ——不认领，claim 按 type 过滤）；
 - **取消协同**：should_continue（心跳探测）在阶段/批次边界停止在途执行
   （TC-TASK-03）；
 - **重试**：执行异常且 attempts < task_max_attempts → 回 pending 供重认领
@@ -438,11 +439,14 @@ class WorkerSupervisor:
             "LATTICE_MAINTENANCE_KEEP_COUNT": str(settings.maintenance_keep_count),
             "LATTICE_TOMBSTONE_KEEP_DAYS": str(settings.tombstone_keep_days),
             # 语义层同步（M2-S1）：per-org 源连接与阈值——worker 子进程执行
-            # semantic_sync 任务时经 get_settings 读取（P3-N5 同族：不映射则漂移）
+            # semantic_sync 任务时经 get_settings 读取（P3-N5 同族：不映射则漂移；
+            # P3-1/R2：维度告警两阈值补齐——全 LATTICE_SEM_* 往返闭合）
             "LATTICE_SEM_SOURCES_JSON": settings.semantic_sources_json,
             "LATTICE_SEM_DELETE_GUARD": str(settings.semantic_delete_guard),
             "LATTICE_SEM_GRACE_DAYS": str(settings.semantic_grace_days),
             "LATTICE_SEM_BATCH_ROWS": str(settings.semantic_batch_rows),
+            "LATTICE_SEM_DIM_ALERT_BASELINE": str(settings.semantic_dim_alert_baseline),
+            "LATTICE_SEM_DIM_ALERT_DROP": str(settings.semantic_dim_alert_drop),
             "LATTICE_SEM_NIGHT_WINDOW": settings.semantic_night_window,
         }
 

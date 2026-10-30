@@ -321,3 +321,61 @@ def test_get_settings_reads_worker_env_roundtrip(monkeypatch) -> None:
     assert env["LATTICE_EMBED_MODEL"] == "fake-embed"
     assert env["LATTICE_EMBED_BATCH_SIZE"] == "7"
     assert env["LATTICE_QUALITY_LLM"] == "openai"
+
+
+def test_get_settings_reads_semantic_env_roundtrip(monkeypatch) -> None:
+    """P3-1/R2（m2s-1）：全部 LATTICE_SEM_* 在 get_settings 被读取且 _worker_env
+    完整映射（含维度告警两阈值——映射缺失则子进程静默漂移，N12 同族）。"""
+    import json
+
+    from knowledge_lattice.config import get_settings
+    from knowledge_lattice.worker.runner import WorkerSupervisor
+
+    sources = {"org:tax": {"template_center": {"endpoint": "http://tc/api"}}}
+    monkeypatch.setenv("LATTICE_SEM_SOURCES_JSON", json.dumps(sources))
+    monkeypatch.setenv("LATTICE_SEM_DELETE_GUARD", "0.15")
+    monkeypatch.setenv("LATTICE_SEM_GRACE_DAYS", "3")
+    monkeypatch.setenv("LATTICE_SEM_BATCH_ROWS", "500")
+    monkeypatch.setenv("LATTICE_SEM_DIM_ALERT_BASELINE", "0.7")
+    monkeypatch.setenv("LATTICE_SEM_DIM_ALERT_DROP", "0.4")
+    monkeypatch.setenv("LATTICE_SEM_NIGHT_WINDOW", "01:00-05:00")
+
+    s = get_settings()
+    assert s.semantic_sources == sources
+    assert s.semantic_delete_guard == 0.15
+    assert s.semantic_grace_days == 3
+    assert s.semantic_batch_rows == 500
+    assert s.semantic_dim_alert_baseline == 0.7
+    assert s.semantic_dim_alert_drop == 0.4
+    assert s.semantic_night_window == "01:00-05:00"
+
+    env = WorkerSupervisor._worker_env(s)  # 全 LATTICE_SEM_* 往返闭合（P3-1）
+    assert env["LATTICE_SEM_SOURCES_JSON"] == json.dumps(sources)
+    assert env["LATTICE_SEM_DELETE_GUARD"] == "0.15"
+    assert env["LATTICE_SEM_GRACE_DAYS"] == "3"
+    assert env["LATTICE_SEM_BATCH_ROWS"] == "500"
+    assert env["LATTICE_SEM_DIM_ALERT_BASELINE"] == "0.7"
+    assert env["LATTICE_SEM_DIM_ALERT_DROP"] == "0.4"
+    assert env["LATTICE_SEM_NIGHT_WINDOW"] == "01:00-05:00"
+
+
+def test_semantic_config_bounds_fail_closed(monkeypatch) -> None:
+    """P3-5/R2：semantic_batch_rows 上界 1000（design §5.8 硬约束）与维度告警
+    阈值 ∈[0,1] fail-closed（get_settings 校验入口——沿 P3-N10 惯例）。"""
+    import pytest
+
+    from knowledge_lattice.config import get_settings
+
+    monkeypatch.setenv("LATTICE_SEM_BATCH_ROWS", "1000")
+    assert get_settings().semantic_batch_rows == 1000  # 边界值合法
+    monkeypatch.setenv("LATTICE_SEM_BATCH_ROWS", "1001")
+    with pytest.raises(ValueError, match="semantic_batch_rows"):
+        get_settings()
+    monkeypatch.undo()
+    monkeypatch.setenv("LATTICE_SEM_DIM_ALERT_BASELINE", "1.5")
+    with pytest.raises(ValueError, match="semantic_dim_alert_baseline"):
+        get_settings()
+    monkeypatch.undo()
+    monkeypatch.setenv("LATTICE_SEM_DIM_ALERT_DROP", "-0.1")
+    with pytest.raises(ValueError, match="semantic_dim_alert_drop"):
+        get_settings()

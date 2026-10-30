@@ -28,13 +28,13 @@ def sync_env(backend, tmp_path):
     return SimpleNamespace(db=backend, backend=backend.make_backend(), settings=settings)
 
 
-def run(env, records, *, now=NOW):
+def run(env, records, *, now=NOW, **kw):
     from fake_semantic import FakeSourceAdapter
     from knowledge_lattice.core.semantic.sync import run_sync
 
     return run_sync(
         env.backend, ORG, FakeSourceAdapter("template_center", records),
-        settings=env.settings, snapshot=list(records), now=now,
+        settings=env.settings, snapshot=list(records), now=now, **kw,
     )
 
 
@@ -207,3 +207,39 @@ def test_t_s4_grace_window_boundary(sync_env) -> None:
     assert sync_env.db.execute(
         "SELECT status FROM sem_entities WHERE key = 'TPL_A'"
     ).fetchone()[0] == "missing"  # 6 天 < 7 —— 仍在宽限期
+
+
+# ---- B2 force 放行（T-S2 v1.9.1 口径——运维路径） ----
+
+
+def test_b2_force_overrides_guard_and_audits(sync_env, caplog) -> None:
+    """少 30% 触发保护 → aborted_guard 零写入；force 二跑 → succeeded、
+    stats.forced=true、写入正常发生（消失实体转 missing）、outbox 记 forced、
+    guard 告警仍发；无 force 行为不变。"""
+    import json as _json
+
+    snap = tpl_snapshot(10, with_fields=False)
+    assert run(sync_env, snap)["status"] == "succeeded"
+
+    r_abort = run(sync_env, snap[:7])  # 少 30% > 20% → aborted_guard（无 force 不变）
+    assert r_abort["status"] == "aborted_guard"
+    assert r_abort["stats"]["forced"] is False
+
+    with caplog.at_level("WARNING"):
+        r_force = run(sync_env, snap[:7], force=True)
+    assert r_force["status"] == "succeeded"
+    assert r_force["stats"]["forced"] is True
+    assert r_force["stats"]["missing"] == 3  # 写入正常发生（guard 零写入语义被显式放行）
+    assert any("delete-guard" in rec.message and "force" in rec.message
+               for rec in caplog.records)  # 告警仍发（引用面收缩可见）
+    assert sync_env.db.execute(
+        "SELECT count(*) FROM sem_entities WHERE status = 'missing'"
+    ).fetchone()[0] == 3
+
+    # outbox 事件记 forced 放行（run 侧）
+    events = sync_env.db.execute(
+        "SELECT payload_json FROM audit_outbox WHERE event_type = 'semantic.sync'"
+    ).fetchall()
+    forced_events = [p for (p,) in events if _json.loads(p).get("forced") is True]
+    assert forced_events, "force 放行未入审计事件"
+    assert _json.loads(forced_events[-1])["status"] == "succeeded"

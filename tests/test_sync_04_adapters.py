@@ -199,8 +199,9 @@ def test_tc_sync_02_metadata_pulls_referenced_only(backend, tmp_path) -> None:
     assert rels2["backed_by"] == 1 and rels2["maps_to"] == 1
 
 
-def test_metadata_adapter_http_shape(tmp_path) -> None:
-    """template_center HTTP 形态：分页拼全量（next_cursor 翻页）。"""
+def test_template_center_adapter_paging(tmp_path) -> None:
+    """template_center HTTP 形态：分页拼全量（next_cursor 翻页）——P3-6② 名实
+    对齐（本用例测 tc 分页，非 metadata）。"""
     from knowledge_lattice.core.semantic.adapters import TemplateCenterAdapter
 
     pages = {
@@ -226,3 +227,88 @@ def test_metadata_adapter_http_shape(tmp_path) -> None:
         transport=PagingTransport())
     keys = [r.key for r in adapter.fetch(ORG) if hasattr(r, "key")]
     assert keys == ["P1", "P2"]
+
+
+# ---- P3-6③：build_adapter 默认分支套件（无注册覆盖——默认工厂 + per-org 解析） ----
+
+
+def _patch_default_transport(monkeypatch, transport) -> None:
+    """替换默认 HTTP 传输（build_adapter 默认分支不触网——工厂内部延迟导入，
+    补丁在构造时生效）。"""
+    from knowledge_lattice.core.semantic import adapters as sem_adapters
+
+    monkeypatch.setattr(sem_adapters, "_default_transport", lambda cfg: transport)
+
+
+def test_p3_6_build_adapter_default_tc_per_org(tmp_path, monkeypatch) -> None:
+    """默认 tc 工厂：per-org 实例解析（build_adapter → resolve_source_config——
+    各 org 打到各自 endpoint）。"""
+    from knowledge_lattice.core.semantic.adapters import build_adapter
+
+    settings = _settings({
+        ORG: {"template_center": {"endpoint": "http://tc.tax/api"}},
+        "org:gl": {"template_center": {"endpoint": "http://tc.gl/api"}},
+    }, tmp_path)
+    transport = FakeTransport({
+        "http://tc.tax/api": tc_canned([{"code": "TPL_T", "name": "税模板", "fields": []}]),
+        "http://tc.gl/api": tc_canned([{"code": "GL_T", "name": "总账模板", "fields": []}]),
+    })
+    _patch_default_transport(monkeypatch, transport)
+
+    a_tax = build_adapter("template_center", ORG, settings)
+    a_gl = build_adapter("template_center", "org:gl", settings)
+    assert any(getattr(r, "key", None) == "TPL_T" for r in a_tax.fetch(ORG))
+    assert any(getattr(r, "key", None) == "GL_T" for r in a_gl.fetch("org:gl"))
+    assert any(u.startswith("http://tc.tax/api") for u in transport.requests)
+    assert any(u.startswith("http://tc.gl/api") for u in transport.requests)
+
+
+def test_p3_6_build_adapter_default_metadata_derives_refs(tmp_path, monkeypatch) -> None:
+    """默认 metadata 工厂：引用面从 template_center 快照推导（fetch tc →
+    derive_refs → 只拉被引用表——tc 冷启动冲突面自动进引用面）。"""
+    from knowledge_lattice.core.semantic.adapters import build_adapter
+
+    settings = _settings({
+        ORG: {
+            "template_center": {"endpoint": "http://tc/api"},
+            "metadata": {"endpoint": "http://md/api"},
+        },
+    }, tmp_path)
+    transport = FakeTransport({
+        "http://tc/api": tc_canned([{
+            "code": "TPL_1", "name": "模板一", "table": "ods.t1",
+            "fields": [{"code": "F1", "name": "字段一", "column": "ods.t1.c1"}],
+        }]),
+        "http://md/api": md_canned({
+            "ods.t1": {"name": "表一", "columns": [{"name": "c1", "type": "TEXT"}]},
+            "ods.t9": {"name": "未引用", "columns": [{"name": "x", "type": "TEXT"}]},
+        }),
+    })
+    _patch_default_transport(monkeypatch, transport)
+
+    md = build_adapter("metadata", ORG, settings)
+    records = list(md.fetch(ORG))
+    keys = {getattr(r, "key", None) for r in records}
+    assert "ods.t1" in keys and "ods.t1.c1" in keys
+    assert "ods.t9" not in keys  # 引用面外不拉
+    assert all("/tables/ods.t1" in u for u in transport.requests
+               if u.startswith("http://md"))  # md 只请求被引用表
+
+
+def test_p3_6_build_adapter_metadata_without_tc_config_warns(tmp_path, monkeypatch, caplog) -> None:
+    """N4 场景固化：tc 未配置 org 时 metadata 不炸——引用面空 + WARNING、
+    fetch 空转（首轮 succeeded 0 条属冷启动合法态——TC-SYNC-02 v1.9.1 注记）。"""
+    from knowledge_lattice.core.semantic.adapters import build_adapter
+
+    settings = _settings({ORG: {"metadata": {"endpoint": "http://md/api"}}}, tmp_path)
+    transport = FakeTransport({"http://md/api": md_canned({
+        "ods.t1": {"name": "表一", "columns": [{"name": "c1", "type": "TEXT"}]},
+    })})
+    _patch_default_transport(monkeypatch, transport)
+
+    with caplog.at_level("WARNING"):
+        md = build_adapter("metadata", ORG, settings)
+        records = list(md.fetch(ORG))
+    assert records == []  # 引用面空 → 零拉取（不做全量镜像）
+    assert any("template_center not configured" in rec.message for rec in caplog.records)
+    assert not [u for u in transport.requests if u.startswith("http://md")]

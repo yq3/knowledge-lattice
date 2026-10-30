@@ -1579,7 +1579,8 @@ class PgBackend:
 
     def upsert_entities_batch(self, org_id: str, rows: Sequence[dict]) -> dict:
         """同步实体分批 upsert——单批单事务（与 SqliteBackend 逐条同源：只写事实列、
-        父先子后批内 id 映射、updated 只计事实列变更——T-S1/T-S3）。"""
+        parent_id 三级解析〔批内 id 映射 / 批间缓存 / 库内回查——跨批父行 P2-1〕、
+        updated 只计事实列变更——T-S1/T-S3）。"""
         conn = self._conn
         existing = self._sem_read_existing(
             org_id, [(r["type"], r["key"]) for r in rows]
@@ -1588,9 +1589,12 @@ class PgBackend:
         conn.execute("BEGIN")
         try:
             id_map = {k: v[0] for k, v in existing.items()}
+            parent_cache: dict[tuple[str, str], int | None] = {}
             for row in rows:
                 key = (row["type"], row["key"])
-                parent_id = self._sem_parent_id(row.get("parent_key"), id_map)
+                parent_id = self._sem_parent_id(
+                    org_id, row.get("parent_key"), id_map, parent_cache
+                )
                 if key in existing:
                     _, old_name, old_attrs, old_parent, old_status = existing[key]
                     if (old_name != row["name"]
@@ -1629,12 +1633,23 @@ class PgBackend:
             raise
         return {"inserted": inserted, "updated": updated}
 
-    @staticmethod
-    def _sem_parent_id(parent_key, id_map: dict) -> int | None:
+    def _sem_parent_id(self, org_id, parent_key, id_map: dict, parent_cache: dict):
+        """parent_key "type:key" → id（P2-1 三级解析，与 sqlite 同语义）：批内
+        id_map → 批间缓存 → 库内回查（跨批已提交父行）；悬挂父缓存 None。"""
         if not parent_key or ":" not in parent_key:
             return None
         ptype, _, pkey = parent_key.partition(":")
-        return id_map.get((ptype, pkey))
+        pk = (ptype, pkey)
+        if pk in id_map:
+            return id_map[pk]
+        if pk not in parent_cache:
+            row = self._conn.execute(
+                "SELECT id FROM sem_entities"
+                " WHERE org_id = %(org)s AND type = %(type)s AND key = %(key)s",
+                {"org": org_id, "type": pk[0], "key": pk[1]},
+            ).fetchone()
+            parent_cache[pk] = row[0] if row else None
+        return parent_cache[pk]
 
     def _sem_read_existing(self, org_id: str, keys) -> dict:
         by_type: dict[str, list[str]] = {}
@@ -1796,7 +1811,8 @@ class PgBackend:
 
     def advance_status(self, org_id: str, *, missing_before: str) -> dict:
         """missing 宽限期推进（超期 → retired + 关系一并 retired——T-S4；与
-        sqlite 同语义同计数口径）。"""
+        sqlite 同语义同计数口径）。推进口径（P3-8）：org 全量推进、不按
+        source_system 收口（多适配器共享同一时间窗——本段接受口径）。"""
         conn = self._conn
         conn.execute("BEGIN")
         try:

@@ -1867,8 +1867,8 @@ class SqliteBackend:
         """同步实体分批 upsert——单批单事务（BEGIN IMMEDIATE 短事务，NFR-9/11）。
 
         只写事实列（name/attrs_json/parent_id/status/synced_at——从不写
-        curated_json，T-S1 列级分工）；rows 按父先子后有序，批内父行先落建
-        (type,key)→id 映射供子行 parent_id 解析。updated 计数只看事实列变更
+        curated_json，T-S1 列级分工）；rows 按父先子后有序；parent_id 解析三级——批内 id 映射 / 批间缓存 /
+        库内回查（跨批已提交父行——P2-1 修复：快照超 batch_rows 不再丢父）。updated 计数只看事实列变更
         与状态回归 active（synced_at 刷新不计入——T-S3）。
         """
         conn = self._conn
@@ -1879,9 +1879,12 @@ class SqliteBackend:
         conn.execute("BEGIN IMMEDIATE")
         try:
             id_map = {k: v[0] for k, v in existing.items()}
+            parent_cache: dict[tuple[str, str], int | None] = {}
             for row in rows:
                 key = (row["type"], row["key"])
-                parent_id = self._sem_parent_id(row.get("parent_key"), id_map)
+                parent_id = self._sem_parent_id(
+                    org_id, row.get("parent_key"), id_map, parent_cache
+                )
                 if key in existing:
                     _, old_name, old_attrs, old_parent, old_status = existing[key]
                     if (old_name != row["name"]
@@ -1918,13 +1921,25 @@ class SqliteBackend:
             raise
         return {"inserted": inserted, "updated": updated}
 
-    @staticmethod
-    def _sem_parent_id(parent_key, id_map: dict) -> int | None:
-        """parent_key "type:key" → id（批内已落父行优先；解析不到 = 悬挂父 → NULL）。"""
+    def _sem_parent_id(self, org_id, parent_key, id_map: dict, parent_cache: dict):
+        """parent_key "type:key" → id（P2-1 三级解析）：批内已落父行（id_map，
+        事务内本连接可见）→ 批间缓存 → **库内回查**（跨批已提交父行——快照超
+        batch_rows 时父行在前批、子行在后批，只靠批内映射必丢）；悬挂父缓存
+        None 防重复回查。"""
         if not parent_key or ":" not in parent_key:
             return None
         ptype, _, pkey = parent_key.partition(":")
-        return id_map.get((ptype, pkey))
+        pk = (ptype, pkey)
+        if pk in id_map:
+            return id_map[pk]
+        if pk not in parent_cache:
+            row = self._conn.execute(
+                "SELECT id FROM sem_entities"
+                " WHERE org_id = :org AND type = :type AND key = :key",
+                {"org": org_id, "type": pk[0], "key": pk[1]},
+            ).fetchone()
+            parent_cache[pk] = row[0] if row else None
+        return parent_cache[pk]
 
     def _sem_read_existing(self, org_id: str, keys) -> dict:
         """批内 (type,key) 预读：{(type,key): (id, name, attrs_json, parent_id, status)}。"""
@@ -2083,7 +2098,11 @@ class SqliteBackend:
 
     def advance_status(self, org_id: str, *, missing_before: str) -> dict:
         """missing 宽限期推进：超期（synced_at < missing_before）→ retired 且其
-        active 关系一并 retired（T-S4③）。"""
+        active 关系一并 retired（T-S4③）。
+
+        推进口径（P3-8）：**org 全量推进、不按 source_system 收口**——多适配器
+        共享同一时间窗（任一 run 的 advance 均推进全 org 的超期 missing）；
+        本段接受口径，按源收口待多适配器时间窗分叉需要时再议。"""
         conn = self._conn
         conn.execute("BEGIN IMMEDIATE")
         try:

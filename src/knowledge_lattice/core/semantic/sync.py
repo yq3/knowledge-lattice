@@ -66,19 +66,24 @@ def run_sync(
     settings: Settings,
     snapshot: Sequence | None = None,
     now: str | None = None,
+    finish_now: str | None = None,
     should_continue: Callable[[], bool] | None = None,
+    force: bool = False,
 ) -> dict:
     """一个适配器一次同步 run（§5.8）。返回 {run_id, status, stats}。
 
     snapshot 显式注入（测试/重放）；缺省经 adapter.fetch(org) 取全量快照。
-    失败路径：run 落 failed + 审计事件后原异常上抛（调用方任务态处置）。
+    finish_now：run 终态时刻（None=库时钟 CURRENT_TIMESTAMP——P3-2：finished_at
+    不再恒等于 started_at）。force：跳过删除比例保护执行同步（B2 运维放行
+    ——guard 告警仍发、stats.forced=True、审计事件记 forced）。失败路径：run
+    落 failed + 审计事件后原异常上抛（调用方任务态处置）。
     """
     now = now or utc_now_ts()
     run_id = backend.sem_start_run(org_id, adapter.name, now=now)
     try:
         records = list(snapshot) if snapshot is not None else list(adapter.fetch(org_id))
         status, stats = _sync_records(
-            backend, org_id, adapter, records, settings, now, should_continue
+            backend, org_id, adapter, records, settings, now, should_continue, force
         )
     except BaseException as exc:
         logger.exception(
@@ -86,13 +91,13 @@ def run_sync(
         )
         backend.sem_finish_run(
             org_id, run_id, status="failed", stats_json="{}",
-            error=str(exc), now=now,
+            error=str(exc), now=finish_now,
         )
         _audit_sync(backend, org_id, adapter.name, run_id, "failed", {"error": str(exc)})
         raise
     backend.sem_finish_run(
         org_id, run_id, status=status,
-        stats_json=json.dumps(stats, ensure_ascii=False, default=str), now=now,
+        stats_json=json.dumps(stats, ensure_ascii=False, default=str), now=finish_now,
     )
     _audit_sync(backend, org_id, adapter.name, run_id, status, stats)
     logger.info(
@@ -105,7 +110,15 @@ def run_sync(
 # ---- 流程主体 ----
 
 
-def _sync_records(backend, org_id, adapter, records, settings, now, should_continue):
+def _check_alive(should_continue) -> None:
+    """批/段边界存活检查（m2-1 阶段边界口径——取消/失租约不等整轮；P3-3：
+    实体批、别名重建、关系批三处边界统一走本口）。"""
+    if should_continue is not None and not should_continue():
+        raise SyncInterrupted("sync interrupted at batch boundary (lease lost/cancelled)")
+
+
+def _sync_records(backend, org_id, adapter, records, settings, now, should_continue,
+                  force=False):
     dedup: dict[tuple[str, str], EntityRecord] = {}
     for rec in records:
         if isinstance(rec, EntityRecord):
@@ -114,41 +127,45 @@ def _sync_records(backend, org_id, adapter, records, settings, now, should_conti
     relations = [r for r in records if isinstance(r, RelationRecord)]
     snap_keys = set(dedup)
 
-    # ③ 删除比例保护（先于一切写入——T-S2 零写入语义）
+    # ③ 删除比例保护（先于一切写入——T-S2 零写入语义；force=B2 运维放行）
     active_keys = backend.sem_active_source_keys(org_id, adapter.name)
     vanished = active_keys - snap_keys
-    if active_keys and len(vanished) > settings.semantic_delete_guard * len(active_keys):
+    guard_hit = bool(
+        active_keys and len(vanished) > settings.semantic_delete_guard * len(active_keys)
+    )
+    if guard_hit:
         ratio = len(vanished) / len(active_keys)
-        logger.warning(
-            "semantic sync delete-guard aborted: org=%s adapter=%s active=%d"
-            " vanished=%d ratio=%.3f > %.2f — zero writes (T-S2)",
+        logger.warning(  # 告警恒发（force 放行也告警——引用面收缩的可见信号）
+            "semantic sync delete-guard %s: org=%s adapter=%s active=%d"
+            " vanished=%d ratio=%.3f > %.2f%s",
+            "aborted (zero writes)" if not force else "OVERRIDDEN by force",
             org_id, adapter.name, len(active_keys), len(vanished), ratio,
             settings.semantic_delete_guard,
+            "" if not force else " — force 放行执行同步（B2）",
         )
-        return "aborted_guard", {
-            "inserted": 0, "updated": 0, "missing": 0, "retired": 0,
-            "conflicts": [],
-            "guard": {"active": len(active_keys), "vanished": len(vanished),
-                      "ratio": ratio, "threshold": settings.semantic_delete_guard},
-        }
+        if not force:
+            return "aborted_guard", {
+                "inserted": 0, "updated": 0, "missing": 0, "retired": 0,
+                "conflicts": [], "forced": False,
+                "guard": {"active": len(active_keys), "vanished": len(vanished),
+                          "ratio": ratio, "threshold": settings.semantic_delete_guard},
+            }
 
     # 维度填充率库内基线（本 run 写入前——骤降判定基准）
     lib = backend.sem_source_fill_stats(org_id, adapter.name)
     lib_ratio = (lib["filled"] / lib["total"]) if lib["total"] else None
 
-    # ④① 实体分批 upsert（父先子后）+ ④④ 同批别名重建
+    # ④① 实体分批 upsert（父先子后）+ ④④ 同批别名重建（段边界存活检查——P3-3）
     inserted = updated = batches = 0
     for chunk in _chunks(_order_entities(entities), settings.semantic_batch_rows):
-        if should_continue is not None and not should_continue():
-            raise SyncInterrupted(
-                "sync interrupted between batches (lease lost/cancelled)"
-            )
+        _check_alive(should_continue)
         counts = backend.upsert_entities_batch(
             org_id, [_entity_row(e, adapter.name, now) for e in chunk]
         )
         inserted += counts["inserted"]
         updated += counts["updated"]
         batches += 1
+        _check_alive(should_continue)  # 别名重建前边界（upsert 已提交、重建未起）
         backend.rebuild_sync_aliases(org_id, [_alias_row(e) for e in chunk])
 
     # ④② 快照消失实体 → missing
@@ -185,11 +202,14 @@ def _sync_records(backend, org_id, adapter, records, settings, now, should_conti
             })
     rel_inserted = rel_updated = 0
     for chunk in _chunks(rel_rows, settings.semantic_batch_rows):
+        _check_alive(should_continue)  # 关系批边界（P3-3——取消不等整轮）
         counts = backend.upsert_relations_batch(org_id, chunk)
         rel_inserted += counts["inserted"]
         rel_updated += counts["updated"]
 
-    # ⑤ 宽限期推进（超期 missing → retired + 关系联动——顺序注记见模块 docstring）
+    # ⑤ 宽限期推进（超期 missing → retired + 关系联动——顺序注记见模块 docstring；
+    #    推进口径为 org 全量、不按 source_system 收口——多适配器共享同一时间窗，
+    #    本段接受口径〔P3-8〕，按源收口归后续段需要时再议）
     advanced = backend.advance_status(
         org_id, missing_before=add_seconds(now, -settings.semantic_grace_days * 86400)
     )
@@ -209,7 +229,7 @@ def _sync_records(backend, org_id, adapter, records, settings, now, should_conti
         "retired": advanced["retired"], "conflicts": conflicts,
         "relations_inserted": rel_inserted, "relations_updated": rel_updated,
         "relations_retired": advanced["relations_retired"],
-        "batches": batches, "dims_fill": dims_fill,
+        "batches": batches, "dims_fill": dims_fill, "forced": bool(force),
     }
     return "succeeded", stats
 
@@ -219,7 +239,9 @@ def _sync_records(backend, org_id, adapter, records, settings, now, should_conti
 
 def run_sync_task(backend, settings: Settings, task_id: str, *,
                   should_continue: Callable[[], bool] | None = None) -> dict:
-    """semantic_sync 任务体（worker executor 调用——自管任务行状态）。"""
+    """semantic_sync 任务体（worker executor 调用——自管任务行状态）。
+
+    payload：{org, adapter, force?}——force=true 经 B2 运维放行跳过删除比例保护。"""
     from knowledge_lattice.core.semantic.adapters import build_adapter
 
     task = backend.get_task(task_id)
@@ -240,7 +262,8 @@ def run_sync_task(backend, settings: Settings, task_id: str, *,
     backend.update_task(task_id, status="running")
     adapter = build_adapter(adapter_name, org_id, settings)
     result = run_sync(
-        backend, org_id, adapter, settings=settings, should_continue=should_continue
+        backend, org_id, adapter, settings=settings,
+        should_continue=should_continue, force=bool(payload.get("force")),
     )
     backend.update_task(task_id, status="done")
     return result
@@ -250,12 +273,14 @@ def run_sync_task(backend, settings: Settings, task_id: str, *,
 
 
 def _audit_sync(backend, org_id, adapter_name, run_id, status, stats) -> None:
-    """semantic.sync 审计事件（成功/aborted_guard/failed 全终态——TC-SYNC-07）。"""
+    """semantic.sync 审计事件（成功/aborted_guard/failed 全终态——TC-SYNC-07；
+    force 放行显式记 forced——B2）。"""
     backend.append_outbox(
         EVENT_SEMANTIC_SYNC,
         json.dumps(
             {"org_id": org_id, "adapter": adapter_name, "run_id": run_id,
-             "status": status, "stats": stats},
+             "status": status, "forced": bool(stats.get("forced")) if isinstance(stats, dict) else False,
+             "stats": stats},
             ensure_ascii=False, default=str,
         ),
     )

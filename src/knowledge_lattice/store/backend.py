@@ -269,13 +269,19 @@ class AdminBackend(Protocol):
     def create_task(
         self, doc_id: str | None, *, task_type: str = "ingest",
         target_version: int | None = None, task_id: str | None = None,
+        payload: str | None = None,
     ) -> str:
         """新建任务行（maintenance 等无文档任务 doc_id=None——P3-19 注解口径；
         tasks.doc_id ON DELETE SET NULL 允许 NULL）。
 
         target_version（0005/M2.1 R2 边界裁定 B(a)）：ingest 任务的目标文档版本
         ——取消与崩溃耗尽清扫按该版本落 pending failed（P2-3）；NULL=无版本任务。
-        task_id：预生成 id 显式携带（治理 outbox 事件与任务行同源关联——M2.4）。"""
+
+        task_id：预生成 id 显式携带（治理 outbox 事件与任务行同源关联——M2.4）。
+
+        payload（0006/M2-S1）：任务参数 JSON 文本（semantic_sync 携带
+        {org, adapter, force?}——executor 分发面读取；NULL=无参数任务）。
+        """
         ...
 
     def get_task(self, task_id: str) -> dict | None:

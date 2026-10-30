@@ -125,6 +125,8 @@ class Settings:
     semantic_dim_alert_baseline: float = 0.8  # 维度填充率骤降告警：库内基线携带率 ≥ 此值才参与判定（口径注记见 core/semantic/sync.py）
     semantic_dim_alert_drop: float = 0.5  # 快照携带率 < 基线 × 此值 → 告警（防缺值静默变宽——TC-SYNC-06②）
     semantic_night_window: str = ""  # 错峰窗口登记（如 "01:00-05:00"——本段不强制生效，分批即天然限速）
+    # semantic_batch_rows 上界 1000 = design §5.8「每批 ≤1000 行提交」硬约束
+    # （NFR-11 写锁治理）——校验收口（P3-5/R2），不可配置突破
 
     # 运行日志（v0.8.5：结构化 JSON→stdout；本地开发可切人读格式）
     log_level: str = "INFO"
@@ -252,6 +254,15 @@ def _validate(s: Settings) -> None:
             f"semantic_grace_days={s.semantic_grace_days!r}（须 ≥0）/"
             f"semantic_batch_rows={s.semantic_batch_rows!r}（须 ≥1）"
         )
+    if s.semantic_batch_rows > 1000:
+        numeric_failures.append(
+            f"semantic_batch_rows={s.semantic_batch_rows!r}（须 ≤1000——design §5.8"
+            " 每批 ≤1000 行提交的硬约束，NFR-11 写锁治理）"
+        )
+    for name in ("semantic_dim_alert_baseline", "semantic_dim_alert_drop"):
+        value = getattr(s, name)
+        if not 0.0 <= value <= 1.0:
+            numeric_failures.append(f"{name}={value!r}（须 ∈ [0,1]）")
     if numeric_failures:
         raise ValueError(
             "invalid config values (must be >= 0): " + "; ".join(numeric_failures)
