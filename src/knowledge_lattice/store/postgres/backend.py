@@ -210,7 +210,8 @@ class PgBackend:
         raise NotImplementedError("实体召回路随 M2-S3（D23 §5.10）")
 
     def expand_relations(self, org_id: str, seed_ids, rels, *, depth: int = 1) -> dict:
-        raise NotImplementedError("语义关系递归展开随 M2-S1（#42 拍板3）")
+        """薄适配实现见 Semantic 域（P3-3/R2——NotImplementedError 占位已删）。"""
+        return _expand_relations_thin(self, org_id, seed_ids, rels, depth=depth)
 
     # ============ Ingest 域（chunks+状态同事务 / 嵌入回写——MVCC 普通事务） ============
 
@@ -2014,21 +2015,58 @@ class PgBackend:
         return new_id
 
     def sem_switch_build_ready(
-        self, org_id: str, build_id: int, stats_json: str
+        self, org_id: str, build_id: int, stats_json: str, *,
+        audit: tuple[str, str] | None = None,
     ) -> bool:
-        cur = self._conn.execute(
-            "UPDATE sem_builds SET status = 'ready', stats_json = %(stats)s"
-            " WHERE org_id = %(org)s AND id = %(bid)s AND status = 'building'",
-            {"stats": stats_json, "org": org_id, "bid": build_id},
-        )
-        return cur.rowcount == 1
+        """原子切换 + ready 事件同一事务（P3-5/R2——audit 仅真生效写；并发输者
+        rowcount=0 返回 False 零事件，P2-2——与 sqlite 同语义）。"""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE sem_builds SET status = 'ready', stats_json = %(stats)s"
+                " WHERE org_id = %(org)s AND id = %(bid)s AND status = 'building'",
+                {"stats": stats_json, "org": org_id, "bid": build_id},
+            )
+            effective = cur.rowcount == 1
+            if effective and audit is not None:
+                conn.execute(
+                    "INSERT INTO audit_outbox(id, event_type, payload_json)"
+                    " VALUES(%(id)s, %(t)s, %(p)s)",
+                    {"id": f"aud_{uuid.uuid4()}", "t": audit[0], "p": audit[1]},
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return effective
 
-    def sem_fail_build(self, org_id: str, build_id: int, stats_json: str) -> None:
-        self._conn.execute(
-            "UPDATE sem_builds SET status = 'failed', stats_json = %(stats)s"
-            " WHERE org_id = %(org)s AND id = %(bid)s AND status = 'building'",
-            {"stats": stats_json, "org": org_id, "bid": build_id},
-        )
+    def sem_fail_build(
+        self, org_id: str, build_id: int, stats_json: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> bool:
+        """失败收尾 + failed 事件同一事务；仅真生效返回 True（P2-2/R2——
+        已终态行幂等零生效，不写脏 failed 审计）。"""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE sem_builds SET status = 'failed', stats_json = %(stats)s"
+                " WHERE org_id = %(org)s AND id = %(bid)s AND status = 'building'",
+                {"stats": stats_json, "org": org_id, "bid": build_id},
+            )
+            effective = cur.rowcount == 1
+            if effective and audit is not None:
+                conn.execute(
+                    "INSERT INTO audit_outbox(id, event_type, payload_json)"
+                    " VALUES(%(id)s, %(t)s, %(p)s)",
+                    {"id": f"aud_{uuid.uuid4()}", "t": audit[0], "p": audit[1]},
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return effective
 
     def save_build(self, org_id: str, dict_rev: str, stats_json: str) -> int:
         new_id = self._conn.execute(
@@ -2111,9 +2149,10 @@ class PgBackend:
     ) -> dict:
         """BFS 逐层批量展开（递归 CTE 的等价 SQL——与 sqlite 同策略同语义：
         visited 防环 / fanout 每节点截断 / node_limit 总量截断 / restricted 与
-        非 active 端点不出现）。"""
+        非 active 端点不出现；P3-2/R2：edges 去重且端点恒 ∈ {root} ∪ nodes）。"""
         nodes: dict[int, dict] = {}
         edges: list[dict] = []
+        seen_edges: set[tuple[int, str, int]] = set()
         truncated = False
         visited = {root_id}
         frontier = [root_id]
@@ -2144,13 +2183,18 @@ class PgBackend:
                         if fan >= fanout_limit:
                             truncated = True
                             break
+                        edge_key = (src, rel, dst)
+                        if edge_key in seen_edges:
+                            continue  # P3-2/R2：同关系行双向只计一次
+                        if oid not in visited and len(nodes) >= node_limit:
+                            # P3-2/R2：节点截断后不产悬挂边
+                            truncated = True
+                            continue
                         fan += 1
+                        seen_edges.add(edge_key)
                         edges.append({"src": src, "rel": rel, "dst": dst,
                                       "source": rel_source})
                         if oid not in visited:
-                            if len(nodes) >= node_limit:
-                                truncated = True
-                                continue
                             visited.add(oid)
                             nodes[oid] = {"id": oid, "type": otype, "key": okey,
                                           "name": oname, "depth": _level}
@@ -2163,7 +2207,9 @@ class PgBackend:
         types: Sequence[str] | None, top_k: int,
     ) -> list[dict]:
         """三层 UNION（与 sqlite 同语义）：alias 精确 1.0 > 前缀 0.8 > name 模糊
-        0.5；LIKE 统一 LOWER + ESCAPE（pg LIKE 默认大小写敏感——显式 LOWER 拉平）。"""
+        0.5；LIKE 统一 LOWER + ESCAPE（pg LIKE 默认大小写敏感——显式 LOWER 拉平）。
+        P2-1/R2：score 常量显式 ::float8——PG 裸字面量为 NUMERIC（psycopg 归
+        Decimal），与 sqlite float 类型漂移会致 FastMCP 出参字符串化。"""
         esc_norm = _like_escape(q_norm)
         esc_raw = _like_escape(q_raw)
         type_filter = ""
@@ -2179,15 +2225,18 @@ class PgBackend:
         sql = (
             "SELECT * FROM ("
             "  SELECT e.id, e.type, e.key, e.name, e.attrs_json, e.curated_json,"
-            "         1.0 AS score, 'alias-exact' AS via" + base
+            "         CAST(1.0 AS double precision) AS score,"
+            "         'alias-exact' AS via" + base
             + "   AND a.alias_norm = %(q_exact)s"
             "  UNION ALL"
             "  SELECT e.id, e.type, e.key, e.name, e.attrs_json, e.curated_json,"
-            "         0.8 AS score, 'alias-prefix' AS via" + base
+            "         CAST(0.8 AS double precision) AS score,"
+            "         'alias-prefix' AS via" + base
             + "   AND a.alias_norm LIKE %(q_prefix)s ESCAPE '\\'"
             "  UNION ALL"
             "  SELECT e.id, e.type, e.key, e.name, e.attrs_json, e.curated_json,"
-            "         0.5 AS score, 'name' AS via"
+            "         CAST(0.5 AS double precision) AS score,"
+            "         'name' AS via"
             "  FROM sem_entities e WHERE e.org_id = %(org)s"
             "   AND e.status = 'active' AND e.sensitivity = 'normal'" + type_filter
             + "   AND LOWER(e.name) LIKE LOWER(%(q_name)s) ESCAPE '\\'"
@@ -2209,7 +2258,7 @@ class PgBackend:
             " JOIN sem_entities c ON c.id = r.dst_id"
             " WHERE r.org_id = %(org)s AND r.src_id = %(tid)s"
             "   AND r.rel_type = 'has_column' AND r.status = 'active'"
-            "   AND c.status = 'active'"
+            "   AND c.status = 'active' AND c.sensitivity = 'normal'"
             " ORDER BY c.key",
             {"org": org_id, "tid": table_id},
         ).fetchall()
@@ -2743,6 +2792,34 @@ def _month_upper(month: str) -> str:
 def _like_escape(text: str) -> str:
     """LIKE 通配转义（%/_/\——配合 ESCAPE '\\' 子句与 sqlite 同语义）。"""
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _expand_relations_thin(backend, org_id, seed_ids, rels, *, depth: int) -> dict:
+    """expand_relations 薄适配共用体（P3-3/R2，与 sqlite 同实现——方言无关
+    纯归并）：逐 seed 调 sem_expand_graph（rels 双向）后归并去重。"""
+    merged_nodes: dict[int, dict] = {}
+    merged_edges: set[tuple[int, str, int]] = set()
+    edge_rows: dict[tuple[int, str, int], dict] = {}
+    truncated = False
+    rel_list = list(rels)
+    for seed in seed_ids:
+        graph = backend.sem_expand_graph(
+            org_id, seed, outgoing=rel_list, incoming=rel_list,
+            depth=depth, fanout_limit=50, node_limit=200,
+        )
+        truncated = truncated or graph["truncated"]
+        for node in graph["nodes"]:
+            merged_nodes.setdefault(node["id"], node)
+        for edge in graph["edges"]:
+            key = (edge["src"], edge["rel"], edge["dst"])
+            if key not in merged_edges:
+                merged_edges.add(key)
+                edge_rows[key] = edge
+    return {
+        "nodes": list(merged_nodes.values()),
+        "edges": list(edge_rows.values()),
+        "truncated": truncated,
+    }
 
 
 def _month_has_rows(conn, month: str) -> bool:

@@ -118,7 +118,9 @@ class SearchBackend(Protocol):
     def expand_relations(
         self, org_id: str, seed_ids: Sequence[int], rels: Sequence[str], *, depth: int = 1
     ) -> dict:
-        """语义关系递归展开（M2-S1——方言渲染收口于此，#42 拍板3）。"""
+        """语义关系递归展开（#42 拍板3——M2-S3 实体召回路口径）。m2s-2 R2 起为
+        ``sem_expand_graph`` 的薄适配（多 seed 归并、rels 双向、fanout/node 上限
+        取 store 侧缺省 50/200——语义与 core/semantic/expand.py 常量一致）。"""
         ...
 
 
@@ -802,15 +804,25 @@ class SemanticBackend(Protocol):
         ...
 
     def sem_switch_build_ready(
-        self, org_id: str, build_id: int, stats_json: str
+        self, org_id: str, build_id: int, stats_json: str, *,
+        audit: tuple[str, str] | None = None,
     ) -> bool:
         """原子切换：building → ready 单语句单事务（design §5.8 第 3 步——旧 ready
-        行不动、新行就位即当前；非 building 态零行生效返回 False）。"""
+        行不动、新行就位即当前；非 building 态零行生效返回 False——并发输者
+        语义见 core/semantic/build.py，P2-2/R2）。
+
+        audit（P3-5/R2，沿 create_task 先例）：ready 事件与切换**同一事务**且
+        **仅切换真生效时写**（rowcount==1）——构建终态审计不丢（G-16 构建侧）。"""
         ...
 
-    def sem_fail_build(self, org_id: str, build_id: int, stats_json: str) -> None:
+    def sem_fail_build(
+        self, org_id: str, build_id: int, stats_json: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> bool:
         """构建失败收尾：building → failed + stats（error 载 stats_json.error——
-        失败不切指针，旧 ready 继续为当前——T-S12 骨架）。"""
+        失败不切指针，旧 ready 继续为当前——T-S12 骨架）。**返回是否真生效**
+        （rowcount==1——已终态行幂等零生效，P2-2/R2：调用方仅真生效时认失败，
+        不因并发输者/迟到异常写脏审计）；audit 同事务同条件。"""
         ...
 
     def save_build(self, org_id: str, dict_rev: str, stats_json: str) -> int:

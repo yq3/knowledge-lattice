@@ -393,5 +393,14 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
             )
         except DescribeTableDenied as exc:
             raise ToolError(f"403: {exc}") from exc
+        except Exception as exc:  # noqa: BLE001 —— P1-1⑤/R2：默认通道意外异常
+            # 不裸露为 fastmcp 内部错误栈——统一 ToolError 500（透传/构造类
+            # 失败已在 core 降级，此处仅兜底防泄漏栈帧）
+            logger.exception("describe_table unexpected failure: org=%s table=%s",
+                             org_id, table)
+            raise ToolError(
+                f"500: describe_table 内部错误（{type(exc).__name__}——已记录，"
+                "请稍后重试或联系运维）"
+            ) from exc
 
     return mcp

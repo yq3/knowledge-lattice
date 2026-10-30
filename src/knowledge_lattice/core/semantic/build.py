@@ -29,6 +29,7 @@ import logging
 from collections.abc import Callable
 
 from knowledge_lattice.config import Settings
+from knowledge_lattice.domain.audit_events import EVENT_SEMANTIC_BUILD
 
 logger = logging.getLogger(__name__)
 
@@ -120,8 +121,11 @@ def run_build(
     """一次构建 run（§5.8——返回 {build_id?, dict_rev, status, stats}）。
 
     - dict_rev 与当前 ready 相同 → skipped（不产新行——TC-BUILD-01）；
-    - 切换失败 → building 行置 failed + error 载 stats、旧 ready 不动
-      （T-S12 失败不切），异常上抛由调用方任务态处置。"""
+    - ready/failed 事件与终态行**同一事务**（store switch/fail 的 audit=——
+      P3-5/R2，沿 create_task 先例；G-16 构建侧收口）；
+    - 切换无效且 current 已是同 rev ready（并发输者——P2-2/R2）→ 按 skipped
+      返回：不抛错（不触发任务重试）、不写 failed 事件（赢家已记录 ready）；
+    - 其余失败 → building 行置 failed（仅真生效写事件）+ 异常上抛。"""
     build_id: int | None = None
     dict_rev: str | None = None
     try:
@@ -145,13 +149,30 @@ def run_build(
         stats = _build_stats(snapshot)
         stats_json = json.dumps(stats, ensure_ascii=False, default=str)
         build_id = backend.sem_insert_build(org_id, dict_rev, stats_json)
-        if not backend.sem_switch_build_ready(org_id, build_id, stats_json):
+        ready_audit = (
+            EVENT_SEMANTIC_BUILD,
+            json.dumps({"org_id": org_id, "build_id": build_id, "dict_rev": dict_rev,
+                        "status": "ready", "stats": stats},
+                       ensure_ascii=False, default=str),
+        )
+        if not backend.sem_switch_build_ready(org_id, build_id, stats_json,
+                                              audit=ready_audit):
+            # P2-2/R2：rowcount=0——行非 building。若 current 已是同 rev ready
+            #（并发赢家先切），本执行者按 skipped 收场（不抛错不重试不写
+            # failed 事件——行终态与 ready 事件属赢家）；否则才是真异常。
+            now_current = backend.sem_current_build(org_id)
+            if now_current is not None and now_current["dict_rev"] == dict_rev:
+                stats_skip = {"skipped": True, "current_build_id": now_current["id"],
+                              "reason": "concurrent-ready"}
+                logger.info(
+                    "semantic build ceded to concurrent winner: org=%s rev=%s"
+                    " current_build=%s", org_id, dict_rev, now_current["id"])
+                return {"build_id": now_current["id"], "dict_rev": dict_rev,
+                        "status": "skipped", "stats": stats_skip}
             raise RuntimeError(
                 f"build switch ineffective (not building?): org={org_id!r}"
                 f" build={build_id}"
             )
-        _audit_build(backend, org_id, "ready",
-                     {"build_id": build_id, "dict_rev": dict_rev, "stats": stats})
         logger.info("semantic build ready: org=%s build=%s rev=%s entities=%s",
                     org_id, build_id, dict_rev, stats["entities"])
         return {"build_id": build_id, "dict_rev": dict_rev, "status": "ready",
@@ -160,20 +181,22 @@ def run_build(
         fail_stats = {"error": str(exc), "dict_rev": dict_rev}
         if build_id is not None:
             try:
+                # failed 事件经 audit= 与行同事务，且仅 building→failed 真生效
+                # 时写入（sem_fail_build 返回生效性——P2-2/R2 防脏 failed 审计）
                 backend.sem_fail_build(
                     org_id, build_id,
                     json.dumps(fail_stats, ensure_ascii=False, default=str),
+                    audit=(
+                        EVENT_SEMANTIC_BUILD,
+                        json.dumps({"org_id": org_id, "build_id": build_id,
+                                    "dict_rev": dict_rev, "status": "failed",
+                                    "stats": fail_stats},
+                                   ensure_ascii=False, default=str),
+                    ),
                 )
             except Exception:  # noqa: BLE001 —— 失败收尾失败不掩盖原始异常
                 logger.exception("sem_fail_build failed: org=%s build=%s",
                                  org_id, build_id)
-        try:
-            _audit_build(backend, org_id, "failed",
-                         {"build_id": build_id, "dict_rev": dict_rev,
-                          "stats": fail_stats})
-        except Exception:  # noqa: BLE001
-            logger.exception("semantic.build failed-event write failed: org=%s",
-                             org_id)
         if isinstance(exc, BuildInterrupted):
             raise
         logger.exception("semantic build failed: org=%s", org_id)

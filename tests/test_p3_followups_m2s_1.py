@@ -207,3 +207,45 @@ def test_p3_r5_config_error_prefix_range_semantics(tmp_path, monkeypatch) -> Non
     assert "out of allowed range" in msg
     assert "must be >= 0" not in msg, "P3-r5：旧前缀文案不得残留"
     assert "worker_poll_s=-1" in msg  # 具体字段与值仍定位得到
+
+
+# ---- P3-1/R2：G-16 create_task(audit=) 崩溃注入——任务行+审计零残留（双臂
+#      ——此前仅 tester v4 临时脚本实证，本用例进永久套件） ----
+
+
+def test_p3_1_g16_crash_injection_rollback(sync_env) -> None:
+    """audit_outbox 写入失败 → 任务行与审计行**同事务回滚零残留**（G-16
+    收口的崩溃窗口语义——不出现「任务行在、审计丢」的半态）。"""
+    import json as _json
+
+    db, backend = sync_env.db, sync_env.backend
+    if db.is_sqlite:
+        db.execute(
+            "CREATE TRIGGER trg_outbox_boom BEFORE INSERT ON audit_outbox"
+            " BEGIN SELECT RAISE(ABORT, 'boom: outbox unavailable'); END")
+    else:
+        db.execute(
+            "CREATE OR REPLACE FUNCTION _outbox_boom() RETURNS trigger AS $$"
+            " BEGIN RAISE EXCEPTION 'boom: outbox unavailable'; END"
+            " $$ LANGUAGE plpgsql")
+        db.execute(
+            "CREATE TRIGGER trg_outbox_boom BEFORE INSERT ON audit_outbox"
+            " FOR EACH ROW EXECUTE FUNCTION _outbox_boom()")
+    try:
+        with pytest.raises(Exception, match="boom: outbox unavailable"):
+            backend.create_task(
+                None, task_type="semantic_build",
+                payload=_json.dumps({"org": ORG}),
+                audit=("semantic.build", '{"org_id": "org:tax"}'),
+            )
+        # 回滚语义：任务行零残留 + 审计行零残留（半态不出现）
+        assert db.execute("SELECT count(*) FROM tasks").fetchone()[0] == 0
+        assert db.execute(
+            "SELECT count(*) FROM audit_outbox WHERE event_type = 'semantic.build'"
+        ).fetchone()[0] == 0
+    finally:
+        if db.is_sqlite:
+            db.execute("DROP TRIGGER trg_outbox_boom")
+        else:
+            db.execute("DROP TRIGGER trg_outbox_boom ON audit_outbox")
+            db.execute("DROP FUNCTION IF EXISTS _outbox_boom()")

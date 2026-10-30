@@ -98,8 +98,9 @@ def describe_table(
 
     - 白名单：sem_entities 内 type='table' 的 active 实体才放行（T-S11②）；
     - 缓存 5min（settings.semantic_describe_cache_s——T-S11④，只缓存成功结果）；
-    - 降级：透传异常（超时/不可达/未知表）→ 本地轻量列节点 + degraded=true
-      （T-S11③——不缓存降级结果，恢复后即透传）；
+    - 降级：透传异常（超时/不可达/未知表/**源未配置或配置畸形**——fetcher
+      构造亦在 try 内，P1-1②/R2）→ 本地轻量列节点 + degraded=true（T-S11③
+      ——不缓存降级结果，恢复后即透传）；
     - columns 参数：按列名过滤（§6.3 input）。"""
     entity = _resolve_table_entity(backend, org_id, table)
 
@@ -110,13 +111,13 @@ def describe_table(
     if cached and ttl > 0 and now - cached[0] < ttl:
         return _shape_describe(entity["key"], cached[1], columns, degraded=False)
 
-    fetch = fetcher if fetcher is not None else _default_fetcher(settings, org_id)
     try:
+        fetch = fetcher if fetcher is not None else _default_fetcher(settings, org_id)
         detail = fetch(entity["key"])
         if ttl > 0:
             _DESCRIBE_CACHE[cache_key] = (now, detail)
         return _shape_describe(entity["key"], detail, columns, degraded=False)
-    except Exception as exc:  # noqa: BLE001 —— 透传失败一律降级（T-S11③）
+    except Exception as exc:  # noqa: BLE001 —— 透传/构造失败一律降级（T-S11③）
         logger.warning(
             "describe_table degraded: org=%s table=%s (%s: %s)——回退本地轻量节点",
             org_id, entity["key"], type(exc).__name__, exc,
@@ -152,7 +153,10 @@ def _resolve_table_entity(backend, org_id: str, table: str) -> dict:
 
 def _default_fetcher(settings: Settings, org_id: str):
     """默认透传通道：注册工厂覆盖（duck-typed describe_table）优先，否则
-    per-org 配置解析 → MetadataAdapter（超时钳制 3s——T-S11）。"""
+    per-org 配置解析 → MetadataAdapter.describe_table（超时钳制 3s——T-S11）。
+
+    默认分支按次构造适配器，**用后即关**（P1-1④/R2：_default_transport
+    持有 httpx.Client，不关则 describe 每 5min/表泄漏一个连接池）。"""
     from knowledge_lattice.core.semantic.adapters import (
         ADAPTER_FACTORIES,
         MetadataAdapter,
@@ -172,7 +176,15 @@ def _default_fetcher(settings: Settings, org_id: str):
         endpoint=cfg.endpoint, api_key=cfg.api_key,
         timeout_s=min(cfg.timeout_s, DESCRIBE_TIMEOUT_S),
     )
-    return MetadataAdapter(config, refs=()).describe_table
+    adapter = MetadataAdapter(config, refs=())
+
+    def _fetch_once(table_key: str) -> dict:
+        try:
+            return adapter.describe_table(table_key)
+        finally:
+            adapter.close()
+
+    return _fetch_once
 
 
 def _shape_describe(table_key: str, detail: dict, columns, *, degraded: bool) -> dict:

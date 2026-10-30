@@ -127,6 +127,18 @@ def test_build_failure_keeps_old_ready_current(build_env, monkeypatch) -> None:
         "SELECT stats_json FROM sem_builds WHERE status = 'failed'"
     ).fetchone()[0]
     assert "switch exploded" in json.loads(failed_stats).get("error", "")
+    # P3-1/R2：failed 终态事件入 outbox（TC-BUILD-03——此前仅 tester 临时脚本）
+    from knowledge_lattice.domain.audit_events import EVENT_SEMANTIC_BUILD
+
+    events = build_env.db.execute(
+        "SELECT payload_json FROM audit_outbox WHERE event_type = ?",
+        (EVENT_SEMANTIC_BUILD,),
+    ).fetchall()
+    failed_events = [json.loads(p) for (p,) in events
+                     if json.loads(p)["status"] == "failed"]
+    assert len(failed_events) == 1
+    assert failed_events[0]["build_id"] == rows[1][0]
+    assert "switch exploded" in failed_events[0]["stats"]["error"]
 
 
 def test_build_success_stats_and_outbox_event(build_env) -> None:
@@ -196,3 +208,69 @@ def test_build_retry_after_failure_same_rev(build_env, monkeypatch) -> None:
     r2 = run_build(build_env.backend, ORG, settings=build_env.settings)
     assert r2["status"] == "ready"
     assert len(_rows(build_env)) == 1, "同 rev 重试复用同一 build 行（不堆 failed 尸体）"
+
+
+# ---- P2-2（R1 Committer/N-2）：switch 无效 + 同 rev 已 ready → skipped、
+#      仅 fail 真生效写 failed 事件（确定性用例——不依赖真并发） ----
+
+
+def test_p2_2_switch_ineffective_same_rev_returns_skipped(build_env, monkeypatch) -> None:
+    """并发输者路径（确定性模拟）：跳过检查时刻无 current（竞态窗）→ 落行 →
+    switch 返回 False（赢家已切同 rev ready）→ 按 skipped 返回：不抛错
+    （不触发任务重试）、不写 failed 事件。行终态属赢家，此处只断言本执行者
+    的结果语义与审计面。"""
+    from knowledge_lattice.core.semantic.build import run_build
+
+    r1 = run_build(build_env.backend, ORG, settings=build_env.settings)
+    assert r1["status"] == "ready"
+
+    real_current = build_env.backend.sem_current_build
+    calls = {"n": 0}
+
+    def fake_current(org):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None  # 跳过检查时刻：current 尚不可见（双执行者竞态窗）
+        # switch 无效后复核：赢家已把同 rev 行置 ready（模拟赢家终态）
+        return {"id": r1["build_id"], "dict_rev": r1["dict_rev"], "status": "ready"}
+
+    monkeypatch.setattr(build_env.backend, "sem_current_build", fake_current)
+    monkeypatch.setattr(
+        build_env.backend, "sem_switch_build_ready",
+        lambda *a, **kw: False,  # 输者 switch 零行生效（行已被赢家置 ready）
+    )
+    r2 = run_build(build_env.backend, ORG, settings=build_env.settings)
+    assert r2["status"] == "skipped"
+    assert r2["dict_rev"] == r1["dict_rev"]
+    # 无 failed 事件（P2-2 核心：脏 failed 审计不出现——N-2）
+    events = build_env.db.execute(
+        "SELECT payload_json FROM audit_outbox WHERE event_type = 'semantic.build'"
+    ).fetchall()
+    statuses = [json.loads(p)["status"] for (p,) in events]
+    assert "failed" not in statuses
+    assert statuses.count("ready") == 1  # 只有赢家（r1）的 ready 事件
+
+
+def test_p2_2_sem_fail_build_returns_effectiveness(build_env) -> None:
+    """store 契约：sem_fail_build 返回 bool（rowcount==1 仅真生效）——
+    双方言同一签名；非 building 行（已 ready/已 failed）零行生效返回 False。"""
+    from knowledge_lattice.core.semantic.build import run_build
+
+    r1 = run_build(build_env.backend, ORG, settings=build_env.settings)
+    assert r1["status"] == "ready"
+    # 已 ready 行再 fail → 零行生效（切换后不得被失败收尾改写）
+    assert build_env.backend.sem_fail_build(
+        ORG, r1["build_id"], "{}") is False
+
+    eid = build_env.db.execute(
+        "SELECT id FROM sem_entities WHERE key = 'TPL_0'"
+    ).fetchone()[0]
+    build_env.db.execute(
+        "INSERT INTO sem_aliases(org_id, entity_id, alias, alias_norm, kind)"
+        " VALUES(?, ?, 'failbool', 'failbool', 'manual')", (ORG, eid))
+    build_env.db.commit()
+    build_id = build_env.backend.sem_insert_build(ORG, "rev-failbool-test", "{}")
+    assert build_env.backend.sem_fail_build(
+        ORG, build_id, '{"error": "x"}') is True   # building → failed 生效
+    assert build_env.backend.sem_fail_build(
+        ORG, build_id, '{"error": "x"}') is False  # 已 failed 幂等零行

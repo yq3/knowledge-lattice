@@ -406,3 +406,31 @@ def test_t_s11_describe_table_degraded(sem_app, monkeypatch) -> None:
     assert payload["table"] == "ods.vat_input_invoice"
     col_names = {c["name"] for c in payload["columns"]}
     assert col_names == {"tax_amt", "inv_no", "seller"}  # 本地轻量列节点
+
+
+def test_t_s11_describe_table_unexpected_500(sem_app, monkeypatch) -> None:
+    """P1-1⑤/R2：core 意外异常不裸露内部栈——统一 ToolError 500（透传/构造
+    失败已在 core 降级，此处仅 MCP 层兜底映射的契约锁定）。"""
+    from knowledge_lattice.mcp import server as mcp_server
+
+    def boom(*a, **kw):
+        raise RuntimeError("unexpected core bug")
+
+    monkeypatch.setattr(mcp_server, "describe_table", boom)
+    err = _call_err(sem_app["app"], sem_app["jwt"]("u_full", org=ORG),
+                    "describe_table", {"table": "ods.vat_input_invoice"})
+    assert "500" in str(err) and "unexpected core bug" not in str(err)
+
+
+# ---- P3-6/R2：get_entity 非 active 实体 404（与 describe_table 口径对齐） ----
+
+
+def test_p3_6_get_entity_non_active_404(sem_app) -> None:
+    conn = sem_app["conn"]
+    conn.execute(
+        "UPDATE sem_entities SET status = 'missing'"
+        " WHERE org_id = ? AND key = 'TPL_VAT_INPUT'", (ORG,))
+    conn.commit()
+    err = _call_err(sem_app["app"], sem_app["jwt"]("u_full", org=ORG),
+                    "get_entity", {"key": "template:TPL_VAT_INPUT"})
+    assert "404" in str(err)

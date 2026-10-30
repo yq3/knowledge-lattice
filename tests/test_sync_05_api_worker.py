@@ -168,6 +168,66 @@ def test_semantic_sync_e2e_inline_worker(sem_app) -> None:
     assert any(json.loads(p).get("run_id") for (p,) in events)
 
 
+# ---- P3-1/R2：sync-runs 过滤参数永久用例（adapter/status/limit + 非法 400
+#      ——此前仅 tester v6 临时补验 7/7） ----
+
+
+def test_p3_1_sync_runs_filters_permanent(sem_app) -> None:
+    """两次 run（一成一败）后：adapter 收窄 / status 过滤 / limit 分页 /
+    非法 status 400——管理语义回归锁。"""
+    import time
+
+    from knowledge_lattice.core.semantic.adapters import ADAPTER_FACTORIES
+    from fake_semantic import FakeSourceAdapter
+
+    client, conn = sem_app["client"], sem_app["conn"]
+    admin = sem_app["static"]["admin_tax"]
+
+    class Exploding(FakeSourceAdapter):
+        def fetch(self, org):
+            raise RuntimeError("boom for filter test")
+
+    # run 1：成功（template_center fake）
+    r1 = client.post(f"/api/orgs/{ORG}/semantic/sync/template_center",
+                     headers=_h(admin))
+    assert r1.status_code == 202
+    assert _wait_task_status(conn, r1.json()["task_id"], "done")[0] == "done"
+
+    # run 2：失败（工厂改炸——run 落 failed）
+    monkeypatch_factory = ADAPTER_FACTORIES["template_center"]
+    ADAPTER_FACTORIES["template_center"] = lambda org, cfg: Exploding("t", [])
+    try:
+        r2 = client.post(f"/api/orgs/{ORG}/semantic/sync/template_center",
+                         headers=_h(admin))
+        for _ in range(50):
+            row = conn.execute(
+                "SELECT count(*) FROM sem_sync_runs WHERE status = 'failed'"
+            ).fetchone()[0]
+            if row >= 1:
+                break
+            time.sleep(0.2)
+        assert row >= 1
+    finally:
+        ADAPTER_FACTORIES["template_center"] = monkeypatch_factory
+
+    base = f"/api/orgs/{ORG}/semantic/sync-runs"
+    # adapter 过滤：命中与空集
+    hits = client.get(f"{base}?adapter=template_center", headers=_h(admin)).json()
+    assert hits["runs"] and all(r["adapter"] == "template_center" for r in hits["runs"])
+    assert client.get(f"{base}?adapter=metadata", headers=_h(admin)).json()["runs"] == []
+    # status 过滤
+    succeeded = client.get(f"{base}?status=succeeded", headers=_h(admin)).json()
+    assert succeeded["runs"] and all(r["status"] == "succeeded" for r in succeeded["runs"])
+    failed = client.get(f"{base}?status=failed", headers=_h(admin)).json()
+    assert failed["runs"] and all(r["status"] == "failed" for r in failed["runs"])
+    # limit 分页（id 降序截断）
+    limited = client.get(f"{base}?limit=1", headers=_h(admin)).json()
+    assert len(limited["runs"]) == 1
+    assert limited["runs"][0]["id"] >= max(r["id"] for r in hits["runs"])
+    # 非法 status → 400
+    assert client.get(f"{base}?status=nope", headers=_h(admin)).status_code == 400
+
+
 # ---- P2-2：inline 兜底循环认领 semantic_sync（kick 唤醒丢失的兜底通道） ----
 
 

@@ -5,7 +5,8 @@
 - expand 方向后缀：`uses>` 出向 / `derived_from<` 入向 / 裸 rel_type 双向；
 - 防环/截断在 store.sem_expand_graph（递归 CTE 等价 SQL——BFS 逐层）；
 - restricted 实体：根 404、展开不出现（fail-closed——T-S9；持权路径 M2-S3
-  权限面交付前一律不可见）；
+  权限面交付前一律不可见）；非 active（missing/retired）根同样 404（P3-6/R2
+  ——工具面只服务 active 图，与 describe_table 口径对齐；状态面经管理端点）；
 - dict_rev：当前构建（最新 ready）的词典版本——无构建时 None（服务按
   (org, dict_rev) 懒加载的取用锚点，§5.8）。
 
@@ -71,8 +72,11 @@ def get_entity(
         row = backend.sem_entity_by_key(org_id, type_, k)
     else:
         row = backend.sem_entity_by_id(org_id, entity_id)
-    if row is None or row["sensitivity"] == "restricted":
-        # 他组织（org 第一条件隔离）/ 不存在 / restricted → 同一 404（零泄露）
+    if (row is None or row["sensitivity"] == "restricted"
+            or row["status"] != "active"):
+        # 他组织（org 第一条件隔离）/ 不存在 / restricted / 非 active
+        # （missing/retired——P3-6/R2 与 describe_table 对齐：工具面只服务
+        # active 图，状态面经管理端点）→ 同一 404（存在性零泄露）
         raise EntityNotFound(f"entity not found: id={entity_id!r} key={key!r}")
 
     outgoing, incoming = _parse_expand(expand)

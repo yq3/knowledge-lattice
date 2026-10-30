@@ -2574,24 +2574,58 @@ class SqliteBackend:
         return build_id
 
     def sem_switch_build_ready(
-        self, org_id: str, build_id: int, stats_json: str
+        self, org_id: str, build_id: int, stats_json: str, *,
+        audit: tuple[str, str] | None = None,
     ) -> bool:
-        """原子切换：building → ready 单语句（旧 ready 不动——T-S12 失败不切）。"""
-        cur = self._conn.execute(
-            "UPDATE sem_builds SET status = 'ready', stats_json = ?"
-            " WHERE org_id = ? AND id = ? AND status = 'building'",
-            (stats_json, org_id, build_id),
-        )
-        self._conn.commit()
-        return cur.rowcount == 1
+        """原子切换：building → ready + ready 事件同一事务（P3-5/R2——audit 仅
+        rowcount==1 真生效时写；并发输者零行生效零事件，P2-2）。"""
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = conn.execute(
+                "UPDATE sem_builds SET status = 'ready', stats_json = ?"
+                " WHERE org_id = ? AND id = ? AND status = 'building'",
+                (stats_json, org_id, build_id),
+            )
+            effective = cur.rowcount == 1
+            if effective and audit is not None:
+                conn.execute(
+                    "INSERT INTO audit_outbox(id, event_type, payload_json)"
+                    " VALUES(:id, :t, :p)",
+                    {"id": f"aud_{uuid.uuid4()}", "t": audit[0], "p": audit[1]},
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return effective
 
-    def sem_fail_build(self, org_id: str, build_id: int, stats_json: str) -> None:
-        self._conn.execute(
-            "UPDATE sem_builds SET status = 'failed', stats_json = ?"
-            " WHERE org_id = ? AND id = ? AND status = 'building'",
-            (stats_json, org_id, build_id),
-        )
-        self._conn.commit()
+    def sem_fail_build(
+        self, org_id: str, build_id: int, stats_json: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> bool:
+        """失败收尾：building → failed + failed 事件同一事务；仅真生效返回 True
+        （已终态行幂等零生效——P2-2/R2 防脏 failed 审计）。"""
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = conn.execute(
+                "UPDATE sem_builds SET status = 'failed', stats_json = ?"
+                " WHERE org_id = ? AND id = ? AND status = 'building'",
+                (stats_json, org_id, build_id),
+            )
+            effective = cur.rowcount == 1
+            if effective and audit is not None:
+                conn.execute(
+                    "INSERT INTO audit_outbox(id, event_type, payload_json)"
+                    " VALUES(:id, :t, :p)",
+                    {"id": f"aud_{uuid.uuid4()}", "t": audit[0], "p": audit[1]},
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return effective
 
     def save_build(self, org_id: str, dict_rev: str, stats_json: str) -> int:
         cur = self._conn.execute(
@@ -2673,9 +2707,12 @@ class SqliteBackend:
 
         fanout_limit 按展开节点计（每节点每方向出边上限）；node_limit 为新增
         节点总量上限——命中任一截断 → truncated=True（T-S6）。restricted 端点
-        与非 active 端点不出现（fail-closed——T-S9；active 关系才走）。"""
+        与非 active 端点不出现（fail-closed——T-S9；active 关系才走）。
+        P3-2/R2：edges 以 (src,rel,dst) 去重（双向查询同关系行不重复）且
+        端点恒 ∈ {root} ∪ nodes（节点截断后不产悬挂边）。"""
         nodes: dict[int, dict] = {}
         edges: list[dict] = []
+        seen_edges: set[tuple[int, str, int]] = set()
         truncated = False
         visited = {root_id}
         depth_of = {root_id: 0}
@@ -2706,13 +2743,19 @@ class SqliteBackend:
                         if fan >= fanout_limit:
                             truncated = True
                             break
+                        edge_key = (src, rel, dst)
+                        if edge_key in seen_edges:
+                            continue  # P3-2/R2：同一关系行双向查询只计一次
+                        if oid not in visited and len(nodes) >= node_limit:
+                            # P3-2/R2：节点截断后不再 append 悬挂边（边端点
+                            # 必 ∈ {root} ∪ nodes——契约与 nodes 断言一致）
+                            truncated = True
+                            continue
                         fan += 1
+                        seen_edges.add(edge_key)
                         edges.append({"src": src, "rel": rel, "dst": dst,
                                       "source": rel_source})
                         if oid not in visited:
-                            if len(nodes) >= node_limit:
-                                truncated = True
-                                continue
                             visited.add(oid)
                             nodes[oid] = {"id": oid, "type": otype, "key": okey,
                                           "name": oname, "depth": _level}
@@ -2773,10 +2816,16 @@ class SqliteBackend:
             " JOIN sem_entities c ON c.id = r.dst_id"
             " WHERE r.org_id = ? AND r.src_id = ? AND r.rel_type = 'has_column'"
             "   AND r.status = 'active' AND c.status = 'active'"
+            "   AND c.sensitivity = 'normal'"
             " ORDER BY c.key",
             (org_id, table_id),
         ).fetchall()
         return [{"key": r[0], "name": r[1]} for r in rows]
+
+    def expand_relations(self, org_id: str, seed_ids, rels, *, depth: int = 1) -> dict:
+        """P3-3/R2 薄适配：sem_expand_graph 多 seed 归并（design §3/NFR-4 命名
+        保留给 M2-S3 实体召回路；fanout/node 缺省与 core/expand.py 常量一致）。"""
+        return _expand_relations_thin(self, org_id, seed_ids, rels, depth=depth)
 
 
 def _month_upper(month: str) -> str:
@@ -2790,6 +2839,34 @@ def _month_upper(month: str) -> str:
 def _like_escape(text: str) -> str:
     """LIKE 通配转义（%/_/\——配合 ESCAPE '\\' 子句双方言同语义）。"""
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _expand_relations_thin(backend, org_id, seed_ids, rels, *, depth: int) -> dict:
+    """expand_relations 薄适配共用体（双方言同实现——P3-3/R2）：
+    逐 seed 调 sem_expand_graph（rels 双向）后归并去重；truncated 任一命中即真。"""
+    merged_nodes: dict[int, dict] = {}
+    merged_edges: set[tuple[int, str, int]] = set()
+    edge_rows: dict[tuple[int, str, int], dict] = {}
+    truncated = False
+    rel_list = list(rels)
+    for seed in seed_ids:
+        graph = backend.sem_expand_graph(
+            org_id, seed, outgoing=rel_list, incoming=rel_list,
+            depth=depth, fanout_limit=50, node_limit=200,
+        )
+        truncated = truncated or graph["truncated"]
+        for node in graph["nodes"]:
+            merged_nodes.setdefault(node["id"], node)
+        for edge in graph["edges"]:
+            key = (edge["src"], edge["rel"], edge["dst"])
+            if key not in merged_edges:
+                merged_edges.add(key)
+                edge_rows[key] = edge
+    return {
+        "nodes": list(merged_nodes.values()),
+        "edges": list(edge_rows.values()),
+        "truncated": truncated,
+    }
 
 
 def _sem_chunks(seq, n: int):

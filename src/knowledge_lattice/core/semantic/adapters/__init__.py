@@ -143,22 +143,38 @@ def build_adapter(name: str, org: str, settings: Settings) -> SourceAdapter:
     )
 
 
-def _default_transport(config: SourceConfig) -> Callable[[str, str, dict | None], dict]:
-    """HTTP 传输（httpx 同步客户端——真实源系统联调环境依赖申报，同 rerank 先例）。"""
-    import httpx
+class _DefaultHttpTransport:
+    """默认 HTTP 传输 + 客户端生命周期（P1-1④/R2——每次构造新建的
+    httpx.Client 必须可显式关闭：describe 路径每 5min/表一次长期运行，
+    依赖 GC 泄漏连接池）。可调用形态与注入用 transport 同契约。"""
 
-    client = httpx.Client(
-        base_url=config.endpoint,
-        timeout=config.timeout_s,
-        headers={"Authorization": f"Bearer {config.api_key}"} if config.api_key else None,
-    )
+    def __init__(self, config: SourceConfig) -> None:
+        import httpx
 
-    def transport(endpoint: str, path: str, params: dict | None = None) -> dict:
-        resp = client.get(path, params=params)
+        self._client = httpx.Client(
+            base_url=config.endpoint,
+            timeout=config.timeout_s,
+            headers=(
+                {"Authorization": f"Bearer {config.api_key}"}
+                if config.api_key else None
+            ),
+        )
+
+    def __call__(self, endpoint: str, path: str, params: dict | None = None) -> dict:
+        resp = self._client.get(path, params=params)
         resp.raise_for_status()
         return resp.json()
 
-    return transport
+    def close(self) -> None:
+        self._client.close()
+
+
+def _default_transport(config: SourceConfig) -> Callable[[str, str, dict | None], dict]:
+    """HTTP 传输（httpx 同步客户端——真实源系统联调环境依赖申报，同 rerank 先例）。
+
+    返回值可调用且带 ``close()``（R2 起）——按次构造的调用方（describe_table
+    默认通道）用后即关；长驻调用方（一次同步 run 的 fetch）随适配器 close。"""
+    return _DefaultHttpTransport(config)
 
 
 # 底部再导出具体适配器（子模块反向引用本包符号——延迟至协议/配置定义之后防环）

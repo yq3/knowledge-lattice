@@ -42,6 +42,12 @@ class TemplateCenterAdapter:
     def fetch(self, org: str) -> Iterator[EntityRecord | RelationRecord]:
         yield from self._templates()
 
+    def close(self) -> None:
+        """关闭底层传输客户端（默认 HTTP 传输持有 httpx.Client——P1-1④ 同款）。"""
+        closer = getattr(self._transport, "close", None)
+        if callable(closer):
+            closer()
+
     # ---- 内部：分页拼全量 ----
 
     def _templates(self) -> Iterator[EntityRecord | RelationRecord]:
