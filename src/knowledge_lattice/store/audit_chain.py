@@ -13,6 +13,12 @@ from __future__ import annotations
 import hashlib
 import json
 
+
+class AuditChainError(Exception):
+    """审计哈希链验证失败（m2-3 B2——读路径按链遍历后的 fail-closed 信号：
+    破链（哈希不符/分叉/孤儿行）即审计完整性异常，读路径上抛不静默）。"""
+
+
 # audit_events 行字段序（canonical 拼接序——冻结：改序即断链，迁移期不动）
 _CHAIN_FIELDS = (
     "id", "org_id", "actor", "action", "target_type", "target_id",
@@ -88,6 +94,83 @@ def _target_of(action: str, payload: dict) -> tuple[str | None, str | None]:
 def month_of(ts: str) -> str:
     """'YYYY-MM-DD HH:MM:SS' → 'YYYYMM'（搬运按事件原时刻路由月库/分区）。"""
     return ts[:4] + ts[5:7]
+
+
+def walk_chain(rows: list[dict]) -> list[dict]:
+    """**链遍历读序**（m2-3 B2——G-13 对冲：不依赖 rowid/seq 读序）。
+
+    输入任意顺序的 audit_events 行（含 prev_hash/row_hash），输出按链衔接的
+    插入序并逐行验证 row_hash；破链（哈希不符 / 分叉 / 孤儿行 / 多链头）raise
+    AuditChainError（fail-closed——审计完整性异常不可静默）。
+
+    链头判定：prev_hash 不在本批 row_hash 集合中的行（月首条 prev=上月末哈希
+    或创世空串——均不在本月集合内）；正常数据恰一个链头；空集 → []。
+    """
+    if not rows:
+        return []
+    hashes = {r.get("row_hash") for r in rows if r.get("row_hash")}
+    by_prev: dict[str, list[dict]] = {}
+    for r in rows:
+        by_prev.setdefault(r.get("prev_hash") or "", []).append(r)
+    heads = [p for p in by_prev if p not in hashes]
+    if len(heads) != 1:
+        raise AuditChainError(
+            f"audit chain broken: expected 1 chain head, got {len(heads)}"
+            f" ({len(rows)} rows)"
+        )
+    ordered: list[dict] = []
+    cur = heads[0]
+    seen: set[str] = set()
+    while True:
+        nxt = by_prev.get(cur)
+        if not nxt:
+            break  # 链尾
+        if len(nxt) != 1:
+            raise AuditChainError(f"audit chain fork at prev={cur[:16]}…")
+        row = nxt[0]
+        expected = compute_row_hash(row, row.get("prev_hash"))
+        if row.get("row_hash") != expected:
+            raise AuditChainError(
+                f"audit row hash mismatch: id={row.get('id')!r}"
+                f" (stored={str(row.get('row_hash'))[:16]}… expected={expected[:16]}…)"
+            )
+        if row["id"] in seen:
+            raise AuditChainError(f"audit chain cycle at id={row['id']!r}")
+        seen.add(row["id"])
+        ordered.append(row)
+        cur = row["row_hash"]
+    if len(ordered) != len(rows):
+        raise AuditChainError(
+            f"audit chain has orphan rows: {len(rows) - len(ordered)} not on chain"
+        )
+    return ordered
+
+
+def backfill_semantic_cols(event: dict) -> dict:
+    """R1 期行语义列兜底（m2-3 B5——早期搬运行 org_id=''/actor='system'/
+    target 空时，从 detail_json〔payload 原文〕重投影；已投影行不被覆盖——
+    仅填空值，幂等）。
+
+    投影逻辑与 outbox_row_to_event 同源（actor 回退链 + target 按事件类型映射）
+    ——语义列是投影非真相源，detail_json 才是。
+    """
+    out = dict(event)
+    if not out.get("detail_json"):
+        return out
+    try:
+        payload = json.loads(out["detail_json"])
+        if not isinstance(payload, dict):
+            return out
+    except (json.JSONDecodeError, TypeError):
+        return out
+    if not out.get("org_id"):
+        out["org_id"] = payload.get("org_id") or ""
+    if not out.get("actor") or out.get("actor") == "system":
+        out["actor"] = payload.get("actor") or payload.get("user_id") or "system"
+    if not out.get("target_type"):
+        target_type, target_id = _target_of(out.get("action") or "", payload)
+        out["target_type"], out["target_id"] = target_type, target_id
+    return out
 
 
 def prev_month(month: str) -> str:

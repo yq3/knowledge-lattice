@@ -51,7 +51,7 @@ run_mode() {
   log="$(mktemp "${TMPDIR:-/tmp}/lattice-gate-${label}.XXXXXX")"  # 模板以 X 结尾（GNU/BSD 通用）
   echo "==== [$label] $* -m 'not manual' -q ===="
   if ! "$@" -m "not manual" -q 2>&1 | tee "$log"; then
-    echo "GATE FAIL: [$label] 存在 failed 用例（详见 $log）" >&2
+    echo "GATE FAIL: [$label] 存在 failed 用例（详见 ${log}）" >&2
     exit 1
   fi
   # 完整 summary 行（最后一个 passed/failed/error 汇总行）上的 skipped 检测
@@ -65,7 +65,7 @@ run_mode() {
     exit 1
   fi
   if [[ -z "$summary" ]]; then
-    echo "GATE FAIL: [$label] 未解析到 pytest summary 行（详见 $log）——门禁拒绝无凭据绿灯。" >&2
+    echo "GATE FAIL: [$label] 未解析到 pytest summary 行（详见 ${log}）——门禁拒绝无凭据绿灯。" >&2
     exit 1
   fi
   echo "[$label] OK：$summary"

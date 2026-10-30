@@ -213,6 +213,166 @@ def test_pg_snapshot_restore_drill(pg_db, tmp_path, _pg_dump_tool) -> None:
         admin.close()
 
 
+# ============ m2-3 B3：审计月库纳入备份（sqlite 月库文件 + pg 分区口径核对） ============
+
+
+def test_sqlite_backup_includes_audit_monthly_dbs(db_path) -> None:
+    """B3：sqlite 快照纳入 audit_*.db 月库文件（原仅主库+objects——恢复后审计
+    历史全失的缺口收口）。断言：返回 audit_months 键；tar 解包后月库在场且
+    行数与源一致（恢复演练断言月库在场）。sqlite 月库文件形态专属（pg 分区
+    在库内——独立口径核对用例 test_pg_backup_scope_covers_audit_partitions；
+    互斥形态不做参数化，沿 test_sqlite_snapshot_restore_drill 惯例）。"""
+    import json as _json
+
+    from dbwrap import SqliteDb
+
+    from knowledge_lattice.store.sqlite import connect, migrate_db
+    from knowledge_lattice.store.sqlite.backend import SqliteBackend
+
+    from conftest import _seed_standard_matrix
+
+    conn = connect(db_path)
+    migrate_db(conn)
+    _seed_standard_matrix(SqliteDb(conn))
+    backend = SqliteBackend(conn)
+    tmp_path = db_path.parent
+
+    for i in range(3):
+        backend.append_outbox(
+            "document.upload",
+            _json.dumps({"org_id": "org:tax", "user_id": "u_full", "doc_id": f"d{i}"}),
+        )
+    shipped = backend.ship_outbox()
+    assert shipped["shipped"] == 3
+
+    db_dir = db_path.parent
+    monthly = sorted(db_dir.glob("audit_*.db"))
+    assert len(monthly) == 1, "搬运后当月月库应落盘"
+
+    snap = backend.backup_snapshot(tmp_path / "backups", objects_dir=None)
+    assert snap.get("audit_months"), "快照结果应含 audit_months 键（B3）"
+    archive = Path(snap["audit_months"])
+    assert archive.is_file() and archive.stat().st_size > 0
+
+    # 恢复演练：解包到新目录 → 月库在场 + 行数与源一致
+    import tarfile
+
+    restored = tmp_path / "restored-audit"
+    restored.mkdir()
+    with tarfile.open(archive, "r:gz") as tar:
+        tar.extractall(restored, filter="data")
+    files = sorted(p.name for p in restored.glob("audit_*.db"))
+    assert files == [monthly[0].name], "月库文件应在恢复产物中"
+    import sqlite3
+
+    mconn = sqlite3.connect(restored / files[0])
+    try:
+        count = mconn.execute("SELECT count(*) FROM audit_events").fetchone()[0]
+    finally:
+        mconn.close()
+    src_conn = sqlite3.connect(monthly[0])
+    try:
+        src_count = src_conn.execute("SELECT count(*) FROM audit_events").fetchone()[0]
+    finally:
+        src_conn.close()
+    assert count == src_count == 3
+    conn.close()
+
+
+def test_sqlite_backup_includes_monthly_seal_sidecar(db_path) -> None:
+    """B3 补充：封存月库（0444 + sidecar）随后快照——tar 同时纳入 seal sidecar
+    （恢复后封存态可判读）。sqlite 月库文件形态专属（同上不参数化）。"""
+    from knowledge_lattice.store.audit_chain import month_of, month_shift
+    from knowledge_lattice.store.sqlite import connect, migrate_db
+    from knowledge_lattice.store.sqlite.backend import SqliteBackend
+    from knowledge_lattice.store.taskclock import utc_now_ts
+
+    conn = connect(db_path)
+    migrate_db(conn)
+    backend = SqliteBackend(conn)
+    tmp_path = db_path.parent
+
+    backend.append_outbox("maintenance.run", '{"stats": {}}')
+    backend.ship_outbox()
+    db_dir = db_path.parent
+    # 造上月封存 sidecar（当前月照常在场）
+    cur = month_of(utc_now_ts())
+    prev = month_shift(cur, -1)
+    seal = db_dir / f"audit_{prev}.db.seal.json"
+    seal.write_text('{"month": "%s", "last_hash": null, "rows": 0}' % prev)
+    try:
+        seal.chmod(0o444)
+    except OSError:
+        pass
+
+    snap = backend.backup_snapshot(tmp_path / "backups", objects_dir=None)
+    import tarfile
+
+    with tarfile.open(Path(snap["audit_months"]), "r:gz") as tar:
+        names = set(tar.getnames())
+    assert f"audit_{prev}.db.seal.json" in names or f"./audit_{prev}.db.seal.json" in names, (
+        "封存 sidecar 应纳入备份（恢复后封存态可判读）"
+    )
+    conn.close()
+
+
+def test_pg_backup_scope_covers_audit_partitions(pg_db, tmp_path, _pg_dump_tool) -> None:
+    """B3 pg 侧口径核对：audit_events 按月分区与业务数据同库——pg_dump
+    （schema 级）天然含分区；dump → restore 后审计行在场且链读 OK（备份范围
+    口径的实证核对）。"""
+    import json as _json
+
+    backend = pg_db.make_backend()
+    for i in range(2):
+        backend.append_outbox(
+            "document.upload",
+            _json.dumps({"org_id": "org:tax", "user_id": "u_full", "doc_id": f"d{i}"}),
+        )
+    assert backend.ship_outbox()["shipped"] == 2
+    from knowledge_lattice.store.postgres.backup import (
+        restore_database,
+        snapshot_database,
+    )
+
+    dump = snapshot_database(pg_db.dsn, tmp_path / "backups", schema=pg_db.schema)
+    assert dump.is_file()
+
+    import uuid as _uuid
+
+    import psycopg
+
+    admin = psycopg.connect(pg_db.dsn, autocommit=True)
+    restore_db = f"lattice_audit_restore_{_uuid.uuid4().hex[:8]}"
+    restore_dsn = pg_db.dsn.rsplit("/", 1)[0] + "/" + restore_db
+    try:
+        admin.execute(f'CREATE DATABASE "{restore_db}"')
+        pre = psycopg.connect(restore_dsn, autocommit=True)
+        try:
+            pre.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        finally:
+            pre.close()
+        restore_database(restore_dsn, dump)
+        rc = psycopg.connect(restore_dsn, autocommit=True)
+        try:
+            rc.execute(f'SET search_path TO "{pg_db.schema}", public')
+            from knowledge_lattice.store.postgres import setup_connection
+
+            setup_connection(rc)
+            from knowledge_lattice.store.postgres.backend import PgBackend
+
+            rb = PgBackend(rc)
+            from knowledge_lattice.store.taskclock import utc_now_ts
+
+            events = rb.read_monthly_events(when=utc_now_ts())
+            assert len(events) == 2, "恢复库审计行应在场（pg_dump 天然含分区——B3 口径）"
+            assert all(e["org_id"] == "org:tax" for e in events)
+        finally:
+            rc.close()
+    finally:
+        admin.execute(f'DROP DATABASE IF EXISTS "{restore_db}" WITH (FORCE)')
+        admin.close()
+
+
 # ============ maintenance 挂载（backup 任务体 + 节流 + audit bodies） ============
 
 

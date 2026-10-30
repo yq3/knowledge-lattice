@@ -423,6 +423,77 @@ class AdminBackend(Protocol):
         仍有文档 → DatasetNotEmptyError（RESTRICT 明确报错——非裸外键异常）；
         不存在/跨组织 → KeyError（404）；audit 治理事件与删行同事务。"""
 
+    # ---- 维度治理（m2-3——TC-OPS-07：取值停用 dry_run / 维度退役） ----
+
+    def dimension_value_impact(
+        self, org_id: str, dim_id: str, value_id: str,
+    ) -> dict | None:
+        """取值停用影响面预估（dry_run 数据源——FR-4）：{docs, grants, users} =
+        引用该值的文档数 / 授权行数 / 持有者数（org 归属校验——不存在或跨
+        组织 → None）。只读零副作用。"""
+
+    def disable_dimension_value(
+        self, org_id: str, dim_id: str, value_id: str, *,
+        dry_run: bool = False,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """取值停用（TC-OPS-07①）：status→disabled（幂等——重复停用零新审计）；
+        **T3 联动**：停用取值从授权展开消失（read_grants 的 v.status='active'
+        三重过滤既有机制——收紧进计算）。dry_run=True 只返回预估不落库；
+        audit 治理事件与停行**同一事务**（仅实际执行时记）。返回
+        {docs, grants, users, applied}。"""
+
+    def dimension_retire_impact(self, org_id: str, dim_id: str) -> dict | None:
+        """维度退役影响面预估（二次确认数据源）：{docs, grants, values} =
+        该维度有值文档数 / 授权行数 / 取值数。只读零副作用。"""
+
+    def get_dimension_status(self, org_id: str, dim_id: str) -> str | None:
+        """维度生命周期状态（'active'|'retired'——退役端点幂等 409 判据；
+        不存在/跨组织 → None）。"""
+
+    def retire_dimension(
+        self, org_id: str, dim_id: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """维度退役（TC-OPS-07②——**T20 半句：唯一放宽路径**）：status→retired
+        （幂等——重复退役零新审计）；退役后 read_grants 不再含该维度（dim
+        .status='active' 过滤——编译产物不再生成该维度条件）。audit 治理事件
+        与退役**同一事务**。返回 {docs, grants, values}；不存在 → None。"""
+
+    # ---- 授权写路径（m2-3——TC-OPS-08 / TC-OPS-06 CSV 载体） ----
+
+    def replace_local_grants(
+        self, org_id: str, user_id: str,
+        rows: Sequence[tuple[str, str, str | None]], *,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        """用户 local 授权全量替换（TC-OPS-08——**只动 source='local' 行，
+        sync 授权不动**；CSV 导入同载体）。rows=(dim_key, value, expires_at)
+        目标全量态：先删该用户在本组织的全部 local 行再插入新行（幂等）；
+        dim/value 不存在或不属本组织 → KeyError（400 语义）。audit 治理事件
+        与替换**同一事务**。返回 {removed, inserted}。"""
+
+    def list_grants_for_export(self, org_id: str) -> list[dict]:
+        """组织全部授权行（CSV 导出 / 导入差异计算数据源）：[{username,
+        user_id, dim_key, value, expires_at, source}]——含 sync 行（导出 CSV
+        只取 local；UI 标注 sync 只读）。"""
+
+    def find_user_by_username(self, username: str) -> dict | None:
+        """username → 用户行（CSV 导入 username 列解析；无 → None）。"""
+
+    # ---- 嵌入覆盖率（m2-3——TC-EMB-06 管理面只读面板） ----
+
+    def embedding_coverage(
+        self, org_id: str, embed_model: str,
+    ) -> list[dict]:
+        """各知识库嵌入覆盖率（RUNBOOK §1 闭合口径：分子/分母都限**在用块**
+        ——tombstone=0 且 version=documents.active_version）：[{dataset_id,
+        dataset_name, done, total}]——done=已有 (rid, embed_model) cv 行的在用
+        块数。"""
+
+    def read_pending_outbox_events(self) -> list[dict]:
+        """未搬运 outbox 行（审计分级查询的当月未落库部分——created_at,id 序）。"""
+
     def trim_shipped_outbox(self, *, before_ts: str) -> int:
         """已搬运 outbox 行保留期清理（R2 P3-1——只删 shipped_at 非 NULL 且早于
         before_ts 的行；未搬运行永不删）。返回删除行数。"""
@@ -725,9 +796,15 @@ class AuditBackend(Protocol):
         """
 
     def read_monthly_events(self, *, when: str) -> list[dict]:
-        """读指定时点所在月的 audit_events 行（**插入序**——P2-1/R2 定链序=
-        插入序：sqlite rowid / pg seq 单调；搬运/链验证数据源；sqlite 封存月库
-        只读打开 / pg 分区查询）。"""
+        """读指定时点所在月的 audit_events 行（m2-3 B2 起为**链遍历序**——
+        walk_chain 按链重排与逐行哈希验证，不依赖 rowid/seq 读序〔G-13 对冲〕；
+        R1 期行语义列 detail_json 兜底〔B5〕；破链 raise AuditChainError。
+        sqlite 封存月库只读打开 / pg 分区查询）。"""
+
+    def read_last_maintenance_stats(self) -> dict | None:
+        """最近一次 maintenance.run 的 stats（m2-3 B4——运维面板 GET stats 端点
+        数据源，含 audit_outbox_trimmed 等新键）：outbox 最近行优先、无则当月
+        月库（链遍历读序）最近行；无 → None。"""
 
     def seal_audit_months(self, *, now: str | None = None) -> dict:
         """封存过月月库（sqlite：末哈希 sidecar + 0444 只读；pg：分区 sealed

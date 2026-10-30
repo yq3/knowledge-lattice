@@ -28,7 +28,10 @@
       <nav class="rail">
         <button class="nav-item on" data-view="upload"><span data-i18n="nav.upload">文档上传</span></button>
         <button class="nav-item" data-view="search"><span data-i18n="nav.search">检索测试</span></button>
-        <div class="rail-note" data-i18n="nav.hint">M0a 页壳：两视图</div>
+        <button class="nav-item" data-view="access"><span data-i18n="nav.access">权限</span></button>
+        <button class="nav-item" data-view="dims"><span data-i18n="nav.dims">维度治理</span></button>
+        <button class="nav-item" data-view="ops"><span data-i18n="nav.ops">任务与审计</span></button>
+        <div class="rail-note" data-i18n="nav.hint">管理面三视图：org_admin</div>
         <div class="conn">
           <div class="conn-h" data-i18n="settings.title">连接设置</div>
           <input id="cfgToken" type="text" data-i18n-ph="settings.token.ph" placeholder="开发 JWT">
@@ -102,6 +105,123 @@
               <h3 data-i18n="search.empty">没有可见结果</h3>
             </div>
           </div>
+        </section>
+        <!-- ============ 权限视图（m2-3——grants 管理 / CSV 导入导出 / expires_at） ============ -->
+        <section class="view" id="view-access" hidden>
+          <header class="head">
+            <h1 data-i18n="access.title">权限</h1>
+            <p class="lede" data-i18n="access.lede">授权 = 成员 × 维度取值；每格切换后「保存」= 一次全量替换（只动 local，sync 不动）。</p>
+            <div class="head-act">
+              <button class="btn ghost" id="grantsExport" data-i18n="access.export">导出 CSV</button>
+            </div>
+          </header>
+          <div class="form">
+            <div class="row">
+              <label data-i18n="access.member">成员</label>
+              <select id="gMember"><option data-i18n="access.member.none">（先加载授权）</option></select>
+            </div>
+            <div class="row">
+              <label data-i18n="access.grants">授权格</label>
+              <div id="gChips" class="chips"><span class="muted" data-i18n="access.grants.hint">local 授权可编辑；sync 授权只读</span></div>
+            </div>
+            <div class="row">
+              <label data-i18n="access.expires">过期时间</label>
+              <input id="gExpires" type="text" data-i18n-ph="access.expires.ph" placeholder="如 2027-12-31 00:00:00（空=永久）">
+            </div>
+            <div class="row actions">
+              <button class="btn primary" id="gSave" data-i18n="access.save">保存（全量替换）</button>
+              <span id="gMsg" class="msg"></span>
+            </div>
+          </div>
+          <section class="status">
+            <h3 data-i18n="access.csv.title">CSV 批量导入</h3>
+            <p class="tiny muted" data-i18n="access.csv.hint">username,dim_key,value,expires_at——无 org 列（org 以路径为准）；dry_run 先看差异。</p>
+            <textarea id="csvText" rows="6" class="csv-box" placeholder="username,dim_key,value,expires_at"></textarea>
+            <div class="row actions" style="margin-top:8px">
+              <button class="btn" id="csvDryRun" data-i18n="access.csv.dryrun">差异预览</button>
+              <button class="btn primary" id="csvApply" data-i18n="access.csv.apply">导入生效</button>
+              <span id="csvMsg" class="msg"></span>
+            </div>
+            <pre id="csvDiff" class="diff-box" hidden></pre>
+          </section>
+        </section>
+
+        <!-- ============ 维度治理视图（m2-3——停用 dry_run / 退役二次确认） ============ -->
+        <section class="view" id="view-dims" hidden>
+          <header class="head">
+            <h1 data-i18n="dims.title">维度治理</h1>
+            <p class="lede" data-i18n="dims.lede">取值停用=收紧（dry_run 先看影响面）；维度退役=唯一放宽路径（预估 + 二次确认 + 审计）。</p>
+            <div class="head-act"><button class="btn ghost" id="dimsRefresh" data-i18n="dims.refresh">刷新</button></div>
+          </header>
+          <table class="ledger" id="dimsTable" hidden>
+            <thead><tr>
+              <th data-i18n="dims.col.dim">维度</th>
+              <th data-i18n="dims.col.required">必选</th>
+              <th data-i18n="dims.col.values">取值</th>
+              <th></th>
+            </tr></thead>
+            <tbody id="dimsBody"></tbody>
+          </table>
+          <div id="dimsEmpty" class="empty" hidden><h3 data-i18n="dims.empty">没有 active 维度</h3></div>
+          <div class="confirm" id="dimsConfirm" hidden>
+            <b id="dimsConfirmTitle"></b>
+            <p class="tiny muted" id="dimsConfirmBody"></p>
+            <div class="cf-act">
+              <button class="btn danger-btn sm" id="dimsConfirmOk" data-i18n="dims.confirm.ok">确认执行</button>
+              <button class="btn ghost sm" id="dimsConfirmCancel" data-i18n="dims.confirm.cancel">取消</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ 任务与审计视图（m2-3——取消 / 重嵌入入口 / 覆盖率面板 / 审计分级） ============ -->
+        <section class="view" id="view-ops" hidden>
+          <header class="head">
+            <h1 data-i18n="ops.title">任务与审计</h1>
+            <p class="lede" data-i18n="ops.lede">任务取消、重索引 / 换模型重嵌入入口、嵌入覆盖率（只读）、审计分级查询。</p>
+            <div class="head-act"><button class="btn ghost" id="opsRefresh" data-i18n="ops.refresh">刷新</button></div>
+          </header>
+          <section class="pane">
+            <div class="lane-h"><h3 data-i18n="ops.cover.title">嵌入与覆盖率</h3>
+              <span class="tiny muted" data-i18n="ops.cover.note">只读面板 · 改模型=走重嵌入流程</span></div>
+            <dl class="kv" id="covKv"></dl>
+            <div id="covBars"></div>
+            <div class="row actions" style="margin-top:10px">
+              <input id="reembedDoc" type="text" style="max-width:280px" data-i18n-ph="ops.reembed.doc.ph" placeholder="文档 doc_id">
+              <input id="reembedModel" type="text" style="max-width:200px" data-i18n-ph="ops.reembed.model.ph" placeholder="新模型标签（空=仅重索引）">
+              <button class="btn" id="reembedGo" data-i18n="ops.reembed.go">投递任务</button>
+              <span id="reembedMsg" class="msg"></span>
+            </div>
+          </section>
+          <table class="ledger" id="tasksTable" style="margin-top:18px" hidden>
+            <thead><tr>
+              <th data-i18n="ops.col.task">任务</th>
+              <th data-i18n="ops.col.type">类型</th>
+              <th data-i18n="ops.col.doc">文档</th>
+              <th data-i18n="ops.col.status">状态</th>
+              <th data-i18n="ops.col.error">备注</th>
+              <th></th>
+            </tr></thead>
+            <tbody id="tasksBody"></tbody>
+          </table>
+          <section class="pane" style="margin-top:18px">
+            <div class="lane-h"><h3 data-i18n="ops.audit.title">审计</h3>
+              <span class="tiny muted" id="auditScope"></span></div>
+            <table class="ledger" id="auditTable" hidden>
+              <thead><tr>
+                <th data-i18n="ops.audit.col.time">时间</th>
+                <th data-i18n="ops.audit.col.actor">操作者</th>
+                <th data-i18n="ops.audit.col.action">动作</th>
+                <th data-i18n="ops.audit.col.detail">详情</th>
+              </tr></thead>
+              <tbody id="auditBody"></tbody>
+            </table>
+            <div id="auditEmpty" class="empty" hidden><h3 data-i18n="ops.audit.empty">暂无事件</h3></div>
+          </section>
+          <section class="pane" style="margin-top:18px">
+            <div class="lane-h"><h3 data-i18n="ops.stats.title">运维</h3>
+              <span class="tiny muted" data-i18n="ops.stats.note">maintenance 最近一次运行</span></div>
+            <dl class="kv" id="statsKv"></dl>
+          </section>
         </section>
       </main>
     </div>

@@ -168,11 +168,337 @@ async function doSearch() {
     </tr>`).join("");
 }
 
+/* ---------- 权限视图（m2-3：grants 管理 / CSV 导入导出 / expires_at） ---------- */
+
+const accessState = { rows: [], members: [], picked: {}, expires: {} };
+
+async function loadGrants() {
+  if (!state.token || !state.org) return;
+  const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/grants/export`);
+  if (!resp.ok) { $("#gMsg").textContent = `${resp.status}`; return; }
+  const lines = (await resp.text()).trim().split(/\r?\n/);
+  accessState.rows = lines.length > 1 ? lines.slice(1).map((l) => {
+    const [username, dimKey, value, expiresAt] = l.split(",");
+    return { username, dimKey, value, expiresAt: expiresAt || "" };
+  }) : [];
+  accessState.members = [...new Set(accessState.rows.map((r) => r.username))].sort();
+  const sel = $("#gMember");
+  sel.innerHTML = "";
+  if (!accessState.members.length) {
+    const o = document.createElement("option");
+    o.setAttribute("data-i18n", "access.member.none");
+    o.textContent = t("access.member.none");
+    sel.appendChild(o);
+    $("#gChips").innerHTML = `<span class="muted">${t("access.member.none")}</span>`;
+    return;
+  }
+  accessState.members.forEach((m) => {
+    const o = document.createElement("option");
+    o.value = m; o.textContent = m;
+    sel.appendChild(o);
+  });
+  renderGrantChips();
+}
+
+function renderGrantChips() {
+  const member = $("#gMember").value;
+  const box = $("#gChips");
+  box.innerHTML = "";
+  const mine = accessState.rows.filter((r) => r.username === member);
+  accessState.picked = {};
+  mine.forEach((r) => { accessState.picked[`${r.dimKey}=${r.value}`] = r.expiresAt; });
+  state.dims.forEach((dim) => {
+    const g = document.createElement("div");
+    g.className = "dim-group";
+    const label = document.createElement("div");
+    label.className = "dim-label";
+    label.textContent = `${dim.name}（${dim.key}）`;
+    g.appendChild(label);
+    (dim.values || []).forEach((v) => {
+      const on = `${dim.key}=${v.value}` in accessState.picked;
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "chip" + (on ? " on" : "");
+      chip.textContent = `${v.label}（${v.value}）`;
+      chip.onclick = () => {
+        const key = `${dim.key}=${v.value}`;
+        if (key in accessState.picked) delete accessState.picked[key];
+        else accessState.picked[key] = $("#gExpires").value.trim();
+        chip.classList.toggle("on", key in accessState.picked);
+      };
+      g.appendChild(chip);
+    });
+    box.appendChild(g);
+  });
+}
+
+async function saveGrants() {
+  const member = $("#gMember").value;
+  if (!member) return;
+  const grants = Object.entries(accessState.picked).map(([k, exp]) => {
+    const [dimKey, value] = k.split("=");
+    return { dim_key: dimKey, value, expires_at: exp || null };
+  });
+  const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/members/${encodeURIComponent(member)}/grants`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ grants }),
+  });
+  const body = await resp.json().catch(() => ({}));
+  if (!resp.ok) { $("#gMsg").textContent = `${resp.status}: ${body.detail || body.error || ""}`; return; }
+  $("#gMsg").textContent = t("access.saved", body);
+  loadGrants();
+}
+
+function downloadCsv(text) {
+  const blob = new Blob([text], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `grants-${state.org}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+async function importCsv(dryRun) {
+  const text = $("#csvText").value.trim();
+  if (!text) return;
+  const resp = await api(
+    `/api/orgs/${encodeURIComponent(state.org)}/grants/import${dryRun ? "?dry_run=1" : ""}`,
+    { method: "POST", body: text }
+  );
+  const body = await resp.json().catch(() => ({}));
+  if (!resp.ok) { $("#csvMsg").textContent = `${resp.status}: ${body.detail || body.error || ""}`; return; }
+  if (dryRun) {
+    const d = body.diff;
+    $("#csvDiff").hidden = false;
+    $("#csvDiff").textContent = JSON.stringify(d, null, 2);
+    $("#csvMsg").textContent = `+${d.added.length} / -${d.removed.length} / ~${d.changed.length} / rejected ${body.rejected.length}`;
+    return;
+  }
+  $("#csvDiff").hidden = true;
+  $("#csvMsg").textContent = t("access.csv.applied", {
+    users: body.applied_users, rejected: body.rejected.length,
+  });
+  loadGrants();
+}
+
+/* ---------- 维度治理视图（m2-3：停用 dry_run / 退役二次确认） ---------- */
+
+const dimsState = { pending: null }; // {action: 'disable'|'retire', dim, value}
+
+async function loadGovernanceDims() {
+  await loadMeta();
+  renderGovernanceDims();
+}
+
+function renderGovernanceDims() {
+  const body = $("#dimsBody");
+  body.innerHTML = "";
+  const dims = state.dims || [];
+  $("#dimsTable").hidden = dims.length === 0;
+  $("#dimsEmpty").hidden = dims.length > 0;
+  dims.forEach((dim) => {
+    const tr = document.createElement("tr");
+    const vals = (dim.values || []).map((v) => {
+      const chip = document.createElement("span");
+      chip.className = "chip d";
+      chip.textContent = `${v.label}（${v.value}）`;
+      const btn = document.createElement("button");
+      btn.className = "btn ghost sm";
+      btn.textContent = t("dims.disable");
+      btn.onclick = () => askDisableValue(dim, v);
+      const wrap = document.createElement("span");
+      wrap.className = "val-item";
+      wrap.appendChild(chip); wrap.appendChild(btn);
+      return wrap;
+    });
+    const retireBtn = document.createElement("button");
+    retireBtn.className = "btn ghost sm";
+    retireBtn.textContent = t("dims.retire");
+    retireBtn.onclick = () => askRetireDim(dim);
+    const cells = [
+      `<td><b>${esc(dim.name)}</b><div class="tiny muted mono">${esc(dim.key)}</div></td>`,
+      `<td>${dim.required ? t("upload.required") : "—"}</td>`,
+    ];
+    tr.innerHTML = cells.join("");
+    const tdVals = document.createElement("td");
+    vals.forEach((v) => tdVals.appendChild(v));
+    tr.appendChild(tdVals);
+    const tdAct = document.createElement("td");
+    tdAct.appendChild(retireBtn);
+    tr.appendChild(tdAct);
+    body.appendChild(tr);
+  });
+}
+
+async function askDisableValue(dim, v) {
+  // dry_run 影响面 → 二次确认
+  const resp = await api(
+    `/api/orgs/${encodeURIComponent(state.org)}/dimensions/${encodeURIComponent(dim.id)}` +
+    `/values/${encodeURIComponent(v.id)}`,
+    { method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "disabled", dry_run: true }) }
+  );
+  const body = await resp.json().catch(() => ({}));
+  if (!resp.ok) { alert(`${resp.status}: ${body.detail || ""}`); return; }
+  const imp = body.impact;
+  showConfirm(
+    t("dims.disable.ask", { value: v.value }),
+    `${t("dims.impact.docs")}: ${imp.docs} · ${t("dims.impact.grants")}: ${imp.grants} · ${t("dims.impact.users")}: ${imp.users}`,
+    { action: "disable", dim, v }
+  );
+}
+
+async function askRetireDim(dim) {
+  const resp = await api(
+    `/api/orgs/${encodeURIComponent(state.org)}/dimensions/${encodeURIComponent(dim.id)}/retire`,
+    { method: "POST" }
+  );
+  const body = await resp.json().catch(() => ({}));
+  if (!resp.ok) { alert(`${resp.status}: ${body.detail || ""}`); return; }
+  const imp = body.impact;
+  showConfirm(
+    t("dims.retire.ask", { key: dim.key }),
+    `${t("dims.impact.docs")}: ${imp.docs} · ${t("dims.impact.grants")}: ${imp.grants} · ${t("dims.impact.values")}: ${imp.values}`,
+    { action: "retire", dim }
+  );
+}
+
+function showConfirm(title, detail, pending) {
+  dimsState.pending = pending;
+  $("#dimsConfirmTitle").textContent = title;
+  $("#dimsConfirmBody").textContent = detail;
+  $("#dimsConfirm").hidden = false;
+}
+
+async function runConfirmed() {
+  const p = dimsState.pending;
+  if (!p) return;
+  let resp;
+  if (p.action === "disable") {
+    resp = await api(
+      `/api/orgs/${encodeURIComponent(state.org)}/dimensions/${encodeURIComponent(p.dim.id)}` +
+      `/values/${encodeURIComponent(p.v.id)}`,
+      { method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "disabled" }) }
+    );
+  } else {
+    resp = await api(
+      `/api/orgs/${encodeURIComponent(state.org)}/dimensions/${encodeURIComponent(p.dim.id)}/retire?confirm=1`,
+      { method: "POST" }
+    );
+  }
+  $("#dimsConfirm").hidden = true;
+  dimsState.pending = null;
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    alert(`${resp.status}: ${body.detail || ""}`);
+  }
+  loadGovernanceDims();
+}
+
+/* ---------- 任务与审计视图（m2-3：取消 / 重嵌入 / 覆盖率 / 审计 / stats） ---------- */
+
+async function loadOps() {
+  if (!state.token || !state.org) return; // 未连接早退（防 404 噪音）
+  await Promise.all([loadTasks(), loadCoverage(), loadAudit(), loadStats()]);
+}
+
+async function loadTasks() {
+  const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/tasks`);
+  const body = await resp.json().catch(() => ({ tasks: [] }));
+  const tasks = body.tasks || [];
+  $("#tasksTable").hidden = tasks.length === 0;
+  $("#tasksBody").innerHTML = tasks.map((task) => `<tr>
+      <td class="mono tiny">${esc(task.task_id)}</td>
+      <td class="tiny">${esc(task.type)}</td>
+      <td class="mono tiny">${esc(task.doc_id ?? "—")}</td>
+      <td class="tiny">${esc(task.status)}${(task.error || "").startsWith("cancelled:") ? ` · ${t("ops.cancelled")}` : ""}</td>
+      <td class="tiny muted">${esc(task.error || "")}</td>
+      <td>${["pending", "leased", "running"].includes(task.status)
+        ? `<button class="btn ghost sm" data-cancel="${esc(task.task_id)}">${t("ops.cancel")}</button>` : ""}</td>
+    </tr>`).join("");
+  $("#tasksBody").querySelectorAll("[data-cancel]").forEach((b) => {
+    b.onclick = async () => {
+      await api(`/api/orgs/${encodeURIComponent(state.org)}/tasks/${b.dataset.cancel}/cancel`, { method: "POST" });
+      loadTasks();
+    };
+  });
+}
+
+async function loadCoverage() {
+  const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/embedding-coverage`);
+  if (!resp.ok) { $("#covKv").innerHTML = `<dd>${resp.status}</dd>`; return; }
+  const body = await resp.json();
+  const pct = body.totals.total ? Math.round((body.totals.done / body.totals.total) * 1000) / 10 : 100;
+  const reembed = body.reembed
+    ? `${body.reembed.status} · ${body.reembed.done}/${body.reembed.total}`
+    : "—";
+  $("#covKv").innerHTML = [
+    [t("ops.cover.model"), `<span class="mono">${esc(body.embed_model)}</span>`],
+    [t("ops.cover.dim"), esc(body.dim)],
+    [t("ops.cover.ratio"), `${body.totals.done}/${body.totals.total}（${pct}%）`],
+    [t("ops.cover.progress"), esc(reembed)],
+  ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+  $("#covBars").innerHTML = (body.coverage || []).map((c) => {
+    const p = c.total ? Math.round((c.done / c.total) * 100) : 100;
+    return `<div class="fn-row">
+      <span class="tiny">${esc(c.dataset_name)}</span>
+      <div class="fn-bar"><span class="fb-ok" style="width:${p}%"></span></div>
+      <span class="tiny mono">${c.done}/${c.total}</span>
+    </div>`;
+  }).join("");
+}
+
+async function enqueueReembed() {
+  const docId = $("#reembedDoc").value.trim();
+  if (!docId) return;
+  const model = $("#reembedModel").value.trim();
+  const q = model ? `?embed_model=${encodeURIComponent(model)}` : "";
+  const resp = await api(
+    `/api/orgs/${encodeURIComponent(state.org)}/documents/${encodeURIComponent(docId)}/reindex${q}`,
+    { method: "POST" }
+  );
+  const body = await resp.json().catch(() => ({}));
+  if (!resp.ok) { $("#reembedMsg").textContent = `${resp.status}: ${body.detail || ""}`; return; }
+  $("#reembedMsg").textContent = t("ops.reembed.ok", { type: body.type, task: body.task_id });
+  loadTasks(); loadCoverage();
+}
+
+async function loadAudit() {
+  const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/audit?limit=50`);
+  if (!resp.ok) { $("#auditEmpty").hidden = false; return; }
+  const body = await resp.json();
+  $("#auditScope").textContent = body.scope === "full" ? "" : t("ops.audit.metadata");
+  const events = body.events || [];
+  $("#auditTable").hidden = events.length === 0;
+  $("#auditEmpty").hidden = events.length > 0;
+  $("#auditBody").innerHTML = events.map((e) => `<tr>
+      <td class="mono tiny">${esc(e.created_at ?? "")}</td>
+      <td class="tiny">${esc(e.actor ?? "")}</td>
+      <td class="tiny mono">${esc(e.action ?? "")}</td>
+      <td class="tiny muted">${esc(e.detail_json ? String(e.detail_json).slice(0, 160) : "—")}</td>
+    </tr>`).join("");
+}
+
+async function loadStats() {
+  const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/stats`);
+  if (!resp.ok) { $("#statsKv").innerHTML = ""; return; }
+  const body = await resp.json();
+  const m = body.maintenance || {};
+  $("#statsKv").innerHTML = Object.entries(m).map(([k, v]) =>
+    `<dt class="mono tiny">${esc(k)}</dt><dd class="tiny">${esc(typeof v === "object" ? JSON.stringify(v) : String(v))}</dd>`
+  ).join("");
+}
+
 /* ---------- 视图切换 / 语言切换 / 装配 ---------- */
 function switchView(view) {
   state.view = view;
   document.querySelectorAll(".nav-item").forEach((b) => b.classList.toggle("on", b.dataset.view === view));
   document.querySelectorAll(".view").forEach((v) => (v.hidden = v.id !== "view-" + view));
+  if (view === "access") loadGrants();
+  if (view === "dims") loadGovernanceDims();
+  if (view === "ops") loadOps();
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -183,6 +509,8 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   document.addEventListener("langchange", () => {
     renderDimChips(); // chips 内的动态文案随语言重渲染
+    renderGovernanceDims(); // 治理视图按钮文案
+    if (state.view === "access" && accessState.members.length) renderGrantChips();
   });
 
   loadCfg();
@@ -192,5 +520,21 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#upRefresh").addEventListener("click", refreshStatus);
   $("#qGo").addEventListener("click", doSearch);
   $("#qInput").addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !ev.isComposing) doSearch(); });
+  // 管理面三视图（m2-3）
+  $("#gMember").addEventListener("change", renderGrantChips);
+  $("#gSave").addEventListener("click", saveGrants);
+  $("#grantsExport").addEventListener("click", async () => {
+    const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/grants/export`);
+    if (resp.ok) downloadCsv(await resp.text());
+  });
+  $("#csvDryRun").addEventListener("click", () => importCsv(true));
+  $("#csvApply").addEventListener("click", () => importCsv(false));
+  $("#dimsRefresh").addEventListener("click", loadGovernanceDims);
+  $("#dimsConfirmOk").addEventListener("click", runConfirmed);
+  $("#dimsConfirmCancel").addEventListener("click", () => {
+    $("#dimsConfirm").hidden = true; dimsState.pending = null;
+  });
+  $("#opsRefresh").addEventListener("click", loadOps);
+  $("#reembedGo").addEventListener("click", enqueueReembed);
   if (state.token && state.org) loadMeta();
 });
