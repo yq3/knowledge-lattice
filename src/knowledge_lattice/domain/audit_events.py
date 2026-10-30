@@ -27,10 +27,8 @@ EVENT_UPLOAD_CONSUME = "upload.consume"            # 凭证消费（M1 既有口
 
 EVENT_MAINTENANCE_RUN = "maintenance.run"
 
-# ---- 语义侧预留（m2s-1 / m2s-3——不实现，注释锚点） ----
-# semantic.sync：源系统同步完成（分批 upsert + missing/retired 推进）——归 m2s-1
-# semantic.build：构建产物原子切换（dict_rev + AC 自动机）——归 m2s-1/m2s-2
-# semantic.yaml_merge：YAML 覆盖层合并（curated 列写入）——归 m2s-2/m2s-3
+# ---- 语义侧（m2s-1 起：semantic.sync 已接入——同步 run 终态全事件；build/yaml_merge
+#      常量已备、事件发射归 m2s-2/m2s-3——TC-BUILD-03 / TC-YAML-03 / T-S9） ----
 
 EVENT_SEMANTIC_SYNC = "semantic.sync"
 EVENT_SEMANTIC_BUILD = "semantic.build"

@@ -85,12 +85,13 @@ class InlineWorkerHandle:
       调用——保持 M1「响应返回前摄取已推进」的时序语义；重试回队随 attempts
       上限天然收敛）；
     - wake()：仅唤醒兜底循环（maintenance 调度器投递后调用——异步领取）；
-    - 兜底循环线程（P2-7，M2.1 R2）：**全类型认领**——maintenance 即时领（调度
-      器低延迟）+ ingest 以「陈旧任务」口径领（created_at ≤ now−poll_s：重启
-      遗留/超量滞留/租约过期的 ingest 任务在 poll 周期内被领，与 subprocess 主
-      循环语义一致）；新鲜 ingest 恒由投递方 kick 的同步消化先抢到（claim
-      原子性 + 陈旧过滤——上传时序语义无竞态）。空闲轮询（worker_poll_s）+
-      事件唤醒（IPC 双通道的进程内等价形态）。
+    - 兜底循环线程（P2-7，M2.1 R2）：全类型认领——maintenance / semantic_sync
+      即时领（调度器与手动触发 wake 后低延迟领取；semantic_sync 不设陈旧口径
+      ——kick 唤醒丢失时的兜底通道，P2-2/R2）+ ingest 以「陈旧任务」口径领
+      （created_at ≤ now−poll_s：重启遗留/超量滞留/租约过期的 ingest 任务在
+      poll 周期内被领，与 subprocess 主循环语义一致）；新鲜 ingest 恒由投递方
+      kick 的同步消化先抢到（claim 原子性 + 陈旧过滤——上传时序语义无竞态）。
+      空闲轮询（worker_poll_s）+ 事件唤醒（IPC 双通道的进程内等价形态）。
     """
 
     def __init__(self, runner, *, poll_s: float, max_drain: int = 1024) -> None:
@@ -131,7 +132,13 @@ class InlineWorkerHandle:
                 # ① maintenance 即时认领（调度器 wake 后毫秒级领取）
                 if self._runner.run_once(task_types=("maintenance",)):
                     continue
-                # ② ingest 陈旧认领（P2-7：重启遗留/超量滞留/租约过期——poll 内收口）
+                # ② semantic_sync 即时认领（P2-2/R2：手动触发/调度任务不设陈旧
+                #    口径——kick 唤醒丢失（outbox 抛错/进程间崩溃）时的兜底通道，
+                #    防任务永久滞留 pending）
+                if self._runner.run_once(task_types=("semantic_sync",)):
+                    continue
+                # ③ ingest 陈旧认领（P2-7：重启遗留/超量滞留/租约过期——poll 内收口；
+                #    新鲜 ingest 恒由投递方 kick 同步消化先抢，保上传时序语义）
                 if self._runner.run_once(
                     task_types=("ingest",), created_before=self._aged_before()
                 ):
@@ -334,7 +341,7 @@ def create_app(
             {"error": str(exc), "code": exc.code}, status_code=exc.http_status
         )
 
-    from knowledge_lattice.api import admin, documents, quality, search, tasks, upload
+    from knowledge_lattice.api import admin, documents, quality, search, semantic, tasks, upload
 
     app.include_router(upload.router)
     app.include_router(documents.router)
@@ -342,6 +349,7 @@ def create_app(
     app.include_router(search.router)
     app.include_router(quality.router)  # 区分度环（M1-4——报告/PATCH/抽查）
     app.include_router(admin.router)  # dimensions/datasets 等普通端点——不受环境门控（P2-4）
+    app.include_router(semantic.router)  # 语义层同步（M2-S1——semantic:admin 门控）
     if settings.environment in ("dev", "test"):  # dev token 仅 dev/test（生产 404——D18/P2-4）
         app.include_router(admin.dev_token_router)
 

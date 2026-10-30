@@ -1048,21 +1048,26 @@ class SqliteBackend:
     def create_task(
         self, doc_id: str | None, *, task_type: str = "ingest",
         target_version: int | None = None, task_id: str | None = None,
+        payload: str | None = None,
     ) -> str:
-        """新建任务行（maintenance 等无文档任务 doc_id=None——P3-19 口径）。
+        """新建任务行（maintenance 等无文档任务 doc_id=None——P3-19 注解口径；
+        tasks.doc_id ON DELETE SET NULL 允许 NULL）。
 
         target_version（0005/M2.1 R2 边界裁定 B(a)）：ingest 任务的目标文档版本
-        （v1/vN）——取消与崩溃耗尽清扫按该版本落 pending failed，防「按文档当前
-        pending 落失败」误杀新版本上传（P2-3）；无版本任务 NULL。
+        ——取消与崩溃耗尽清扫按该版本落 pending failed（P2-3）；NULL=无版本任务。
 
         task_id（M2.4 m2-2）：预生成 id 显式携带——治理事件的 outbox payload 与
         任务行同源关联（上传/覆盖事件先于 create_task 落 outbox，需预生成）。
+
+        payload（0006/M2-S1）：任务参数 JSON 文本（semantic_sync 携带
+        {org, adapter}——executor 分发面读取；NULL=无参数任务）。
         """
         task_id = task_id or f"tsk_{uuid.uuid4()}"
         self._conn.execute(
-            "INSERT INTO tasks(id, doc_id, type, status, target_version)"
-            " VALUES(:id, :doc, :type, 'pending', :tv)",
-            {"id": task_id, "doc": doc_id, "type": task_type, "tv": target_version},
+            "INSERT INTO tasks(id, doc_id, type, status, target_version, payload)"
+            " VALUES(:id, :doc, :type, 'pending', :tv, :payload)",
+            {"id": task_id, "doc": doc_id, "type": task_type, "tv": target_version,
+             "payload": payload},
         )
         self._conn.commit()
         return task_id
@@ -1070,7 +1075,7 @@ class SqliteBackend:
     def get_task(self, task_id: str) -> dict | None:
         row = self._conn.execute(
             "SELECT id, doc_id, type, status, attempts, error, target_version,"
-            " lease_owner, lease_until, heartbeat_at, created_at, updated_at"
+            " lease_owner, lease_until, heartbeat_at, created_at, updated_at, payload"
             " FROM tasks WHERE id = :id",
             {"id": task_id},
         ).fetchone()
@@ -1079,6 +1084,7 @@ class SqliteBackend:
         cols = (
             "id", "doc_id", "type", "status", "attempts", "error", "target_version",
             "lease_owner", "lease_until", "heartbeat_at", "created_at", "updated_at",
+            "payload",
         )
         return dict(zip(cols, row))
 
@@ -1853,6 +1859,357 @@ class SqliteBackend:
             self._rollback()
             raise
 
+    # ============ Semantic 域（M2-S1——design §4/§5.8；sync 分批 upsert / 状态推进 / run 记录） ============
+
+    _SEM_IN_CHUNK = 500      # IN (...) 参数分片上限（预读/批量 UPDATE 用）
+
+    def upsert_entities_batch(self, org_id: str, rows: Sequence[dict]) -> dict:
+        """同步实体分批 upsert——单批单事务（BEGIN IMMEDIATE 短事务，NFR-9/11）。
+
+        只写事实列（name/attrs_json/parent_id/status/synced_at——从不写
+        curated_json，T-S1 列级分工）；rows 按父先子后有序；parent_id 解析三级——批内 id 映射 / 批间缓存 /
+        库内回查（跨批已提交父行——P2-1 修复：快照超 batch_rows 不再丢父）。updated 计数只看事实列变更
+        与状态回归 active（synced_at 刷新不计入——T-S3）。
+        """
+        conn = self._conn
+        existing = self._sem_read_existing(
+            org_id, [(r["type"], r["key"]) for r in rows]
+        )
+        inserted = updated = 0
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            id_map = {k: v[0] for k, v in existing.items()}
+            parent_cache: dict[tuple[str, str], int | None] = {}
+            for row in rows:
+                key = (row["type"], row["key"])
+                parent_id = self._sem_parent_id(
+                    org_id, row.get("parent_key"), id_map, parent_cache
+                )
+                if key in existing:
+                    _, old_name, old_attrs, old_parent, old_status = existing[key]
+                    if (old_name != row["name"]
+                            or old_attrs != row["attrs_json"]
+                            or old_parent != parent_id
+                            or old_status != "active"):
+                        updated += 1
+                    conn.execute(
+                        "UPDATE sem_entities SET name = :name, attrs_json = :attrs,"
+                        " parent_id = :parent, source_system = :srcsys,"
+                        " status = 'active', synced_at = :ts, updated_at = CURRENT_TIMESTAMP"
+                        " WHERE org_id = :org AND type = :type AND key = :key",
+                        {"name": row["name"], "attrs": row["attrs_json"],
+                         "parent": parent_id, "srcsys": row["source_system"],
+                         "ts": row["synced_at"], "org": org_id,
+                         "type": row["type"], "key": row["key"]},
+                    )
+                else:
+                    cur = conn.execute(
+                        "INSERT INTO sem_entities(org_id, type, key, name, parent_id,"
+                        " attrs_json, source, source_system, status, synced_at)"
+                        " VALUES(:org, :type, :key, :name, :parent, :attrs,"
+                        " 'sync', :srcsys, 'active', :ts)",
+                        {"org": org_id, "type": row["type"], "key": row["key"],
+                         "name": row["name"], "parent": parent_id,
+                         "attrs": row["attrs_json"], "srcsys": row["source_system"],
+                         "ts": row["synced_at"]},
+                    )
+                    id_map[key] = cur.lastrowid
+                    inserted += 1
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return {"inserted": inserted, "updated": updated}
+
+    def _sem_parent_id(self, org_id, parent_key, id_map: dict, parent_cache: dict):
+        """parent_key "type:key" → id（P2-1 三级解析）：批内已落父行（id_map，
+        事务内本连接可见）→ 批间缓存 → **库内回查**（跨批已提交父行——快照超
+        batch_rows 时父行在前批、子行在后批，只靠批内映射必丢）；悬挂父缓存
+        None 防重复回查。"""
+        if not parent_key or ":" not in parent_key:
+            return None
+        ptype, _, pkey = parent_key.partition(":")
+        pk = (ptype, pkey)
+        if pk in id_map:
+            return id_map[pk]
+        if pk not in parent_cache:
+            row = self._conn.execute(
+                "SELECT id FROM sem_entities"
+                " WHERE org_id = :org AND type = :type AND key = :key",
+                {"org": org_id, "type": pk[0], "key": pk[1]},
+            ).fetchone()
+            parent_cache[pk] = row[0] if row else None
+        return parent_cache[pk]
+
+    def _sem_read_existing(self, org_id: str, keys) -> dict:
+        """批内 (type,key) 预读：{(type,key): (id, name, attrs_json, parent_id, status)}。"""
+        by_type: dict[str, list[str]] = {}
+        for t, k in keys:
+            by_type.setdefault(t, []).append(k)
+        out: dict[tuple[str, str], tuple] = {}
+        for t, ks in by_type.items():
+            for chunk in _sem_chunks(ks, self._SEM_IN_CHUNK):
+                marks = ",".join("?" for _ in chunk)
+                for r in self._conn.execute(
+                    f"SELECT id, key, name, attrs_json, parent_id, status"
+                    f" FROM sem_entities WHERE org_id = ? AND type = ? AND key IN ({marks})",
+                    (org_id, t, *chunk),
+                ):
+                    out[(t, r[1])] = tuple(r[i] for i in (0, 2, 3, 4, 5))
+        return out
+
+    def resolve_entity_ids(
+        self, org_id: str, keys: Sequence[tuple[str, str]]
+    ) -> dict[tuple[str, str], int]:
+        by_type: dict[str, list[str]] = {}
+        for t, k in keys:
+            by_type.setdefault(t, []).append(k)
+        out: dict[tuple[str, str], int] = {}
+        for t, ks in by_type.items():
+            for chunk in _sem_chunks(ks, self._SEM_IN_CHUNK):
+                marks = ",".join("?" for _ in chunk)
+                for r in self._conn.execute(
+                    f"SELECT id, key FROM sem_entities"
+                    f" WHERE org_id = ? AND type = ? AND key IN ({marks})",
+                    (org_id, t, *chunk),
+                ):
+                    out[(t, r[1])] = r[0]
+        return out
+
+    def sem_active_source_keys(
+        self, org_id: str, source_system: str
+    ) -> set[tuple[str, str]]:
+        rows = self._conn.execute(
+            "SELECT type, key FROM sem_entities"
+            " WHERE org_id = ? AND source = 'sync' AND source_system = ?"
+            "   AND status = 'active'",
+            (org_id, source_system),
+        )
+        return {(r[0], r[1]) for r in rows}
+
+    def sem_source_fill_stats(self, org_id: str, source_system: str) -> dict:
+        """维度携带统计（attrs_json.dims 非空 = filled——骤降告警库内基线）。"""
+        row = self._conn.execute(
+            "SELECT count(*), coalesce(sum("
+            "  CASE WHEN json_extract(attrs_json, '$.dims') IS NOT NULL THEN 1 ELSE 0 END"
+            "), 0) FROM sem_entities"
+            " WHERE org_id = ? AND source = 'sync' AND source_system = ?"
+            "   AND status = 'active'",
+            (org_id, source_system),
+        ).fetchone()
+        return {"total": row[0], "filled": row[1]}
+
+    def mark_entities_missing(self, org_id: str, entity_ids: Sequence[int]) -> int:
+        if not entity_ids:
+            return 0
+        n = 0
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for chunk in _sem_chunks(list(entity_ids), self._SEM_IN_CHUNK):
+                marks = ",".join("?" for _ in chunk)
+                cur = conn.execute(
+                    f"UPDATE sem_entities SET status = 'missing',"
+                    f" updated_at = CURRENT_TIMESTAMP"
+                    f" WHERE org_id = ? AND status = 'active' AND id IN ({marks})",
+                    (org_id, *chunk),
+                )
+                n += cur.rowcount
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return n
+
+    def upsert_relations_batch(self, org_id: str, rows: Sequence[dict]) -> dict:
+        """关系分批 upsert（端点不可变——既有行只更新 attrs/status/synced_at）。"""
+        conn = self._conn
+        marks_counts: dict[tuple, str] = {}
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for row in rows:
+                k = (row["src_id"], row["rel_type"], row["dst_id"])
+                old = conn.execute(
+                    "SELECT attrs_json, status FROM sem_relations"
+                    " WHERE org_id = ? AND src_id = ? AND rel_type = ? AND dst_id = ?",
+                    (org_id, *k),
+                ).fetchone()
+                if old is None:
+                    conn.execute(
+                        "INSERT INTO sem_relations(org_id, src_id, rel_type, dst_id,"
+                        " attrs_json, source, status, synced_at)"
+                        " VALUES(:org, :src, :rel, :dst, :attrs, 'sync', 'active', :ts)",
+                        {"org": org_id, "src": k[0], "rel": k[1], "dst": k[2],
+                         "attrs": row["attrs_json"], "ts": row["synced_at"]},
+                    )
+                    marks_counts[k] = "i"
+                else:
+                    if old[0] != row["attrs_json"] or old[1] != "active":
+                        marks_counts[k] = "u"
+                    else:
+                        marks_counts[k] = "s"
+                    conn.execute(
+                        "UPDATE sem_relations SET attrs_json = :attrs,"
+                        " status = 'active', synced_at = :ts"
+                        " WHERE org_id = :org AND src_id = :src AND rel_type = :rel"
+                        "   AND dst_id = :dst",
+                        {"attrs": row["attrs_json"], "ts": row["synced_at"],
+                         "org": org_id, "src": k[0], "rel": k[1], "dst": k[2]},
+                    )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return {
+            "inserted": sum(1 for v in marks_counts.values() if v == "i"),
+            "updated": sum(1 for v in marks_counts.values() if v == "u"),
+        }
+
+    def rebuild_sync_aliases(self, org_id: str, rows: Sequence[dict]) -> int:
+        """别名三 kind 重建：单事务先删后插（manual/abbr 原样——TC-SYNC-05）。"""
+        conn = self._conn
+        ids = self.resolve_entity_ids(
+            org_id, [(r["type"], r["key"]) for r in rows]
+        )
+        inserted = 0
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for row in rows:
+                eid = ids.get((row["type"], row["key"]))
+                if eid is None:
+                    continue  # 实体不在库（理论上不可达——upsert 先行）
+                conn.execute(
+                    "DELETE FROM sem_aliases WHERE org_id = ? AND entity_id = ?"
+                    "   AND kind IN ('name', 'code', 'sync')",
+                    (org_id, eid),
+                )
+                for alias, alias_norm, kind in row["aliases"]:
+                    conn.execute(
+                        "INSERT INTO sem_aliases(org_id, entity_id, alias, alias_norm, kind)"
+                        " VALUES(?, ?, ?, ?, ?)",
+                        (org_id, eid, alias, alias_norm, kind),
+                    )
+                    inserted += 1
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return inserted
+
+    def advance_status(self, org_id: str, *, missing_before: str) -> dict:
+        """missing 宽限期推进：超期（synced_at < missing_before）→ retired 且其
+        active 关系一并 retired（T-S4③）。
+
+        推进口径（P3-8）：**org 全量推进、不按 source_system 收口**——多适配器
+        共享同一时间窗（任一 run 的 advance 均推进全 org 的超期 missing）；
+        本段接受口径，按源收口待多适配器时间窗分叉需要时再议。"""
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            retired_ids = [
+                r[0] for r in conn.execute(
+                    "SELECT id FROM sem_entities"
+                    " WHERE org_id = ? AND status = 'missing' AND synced_at < ?",
+                    (org_id, missing_before),
+                )
+            ]
+            relations_retired = 0
+            for chunk in _sem_chunks(retired_ids, self._SEM_IN_CHUNK):
+                marks = ",".join("?" for _ in chunk)
+                conn.execute(
+                    f"UPDATE sem_entities SET status = 'retired',"
+                    f" updated_at = CURRENT_TIMESTAMP"
+                    f" WHERE org_id = ? AND id IN ({marks})",
+                    (org_id, *chunk),
+                )
+                cur = conn.execute(
+                    f"UPDATE sem_relations SET status = 'retired'"
+                    f" WHERE org_id = ? AND status = 'active'"
+                    f"   AND (src_id IN ({marks}) OR dst_id IN ({marks}))",
+                    (org_id, *chunk, *chunk),
+                )
+                relations_retired += cur.rowcount
+            missing_now = conn.execute(
+                "SELECT count(*) FROM sem_entities"
+                " WHERE org_id = ? AND status = 'missing'",
+                (org_id,),
+            ).fetchone()[0]
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return {
+            "missing": missing_now,
+            "retired": len(retired_ids),
+            "relations_retired": relations_retired,
+        }
+
+    def sem_start_run(self, org_id: str, adapter: str, *, now: str) -> int:
+        cur = self._conn.execute(
+            "INSERT INTO sem_sync_runs(org_id, adapter, started_at, status)"
+            " VALUES(?, ?, ?, 'running')",
+            (org_id, adapter, now),
+        )
+        self._conn.commit()
+        return cur.lastrowid
+
+    def sem_finish_run(
+        self, org_id: str, run_id: int, *, status: str, stats_json: str,
+        error: str | None = None, now: str | None = None,
+    ) -> None:
+        self._conn.execute(
+            "UPDATE sem_sync_runs SET status = ?, stats_json = ?, error = ?,"
+            " finished_at = COALESCE(?, CURRENT_TIMESTAMP)"
+            " WHERE id = ? AND org_id = ?",
+            (status, stats_json, error, now, run_id, org_id),
+        )
+        self._conn.commit()
+
+    def sem_list_sync_runs(self, org_id: str, *, limit: int = 50) -> list[dict]:
+        cols = ("id", "org_id", "adapter", "started_at", "finished_at",
+                "status", "stats_json", "error")
+        rows = self._conn.execute(
+            "SELECT id, org_id, adapter, started_at, finished_at, status, stats_json,"
+            " error FROM sem_sync_runs WHERE org_id = ? ORDER BY id DESC LIMIT ?",
+            (org_id, limit),
+        ).fetchall()
+        return [_sem_run_dict(cols, r) for r in rows]
+
+    def sem_list_builds(self, org_id: str) -> list[dict]:
+        cols = ("id", "org_id", "dict_rev", "yaml_rev", "sync_run_id",
+                "status", "stats_json", "created_at")
+        rows = self._conn.execute(
+            "SELECT id, org_id, dict_rev, yaml_rev, sync_run_id, status, stats_json,"
+            " created_at FROM sem_builds WHERE org_id = ? ORDER BY id DESC",
+            (org_id,),
+        ).fetchall()
+        return [_sem_run_dict(cols, r) for r in rows]
+
+    def save_build(self, org_id: str, dict_rev: str, stats_json: str) -> int:
+        cur = self._conn.execute(
+            "INSERT INTO sem_builds(org_id, dict_rev, stats_json, status)"
+            " VALUES(?, ?, ?, 'building')",
+            (org_id, dict_rev, stats_json),
+        )
+        self._conn.commit()
+        return cur.lastrowid
+
+    def load_build(self, org_id: str, dict_rev: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT id, org_id, dict_rev, yaml_rev, sync_run_id, status, stats_json,"
+            " created_at FROM sem_builds WHERE org_id = ? AND dict_rev = ?",
+            (org_id, dict_rev),
+        ).fetchone()
+        if row is None:
+            return None
+        cols = ("id", "org_id", "dict_rev", "yaml_rev", "sync_run_id",
+                "status", "stats_json", "created_at")
+        return _sem_run_dict(cols, row)
+
+    def export_l0(self, org_id: str) -> str:
+        """L0 术语片段导出——构建产物落地归 m2s-2（本段空串占位，语义轨道后段实装）。"""
+        return ""
+
 
 def _month_upper(month: str) -> str:
     """月排他上界（次月首日 0 点——'YYYY-MM-DD HH:MM:SS'）。"""
@@ -1860,5 +2217,21 @@ def _month_upper(month: str) -> str:
 
     nxt = month_shift(month, 1)
     return f"{nxt[:4]}-{nxt[4:6]}-01 00:00:00"
+
+
+def _sem_chunks(seq, n: int):
+    """序列定长分片（IN (...) 参数上限治理——语义域批量读写共用）。"""
+    for i in range(0, len(seq), n):
+        yield seq[i : i + n]
+
+
+def _sem_run_dict(cols, row) -> dict:
+    """语义行 → dict（stats_json 解析为 dict——REST 查询端点直出）。"""
+    d = dict(zip(cols, row))
+    try:
+        d["stats_json"] = json.loads(d["stats_json"] or "{}")
+    except (TypeError, ValueError):
+        d["stats_json"] = {}
+    return d
 
 

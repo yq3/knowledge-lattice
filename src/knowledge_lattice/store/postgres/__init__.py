@@ -9,7 +9,8 @@ M0b-1 已落（PG spike）：
 - migrations/{docs,semantic}/：二维迁移目录（0001_schema_v1.sql = §4 文档侧全量
   DDL 的 PG 等价——tsvector 五列 GENERATED / vector 列 / 9 个 plpgsql 触发器；
   0002_schema_v1_1.sql = 三项拍板落库〔删 dims_json/embedding、chunk_vectors
-  分表 PK(rid, embed_model)〕；semantic/ 空占位，M2-S1 落）；
+  分表 PK(rid, embed_model)〕；semantic/0006 = M2-S1 语义七表 + 白名单种子 +
+  trg_sem_rel_check/noupdate plpgsql 等价）；
 - acl_render.py：AclPlan PG 渲染器（同一方言无关 AST〔store/acl_ast.py〕；
   M0b-3 起 visible_docs CTE + AS MATERIALIZED **唯一路径**——jsonb 按块路径谓词
   已随拍板 1 删除，向量谓词迁 chunk_vectors JOIN；M1-1 起含 FTS 路——Match
