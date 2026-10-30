@@ -67,3 +67,20 @@ input[type="file"] { font-size: 13px; color: var(--ink-2); }
 .view { animation: fade .18s ease-out; }
 @keyframes fade { from { opacity: .35; } to { opacity: 1; } }
 @media (max-width: 720px) { .body { flex-direction: column; } .rail { width: 100%; flex-direction: row; flex-wrap: wrap; } .conn { margin-top: 0; border: 0; } }
+
+/* ---- m2-3 管理面三视图（权限 / 维度治理 / 任务与审计） ---- */
+.head-act { display: flex; gap: 8px; align-items: center; }
+.csv-box { width: 100%; border: 1px solid var(--rule); border-radius: 8px; padding: 8px 10px; font-family: var(--mono); font-size: 12px; margin-top: 8px; box-sizing: border-box; }
+.diff-box { background: var(--paper-3); border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 240px; overflow: auto; margin-top: 10px; }
+.pane { background: var(--paper-2); border: 1px solid var(--rule); border-radius: var(--r-lg); padding: 14px 18px; }
+.lane-h { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.lane-h h3 { margin: 0; font-size: 14px; }
+.fn-row { display: grid; grid-template-columns: 120px 1fr 72px; gap: 10px; align-items: center; padding: 4px 0; }
+.fn-bar { background: var(--paper-3); border-radius: 999px; height: 8px; overflow: hidden; }
+.fn-bar .fb-ok { display: block; height: 100%; background: var(--moss); border-radius: 999px; }
+.confirm { background: var(--seal-w); border: 1px solid var(--seal); border-radius: var(--r-lg); padding: 14px 18px; margin-top: 14px; }
+.confirm b { font-size: 13.5px; color: var(--seal); }
+.cf-act { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
+.btn.sm { padding: 4px 10px; font-size: 12.5px; }
+.btn.danger-btn { background: var(--danger, #b3261e); border-color: var(--danger, #b3261e); color: #fff; font-weight: 600; }
+.val-item { display: inline-flex; gap: 6px; align-items: center; margin-right: 8px; }

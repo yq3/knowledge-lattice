@@ -44,6 +44,7 @@ from knowledge_lattice.core.docs.acl import AclDeniedError
 from knowledge_lattice.domain.audit_events import (
     EVENT_UPLOAD_CONSUME,
     EVENT_UPLOAD_CREDENTIAL_ISSUED,
+    EVENT_UPLOAD_RECLAIM,
 )
 
 logger = logging.getLogger(__name__)
@@ -551,7 +552,7 @@ class CredentialService:
                     logger.warning("staging purge failed: %s", part)
         if reclaimed:
             self._backend.append_outbox(
-                "upload.reclaim",
+                EVENT_UPLOAD_RECLAIM,  # m2-3 B1：字面量常量化（m2-2 P3-12 余量）
                 json.dumps({"reclaimed": reclaimed}, ensure_ascii=False),
             )
         return {"reclaimed": len(reclaimed)}

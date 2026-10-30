@@ -90,23 +90,49 @@ def _drill_sqlite(report: dict) -> None:
 
     doc_id = step("setup+migrate+ingest", _setup)
 
-    # ② 快照（主库 + objects）
+    # ② 快照（主库 + objects + 审计月库——m2-3 B3/R2 P3-9）
     def _snapshot():
         conn = connect(root / "src" / "lattice.db")
-        snap = sqlite_snapshot(conn, root / "backups", root / "src" / "objects")
+        backend = SqliteBackend(conn)
+        # 造审计事件并搬运（月库落盘——快照断言面）
+        backend.append_outbox(
+            "document.upload",
+            json.dumps({"org_id": "org:tax", "user_id": "u_full",
+                        "doc_id": "drill-doc"}),
+        )
+        backend.ship_outbox()
+        snap = sqlite_snapshot(conn, root / "backups", root / "src" / "objects",
+                               db_dir=root / "src")
         conn.close()
         return snap
 
-    snap = step("snapshot(VACUUM INTO + objects tar)", _snapshot)
+    snap = step("snapshot(VACUUM INTO + objects tar + audit months tar)", _snapshot)
 
-    # ③ 新环境恢复
+    # ③ 新环境恢复（主库 + objects + 月库 tar）
     def _restore():
         restore_database(Path(snap["database"]), root / "restored" / "lattice.db")
         if snap["objects"]:
             restore_objects(Path(snap["objects"]), root / "restored" / "objects")
         assert (root / "restored" / "objects" / "drill.html").read_bytes() == PAYLOAD
+        # 月库恢复（m2-3 B3——R2 P3-9：恢复演练断言月库在场）
+        import tarfile
 
-    step("restore(copy db + untar objects)", _restore)
+        assert snap.get("audit_months"), "快照应含 audit_months（B3）"
+        with tarfile.open(Path(snap["audit_months"]), "r:gz") as tar:
+            tar.extractall(root / "restored", filter="data")
+        monthly = sorted((root / "restored").glob("audit_*.db"))
+        assert monthly, "恢复产物月库应在场（B3）"
+        import sqlite3
+
+        mconn = sqlite3.connect(monthly[0])
+        try:
+            assert mconn.execute(
+                "SELECT count(*) FROM audit_events"
+            ).fetchone()[0] >= 1, "恢复月库审计行在场"
+        finally:
+            mconn.close()
+
+    step("restore(copy db + untar objects + untar audit months)", _restore)
 
     # ④ 跑迁移（幂等）+ user_version 一致性
     def _migrate():

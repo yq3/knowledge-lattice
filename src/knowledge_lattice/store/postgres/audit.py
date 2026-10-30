@@ -133,9 +133,8 @@ CREATE TABLE IF NOT EXISTS audit_month_seals (
 # UPDATE）；幂等二跑不 rewrite。首次部署大分区的一次性 rewrite 运维口径见
 # P3-新③（登记 RUNBOOK/PG 接线段——编排侧）。
 #   · NULL 防御分支：正常路径不可达（rewrite 已填既有行、INSERT 走 DEFAULT），
-#     仅「显式 INSERT NULL 造数」可达——读序分支将其排最前（时间语义上早于
-#     一切 seq 行，保守归位；见 read_monthly_events / last_row_hash 的
-#     `(seq IS NULL) DESC`）。
+#     仅「显式 INSERT NULL 造数」可达——读侧一律排除（last_row_hash 的
+#     `seq IS NOT NULL`——m2-3 B6；read_monthly_events 走链遍历不依赖 seq）。
 SEQ_DDL = """\
 CREATE SEQUENCE IF NOT EXISTS audit_events_seq
 """
@@ -206,14 +205,16 @@ def _ensure_chain_columns(conn: psycopg.Connection) -> None:
 
 
 def last_row_hash(conn: psycopg.Connection, month: str) -> str | None:
-    """指定月分区末行 row_hash（**插入序末条**——seq 单调；NULL 防御分支
-    排最前→末条取非 NULL 最大 seq；无行 → None）。"""
+    """指定月分区末行 row_hash（**插入序末条**——seq 单调）。m2-3 B6 修正：
+    `WHERE seq IS NOT NULL` 显式排除 NULL seq 行（显式 NULL 造数不误取——
+    原 `(seq IS NULL) DESC` 方向与 docstring 自相矛盾，m2-2 Tester 保留项收口）；
+    无行 → None。"""
     start, end = month_bounds(month)
     row = conn.execute(
         "SELECT row_hash FROM audit_events"
         " WHERE created_at >= %(s)s AND created_at < %(e)s"
-        "   AND row_hash IS NOT NULL"
-        f" ORDER BY (seq IS NULL) DESC, seq DESC, created_at DESC, id DESC LIMIT 1",
+        "   AND row_hash IS NOT NULL AND seq IS NOT NULL"
+        " ORDER BY seq DESC LIMIT 1",
         {"s": start, "e": end},
     ).fetchone()
     return row[0] if row else None

@@ -7,7 +7,7 @@
 ## 1. 项目状态与边界
 
 - POC 阶段，2026-10-28 自 lab 仓拆仓独立演进（拆仓前的 issue 评审 #31~#42 指向 lab 仓；仓内携带的历史 PR #47~#55 为迁移前合并记录）。
-- M0a / M0b / M1 已交付（M1 收尾归档见检查点 m1-5，TC-UI 手动走查待用户执行）；**M2 进行中：主线 2/5 段已交付（m2-1 worker 框架 PR #2、m2-2 审计/备份 PR #3——门禁 825+1 双后端双模式 0 skipped），下一段 m2s-1（语义轨道首段）——段序总表/进度/挂账见 [.opencode/workflows/_m2-plan.md](.opencode/workflows/_m2-plan.md)（新会话开工必读）**；M2 之前 agent 侧以「同 schema 的 Git YAML + 本地 AC 自动机」过渡。
+- M0a / M0b / M1 已交付（M1 收尾归档见检查点 m1-5，TC-UI 手动走查待用户执行）；**M2 进行中：主线 2/5 + 语义轨道 1/6 段已交付（m2-1 worker 框架 PR #2、m2-2 审计/备份 PR #3、m2s-1 语义基础段 PR #4——门禁 911+1 双后端双模式 0 skipped），下一段 m2-3（管理面）——段序总表/进度/挂账见 [.opencode/workflows/_m2-plan.md](.opencode/workflows/_m2-plan.md)（新会话开工必读）**；M2 之前 agent 侧以「同 schema 的 Git YAML + 本地 AC 自动机」过渡。
 - 文档版本随实现高频勘误（多数批次为非决策变更）——引用时以各文档头部版本行为准，不要背版本号。
 - 明确不做：GraphRAG / 图数据库（业务语义 = 类型化对象图，关系展开 SQL 可达）；ES 召回引擎、指标栈监控等只登记为演进缝（NFR-5）；不绑云厂（模型端点中立）。
 

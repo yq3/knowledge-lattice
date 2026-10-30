@@ -109,9 +109,9 @@ deploy 场景注意：
 ### 4.1 SQLite 后端（VACUUM INTO）
 
 ```bash
-# 快照（主库 + objects 一并）——maintenance backup_snapshot 任务体周期执行
+# 快照（主库 + objects + 审计月库 一并）——maintenance backup_snapshot 任务体周期执行
 #   产物目录：data/backups/（固定路径，无独立配置项；G-5 快照目的地缺口维持登记）
-#   产物：lattice-snap-<ts>.db（主库 VACUUM INTO）+ objects-<ts>.tar
+#   产物清单（m2-3 B3 起）：lattice-snap-<ts>.db（主库 VACUUM INTO）+ objects-<ts>.tar + audit-months-<ts>.tar.gz
 # 手动等价（脚本 benchmarks/dr_ops05_drill.py 演练同款路径）
 #   sqlite3 data/lattice.db "VACUUM INTO 'data/backups/lattice-snap.db'"
 #   tar -cf data/backups/objects.tar -C data objects
@@ -122,10 +122,11 @@ deploy 场景注意：
 #   3) 抽查：检索一组关键词 + 越权矩阵子集（演练脚本内建）
 ```
 
-- **审计月库 `audit_YYYYMM.db` 备份口径（G-13 关联）**：自动快照**不含**月库文件
-  （VACUUM INTO 仅主库）；月库审计历史需另行保护——**建议整 `data/` 目录级
-  cron 备份**（月库为 append-only 独立文件，直接复制/tar 安全；封存月库只读
-  0444+sidecar 可直接归档）。自动快照纳入月库随 m2-3 收编（m2-2 遗留 B3）。
+- **审计月库 `audit_YYYYMM.db` 备份口径（G-13 关联；v2 随 m2-3 B3 更新）**：自动快照
+  **已含月库**——sqlite 备份产物为 `audit-months-<ts>.tar.gz`（全部 `audit_*.db`
+  + `-wal/-shm` + `*.seal.json` sidecar；月库 append-only 独立文件、tar 安全），
+  恢复时解包回 data/ 后按 prev_hash 链遍历读路径自动纳管。pg 侧月库分区随
+  pg_dump 全量覆盖。~~自动快照不含月库文件~~（m2-2 遗留 B3 已于 m2-3 收编）。
 - 恢复产物上做**链验证须按 prev_hash 链遍历**，不要依赖 rowid 读序
   （G-13：rowid 跨 VACUUM 不保证保留）。
 

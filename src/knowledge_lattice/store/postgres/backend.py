@@ -1065,7 +1065,10 @@ class PgBackend:
         if doc_id is not None:
             sql += " AND t.doc_id = %(doc)s"
             params["doc"] = doc_id
-        sql += " ORDER BY t.created_at DESC"
+        # 次级排序键 id——created_at 并列下的确定性 tiebreak（id 为 ULID
+        # 随机非单调、**不保证时间序**——只消除结果不确定性；并列内「最近」
+        # 歧义本身登记 m2-6（任务 id 加序号列或单调源））
+        sql += " ORDER BY t.created_at DESC, t.id DESC"
         rows = self._conn.execute(sql, params).fetchall()
         cols = (
             "id", "doc_id", "type", "status", "attempts", "error", "target_version",
@@ -1379,7 +1382,7 @@ class PgBackend:
         out: list[dict] = []
         for dim_id, key, name, required, enabled in dims:
             values = self._conn.execute(
-                "SELECT value, label FROM dimension_values"
+                "SELECT id, value, label FROM dimension_values"
                 " WHERE dimension_id = %(d)s AND status = 'active'"
                 " ORDER BY sort_order, value",
                 {"d": dim_id},
@@ -1391,7 +1394,7 @@ class PgBackend:
                     "name": name,
                     "required": bool(required),
                     "enabled": bool(enabled),
-                    "values": [{"value": v, "label": l} for v, l in values],
+                    "values": [{"id": i, "value": v, "label": l} for i, v, l in values],
                 }
             )
         return out
@@ -2025,33 +2028,35 @@ class PgBackend:
         )
 
     def read_monthly_events(self, *, when: str) -> list[dict]:
-        """读指定时点所在月的 audit_events（分区范围查询——**插入序**〔seq
-        单调，P2-1/R2；NULL 防御分支排最前〕）。"""
-        from .audit import month_bounds, partition_name
+        """读指定时点所在月的 audit_events（分区范围查询——m2-3 B2：**链遍历
+        序**〔walk_chain 按链重排与逐行哈希验证——G-13 对冲，读序不依赖 seq〕；
+        B5：语义列 detail_json 兜底。破链 raise AuditChainError——fail-closed）。"""
+        from knowledge_lattice.store.audit_chain import (
+            backfill_semantic_cols,
+            walk_chain,
+        )
+
+        from .audit import month_bounds
 
         month = when[:4] + when[5:7]
         start, end = month_bounds(month)
-        # P2-1/R2：链序=插入序（seq 单调；NULL 防御分支排最前——仅显式 NULL
-        # 造数可达，见 audit.py SEQ 注释 P3-新②）——与写入（DEFAULT nextval）/
-        # 末哈希/封存四路同源
         rows = self._conn.execute(
             "SELECT id, org_id, actor, action, target_type, target_id, outcome,"
             " request_id, detail_json, prev_hash, row_hash, created_at"
-            " FROM audit_events WHERE created_at >= %(s)s AND created_at < %(e)s"
-            " ORDER BY (seq IS NULL) DESC, seq, created_at, id",
+            " FROM audit_events WHERE created_at >= %(s)s AND created_at < %(e)s",
             {"s": start, "e": end},
-        ).fetchall()
+        ).fetchall()  # 读序无关（B2——walk_chain 按链重排）
         cols = (
             "id", "org_id", "actor", "action", "target_type", "target_id", "outcome",
             "request_id", "detail_json", "prev_hash", "row_hash", "created_at",
         )
-        out = []
+        events = []
         for r in rows:
             d = dict(zip(cols, r))
             if d.get("created_at") is not None:
                 d["created_at"] = d["created_at"].strftime("%Y-%m-%d %H:%M:%S")
-            out.append(d)
-        return out
+            events.append(d)
+        return [backfill_semantic_cols(e) for e in walk_chain(events)]
 
     def seal_audit_months(self, *, now: str | None = None) -> dict:
         """封存过月分区：sealed 触发器（拦 INSERT/UPDATE/DELETE——owner 亦拦）+
@@ -2131,6 +2136,272 @@ class PgBackend:
         return {"pruned": months}
 
     # ---- 删库 RESTRICT（C 组——T19 半句收口，sqlite 同构） ----
+
+    # ============ 维度治理 + 授权写路径 + 覆盖率（m2-3——TC-OPS-06/07/08/EMB-06） ============
+
+    def _value_row(self, org_id: str, dim_id: str, value_id: str):
+        return self._conn.execute(
+            "SELECT v.status FROM dimension_values v"
+            " JOIN dimensions d ON d.id = v.dimension_id"
+            " WHERE v.id = %(vid)s AND d.id = %(dim)s AND d.org_id = %(org)s",
+            {"vid": value_id, "dim": dim_id, "org": org_id},
+        ).fetchone()
+
+    def dimension_value_impact(
+        self, org_id: str, dim_id: str, value_id: str,
+    ) -> dict | None:
+        """取值停用影响面预估（TC-OPS-07① dry_run 数据源）——只读。
+        locked_docs 口径见 sqlite 版 docstring（R2 边界3）。"""
+        if self._value_row(org_id, dim_id, value_id) is None:
+            return None
+        docs = self._conn.execute(
+            "SELECT count(DISTINCT dd.doc_id) FROM document_dimensions dd"
+            " WHERE dd.value_id = %(vid)s",
+            {"vid": value_id},
+        ).fetchone()[0]
+        grants, users = self._conn.execute(
+            "SELECT count(*), count(DISTINCT user_id)"
+            " FROM user_dimension_grants WHERE value_id = %(vid)s",
+            {"vid": value_id},
+        ).fetchone()
+        locked = self._conn.execute(
+            "SELECT count(DISTINCT dd.doc_id) FROM document_dimensions dd"
+            " JOIN dimension_values v ON v.id = dd.value_id"
+            " JOIN dimensions d ON d.id = v.dimension_id AND d.org_id = %(org)s"
+            " WHERE d.status != 'active' OR v.status != 'active' OR v.id = %(vid)s",
+            {"org": org_id, "vid": value_id},
+        ).fetchone()[0]
+        return {"docs": docs, "grants": grants, "users": users, "locked_docs": locked}
+
+    def disable_dimension_value(
+        self, org_id: str, dim_id: str, value_id: str, *,
+        dry_run: bool = False,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """取值停用（TC-OPS-07①）：dry_run 只预估；生效=status→disabled
+        （幂等零新审计）+ T3 联动 + audit 同事务。"""
+        impact = self.dimension_value_impact(org_id, dim_id, value_id)
+        if impact is None:
+            return None
+        if dry_run:
+            return {**impact, "applied": False}
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE dimension_values SET status = 'disabled'"
+                " WHERE id = %(vid)s AND status = 'active'",
+                {"vid": value_id},
+            )
+            if cur.rowcount and audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return {**impact, "applied": True}
+
+    def dimension_retire_impact(self, org_id: str, dim_id: str) -> dict | None:
+        """维度退役影响面预估（TC-OPS-07② 二次确认数据源）——只读。"""
+        row = self._conn.execute(
+            "SELECT status FROM dimensions WHERE id = %(dim)s AND org_id = %(org)s",
+            {"dim": dim_id, "org": org_id},
+        ).fetchone()
+        if row is None:
+            return None
+        docs = self._conn.execute(
+            "SELECT count(DISTINCT dd.doc_id) FROM document_dimensions dd"
+            " WHERE dd.dimension_id = %(dim)s",
+            {"dim": dim_id},
+        ).fetchone()[0]
+        grants, values = self._conn.execute(
+            "SELECT (SELECT count(*) FROM user_dimension_grants"
+            "         WHERE dimension_id = %(dim)s),"
+            "       (SELECT count(*) FROM dimension_values"
+            "         WHERE dimension_id = %(dim)s AND status = 'active')",
+            {"dim": dim_id},
+        ).fetchone()
+        return {"docs": docs, "grants": grants, "values": values}
+
+    def get_dimension_status(self, org_id: str, dim_id: str) -> str | None:
+        """维度生命周期状态（退役端点幂等 409 判据）。"""
+        row = self._conn.execute(
+            "SELECT status FROM dimensions WHERE id = %(dim)s AND org_id = %(org)s",
+            {"dim": dim_id, "org": org_id},
+        ).fetchone()
+        return row[0] if row else None
+
+    def retire_dimension(
+        self, org_id: str, dim_id: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """维度退役（T20 半句——唯一放宽路径必有审计）：status→retired
+        （幂等零新审计）；audit 同事务。"""
+        impact = self.dimension_retire_impact(org_id, dim_id)
+        if impact is None:
+            return None
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE dimensions SET status = 'retired', updated_at ="
+                " CURRENT_TIMESTAMP WHERE id = %(dim)s AND org_id = %(org)s"
+                " AND status = 'active'",
+                {"dim": dim_id, "org": org_id},
+            )
+            if cur.rowcount and audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return impact
+
+    def replace_local_grants(
+        self, org_id: str, user_id: str,
+        rows: Sequence[tuple[str, str, str | None]], *,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        """用户 local 授权全量替换（TC-OPS-08——sync 行不动；幂等目标全量态）。"""
+        conn = self._conn
+        resolved: list[tuple[str, str, str | None]] = []
+        for dim_key, value, expires_at in rows:
+            r = conn.execute(
+                "SELECT d.id, v.id FROM dimensions d"
+                " JOIN dimension_values v ON v.dimension_id = d.id"
+                " WHERE d.org_id = %(org)s AND d.key = %(k)s AND v.value = %(v)s",
+                {"org": org_id, "k": dim_key, "v": value},
+            ).fetchone()
+            if r is None:
+                raise KeyError(
+                    f"grant target not found in org: {dim_key!r}={value!r}"
+                )
+            resolved.append((r[0], r[1], expires_at))
+        conn.execute("BEGIN")
+        try:
+            removed = conn.execute(
+                "DELETE FROM user_dimension_grants"
+                " WHERE user_id = %(uid)s AND source = 'local'"
+                "   AND dimension_id IN (SELECT id FROM dimensions"
+                "                        WHERE org_id = %(org)s)",
+                {"uid": user_id, "org": org_id},
+            ).rowcount
+            inserted = 0
+            for dim_db, val_db, expires_at in resolved:
+                conn.execute(
+                    "INSERT INTO user_dimension_grants(user_id, dimension_id,"
+                    " value_id, source, expires_at) VALUES(%(u)s, %(d)s, %(v)s,"
+                    " 'local', %(e)s)",
+                    {"u": user_id, "d": dim_db, "v": val_db, "e": expires_at},
+                )
+                inserted += 1
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return {"removed": removed, "inserted": inserted}
+
+    def list_grants_for_export(self, org_id: str) -> list[dict]:
+        """组织全部授权行（CSV 导出 / 差异计算数据源——含 sync 标注）。
+
+        R3 P2-1：expires_at 双方言统一返回**库格式字符串**（pg TIMESTAMP 在
+        store 单点归一——diff/export/审计面同源比较，datetime 形态不外泄到
+        api 层；created_at 归一先例同款）。"""
+        rows = self._conn.execute(
+            "SELECT u.username, g.user_id, d.key, v.value, g.expires_at, g.source"
+            " FROM user_dimension_grants g"
+            " JOIN dimensions d ON d.id = g.dimension_id AND d.org_id = %(org)s"
+            " JOIN dimension_values v ON v.id = g.value_id"
+            " JOIN users u ON u.id = g.user_id"
+            " ORDER BY u.username, d.key, v.value",
+            {"org": org_id},
+        ).fetchall()
+        out = []
+        for r in rows:
+            expires = r[4]
+            if expires is not None and not isinstance(expires, str):
+                expires = expires.strftime("%Y-%m-%d %H:%M:%S")  # TIMESTAMP→str
+            out.append({
+                "username": r[0], "user_id": r[1], "dim_key": r[2],
+                "value": r[3], "expires_at": expires, "source": r[5],
+            })
+        return out
+
+    def find_user_by_username(self, username: str) -> dict | None:
+        """username → 用户行（CSV 导入解析）。"""
+        row = self._conn.execute(
+            "SELECT id, username, is_system_admin, disabled_at FROM users"
+            " WHERE username = %(u)s",
+            {"u": username},
+        ).fetchone()
+        if row is None:
+            return None
+        return {"id": row[0], "username": row[1], "is_system_admin": row[2],
+                "disabled_at": row[3]}
+
+    def embedding_coverage(self, org_id: str, embed_model: str) -> list[dict]:
+        """各知识库嵌入覆盖率（TC-EMB-06 只读面板——RUNBOOK §1 闭合口径）。"""
+        rows = self._conn.execute(
+            "SELECT ds.id, ds.name,"
+            " (SELECT count(*) FROM chunks c"
+            "   JOIN documents d ON d.id = c.doc_id AND d.active_version = c.version"
+            "   WHERE d.dataset_id = ds.id AND d.org_id = %(org)s AND c.tombstone = 0),"
+            " (SELECT count(*) FROM chunks c"
+            "   JOIN documents d ON d.id = c.doc_id AND d.active_version = c.version"
+            "   JOIN chunk_vectors cv ON cv.rid = c.rid AND cv.embed_model = %(model)s"
+            "   WHERE d.dataset_id = ds.id AND d.org_id = %(org)s AND c.tombstone = 0)"
+            " FROM datasets ds WHERE ds.org_id = %(org)s ORDER BY ds.id",
+            {"org": org_id, "model": embed_model},
+        ).fetchall()
+        return [
+            {"dataset_id": r[0], "dataset_name": r[1], "total": r[2], "done": r[3]}
+            for r in rows
+        ]
+
+    def read_pending_outbox_events(self) -> list[dict]:
+        """未搬运 outbox 行（审计分级查询当月未落库部分）。"""
+        rows = self._conn.execute(
+            "SELECT id, event_type, payload_json, created_at FROM audit_outbox"
+            " WHERE shipped_at IS NULL ORDER BY created_at, id"
+        ).fetchall()
+        cols = ("id", "event_type", "payload_json", "created_at")
+        out = []
+        for r in rows:
+            d = dict(zip(cols, r))
+            if d.get("created_at") is not None:
+                d["created_at"] = d["created_at"].strftime("%Y-%m-%d %H:%M:%S")
+            out.append(d)
+        return out
+
+    def read_last_maintenance_stats(self) -> dict | None:
+        """最近 maintenance.run 的 stats（B4——outbox 优先、月库兜底；P3-1/R2：
+        月库兜底取链序**最后一条**；P3-12/R2：事件名常量）。"""
+        import json as _json
+
+        from knowledge_lattice.domain.audit_events import EVENT_MAINTENANCE_RUN
+
+        row = self._conn.execute(
+            "SELECT payload_json FROM audit_outbox"
+            " WHERE event_type = %(evt)s"
+            " ORDER BY created_at DESC, id DESC LIMIT 1",
+            {"evt": EVENT_MAINTENANCE_RUN},
+        ).fetchone()
+        if row is not None:
+            try:
+                return _json.loads(row[0]).get("stats")
+            except (ValueError, AttributeError):
+                return None
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        for event in reversed(self.read_monthly_events(when=utc_now_ts())):
+            if event.get("action") == EVENT_MAINTENANCE_RUN and event.get("detail_json"):
+                try:
+                    return _json.loads(event["detail_json"]).get("stats")
+                except (ValueError, AttributeError):
+                    return None
+        return None
 
     def delete_dataset(
         self, org_id: str, dataset_id: str,

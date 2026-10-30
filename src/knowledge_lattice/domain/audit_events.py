@@ -22,6 +22,8 @@ EVENT_DOCUMENT_DIMS_CHANGE = "document.dims_change"  # 维度值 PATCH（M1 既�
 EVENT_DATASET_DELETE = "dataset.delete"            # 删库（T19 半句收口——M2.4）
 EVENT_UPLOAD_CREDENTIAL_ISSUED = "upload.credential_issued"  # 凭证签发（M1 既有口径）
 EVENT_UPLOAD_CONSUME = "upload.consume"            # 凭证消费（M1 既有口径）
+EVENT_UPLOAD_RECLAIM = "upload.reclaim"            # 过期未消费凭证回收（m1-3 既有——
+                                                   # m2-3 B1 常量化收编）
 
 # ---- maintenance（M2.1 沿用） ----
 
@@ -52,6 +54,7 @@ __all__ = [
     "EVENT_DATASET_DELETE",
     "EVENT_UPLOAD_CREDENTIAL_ISSUED",
     "EVENT_UPLOAD_CONSUME",
+    "EVENT_UPLOAD_RECLAIM",
     "EVENT_MAINTENANCE_RUN",
     "EVENT_SEMANTIC_SYNC",
     "EVENT_SEMANTIC_BUILD",
