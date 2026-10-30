@@ -111,8 +111,7 @@ deploy 场景注意：
 ```bash
 # 快照（主库 + objects + 审计月库 一并）——maintenance backup_snapshot 任务体周期执行
 #   产物目录：data/backups/（固定路径，无独立配置项；G-5 快照目的地缺口维持登记）
-#   产物清单（m2-3 B3 起）：lattice-snap-<ts>.db + objects-<ts>.tar + audit-months-<ts>.tar.gz
-#   产物：lattice-snap-<ts>.db（主库 VACUUM INTO）+ objects-<ts>.tar
+#   产物清单（m2-3 B3 起）：lattice-snap-<ts>.db（主库 VACUUM INTO）+ objects-<ts>.tar + audit-months-<ts>.tar.gz
 # 手动等价（脚本 benchmarks/dr_ops05_drill.py 演练同款路径）
 #   sqlite3 data/lattice.db "VACUUM INTO 'data/backups/lattice-snap.db'"
 #   tar -cf data/backups/objects.tar -C data objects
