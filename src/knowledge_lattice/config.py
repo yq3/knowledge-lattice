@@ -124,9 +124,11 @@ class Settings:
     semantic_batch_rows: int = 1000  # 同步分批行数上限（每批提交——NFR-11 写锁治理）
     semantic_dim_alert_baseline: float = 0.8  # 维度填充率骤降告警：库内基线携带率 ≥ 此值才参与判定（口径注记见 core/semantic/sync.py）
     semantic_dim_alert_drop: float = 0.5  # 快照携带率 < 基线 × 此值 → 告警（防缺值静默变宽——TC-SYNC-06②）
-    semantic_night_window: str = ""  # 错峰窗口登记（如 "01:00-05:00"——本段不强制生效，分批即天然限速）
+    semantic_night_window: str = ""  # 错峰窗口（如 "01:00-05:00"——m2s-4 起对每日兜底调度生效：窗口外不投递；分批即天然限速）
     semantic_describe_cache_s: float = 300.0  # describe_table 透传缓存 TTL（T-S11④：5min；0=关缓存——m2s-2）
     semantic_l0_token_budget: int = 1500  # L0 总 token 预算（§5.8 l0 行——CI 拦截阈值；TC-YAML-04）
+    semantic_daily_sync_interval_s: float = 86400.0  # G-19 五源每日兜底：距上次成功 run 超过该间隔才投递（0=关闭；webhook/手动触发的成功 run 同口径去重）
+    semantic_eval_golden_path: str = "eval/semantic_golden.jsonl"  # 识别评测黄金集路径（TC-SEV-01——相对进程 CWD；文件缺失 → 构建评测 skipped 不拦截）
     # semantic_batch_rows 上界 1000 = design §5.8「每批 ≤1000 行提交」硬约束
     # （NFR-11 写锁治理）——校验收口（P3-5/R2），不可配置突破
 
@@ -223,6 +225,10 @@ def get_settings() -> Settings:
         semantic_night_window=_f("LATTICE_SEM_NIGHT_WINDOW", ""),
         semantic_describe_cache_s=float(_num("LATTICE_SEM_DESCRIBE_CACHE_S", 300.0)),
         semantic_l0_token_budget=int(_num("LATTICE_SEM_L0_TOKEN_BUDGET", 1500)),
+        semantic_daily_sync_interval_s=float(_num(
+            "LATTICE_SEM_DAILY_SYNC_INTERVAL_S", 86400.0)),
+        semantic_eval_golden_path=_f("LATTICE_SEM_EVAL_GOLDEN_PATH",
+                                     "eval/semantic_golden.jsonl"),
         log_level=env("LATTICE_LOG_LEVEL", "INFO"),
         log_format=env("LATTICE_LOG_FORMAT", "json"),
     )
@@ -245,6 +251,7 @@ def _validate(s: Settings) -> None:
         "audit_keep_months", "upload_credential_ttl_s", "maintenance_interval_s",
         "semantic_describe_cache_s",
         "semantic_l0_token_budget",
+        "semantic_daily_sync_interval_s",
     ):
         value = getattr(s, name)
         if value < 0:

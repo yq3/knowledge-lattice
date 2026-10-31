@@ -294,6 +294,10 @@ class AdminBackend(Protocol):
     def get_task(self, task_id: str) -> dict | None:
         ...
 
+    def pending_task_exists(self, task_type: str, payload: str) -> bool:
+        """同型同参 pending 任务在队判定（G-19 每日兜底投递去重——防任务堆积）。"""
+        ...
+
     def list_tasks(self, org_id: str, *, doc_id: str | None = None) -> list[dict]:
         ...
 

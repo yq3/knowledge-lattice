@@ -25,6 +25,15 @@ m2s-3 读端点 + YAML webhook）：
 - GET /api/orgs/{org}/semantic/tables/{key}/describe?columns=：表/列详情透传，
   同 `describe_table`（L1139——仅已登记 table，未登记 403 防枚举）。
 
+m2s-4 识别与报告面：
+
+- POST /api/orgs/{org}/semantic/annotate：术语识别（semantic:read——同 MCP
+  `annotate`，L1136；≤4000 字/context_entities≤20——TC-SEM-07）；
+- GET /api/orgs/{org}/semantic/l0：L0 核心术语片段导出（semantic:read——
+  TC-SEM-06：片段 + dict_rev）；
+- GET /api/orgs/{org}/semantic/builds/{id}/report：构建报告（semantic:admin
+  ——A4：计数/自动机规模与耗时/dict_rev 分量/缺源警告/冲突/评测指标）。
+
 YAML webhook（design §6.2 L1142——TC-YAML-03；m2s-3）：
 
 - POST /api/orgs/{org}/semantic/yaml/webhook：Git 合并回调——**签名 = 服务
@@ -242,6 +251,85 @@ def _require_semantic_read(service, org: str, auth) -> None:
             detail="semantic:read 需组织成员（no active membership:"
                    f" user={auth.user_id!r} org={org!r}）",
         )
+
+
+@router.post("/api/orgs/{org}/semantic/annotate")
+async def semantic_annotate(
+    org: str, request: Request, auth=Depends(get_auth),
+) -> dict:
+    """术语识别（semantic:read——同 MCP annotate；design §6.2 L1136/§6.3）。
+
+    body：{text, context_entities?≤20, prefer_types?}；text ≤4000 字（超长
+    400——不静默截断，附录 A-10）。AC 四步消歧 + L0 片段兜底；restricted
+    实体表现为不存在（T-S9 annotate 侧）。"""
+    org = org_scoped(request, org, auth)
+    service = get_service(request)
+    _require_semantic_read(service, org, auth)
+
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body 须为 JSON 对象")
+    text = body.get("text")
+    if not isinstance(text, str):
+        raise HTTPException(status_code=400, detail="text 必填（字符串）")
+    ctx = body.get("context_entities")
+    prefer = body.get("prefer_types")
+    for name, val in (("context_entities", ctx), ("prefer_types", prefer)):
+        if val is not None and not isinstance(val, list):
+            raise HTTPException(status_code=400,
+                                detail=f"{name} 须为数组")
+
+    from knowledge_lattice.core.semantic.annotator import annotate_text
+
+    def _run():
+        return annotate_text(service.backend, service.settings, org, text,
+                             context_entities=ctx, prefer_types=prefer)
+
+    try:
+        return await asyncio.to_thread(_run)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/orgs/{org}/semantic/l0")
+async def semantic_l0_export(
+    org: str, request: Request, auth=Depends(get_auth),
+) -> dict:
+    """L0 核心术语片段导出（semantic:read——TC-SEM-06：l0:true 条目渲染
+    markdown + dict_rev；预算超限由 CI 拦截——此处只导出）。"""
+    org = org_scoped(request, org, auth)
+    service = get_service(request)
+    _require_semantic_read(service, org, auth)
+
+    from knowledge_lattice.core.semantic.annotator import render_l0
+
+    def _run():
+        current = service.backend.sem_current_build(org)
+        l0 = render_l0(service.backend.sem_active_snapshot(org))
+        return {"dict_rev": current["dict_rev"] if current else None, **l0}
+
+    return await asyncio.to_thread(_run)
+
+
+@router.get("/api/orgs/{org}/semantic/builds/{build_id}/report")
+async def get_semantic_build_report(
+    org: str, build_id: int, request: Request, auth=Depends(get_auth),
+) -> dict:
+    """构建报告（semantic:admin——A4：计数/自动机规模与耗时/dict_rev 分量/
+    缺源警告/冲突面/评测指标；未知/他组织 404）。"""
+    org = org_scoped(request, org, auth)
+    service = get_service(request)
+    _require_semantic_admin(service, org, auth)
+
+    from knowledge_lattice.core.semantic.build import build_report
+
+    report = await asyncio.to_thread(
+        build_report, service.backend, org, build_id)
+    if report is None:
+        raise HTTPException(
+            status_code=404, detail=f"semantic build not found: {build_id}"
+        )
+    return report
 
 
 @router.get("/api/orgs/{org}/semantic/entities")

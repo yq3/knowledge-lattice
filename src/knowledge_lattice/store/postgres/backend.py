@@ -1078,6 +1078,14 @@ class PgBackend:
         )
         return dict(zip(cols, row))
 
+    def pending_task_exists(self, task_type: str, payload: str) -> bool:
+        """同型同参 pending 任务在队判定（G-19 兜底投递去重——与 sqlite 同构）。"""
+        return bool(self._conn.execute(
+            "SELECT 1 FROM tasks WHERE type = %(t)s AND payload = %(p)s"
+            " AND status = 'pending' LIMIT 1",
+            {"t": task_type, "p": payload},
+        ).fetchone())
+
     def list_tasks(self, org_id: str, *, doc_id: str | None = None) -> list[dict]:
         sql = (
             "SELECT t.id, t.doc_id, t.type, t.status, t.attempts, t.error,"
@@ -2089,14 +2097,16 @@ class PgBackend:
 
     def sem_active_snapshot(self, org_id: str) -> dict:
         """构建输入快照（§5.8 第 1 步——与 sqlite 同结构同稳定序；实体含
-        curated_json/curated_rev——G-17/m2s-3：YAML 改 definition 必触发重建）。"""
+        curated_json/curated_rev——G-17/m2s-3：YAML 改 definition 必触发重建；
+        source_system 随实体携带——m2s-4 构建报告缺源警告面）。"""
         entities = [
             {"id": r[0], "type": r[1], "key": r[2], "name": r[3],
              "parent_id": r[4], "attrs_json": r[5], "sensitivity": r[6],
-             "curated_json": r[7] or "{}", "curated_rev": r[8]}
+             "curated_json": r[7] or "{}", "curated_rev": r[8],
+             "source_system": r[9]}
             for r in self._conn.execute(
                 "SELECT id, type, key, name, parent_id, attrs_json, sensitivity,"
-                " curated_json, curated_rev"
+                " curated_json, curated_rev, source_system"
                 " FROM sem_entities WHERE org_id = %(org)s AND status = 'active'"
                 " ORDER BY id", {"org": org_id},
             )
@@ -2315,8 +2325,9 @@ class PgBackend:
                     {"org": org_id, "eid": eid},
                 )
                 for alias, alias_norm, kind, match_mode in row["aliases"]:
-                    # P3-2/R2：UNIQUE 冲突残余竞态兜底（ON CONFLICT DO NOTHING）
-                    conn.execute(
+                    # P3-2/R2：UNIQUE 冲突残余竞态兜底（ON CONFLICT DO NOTHING）。
+                    # B4②/m2s-4：inserted 只计真插入行（rowcount=0 = 冲突跳过）
+                    cur = conn.execute(
                         "INSERT INTO sem_aliases(org_id, entity_id, alias,"
                         " alias_norm, kind, match_mode)"
                         " VALUES(%(org)s, %(eid)s, %(alias)s, %(norm)s,"
@@ -2324,7 +2335,7 @@ class PgBackend:
                         {"org": org_id, "eid": eid, "alias": alias,
                          "norm": alias_norm, "kind": kind, "mode": match_mode},
                     )
-                    inserted += 1
+                    inserted += max(cur.rowcount, 0)
                 touched.append(eid)
             conn.execute("COMMIT")
         except BaseException:

@@ -1,0 +1,172 @@
+{"qid": "s001", "kind": "pos_exact", "lang": "zh", "text": "本月的进项税额抵扣范围包括哪些", "labels": [["concept:vat.input_credit", 3, 9]]}
+{"qid": "s002", "kind": "pos_exact", "lang": "zh", "text": "进项税额抵扣需要什么条件", "labels": [["concept:vat.input_credit", 0, 6]]}
+{"qid": "s003", "kind": "pos_exact", "lang": "zh", "text": "帮我解释一下进项税额转出的情形", "labels": [["concept:vat.input_transfer_out", 6, 12]]}
+{"qid": "s004", "kind": "pos_exact", "lang": "zh", "text": "哪些业务要做进项税额转出", "labels": [["concept:vat.input_transfer_out", 6, 12]]}
+{"qid": "s005", "kind": "pos_exact", "lang": "zh", "text": "销项税额怎么计算", "labels": [["concept:vat.output_tax", 0, 4]]}
+{"qid": "s006", "kind": "pos_exact", "lang": "zh", "text": "本月销项税额比上月多了", "labels": [["concept:vat.output_tax", 2, 6]]}
+{"qid": "s007", "kind": "pos_exact", "lang": "zh", "text": "期末留抵税额是怎么形成的", "labels": [["concept:vat.retained_credit", 0, 6]]}
+{"qid": "s008", "kind": "pos_exact", "lang": "zh", "text": "期末留抵税额可以为负吗", "labels": [["concept:vat.retained_credit", 0, 6]]}
+{"qid": "s009", "kind": "pos_exact", "lang": "zh", "text": "小规模纳税人的标准是什么", "labels": [["concept:vat.small_scale", 0, 6]]}
+{"qid": "s010", "kind": "pos_exact", "lang": "zh", "text": "小规模纳税人能开专票吗", "labels": [["concept:vat.small_scale", 0, 6]]}
+{"qid": "s011", "kind": "pos_exact", "lang": "zh", "text": "一般纳税人转登记的条件", "labels": [["concept:vat.general_taxpayer", 0, 5]]}
+{"qid": "s012", "kind": "pos_exact", "lang": "zh", "text": "一般纳税人可以简易计税吗", "labels": [["concept:vat.general_taxpayer", 0, 5]]}
+{"qid": "s013", "kind": "pos_exact", "lang": "zh", "text": "增值税税率13%适用哪些行业", "labels": [["concept:vat.tax_rate", 0, 5]]}
+{"qid": "s014", "kind": "pos_exact", "lang": "zh", "text": "交通运输的增值税税率是多少", "labels": [["concept:vat.tax_rate", 5, 10]]}
+{"qid": "s015", "kind": "pos_exact", "lang": "zh", "text": "征收率3%是什么意思", "labels": [["concept:vat.levy_rate", 0, 3]]}
+{"qid": "s016", "kind": "pos_exact", "lang": "zh", "text": "小规模纳税人的征收率是多少", "labels": [["concept:vat.small_scale", 0, 6], ["concept:vat.levy_rate", 7, 10]]}
+{"qid": "s017", "kind": "pos_exact", "lang": "zh", "text": "扣税凭证包括哪些种类", "labels": [["concept:vat.deduction_voucher", 0, 4]]}
+{"qid": "s018", "kind": "pos_exact", "lang": "zh", "text": "海关缴款书算扣税凭证吗", "labels": [["concept:vat.deduction_voucher", 6, 10]]}
+{"qid": "s019", "kind": "pos_exact", "lang": "zh", "text": "增值税免税政策有哪些", "labels": [["concept:vat.exemption", 0, 5]]}
+{"qid": "s020", "kind": "pos_exact", "lang": "zh", "text": "增值税申报的截止时间", "labels": [["concept:vat.filing", 0, 5]]}
+{"qid": "s021", "kind": "pos_exact", "lang": "zh", "text": "本月增值税申报完成了没有", "labels": [["concept:vat.filing", 2, 7]]}
+{"qid": "s022", "kind": "pos_exact", "lang": "zh", "text": "去办税服务厅需要带什么材料", "labels": [["system:tax.hall", 1, 6]]}
+{"qid": "s023", "kind": "pos_exact", "lang": "zh", "text": "办税服务厅几点下班", "labels": [["system:tax.hall", 0, 5]]}
+{"qid": "s024", "kind": "pos_exact", "lang": "zh", "text": "发票综合服务平台怎么登录", "labels": [["system:invoice.platform", 0, 8]]}
+{"qid": "s025", "kind": "pos_exact", "lang": "zh", "text": "进项发票采集模板的字段有哪些", "labels": [["template:TPL_VAT_INPUT", 0, 8]]}
+{"qid": "s026", "kind": "pos_exact", "lang": "zh", "text": "进项发票采集模板每月几号截止", "labels": [["template:TPL_VAT_INPUT", 0, 8]]}
+{"qid": "s027", "kind": "pos_exact", "lang": "zh", "text": "销项发票采集模板在哪里下载", "labels": [["template:TPL_VAT_OUTPUT", 0, 8]]}
+{"qid": "s028", "kind": "pos_exact", "lang": "zh", "text": "增值税申报主表模板的填法", "labels": [["template:TPL_FILING_MAIN", 0, 9]]}
+{"qid": "s029", "kind": "pos_exact", "lang": "zh", "text": "留抵税额确认模板要盖章吗", "labels": [["template:TPL_RETAINED_CONFIRM", 0, 8]]}
+{"qid": "s030", "kind": "pos_exact", "lang": "zh", "text": "票面税额与实际支付不一致", "labels": [["template_field:TPL_VAT_INPUT.TAX_AMT", 0, 4]]}
+{"qid": "s031", "kind": "pos_exact", "lang": "zh", "text": "发票号码填错了一位", "labels": [["template_field:TPL_VAT_INPUT.INV_NO", 0, 4]]}
+{"qid": "s032", "kind": "pos_exact", "lang": "zh", "text": "开票日期晚于报销日期怎么办", "labels": [["template_field:TPL_VAT_INPUT.INV_DATE", 0, 4]]}
+{"qid": "s033", "kind": "pos_exact", "lang": "zh", "text": "价税合计含不含运费", "labels": [["template_field:TPL_VAT_INPUT.TOTAL_AMT", 0, 4]]}
+{"qid": "s034", "kind": "pos_exact", "lang": "zh", "text": "增值税申报表主表怎么导出", "labels": [["report:VAT_MAIN", 0, 8]]}
+{"qid": "s035", "kind": "pos_exact", "lang": "zh", "text": "附列资料一填哪些内容", "labels": [["report:VAT_AUX_1", 0, 5]]}
+{"qid": "s036", "kind": "pos_exact", "lang": "zh", "text": "主表进项税额行本年是灰色的", "labels": [["report_item:VAT_MAIN.L12", 0, 7]]}
+{"qid": "s037", "kind": "pos_exact", "lang": "zh", "text": "应纳税额合计行怎么核对", "labels": [["report_item:VAT_MAIN.L23", 0, 7]]}
+{"qid": "s038", "kind": "pos_exact", "lang": "zh", "text": "专票销售额行的口径", "labels": [["report_item:VAT_AUX_1.R1", 0, 6]]}
+{"qid": "s039", "kind": "pos_exact", "lang": "zh", "text": "普票销售额行能修改吗", "labels": [["report_item:VAT_AUX_1.R2", 0, 6]]}
+{"qid": "s040", "kind": "pos_exact", "lang": "zh", "text": "进项发票明细表在哪个库", "labels": [["table:ods.vat_input_invoice", 0, 7]]}
+{"qid": "s041", "kind": "pos_exact", "lang": "zh", "text": "纳税人信息表怎么关联", "labels": [["table:dim.taxpayer", 0, 6]]}
+{"qid": "s042", "kind": "pos_exact", "lang": "zh", "text": "申报记录表的分区规则", "labels": [["table:ods.filing_record", 0, 5]]}
+{"qid": "s043", "kind": "pos_exact", "lang": "zh", "text": "销项发票明细表有多少行", "labels": [["table:ods.vat_output_invoice", 0, 7]]}
+{"qid": "s044", "kind": "pos_exact", "lang": "zh", "text": "月度增值税申报的流程", "labels": [["scenario:SCN_MONTHLY_FILING", 0, 7]]}
+{"qid": "s045", "kind": "pos_exact", "lang": "zh", "text": "进项抵扣核查做了哪些检查", "labels": [["scenario:SCN_INPUT_CHECK", 0, 6]]}
+{"qid": "s046", "kind": "pos_exact", "lang": "zh", "text": "留抵退税申请已经受理了吗", "labels": [["scenario:SCN_RETAINED_REFUND", 0, 6]]}
+{"qid": "s047", "kind": "pos_exact", "lang": "zh", "text": "纳税人类型字段取值有哪些", "labels": [["column:dim.taxpayer.taxpayer_type", 0, 5]]}
+{"qid": "s048", "kind": "pos_exact", "lang": "zh", "text": "信用等级为D级影响什么", "labels": [["column:dim.taxpayer.credit_level", 0, 4]]}
+{"qid": "s049", "kind": "pos_exact", "lang": "zh", "text": "所属期是按自然月吗", "labels": [["column:ods.filing_record.period", 0, 3]]}
+{"qid": "s050", "kind": "pos_exact", "lang": "zh", "text": "应补税额怎么算", "labels": [["column:ods.filing_record.payable", 0, 4]]}
+{"qid": "s051", "kind": "pos_exact", "lang": "zh", "text": "TPL_VAT_INPUT模板更新了吗", "labels": [["template:TPL_VAT_INPUT", 0, 13]]}
+{"qid": "s052", "kind": "pos_exact", "lang": "zh", "text": "ods.vat_input_invoice表有多少列", "labels": [["table:ods.vat_input_invoice", 0, 21]]}
+{"qid": "s053", "kind": "pos_alias", "lang": "zh", "text": "这个月的进项抵扣怎么算", "labels": [["concept:vat.input_credit", 4, 8]]}
+{"qid": "s054", "kind": "pos_alias", "lang": "zh", "text": "抵进项要什么凭证", "labels": [["concept:vat.input_credit", 0, 3]]}
+{"qid": "s055", "kind": "pos_alias", "lang": "zh", "text": "认证抵扣的期限是多久", "labels": [["concept:vat.input_credit", 0, 4]]}
+{"qid": "s056", "kind": "pos_alias", "lang": "zh", "text": "进项转出怎么做账", "labels": [["concept:vat.input_transfer_out", 0, 4]]}
+{"qid": "s057", "kind": "pos_alias", "lang": "zh", "text": "抵扣转出需要什么资料", "labels": [["concept:vat.input_transfer_out", 0, 4]]}
+{"qid": "s058", "kind": "pos_alias", "lang": "zh", "text": "本月销项大于进项", "labels": [["concept:vat.output_tax", 2, 4]]}
+{"qid": "s059", "kind": "pos_alias", "lang": "zh", "text": "销项怎么核对", "labels": [["concept:vat.output_tax", 0, 2]]}
+{"qid": "s060", "kind": "pos_alias", "lang": "zh", "text": "留抵税额可以一直结转吗", "labels": [["concept:vat.retained_credit", 0, 4]]}
+{"qid": "s061", "kind": "pos_alias", "lang": "zh", "text": "上季度的留抵税额还有多少", "labels": [["concept:vat.retained_credit", 4, 8]]}
+{"qid": "s062", "kind": "pos_alias", "lang": "zh", "text": "小规模能不能转一般纳税人", "labels": [["concept:vat.small_scale", 0, 3], ["concept:vat.general_taxpayer", 7, 12]]}
+{"qid": "s063", "kind": "pos_alias", "lang": "zh", "text": "小规模季度报表怎么填", "labels": [["concept:vat.small_scale", 0, 3]]}
+{"qid": "s064", "kind": "pos_alias", "lang": "zh", "text": "抵扣凭证丢了怎么补", "labels": [["concept:vat.deduction_voucher", 0, 4]]}
+{"qid": "s065", "kind": "pos_alias", "lang": "zh", "text": "扣税凭证认证期限", "labels": [["concept:vat.deduction_voucher", 0, 4]]}
+{"qid": "s066", "kind": "pos_alias", "lang": "zh", "text": "纳税申报延期怎么申请", "labels": [["concept:vat.filing", 0, 4]]}
+{"qid": "s067", "kind": "pos_alias", "lang": "zh", "text": "纳税申报表在哪里打印", "labels": [["concept:vat.filing", 0, 4]]}
+{"qid": "s068", "kind": "pos_alias", "lang": "zh", "text": "发票平台勾选确认在哪里", "labels": [["system:invoice.platform", 0, 4]]}
+{"qid": "s069", "kind": "pos_alias", "lang": "zh", "text": "综合服务平台打不开", "labels": [["system:invoice.platform", 0, 6]]}
+{"qid": "s070", "kind": "pos_alias", "lang": "zh", "text": "进项采集模板的口径说明", "labels": [["template:TPL_VAT_INPUT", 0, 6]]}
+{"qid": "s071", "kind": "pos_alias", "lang": "zh", "text": "进项模板字段映射", "labels": [["template:TPL_VAT_INPUT", 0, 4]]}
+{"qid": "s072", "kind": "pos_alias", "lang": "zh", "text": "主表模板能导出Excel吗", "labels": [["template:TPL_FILING_MAIN", 0, 4]]}
+{"qid": "s073", "kind": "pos_alias", "lang": "zh", "text": "上期留抵行填什么数", "labels": [["report_item:VAT_MAIN.L13", 0, 4]]}
+{"qid": "s074", "kind": "pos_alias", "lang": "zh", "text": "期末留抵和上期留抵的关系", "labels": [["report_item:VAT_MAIN.L20", 0, 4], ["report_item:VAT_MAIN.L13", 5, 9]]}
+{"qid": "s075", "kind": "pos_alias", "lang": "zh", "text": "上期留抵税额行本年数锁定", "labels": [["report_item:VAT_MAIN.L13", 0, 7]]}
+{"qid": "s076", "kind": "pos_alias", "lang": "zh", "text": "期末留抵税额行自动计算吗", "labels": [["report_item:VAT_MAIN.L20", 0, 7]]}
+{"qid": "s077", "kind": "pos_alias", "lang": "zh", "text": "期末留抵行怎么取数", "labels": [["report_item:VAT_MAIN.L20", 0, 4]]}
+{"qid": "s078", "kind": "pos_alias", "lang": "zh", "text": "进项采集源对接哪些系统", "labels": [["template:TPL_VAT_INPUT", 0, 5]]}
+{"qid": "s079", "kind": "pos_alias", "lang": "zh", "text": "税额列的类型是什么", "labels": [["column:ods.vat_input_invoice.tax_amt", 0, 2]]}
+{"qid": "s080", "kind": "pos_alias", "lang": "zh", "text": "价税金额怎么换算", "labels": [["column:ods.vat_input_invoice.total_amt", 0, 4]]}
+{"qid": "s081", "kind": "pos_alias", "lang": "zh", "text": "发票号有重复怎么排查", "labels": [["column:ods.vat_input_invoice.inv_no", 0, 3]]}
+{"qid": "s082", "kind": "pos_alias", "lang": "zh", "text": "开票日超过认证期", "labels": [["column:ods.vat_input_invoice.inv_date", 0, 3]]}
+{"qid": "s083", "kind": "pos_alias", "lang": "zh", "text": "销方名称为空是什么问题", "labels": [["column:ods.vat_input_invoice.seller", 0, 4]]}
+{"qid": "s084", "kind": "pos_alias", "lang": "zh", "text": "销项税额列做聚合吗", "labels": [["column:ods.vat_output_invoice.tax_amt", 0, 5]]}
+{"qid": "s085", "kind": "pos_alias", "lang": "zh", "text": "进项税额字段能批量导入吗", "labels": [["template_field:TPL_VAT_INPUT.TAX_AMT", 0, 4]]}
+{"qid": "s086", "kind": "pos_alias", "lang": "zh", "text": "销项票面税额校验规则", "labels": [["template_field:TPL_VAT_OUTPUT.TAX_AMT", 0, 6]]}
+{"qid": "s087", "kind": "pos_alias", "lang": "zh", "text": "应补税额栏为什么锁定", "labels": [["template_field:TPL_FILING_MAIN.PAYABLE", 0, 5]]}
+{"qid": "s088", "kind": "pos_alias", "lang": "zh", "text": "确认金额栏四舍五入吗", "labels": [["template_field:TPL_RETAINED_CONFIRM.AMT", 0, 5]]}
+{"qid": "s089", "kind": "pos_abbr", "lang": "zh", "text": "JXDK的计算口径说明一下", "labels": [["concept:vat.input_credit", 0, 4]]}
+{"qid": "s090", "kind": "pos_abbr", "lang": "zh", "text": "这个月JXDK多少", "labels": [["concept:vat.input_credit", 3, 7]]}
+{"qid": "s091", "kind": "pos_abbr", "lang": "zh", "text": "jxdk需要哪些资料", "labels": [["concept:vat.input_credit", 0, 4]]}
+{"qid": "s092", "kind": "pos_abbr", "lang": "zh", "text": "LDSE结转规则", "labels": [["concept:vat.retained_credit", 0, 4]]}
+{"qid": "s093", "kind": "pos_abbr", "lang": "zh", "text": "LDSE余额在哪里看", "labels": [["concept:vat.retained_credit", 0, 4]]}
+{"qid": "s094", "kind": "pos_abbr", "lang": "zh", "text": "ldse可以抵欠税吗", "labels": [["concept:vat.retained_credit", 0, 4]]}
+{"qid": "s095", "kind": "pos_abbr", "lang": "zh", "text": "LDTS的申请条件", "labels": [["concept:vat.retained_refund", 0, 4]]}
+{"qid": "s096", "kind": "pos_abbr", "lang": "zh", "text": "LDTS到账要多久", "labels": [["concept:vat.retained_refund", 0, 4]]}
+{"qid": "s097", "kind": "pos_abbr", "lang": "zh", "text": "ldts被驳回了怎么办", "labels": [["concept:vat.retained_refund", 0, 4]]}
+{"qid": "s098", "kind": "pos_abbr", "lang": "zh", "text": "FPPT上怎么勾选发票", "labels": [["system:invoice.platform", 0, 4]]}
+{"qid": "s099", "kind": "pos_abbr", "lang": "zh", "text": "FPPT维护时间是什么时候", "labels": [["system:invoice.platform", 0, 4]]}
+{"qid": "s100", "kind": "pos_abbr", "lang": "zh", "text": "fppt密码忘了", "labels": [["system:invoice.platform", 0, 4]]}
+{"qid": "s101", "kind": "pos_abbr", "lang": "zh", "text": "本月JXDK和LDTS都要处理", "labels": [["concept:vat.input_credit", 2, 6], ["concept:vat.retained_refund", 7, 11]]}
+{"qid": "s102", "kind": "pos_abbr", "lang": "zh", "text": "JXDK、FPPT两个缩写一起查", "labels": [["concept:vat.input_credit", 0, 4], ["system:invoice.platform", 5, 9]]}
+{"qid": "s103", "kind": "pos_abbr", "lang": "zh", "text": "把JXDK勾选认证的时间核对一遍", "labels": [["concept:vat.input_credit", 1, 5]]}
+{"qid": "s104", "kind": "pos_ambiguous", "lang": "zh", "text": "留抵可以申请退还吗", "labels": [["concept:vat.retained_refund", 0, 2]]}
+{"qid": "s105", "kind": "pos_ambiguous", "lang": "zh", "text": "留抵结转下期怎么处理", "labels": [["concept:vat.retained_credit", 0, 2]]}
+{"qid": "s106", "kind": "pos_ambiguous", "lang": "zh", "text": "留抵退税政策下留抵怎么用", "labels": [["concept:vat.retained_refund", 0, 4], ["concept:vat.retained_refund", 7, 9]]}
+{"qid": "s107", "kind": "pos_ambiguous", "lang": "zh", "text": "留抵退税申请场景里的留抵怎么确认", "labels": [["scenario:SCN_RETAINED_REFUND", 0, 6], ["concept:vat.retained_refund", 10, 12]]}
+{"qid": "s108", "kind": "pos_ambiguous", "lang": "zh", "text": "期末留抵税额行里的留抵取数来源", "labels": [["report_item:VAT_MAIN.L20", 0, 7], ["concept:vat.retained_credit", 9, 11]]}
+{"qid": "s109", "kind": "pos_ambiguous", "lang": "zh", "text": "留抵是什么意思", "labels": [["concept:vat.retained_credit", 0, 2]]}
+{"qid": "s110", "kind": "pos_ambiguous", "lang": "zh", "text": "小规模纳税人的税率是多少", "labels": [["concept:vat.small_scale", 0, 6], ["concept:vat.levy_rate", 7, 9]]}
+{"qid": "s111", "kind": "pos_ambiguous", "lang": "zh", "text": "一般纳税人的税率有几档", "labels": [["concept:vat.general_taxpayer", 0, 5], ["concept:vat.tax_rate", 6, 8]]}
+{"qid": "s112", "kind": "pos_ambiguous", "lang": "zh", "text": "销售货物的税率13%对吗", "labels": [["concept:vat.tax_rate", 5, 7]]}
+{"qid": "s113", "kind": "pos_ambiguous", "lang": "zh", "text": "简易计税的税率怎么选", "labels": [["concept:vat.levy_rate", 5, 7]]}
+{"qid": "s114", "kind": "pos_ambiguous", "lang": "zh", "text": "交通运输的税率是多少", "labels": [["concept:vat.tax_rate", 5, 7]]}
+{"qid": "s115", "kind": "pos_ambiguous", "lang": "zh", "text": "3%的税率适用于谁", "labels": [["concept:vat.levy_rate", 3, 5]]}
+{"qid": "s116", "kind": "pos_ambiguous", "lang": "zh", "text": "13%税率覆盖哪些业务", "labels": [["concept:vat.tax_rate", 3, 5]]}
+{"qid": "s117", "kind": "pos_ambiguous", "lang": "zh", "text": "税率档次太多记不住", "labels": [["concept:vat.tax_rate", 0, 2]]}
+{"qid": "s118", "kind": "pos_ambiguous", "lang": "zh", "text": "留抵什么时候可以结转", "labels": [["concept:vat.retained_credit", 0, 2]]}
+{"qid": "s119", "kind": "pos_ambiguous", "lang": "zh", "text": "留抵按政策退还的流程", "labels": [["concept:vat.retained_refund", 0, 2]]}
+{"qid": "s120", "kind": "pos_ambiguous", "lang": "zh", "text": "留抵可以抵减下期税款吗", "labels": [["concept:vat.retained_credit", 0, 2]]}
+{"qid": "s121", "kind": "pos_ambiguous", "lang": "zh", "text": "申请留抵需要什么材料", "labels": [["concept:vat.retained_refund", 2, 4]]}
+{"qid": "s122", "kind": "pos_ambiguous", "lang": "zh", "text": "留抵余额怎么看", "labels": [["concept:vat.retained_credit", 0, 2]]}
+{"qid": "s123", "kind": "pos_ambiguous", "lang": "zh", "text": "退还留抵要多久", "labels": [["concept:vat.retained_refund", 2, 4]]}
+{"qid": "s124", "kind": "pos_context", "lang": "zh", "text": "小规模纳税人免税政策怎么适用", "labels": [["concept:vat.small_scale", 0, 6], ["concept:vat.exemption", 6, 8]]}
+{"qid": "s125", "kind": "pos_context", "lang": "zh", "text": "小规模纳税人季度免税怎么填", "labels": [["concept:vat.small_scale", 0, 6], ["concept:vat.exemption", 8, 10]]}
+{"qid": "s126", "kind": "pos_context", "lang": "zh", "text": "小规模纳税人的免税额度", "labels": [["concept:vat.small_scale", 0, 6], ["concept:vat.exemption", 7, 9]]}
+{"qid": "s127", "kind": "pos_context", "lang": "zh", "text": "进项税额抵扣与免税的关系", "labels": [["concept:vat.input_credit", 0, 6]]}
+{"qid": "s128", "kind": "pos_context", "lang": "zh", "text": "免税店的东西为什么便宜", "labels": []}
+{"qid": "s129", "kind": "pos_context", "lang": "zh", "text": "免税额度是多少", "labels": []}
+{"qid": "s130", "kind": "pos_context", "lang": "zh", "text": "小规模免税政策2026年还有效吗", "labels": [["concept:vat.small_scale", 0, 3], ["concept:vat.exemption", 3, 5]]}
+{"qid": "s131", "kind": "pos_context", "lang": "zh", "text": "一般纳税人也适用免税吗", "labels": [["concept:vat.general_taxpayer", 0, 5]]}
+{"qid": "s132", "kind": "pos_context", "lang": "zh", "text": "小规模纳税人的免税申报怎么填", "labels": [["concept:vat.small_scale", 0, 6], ["concept:vat.exemption", 7, 9]]}
+{"qid": "s133", "kind": "pos_context", "lang": "zh", "text": "留抵退税申请要不要先做免税备案", "labels": [["scenario:SCN_RETAINED_REFUND", 0, 6]]}
+{"qid": "s134", "kind": "pos_context", "lang": "zh", "text": "小规模免税的起征点", "labels": [["concept:vat.small_scale", 0, 3], ["concept:vat.exemption", 3, 5]]}
+{"qid": "s135", "kind": "pos_context", "lang": "zh", "text": "免税与征收率的适用顺序", "labels": [["concept:vat.levy_rate", 3, 6]]}
+{"qid": "s136", "kind": "pos_context", "lang": "zh", "text": "小规模纳税人免税收入要开票吗", "labels": [["concept:vat.small_scale", 0, 6], ["concept:vat.exemption", 6, 8]]}
+{"qid": "s137", "kind": "pos_context", "lang": "zh", "text": "免税农产品是不是也走这个口径", "labels": []}
+{"qid": "s138", "kind": "neg", "lang": "zh", "text": "今天中午食堂有什么菜", "labels": []}
+{"qid": "s139", "kind": "neg", "lang": "zh", "text": "帮我订一张明天去上海的机票", "labels": []}
+{"qid": "s140", "kind": "neg", "lang": "zh", "text": "公司三季度团建去哪里合适", "labels": []}
+{"qid": "s141", "kind": "neg", "lang": "zh", "text": "这个季度的经营分析会改到周四下午", "labels": []}
+{"qid": "s142", "kind": "neg", "lang": "zh", "text": "打印机卡纸了怎么处理", "labels": []}
+{"qid": "s143", "kind": "neg", "lang": "zh", "text": "明天天气预报说有雨", "labels": []}
+{"qid": "s144", "kind": "neg", "lang": "zh", "text": "请帮我把这份文件翻译成英文", "labels": []}
+{"qid": "s145", "kind": "neg", "lang": "zh", "text": "楼下咖啡店几点关门", "labels": []}
+{"qid": "s146", "kind": "neg", "lang": "zh", "text": "年会的节目单排好了吗", "labels": []}
+{"qid": "s147", "kind": "neg", "lang": "zh", "text": "部门预算表还没提交的同事注意", "labels": []}
+{"qid": "s148", "kind": "neg", "lang": "zh", "text": "工位的显示器闪屏", "labels": []}
+{"qid": "s149", "kind": "neg", "lang": "zh", "text": "行政说空调维修下午两点停机", "labels": []}
+{"qid": "s150", "kind": "neg", "lang": "zh", "text": "XJXDKX是随机串不是缩写", "labels": []}
+{"qid": "s151", "kind": "neg", "lang": "zh", "text": "把ldsee这个错拼单词加入词库", "labels": []}
+{"qid": "s152", "kind": "neg", "lang": "zh", "text": "员工体检安排在下个月", "labels": []}
+{"qid": "s153", "kind": "neg", "lang": "zh", "text": "高速公路收费站的休息区开放吗", "labels": []}
+{"qid": "s154", "kind": "neg", "lang": "zh", "text": "财务共享中心的差旅报销流程", "labels": []}
+{"qid": "s155", "kind": "neg", "lang": "zh", "text": "食堂菜单这周换了新菜", "labels": []}
+{"qid": "s156", "kind": "neg", "lang": "zh", "text": "会议室预订系统升级通知", "labels": []}
+{"qid": "s157", "kind": "neg", "lang": "zh", "text": "电梯维保通知贴在一楼大厅", "labels": []}
+{"qid": "s158", "kind": "neg", "lang": "zh", "text": "春节放假安排出来了吗", "labels": []}
+{"qid": "s159", "kind": "neg", "lang": "zh", "text": "这个数据库连接数告警怎么处理", "labels": []}
+{"qid": "s160", "kind": "neg", "lang": "zh", "text": "服务器磁盘占用超过八成", "labels": []}
+{"qid": "s161", "kind": "neg", "lang": "zh", "text": "内网VPN连不上", "labels": []}
+{"qid": "s162", "kind": "neg", "lang": "zh", "text": "考勤系统打卡异常怎么申诉", "labels": []}
+{"qid": "s163", "kind": "neg", "lang": "zh", "text": "招聘的候选人下周二入职", "labels": []}
+{"qid": "s164", "kind": "neg", "lang": "zh", "text": "办公用品申领单在哪里下载", "labels": []}
+{"qid": "s165", "kind": "neg", "lang": "zh", "text": "物业的中央空调坏了", "labels": []}
+{"qid": "s166", "kind": "neg", "lang": "zh", "text": "快递柜满了拿不到件", "labels": []}
+{"qid": "s167", "kind": "neg", "lang": "zh", "text": "值班表这周的排班有问题", "labels": []}
+{"qid": "s168", "kind": "neg", "lang": "zh", "text": "视频会议的摄像头驱动装不上", "labels": []}
+{"qid": "s169", "kind": "neg", "lang": "zh", "text": "保洁阿姨下午来打扫", "labels": []}
+{"qid": "s170", "kind": "neg", "lang": "zh", "text": "报销单被财务退回了", "labels": []}
+{"qid": "s171", "kind": "neg", "lang": "zh", "text": "行政采购了一批显示器", "labels": []}
+{"qid": "s172", "kind": "neg", "lang": "zh", "text": "停车场月卡续费", "labels": []}

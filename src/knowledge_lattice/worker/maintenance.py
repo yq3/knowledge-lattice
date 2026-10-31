@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from collections.abc import Callable
 
 from knowledge_lattice.domain.audit_events import EVENT_MAINTENANCE_RUN
@@ -151,6 +152,93 @@ def _outbox_trim_body(backend, credentials, settings, now):
     cutoff_month = month_shift(month_of(now), -settings.audit_keep_months)
     cutoff = f"{cutoff_month[:4]}-{cutoff_month[4:6]}-01 00:00:00"
     return backend.trim_shipped_outbox(before_ts=cutoff)
+
+
+@_register("semantic_daily_sync")
+def _semantic_daily_body(backend, credentials, settings, now):
+    """G-19 五源每日兜底调度（m2s-4 收口——design §5.8「每天一次兜底」半句）。
+
+    口径（known-gaps G-19 重开条件的三问逐一落定）：
+
+    - **窗口**：`semantic_night_window`（如 "01:00-05:00"，UTC）配置后仅窗口
+      内投递（m2s-4 起对兜底调度生效——错峰）；未配置 = 任意时刻可投；
+    - **幂等**：距该 (org, adapter) 上次**成功** run（sem_sync_runs——
+      webhook/手动/兜底同一真相源）不足 `semantic_daily_sync_interval_s`
+      （默认 24h）不投递；失败 run 不算去重锚（源故障每日重试是兜底本意）；
+      同参 pending 任务在队不重复投递（pending_task_exists）；
+    - **与 webhook 去重**：webhook 触发的成功 run 即「当日已同步」，同口径
+      跳过；sync 自身幂等（同快照零写入——T-S3）+ 同 rev 构建跳过
+      （TC-BUILD-01）使重复触发无害，本去重只是免无谓 run。
+
+    只投递任务行（semantic_sync {org, adapter}），执行体沿用 worker 认领
+    ——不在 maintenance 事务内拉源（兜底与实时路径同一执行面）。"""
+    from knowledge_lattice.core.semantic.constants import SYNC_ADAPTERS
+
+    interval = getattr(settings, "semantic_daily_sync_interval_s", 86400.0)
+    if interval <= 0:
+        return "disabled"
+    window = getattr(settings, "semantic_night_window", "") or ""
+    if window and not _in_window(now, window):
+        return {"enqueued": 0, "window": window,
+                "reason": f"now {now} outside night window {window!r}"}
+
+    now_ts = datetime.strptime(now, "%Y-%m-%d %H:%M:%S")
+    enqueued: list[str] = []
+    skipped_recent: list[str] = []
+    for org, conf in (settings.semantic_sources or {}).items():
+        for adapter in SYNC_ADAPTERS:
+            if not isinstance(conf, dict) or adapter not in conf:
+                continue    # 未配置源静默跳过（无 endpoint 无从拉取——不误报）
+            runs = backend.sem_list_sync_runs(
+                org, limit=1, adapter=adapter, status="succeeded")
+            if runs:
+                last = _as_ts(runs[0].get("finished_at")
+                              or runs[0].get("started_at"))
+                if last is not None:
+                    age = (now_ts - last).total_seconds()
+                    if age < interval:
+                        skipped_recent.append(f"{org}/{adapter}")
+                        continue
+            payload = json.dumps({"org": org, "adapter": adapter})
+            if backend.pending_task_exists("semantic_sync", payload):
+                continue    # 在队不重复投递（幂等半句）
+            backend.create_task(None, task_type="semantic_sync",
+                                payload=payload)
+            enqueued.append(f"{org}/{adapter}")
+    if enqueued:
+        logger.info("semantic daily fallback enqueued: %s（recent-skipped: %s）",
+                    enqueued, skipped_recent)
+    return {"enqueued": len(enqueued), "sources": enqueued,
+            "skipped_recent": skipped_recent, **({"window": window}
+                                                 if window else {})}
+
+
+def _as_ts(value):
+    """run 时间列归一（sqlite str / psycopg datetime 双形态 → datetime|None）。"""
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+    return None
+
+
+def _in_window(now: str, window: str) -> bool:
+    """HH:MM-HH:MM 窗口判定（UTC；支持跨零点如 "23:00-05:00"）。"""
+    try:
+        lo_s, hi_s = window.split("-", 1)
+        t = datetime.strptime(now, "%Y-%m-%d %H:%M:%S").time()
+        lo = datetime.strptime(lo_s.strip(), "%H:%M").time()
+        hi = datetime.strptime(hi_s.strip(), "%H:%M").time()
+    except ValueError:
+        logger.warning("semantic_night_window 非法（须 HH:MM-HH:MM）: %r"
+                       "——视为无窗口", window)
+        return True
+    if lo <= hi:
+        return lo <= t <= hi
+    return t >= lo or t <= hi    # 跨零点
 
 
 def run_maintenance(backend, credentials, settings, task_id: str) -> dict:

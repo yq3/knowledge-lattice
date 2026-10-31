@@ -326,14 +326,31 @@ _MINIMAL_SCHEMA_TYPES = frozenset({
 
 
 def _minimal_schema_self_check(schema: object, path: str = "$") -> str | None:
-    """回退路径最小 schema 合法性检查（R3/N6——与 jsonschema 路径对称）：
-    type 值须为已知类型、required 须为字符串数组、properties/items/enum
-    形状合法；未知关键字忽略（方言子集口径）。"""
+    """回退路径最小 schema 合法性检查（R3/N6 + B2⑦/m2s-4——与 jsonschema 路径
+    对称，且不再误拦合法形态）：type 接受单值或**数组**（如 ["string","null"]）、
+    **布尔子 schema**（true/false——允许/拒绝任何值）合法、items 接受对象（单
+    schema）或**数组**（tuple 形态）；required/enum/properties 形状校验保留；
+    未知关键字忽略（方言子集口径）。畸形输入 except 兜底返回可定位信息
+    （不崩溃——fail-closed 方向不变，零依赖 only）。"""
+    try:
+        return _minimal_schema_self_check_impl(schema, path)
+    except Exception as exc:  # noqa: BLE001 —— B2⑦：畸形 schema 兜底不崩溃
+        return f"{path}: schema 自校验异常（{type(exc).__name__}: {exc}）"
+
+
+def _minimal_schema_self_check_impl(schema: object, path: str) -> str | None:
+    if schema is True or schema is False:
+        return None                      # 布尔子 schema（合法 JSON Schema 形态）
     if not isinstance(schema, dict):
         return f"{path}: schema 须为对象"
     stype = schema.get("type")
-    if stype is not None and stype not in _MINIMAL_SCHEMA_TYPES:
-        return f"{path}: 未知 type {stype!r}（合法：{sorted(_MINIMAL_SCHEMA_TYPES)}）"
+    if stype is not None:
+        types = stype if isinstance(stype, list) else [stype]
+        if not types or not all(
+            isinstance(t, str) and t in _MINIMAL_SCHEMA_TYPES for t in types
+        ):
+            return (f"{path}: 未知 type {stype!r}"
+                    f"（合法：{sorted(_MINIMAL_SCHEMA_TYPES)}）")
     if "required" in schema and not (
         isinstance(schema["required"], list)
         and all(isinstance(r, str) for r in schema["required"])
@@ -341,17 +358,24 @@ def _minimal_schema_self_check(schema: object, path: str = "$") -> str | None:
         return f"{path}: required 须为字符串数组"
     if "enum" in schema and not isinstance(schema["enum"], list):
         return f"{path}: enum 须为数组"
-    for key in ("properties",):
-        if key in schema and not isinstance(schema[key], dict):
-            return f"{path}: {key} 须为对象"
-    if "items" in schema and not isinstance(schema["items"], dict):
-        return f"{path}: items 须为对象"
+    if "properties" in schema and not isinstance(schema["properties"], dict):
+        return f"{path}: properties 须为对象"
+    if "items" in schema:
+        items = schema["items"]
+        if not isinstance(items, (dict, list)) and items not in (True, False):
+            return f"{path}: items 须为对象或数组（tuple 形态）"
     for key, sub in (schema.get("properties") or {}).items():
         problem = _minimal_schema_self_check(sub, f"{path}.{key}")
         if problem:
             return problem
-    if isinstance(schema.get("items"), dict):
-        return _minimal_schema_self_check(schema["items"], f"{path}.items")
+    items = schema.get("items")
+    if isinstance(items, dict):
+        return _minimal_schema_self_check(items, f"{path}.items")
+    if isinstance(items, list):
+        for k, sub in enumerate(items):
+            problem = _minimal_schema_self_check(sub, f"{path}.items[{k}]")
+            if problem:
+                return problem
     return None
 
 
@@ -378,19 +402,47 @@ def _schema_errors(instance: dict, schema: dict) -> list[str]:
 
 
 def _minimal_schema_errors(instance: dict, schema: dict, path: str = "$") -> list[str]:
-    """手写最小子集（jsonschema 缺席时的回退——未知关键字忽略）。"""
+    """手写最小子集（jsonschema 缺席时的回退——未知关键字忽略；B2⑦/m2s-4：
+    布尔子 schema（true 放行/false 拒绝）、type 数组（any-of）、items 数组
+    （tuple 按位）同口径；畸形 schema except 兜底不崩溃——fail-closed 方向）。"""
+    try:
+        if schema is True:
+            return []
+        if schema is False:
+            return [f"{path}: schema false（任何值都不通过）"]
+        if not isinstance(schema, dict):
+            return [f"{path}: schema 非法形态（须对象/布尔）"]
+        return _minimal_schema_errors_impl(instance, schema, path)
+    except Exception as exc:  # noqa: BLE001 —— B2⑦：兜底（可定位不崩溃）
+        return [f"{path}: 校验异常（{type(exc).__name__}: {exc}）"]
+
+
+def _type_matches(instance, type_name: str) -> bool:
+    if type_name == "object":
+        return isinstance(instance, dict)
+    if type_name == "array":
+        return isinstance(instance, list)
+    if type_name == "string":
+        return isinstance(instance, str)
+    if type_name == "boolean":
+        return isinstance(instance, bool)
+    if type_name == "integer":
+        return isinstance(instance, int) and not isinstance(instance, bool)
+    if type_name == "number":
+        return isinstance(instance, (int, float)) and not isinstance(instance, bool)
+    if type_name == "null":
+        return instance is None
+    return True
+
+
+def _minimal_schema_errors_impl(instance, schema: dict, path: str) -> list[str]:
     errors: list[str] = []
     expected = schema.get("type")
-    if expected == "object" and not isinstance(instance, dict):
-        return [f"{path}: expected object"]
-    if expected == "array" and not isinstance(instance, list):
-        return [f"{path}: expected array"]
-    if expected == "string" and not isinstance(instance, str):
-        return [f"{path}: expected string"]
-    if expected == "boolean" and not isinstance(instance, bool):
-        return [f"{path}: expected boolean"]
-    if expected == "integer" and not isinstance(instance, int):
-        return [f"{path}: expected integer"]
+    if expected is not None:
+        types = expected if isinstance(expected, list) else [expected]
+        if types and not any(_type_matches(instance, t) for t in types):
+            errors.append(
+                f"{path}: expected {'|'.join(map(str, types))}")
     if "enum" in schema and instance not in schema["enum"]:
         errors.append(f"{path}: {instance!r} not in enum {schema['enum']!r}")
     if isinstance(instance, dict):
@@ -405,10 +457,16 @@ def _minimal_schema_errors(instance: dict, schema: dict, path: str = "$") -> lis
             elif schema.get("additionalProperties") is False:
                 errors.append(
                     f"{path}.{key}: additional property not allowed")
-    if isinstance(instance, list) and isinstance(schema.get("items"), dict):
-        for i, item in enumerate(instance):
-            errors.extend(
-                _minimal_schema_errors(item, schema["items"], f"{path}[{i}]"))
+    if isinstance(instance, list):
+        items = schema.get("items")
+        if isinstance(items, dict):            # 单 schema：逐项
+            for i, item in enumerate(instance):
+                errors.extend(
+                    _minimal_schema_errors(item, items, f"{path}[{i}]"))
+        elif isinstance(items, list):          # tuple 形态：按位校验
+            for i, (item, sub) in enumerate(zip(instance, items)):
+                errors.extend(
+                    _minimal_schema_errors(item, sub, f"{path}[{i}]"))
     return errors
 
 
