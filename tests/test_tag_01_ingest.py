@@ -286,3 +286,79 @@ def test_a1_pure_concept_entity_in_snapshot_and_tagging(tag_env) -> None:
     eid = tag_env.backend.resolve_entity_ids(
         ORG, [("concept", "vat.pure_manual")])[("concept", "vat.pure_manual")]
     assert (eid, 1) in [(r[1], r[2]) for r in rows]
+
+
+# ---- 用户裁定①（2026-10-31）：歧义 mention 打标 skip（fail-closed） ----
+
+
+def test_ruling_1_ambiguous_mentions_skipped_when_tagging(tag_env) -> None:
+    """裁定①：`ambiguous=true` 的 mention **不落标**（消歧未定案不贴——
+    fail-closed；防未来实体召回用未定案证据）；消歧定案（共现①/default⑤）
+    的对照命中照常落标。"""
+    from fake_semantic import FakeSourceAdapter
+    from knowledge_lattice.core.semantic.records import EntityRecord
+    from knowledge_lattice.core.semantic.sync import run_sync
+
+    # 共享别名「歧面」双实体（无 default 声明、无关系——无佐证必歧义）；
+    # 既有实体随快照保留（删除比例保护——per-source active 基数）
+    base = EntityRecord(type="concept", key="vat.input_credit",
+                        name="进项税额抵扣")
+    recs = [
+        base,
+        EntityRecord(type="concept", key="amb.a", name="歧义甲",
+                     aliases=("歧面",)),
+        EntityRecord(type="concept", key="amb.b", name="歧义乙",
+                     aliases=("歧面",)),
+    ]
+    run_sync(tag_env.backend, ORG, FakeSourceAdapter("template_center", recs),
+             settings=tag_env.settings, snapshot=list(recs), now=NOW)
+
+    from knowledge_lattice.core.semantic.annotator import (
+        clear_annotator_cache, get_annotator,
+    )
+    from knowledge_lattice.core.semantic.build import run_build
+
+    clear_annotator_cache()
+    r = run_build(tag_env.backend, ORG, settings=tag_env.settings)
+    assert r["status"] == "ready"
+
+    # ① 无佐证文本：annotate 返回 ambiguous=true → 打标 skip（零行）
+    ann, rev = get_annotator(tag_env.backend, ORG, tag_env.settings)
+    mentions = ann.annotate("歧面的说明")["mentions"]
+    assert mentions and mentions[0]["ambiguous"] is True, "前置：无佐证歧义"
+    doc1, t1 = _upload_and_ingest(tag_env, content="歧面的说明。".encode(),
+                                  title="歧义文档")
+    _make_service(tag_env).run_task(t1)
+    assert _tag_rows(tag_env, doc1) == [], \
+        "ambiguous=true 不得落标（裁定① skip——消歧未定不贴）"
+
+    # ② 对照：同句关系佐证（甲乙 related）消歧定案 → 落标
+    from knowledge_lattice.core.semantic.records import RelationRecord
+
+    recs2 = [
+        base,
+        EntityRecord(type="concept", key="amb.a", name="歧义甲",
+                     aliases=("歧面",)),
+        EntityRecord(type="concept", key="amb.b", name="歧义乙",
+                     aliases=("歧面",)),
+        RelationRecord(src=("concept", "amb.a"), rel_type="related_to",
+                       dst=("concept", "amb.b")),
+    ]
+    run_sync(tag_env.backend, ORG, FakeSourceAdapter("template_center", recs2),
+             settings=tag_env.settings, snapshot=list(recs2), now=NOW)
+    clear_annotator_cache()
+    r2 = run_build(tag_env.backend, ORG, settings=tag_env.settings)
+    assert r2["status"] == "ready"
+    ann2, _ = get_annotator(tag_env.backend, ORG, tag_env.settings)
+    # 同句含确定命中「歧义乙」（规范名）→ 共现①把「歧面」定到 amb.a
+    out = ann2.annotate("歧面与歧义乙的关系")
+    face = next(m for m in out["mentions"] if m["surface"] == "歧面")
+    assert face["resolved_by"] == "cooccurrence" and not face["ambiguous"]
+    doc2, t2 = _upload_and_ingest(
+        tag_env, content="歧面与歧义乙的关系说明。".encode(), title="消歧文档")
+    _make_service(tag_env).run_task(t2)
+    rows = _tag_rows(tag_env, doc2)
+    eid_a = tag_env.backend.resolve_entity_ids(
+        ORG, [("concept", "amb.a")])[("concept", "amb.a")]
+    assert (eid_a, 1) in [(r[1], r[2]) for r in rows], \
+        "消歧定案（cooccurrence）的命中照常落标（对照）"

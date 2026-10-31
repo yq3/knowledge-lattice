@@ -920,10 +920,14 @@ class SemanticBackend(Protocol):
         ——m2s-5：无行块重标不消候选，节流窗口防重复投递风暴）。"""
         ...
 
-    def sem_replace_chunk_tags(self, org_id: str, rows: Sequence[dict]) -> int:
-        """块级标签整替（同事务）：rows 涉及的 chunk_rid 集 DELETE 旧行 +
-        INSERT 新行（retag 重算面——幂等收敛；块已删/版本已切时由 untag/
-        对账负责，本方法不做存活过滤——调用方只投活跃块）。返回插入行数。"""
+    def sem_replace_chunk_tags(
+        self, org_id: str, rows: Sequence[dict], *,
+        clear: Sequence[dict] | None = None,
+    ) -> int:
+        """块级标签整替（同事务）：**clear 集**（候选块 {chunk_rid, doc_id,
+        version} 三元组）先 DELETE 再 INSERT 命中行——rows 为空也进事务清理
+        （P1/R2：零命中候选块〔别名删除/restricted 化/歧义 skip〕的旧标随
+        批清除，lagging 可收敛；三元组收窄防 rid 复用误删）。返回提交行数。"""
         ...
 
     def sem_reconcile_chunk_tags(self) -> list[dict]:

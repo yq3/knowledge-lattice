@@ -314,3 +314,81 @@ def test_a5_reconcile_throttle_after_done_retag(env) -> None:
     assert ours["untagged_chunks"] >= 1
     assert stats["retag_enqueued"] == [] and ORG in stats["retag_throttled"], \
         "done retag 后节流窗口内不因无行块重复投（防风暴）"
+
+
+# ---- P2-1（R1 Committer）：pending 版本标行不被对账当悬挂清 ----
+
+
+def test_p2_1_pending_version_tags_survive_reconcile(env) -> None:
+    """对账存活谓词含 pending 版本：覆盖上传 v2 在 index_fts 已写 tag、
+    embed 未完成未切换（`run_task(stop_after='index_fts')` 造态）→ 对账
+    不得把 v2 标行当「非活跃版本」清掉（与「index_fts 同事务打标」承诺
+    一致——inline 并发窗口保护）。"""
+    doc_id, t1 = _ingest(env, "本月进项税额抵扣的口径说明。")
+    _service(env).run_task(t1)
+    assert _active_tags(env, doc_id), "前置：v1 活跃版本打标"
+
+    # 覆盖上传 v2 → 停在 index_fts 之后（v2 块+tag 已写、未 embed 未切换）
+    _, t2 = _ingest(env, "次月口径：进项税额抵扣继续生效。", doc_id=doc_id)
+    _service(env).run_task(t2, stop_after="index_fts")
+    doc = env.backend.get_document(doc_id)
+    assert doc["pending_version"] == 2, "v2 停在 pending（未切换造态）"
+    v2_tags = _tags(env, doc_id, version=2)
+    assert v2_tags, "前置：v2 pending 块已同事务打标（index_fts 阶段）"
+
+    # 对账：v2 标行须存活（修复前被「非活跃版本」谓词物理删除）
+    report = env.backend.sem_reconcile_chunk_tags()
+    ours = next(r for r in report if r["org_id"] == ORG)
+    assert ours["stale_chunks_removed"] == 0, \
+        "pending 版本标行不是悬挂（存活谓词含 pending——P2-1）"
+    assert _tags(env, doc_id, version=2), "pending v2 标行不得被对账清掉"
+    assert _active_tags(env, doc_id), "v1 活跃标行不受影响"
+
+
+# ---- P2-2（R1 Committer）：第 4 挂点（tombstone 90 天 untag）仓库回归 ----
+
+
+def test_p2_2_tombstone_cleanup_untags_fourth_hook(env) -> None:
+    """tombstone 90 天物理清理的语义标随删（第 4 挂点）：过期 tombstone 块
+    的残留 tag 行随 delete_aged_tombstones 清除；**未过期窗口内不删**。
+
+    场景：切换挂点正常清旧版本标（T-S10①）——本用例造「漏网残留」形态
+    （直插行挂在 tombstone 块上），验证兜底挂点自身可测（TC-TAG-03 同款
+    独立造数口径）。"""
+    from knowledge_lattice.store.taskclock import add_seconds, utc_now_ts
+
+    doc_id, t1 = _ingest(env, "本月进项税额抵扣的口径说明。")
+    _service(env).run_task(t1)
+    rid = env.db.execute(
+        "SELECT rid FROM chunks WHERE doc_id = ? AND version = 1", (doc_id,)
+    ).fetchone()[0]
+    eid = env.backend.resolve_entity_ids(
+        ORG, [("concept", "vat.input_credit")])[("concept", "vat.input_credit")]
+
+    # 造 tombstone 块 + 漏网 tag 行：清掉正常打标行后直插「漏网」形态
+    #（模拟切换事务外异常残留——挂点兜底面的独立造数口径，TC-TAG-03 同款）
+    now = utc_now_ts()
+    env.db.execute(
+        "UPDATE chunks SET tombstone = 1, tombstoned_at = ?"
+        " WHERE rid = ?", (add_seconds(now, -91 * 86400), rid))
+    env.db.execute(
+        "DELETE FROM sem_chunk_entities WHERE chunk_rid = ?", (rid,))
+    env.db.execute(
+        "INSERT INTO sem_chunk_entities(org_id, chunk_rid, doc_id, version,"
+        " entity_id, hits, dict_rev) VALUES(?, ?, ?, 1, ?, 1, 'leak')",
+        (ORG, rid, doc_id, eid))
+    assert _tags(env, doc_id, version=1), "前置：漏网 tag 行在"
+
+    # 未过期窗口（before=90 天前减 1 秒——tombstoned_at(91d前) 更早、仍 <=
+    # before？——before 取 92 天前则 91 天前 > before 不删）：先验窗口内不删
+    removed = env.backend.delete_aged_tombstones(
+        before_ts=add_seconds(now, -92 * 86400))
+    assert removed == 0
+    assert _tags(env, doc_id, version=1), "未过期窗口内不删（tag 保留）"
+
+    # 过期（before=90 天前）：块+tag 同事务清
+    removed2 = env.backend.delete_aged_tombstones(
+        before_ts=add_seconds(now, -90 * 86400))
+    assert removed2 == 1
+    assert _tags(env, doc_id, version=1) == [], \
+        "tombstone 清理须同事务清语义标（第 4 挂点）"

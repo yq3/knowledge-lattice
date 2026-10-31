@@ -64,16 +64,21 @@ def env(backend, tmp_path):
                            sync=sync, build=build, r1=r1, tmp=tmp_path)
 
 
-def _ingest_doc(env, content: str, *, doc_id=None):
+def _make_service(env):
+    """带 tagger 的 IngestService（P2-3/R2：retag 测试栈打标链真实触达）。"""
     from fake_providers import FakeEmbedder
     from knowledge_lattice.adapters.embedder import EmbeddingGate
     from knowledge_lattice.core.docs.ingest import IngestService
     from knowledge_lattice.core.semantic.tagging import make_ingest_tagger
 
-    service = IngestService(
+    return IngestService(
         env.backend, FakeEmbedder(dim=8, model_name="fake-embed"),
         env.settings, EmbeddingGate(), env.tmp / "objects",
         tagger=make_ingest_tagger(env.backend, env.settings))
+
+
+def _ingest_doc(env, content: str, *, doc_id=None):
+    service = _make_service(env)
     return service.create_document(
         org_id=ORG, dataset_id="ds:vat_lib", title="t",
         dims={"region": ["CN"]}, owner_user_id="u_full",
@@ -82,14 +87,9 @@ def _ingest_doc(env, content: str, *, doc_id=None):
 
 
 def _run_task(env, task_id):
-    from fake_providers import FakeEmbedder
-    from knowledge_lattice.adapters.embedder import EmbeddingGate
-    from knowledge_lattice.core.docs.ingest import IngestService
-
-    service = IngestService(
-        env.backend, FakeEmbedder(dim=8, model_name="fake-embed"),
-        env.settings, EmbeddingGate(), env.tmp / "objects")
-    service.run_task(task_id)
+    """带 tagger 的执行（P2-3/R2：复用 _make_service——打标链真实触达；
+    「无行块」形态由用例显式构造无 tagger service，不在本 helper 隐含）。"""
+    _make_service(env).run_task(task_id)
 
 
 def _retag_tasks(env):
@@ -166,7 +166,10 @@ def test_tc_build_05_first_build_enqueues_for_legacy_blocks(env) -> None:
 
 def test_tc_tag_02_retag_retags_only_lagging_blocks(env) -> None:
     """词典 r1→r2（别名增删）后跑 retag：仅 dict_rev 落后块重标（已同 rev 的
-    块不动——零候选收敛）；retag 后 dict_rev 字段更新为新 rev。"""
+    块不动——零候选收敛）；retag 后 dict_rev 字段更新为新 rev。
+
+    P2-3/R2：栈接 tagger——r1 已打标为**真实前置**（断言 tag 行非空，
+    非无行块补标形态）。"""
     from knowledge_lattice.core.semantic.records import EntityRecord
     from knowledge_lattice.core.semantic.tagging import run_retag_task
 
@@ -174,6 +177,11 @@ def test_tc_tag_02_retag_retags_only_lagging_blocks(env) -> None:
     _run_task(env, t1)
     doc2, t2 = _ingest_doc(env, "完全无关的日常内容记录。")
     _run_task(env, t2)
+    # r1 已打标（前置——P2-3：真实「落后块」而非无行块）
+    r1_rows = env.db.execute(
+        "SELECT chunk_rid FROM sem_chunk_entities WHERE doc_id = ?", (doc1,)
+    ).fetchall()
+    assert r1_rows, "前置：r1 词典下 doc1 已打标（tagger 接线）"
 
     # r2：别名增删（进项面——新识别面）+ 投递
     env.sync([EntityRecord(type="concept", key="vat.input_credit",
@@ -238,8 +246,117 @@ def test_tc_tag_02_retag_picks_up_untagged_blocks(env) -> None:
         "无行块（打标失败/无构建期）由 retag 补标"
 
 
-# ---- worker 接线：认领类型 + 分发 + 最低优先级 ----
+# ---- P1（R1 Committer）：零命中候选块的旧标清理（别名删除/restricted 化） ----
 
+
+def test_p1_alias_deleted_retag_clears_stale_tags(env) -> None:
+    """P1 回归（删侧）：r1 借别名 A 打标 → r2 **删除**别名 A（别名面收缩）
+    → retag 重标该块零命中 → 旧 tag 行必须清零（整替语义；lagging 收敛，
+    不残留已删别名的召回证据）。"""
+    from knowledge_lattice.core.semantic.records import EntityRecord
+    from knowledge_lattice.core.semantic.tagging import run_retag_task
+
+    # r1：带别名「进项面」（块内容只含别名面——规范名不在块内，保证 r2 删
+    # 别名后 annotate 零命中）
+    env.sync([EntityRecord(type="concept", key="vat.input_credit",
+                           name="进项税额抵扣", aliases=("进项面",))])
+    from knowledge_lattice.core.semantic.annotator import clear_annotator_cache
+    from knowledge_lattice.core.semantic.build import run_build
+
+    clear_annotator_cache()
+    r1 = env.build()
+    assert r1["status"] == "ready"
+
+    doc, t1 = _ingest_doc(env, "进项面的业务口径说明。")
+    _run_task(env, t1)
+    rows = env.db.execute(
+        "SELECT chunk_rid, dict_rev FROM sem_chunk_entities WHERE doc_id = ?",
+        (doc,)).fetchall()
+    assert rows, "前置：r1 借别名「进项面」打标成功"
+    assert rows[0][1] == r1["dict_rev"]
+
+    # r2：别名删除（sync 不带「进项面」——别名面收缩）
+    env.sync([EntityRecord(type="concept", key="vat.input_credit",
+                           name="进项税额抵扣")])
+    r2 = env.build()
+    assert r2["status"] == "ready" and r2["dict_rev"] != r1["dict_rev"]
+    r2_task = next(t for t in _retag_tasks(env)
+                   if json.loads(t[1])["dict_rev"] == r2["dict_rev"])
+
+    result = run_retag_task(env.backend, env.settings, r2_task[0])
+    assert result["chunks_retagged"] >= 1
+    # P1 断言：零命中块旧标清零（修复前残留 r1 行——整替语义不成立）
+    assert env.db.execute(
+        "SELECT COUNT(*) FROM sem_chunk_entities WHERE doc_id = ?",
+        (doc,)).fetchone()[0] == 0, "别名删除后 retag 须清旧标（P1）"
+    # lagging 收敛（残留行会使 lagging 永不归零）
+    report = env.backend.sem_reconcile_chunk_tags()
+    ours = next(r for r in report if r["org_id"] == ORG)
+    assert ours["lagging_chunks"] == 0
+
+
+def test_p1_restricted_migration_retag_clears_stale_tags(env) -> None:
+    """P1 对称面：r1 实体 normal 打标 → r2 sensitivity 改 restricted（自动机
+    不收——T-S9 识别面收缩）→ retag 零命中 → 旧标清零（防 restricted 实体
+    经存量 tag 行残留召回证据）。实体走**纯人工** YAML（concepts/ 覆盖层
+    撞同步实体会被规则表第 3 行剔除——restricted 只能 YAML 声明）。"""
+    from knowledge_lattice.core.semantic.adapters import SourceConfig
+    from knowledge_lattice.core.semantic.adapters.yaml_repo import YamlRepoAdapter
+    from knowledge_lattice.core.semantic.annotator import clear_annotator_cache
+    from knowledge_lattice.core.semantic.tagging import run_retag_task
+    from knowledge_lattice.core.semantic.yaml_merge import run_yaml_sync
+
+    repo = env.tmp / "yamlrepo_r"
+    (repo / "concepts").mkdir(parents=True)
+    # r1：纯人工实体（未声明 sensitivity → normal——B3④ 口径）
+    (repo / "concepts" / "secret.yaml").write_text(
+        "- id: concept:vat.secret\n  name: 内部税收筹划方案\n  owner: o\n"
+        "  aliases: [内部税收筹划方案]\n",
+        encoding="utf-8")
+    run_yaml_sync(env.backend, ORG,
+                  YamlRepoAdapter(SourceConfig(endpoint=str(repo))),
+                  settings=env.settings, now=NOW)
+    clear_annotator_cache()
+    r1 = env.build()
+    assert r1["status"] == "ready", r1
+
+    doc, t1 = _ingest_doc(env, "内部税收筹划方案的执行细则。")
+    _run_task(env, t1)
+    assert env.db.execute(
+        "SELECT COUNT(*) FROM sem_chunk_entities WHERE doc_id = ?",
+        (doc,)).fetchone()[0] == 1, "前置：r1（normal）打标成功"
+
+    # r2：同条目改 restricted（覆盖层在场声明——sensitivity 回写生效）
+    (repo / "concepts" / "secret.yaml").write_text(
+        "- id: concept:vat.secret\n  name: 内部税收筹划方案\n  owner: o\n"
+        "  aliases: [内部税收筹划方案]\n  sensitivity: restricted\n",
+        encoding="utf-8")
+    run_yaml_sync(env.backend, ORG,
+                  YamlRepoAdapter(SourceConfig(endpoint=str(repo))),
+                  settings=env.settings, now=NOW)
+    clear_annotator_cache()
+    r2 = env.build()
+    assert r2["status"] == "ready" and r2["dict_rev"] != r1["dict_rev"]
+    # sensitivity 变化不动别名面——构建面不投（TC-BUILD-05）；补投走**对账
+    # 兜底**（裁定③双层口径：构建侧防风暴、对账保证最终收敛）
+    env.db.execute("DELETE FROM tasks WHERE type = 'semantic_retag'")
+    from knowledge_lattice.worker.maintenance import MAINTENANCE_BODIES
+
+    stats = MAINTENANCE_BODIES["semantic_reconcile"](
+        env.backend, None, env.settings, NOW)
+    assert stats["retag_enqueued"] == [ORG], "sensitivity 收缩经对账补投 retag"
+    task_id = env.db.execute(
+        "SELECT id FROM tasks WHERE type = 'semantic_retag'"
+        " AND status = 'pending'").fetchall()[0][0]
+
+    run_retag_task(env.backend, env.settings, task_id)
+    assert env.db.execute(
+        "SELECT COUNT(*) FROM sem_chunk_entities WHERE doc_id = ?",
+        (doc,)).fetchone()[0] == 0, \
+        "restricted 化后 retag 须清旧标（T-S9 存量残留面）"
+
+
+# ---- worker 接线：认领类型 + 分发 + 最低优先级 ----
 
 def test_runner_claimable_and_dispatches_semantic_retag(env) -> None:
     """CLAIMABLE_TASK_TYPES 含 semantic_retag；TaskRunner 认领并执行到终态。"""

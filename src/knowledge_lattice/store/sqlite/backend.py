@@ -2973,22 +2973,32 @@ class SqliteBackend:
         return [{"rid": r[0], "content": r[1], "doc_id": r[2], "version": r[3]}
                 for r in rows]
 
-    def sem_replace_chunk_tags(self, org_id: str, rows: Sequence[dict]) -> int:
-        """块级标签整替（同事务）：涉及 rid 集 DELETE 旧行 + INSERT 新行
-        （retag 重算面——幂等收敛；本方法不做块存活过滤，调用方只投活跃块）。"""
-        if not rows:
+    def sem_replace_chunk_tags(
+        self, org_id: str, rows: Sequence[dict], *,
+        clear: Sequence[dict] | None = None,
+    ) -> int:
+        """块级标签整替（同事务）：**clear 集**（候选块三元组）先 DELETE 再
+        INSERT 命中行——rows 为空也进事务清理（P1/R2：零命中候选块的旧标
+        必须随整替清除——别名删除/restricted 化后 tag 不残留，lagging 可收敛）。
+
+        删除/插入按 (chunk_rid, doc_id, version) 三元组收窄——SQLite rowid
+        复用与批间版本切换下不误删/误插他块（P1/R2）。clear 缺省回退 rows
+        自身 rid 集（ingest insert 事务路径外无第三态调用方——兼容防御）。"""
+        clear_rows = list(clear) if clear is not None else list(rows)
+        if not clear_rows and not rows:
             return 0
         conn = self._conn
-        rids = sorted({r["chunk_rid"] for r in rows})
         conn.execute("BEGIN IMMEDIATE")
         try:
-            for chunk in _sem_chunks(rids, self._SEM_IN_CHUNK):
-                marks = ",".join("?" for _ in chunk)
+            for chunk in _sem_chunks(clear_rows, self._SEM_IN_CHUNK):
+                conds = " OR ".join(
+                    "(chunk_rid = ? AND doc_id = ? AND version = ?)" for _ in chunk)
+                params: list[object] = [org_id]
+                for r in chunk:
+                    params += [r["chunk_rid"], r["doc_id"], r["version"]]
                 conn.execute(
                     f"DELETE FROM sem_chunk_entities WHERE org_id = ?"
-                    f" AND chunk_rid IN ({marks})",
-                    (org_id, *chunk),
-                )
+                    f" AND ({conds})", params)
             for r in rows:
                 conn.execute(
                     "INSERT INTO sem_chunk_entities(org_id, chunk_rid, doc_id,"
@@ -3007,26 +3017,35 @@ class SqliteBackend:
         return len(rows)
 
     def sem_reconcile_chunk_tags(self) -> list[dict]:
-        """打标对账（T-S10/TC-TAG-03 兜底）：①悬挂行（块不在/非活跃版本）与
-        ②实体已亡行物理清理（计数报告）；③dict_rev 落后只计数（补投 retag
-        幂等收敛——不直接改标）。per-org 报告。"""
+        """打标对账（T-S10/TC-TAG-03 兜底）：①悬挂行（块不在/非存活版本——
+        **存活谓词含 pending**：index_fts 同事务打标承诺下覆盖上传在途版本
+        的标行不是悬挂，P2-1/R2）与②实体已亡行物理清理（计数报告）；③
+        dict_rev 落后只计数（补投 retag 幂等收敛——不直接改标）。匹配均按
+        (chunk_rid, doc_id, version) 三元组收窄——SQLite rowid 复用不误判。
+        per-org 报告。"""
         conn = self._conn
         conn.execute("BEGIN IMMEDIATE")
         try:
-            # ① 块悬挂：sem_chunk_entities 行指向的块不存在或非活跃版本
+            # ① 块悬挂：标行指向的块不存在或非存活版本（活跃或 pending）
             stale_by_org = dict(conn.execute(
                 "SELECT ce.org_id, COUNT(*) FROM sem_chunk_entities ce"
                 " WHERE NOT EXISTS ("
                 "   SELECT 1 FROM chunks c JOIN documents d ON d.id = c.doc_id"
-                "   WHERE c.rid = ce.chunk_rid AND c.tombstone = 0"
-                "     AND c.version = d.active_version)"
+                "   WHERE c.rid = ce.chunk_rid AND c.doc_id = ce.doc_id"
+                "     AND c.version = ce.version AND c.tombstone = 0"
+                "     AND (c.version = d.active_version"
+                "          OR c.version = d.pending_version))"
                 " GROUP BY ce.org_id",
             ).fetchall())
             conn.execute(
                 "DELETE FROM sem_chunk_entities WHERE NOT EXISTS ("
                 "  SELECT 1 FROM chunks c JOIN documents d ON d.id = c.doc_id"
-                "  WHERE c.rid = sem_chunk_entities.chunk_rid AND c.tombstone = 0"
-                "    AND c.version = d.active_version)",
+                "  WHERE c.rid = sem_chunk_entities.chunk_rid"
+                "    AND c.doc_id = sem_chunk_entities.doc_id"
+                "    AND c.version = sem_chunk_entities.version"
+                "    AND c.tombstone = 0"
+                "    AND (c.version = d.active_version"
+                "         OR c.version = d.pending_version))",
             )
             # ② 实体已亡（missing/retired——命中不该再服务；等价清理面）
             retired_by_org = dict(conn.execute(
@@ -3058,8 +3077,10 @@ class SqliteBackend:
                 " WHERE ce.org_id = ? AND ce.dict_rev <> ?"
                 "   AND EXISTS ("
                 "     SELECT 1 FROM chunks c JOIN documents d ON d.id = c.doc_id"
-                "     WHERE c.rid = ce.chunk_rid AND c.tombstone = 0"
-                "       AND c.version = d.active_version)",
+                "     WHERE c.rid = ce.chunk_rid AND c.doc_id = ce.doc_id"
+                "       AND c.version = ce.version AND c.tombstone = 0"
+                "       AND (c.version = d.active_version"
+                "            OR c.version = d.pending_version))",
                 (org, rev),
             ).fetchone()
             lagging[org] = row[0] if row else 0
@@ -3067,9 +3088,11 @@ class SqliteBackend:
                 "SELECT COUNT(*) FROM chunks c"
                 " JOIN documents d ON d.id = c.doc_id"
                 " WHERE d.org_id = ? AND c.tombstone = 0"
-                "   AND c.version = d.active_version"
+                "   AND (c.version = d.active_version"
+                "        OR c.version = d.pending_version)"
                 "   AND NOT EXISTS (SELECT 1 FROM sem_chunk_entities ce"
-                "     WHERE ce.chunk_rid = c.rid)",
+                "     WHERE ce.chunk_rid = c.rid AND ce.doc_id = c.doc_id"
+                "       AND ce.version = c.version)",
                 (org,),
             ).fetchone()
             untagged[org] = row2[0] if row2 else 0

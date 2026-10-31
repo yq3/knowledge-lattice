@@ -126,24 +126,33 @@ def _maybe_enqueue_retag(
     ——新/旧构建的 dict_rev_components.aliases 分量摘要对比（变化 ⟺ 别名集
     增删/改动；仅 definition 变化不动别名面 → 不投，避免无谓重标风暴）。
     prev 缺省（首建/存量行无分量）→ 宁投勿漏（存量无行块由 retag 补标；
-    无块时零候选幂等收尾）。stats.retag_enqueued 已在返回前落值。"""
+    无块时零候选幂等收尾）。stats.retag_enqueued 已在返回前落值。
+
+    P3-3/R2：投递失败不让**已 ready** 的构建失败（切换已提交——fail_build
+    零生效但任务重试徒劳；记 warning，补投交对账兜底）。"""
     from knowledge_lattice.core.semantic.tagging import alias_set_changed, enqueue_retag
 
-    prev_stats = None
-    if prev_build is not None:
-        prev_json = prev_build.get("stats_json") or "{}"
-        if isinstance(prev_json, str):
-            try:
-                prev_json = json.loads(prev_json)
-            except (TypeError, ValueError):
-                prev_json = {}
-        prev_stats = prev_json if isinstance(prev_json, dict) else None
-    if not alias_set_changed(prev_stats, stats):
-        logger.info(
-            "semantic build alias set unchanged: org=%s rev=%s——不投 retag"
-            "（仅非别名面变化，TC-BUILD-05）", org_id, dict_rev)
+    try:
+        prev_stats = None
+        if prev_build is not None:
+            prev_json = prev_build.get("stats_json") or "{}"
+            if isinstance(prev_json, str):
+                try:
+                    prev_json = json.loads(prev_json)
+                except (TypeError, ValueError):
+                    prev_json = {}
+            prev_stats = prev_json if isinstance(prev_json, dict) else None
+        if not alias_set_changed(prev_stats, stats):
+            logger.info(
+                "semantic build alias set unchanged: org=%s rev=%s——不投 retag"
+                "（仅非别名面变化，TC-BUILD-05）", org_id, dict_rev)
+            return False
+        return enqueue_retag(backend, org_id, dict_rev)
+    except Exception:  # noqa: BLE001 —— 已 ready 构建不受投递失败影响（P3-3）
+        logger.exception(
+            "retag enqueue failed after build ready: org=%s rev=%s"
+            "（构建终态不受影响——补投交对账兜底）", org_id, dict_rev)
         return False
-    return enqueue_retag(backend, org_id, dict_rev)
 
 
 def _build_stats(snapshot: dict, *, annotator=None) -> dict:

@@ -30,7 +30,7 @@
 | [G-18](#g-18-sem_builds当前构建按最新-ready-取值rev-回退场景-current锚点失真) | **已收口**（m2s-3 R1——0007 activated_at 指针+条件 upsert） | design §4 status 枚举无 superseded/is_current，「最新 ready by id」在 rev 回退时 current/锚点失真（查询面走实时表不受影响）；sqlite 同 rev 竞态双 ready 事件（O-1） | FR-S1 / design §4·§5.8 · M2-S1 | 2026-10-30 |
 | [G-19](#g-19-五源每天一次兜底调度未接线design-§58-适配器表半句) | **已收口**（m2s-4 R1——maintenance 挂载 semantic_daily_sync：五源/日·窗口跨零点·pending 幂等·sem_sync_runs 24h 与 webhook 去重） | design §5.8 适配器表「每天一次兜底」半句——五源仅 webhook/手动两路径，app 兜底循环只认领任务行不投递同步；长期无 webhook 的源停留旧快照 | FR-S1 / design §5.8 · M2-S1 | 2026-10-31 |
 | [G-20](#g-20-webhook-验签前读取完整请求体无大小上限公网入口内存放大) | 已接受（私有化内网面+部署侧反代限流兜底） | webhook 验签前 `await request.body()` 无上限——公网入口内存放大（design 未要求）；公网直曝部署时补应用层上限 | 安全 / design §6.2 · M2-S2 | 2026-10-31 |
-| [G-21](#g-21-annotatello-读-live-快照而非-build-产物冷缓存重启窗口-rev-锚点失真评测门禁非持久m2s-4-p2-1-方案-b-登记项) | 已接受（方案 B：同锚点+钉死用例；**方案 A〔build 快照附表〕M2-S3/m2-5 承接**；同批登记 P3 级六项） | annotate/L0 恒读 live：冷缓存/重启 rev 锚点失真、评测拦下词典重启后仍被服务、sync→build 窗口内容/rev 错配 | 语义 / design §5.8·§5.9 · M2-S2 | 2026-10-31 |
+| [G-21](#g-21-annotatello-读-live-快照而非-build-产物冷缓存重启窗口-rev-锚点失真评测门禁非持久m2s-4-p2-1-方案-b-登记项) | **已收口**（m2s-5 方案 A：0008 快照附表+按 current build 取快照+冷缓存/重启服务 build 产物；残留 8 项登记〔快照 GC/pg CHECK/对账双层口径等〕） | annotate/L0 恒读 live：冷缓存/重启 rev 锚点失真、评测拦下词典重启后仍被服务、sync→build 窗口内容/rev 错配 | 语义 / design §5.8·§5.9 · M2-S2 | 2026-10-31 |
 
 ---
 
@@ -222,10 +222,9 @@
 
 ## G-21 annotate/L0 读 live 快照而非 build 产物——冷缓存/重启窗口 rev 锚点失真+评测门禁非持久（m2s-4 P2-1 方案 B 登记项）
 
-- **状态**：已接受（2026-10-31 随 m2s-4 R2 Committer P2-1/P1 相关裁定登记——用户拍板「按建议执行」取方案 B）。
-- **问题**：annotate（get_annotator 缓存 miss）与 `/semantic/l0` 恒读 live 快照（`sem_active_snapshot`）：①进程重启/冷缓存在构建中或构建失败后，`live_rev != current ready rev` 时按 live 字典服务但响应旧 `dict_rev`（design §5.8「构建中请求始终用旧 dict_rev」字面偏差）；②**评测门槛拦下的词典已写入 live 表**——进程重启后 annotate 直接服务被拦词典（failed build 不切 ready 的治理语义仅进程生命周期内）；③sync→build 窗口内 `/semantic/l0` 内容新/dict_rev 旧错配（agent 侧按 rev 缓存会误判）。
-- **对冲**：R3 起 /semantic/l0 与 annotate 同锚点+永久用例显式钉死冷缓存行为；热缓存路径（进程内）符合 T-S12；评测门禁在构建路径内仍有效（拦切 ready）。
-- **收口方向**：**方案 A（M2-S3/m2-5 收口段承接）**——`sem_builds` 增快照附表（sem_build_snapshots(build_id, snapshot_json) 最小 JSON），get_annotator/render_l0 按 current build id 取快照、无快照才回退 live。
-- **同批登记（m2s-4 R2 P3 级）**：TC-BUILD-04「需人工确认」无确认/强制放行入口（误拦只能修词典/改黄金集重建）；歧义缺省读法=实现第一候选（按 weight+实体 ID 排序，换库/换同步序可能翻转——M2-S3 前改 YAML 显式缺省主读）；L0 兜底单 bigram 证据即定案（宽松档——建议 ≥2 重叠或按定义长度归一）；l0_extra（l0.yaml 额外文本）未被 render_l0 消费；拉丁去空白粘接（"abc def"→"abcdef" 后 "abc" 不命中——保守无 FP 方向）；`_TIER_CONFIDENCE` alias=0.95 与 §6.3 中间件只自动注入 confidence=1.0 命中的交互（M2-S3 中间件确认设计意图）。
-- **R3 终审补登记（2026-10-31 归档批）**：ambiguity 分子把 `ambiguous=true` 的主候选命中计为「正确」（参考集严格口径 18/20=0.90 仍过门——**M2-S3 收紧分子**并同步黄金集断言）；`_build_stats.ambiguous_aliases` 只滤 restricted 未滤 fuzzy_only（注释「识别可用面」与实现出入——报告面非门槛，对齐注释或同滤）；`/semantic/l0` 无 build 时返回空片段+token_estimate:0（构建产物语义——与 annotate「无 build 不服务」一致）；precision 分母不含 neg 条目预测（负样本 FP 只进 neg_fp——docstring 口径化）；mixed-mode context 候选级门槛交互（同一 alias_norm exact+context 并存时整条按非 context 处理——按候选逐个套门槛或登记）；`double_build` 测试名实（同一 Annotator 跑两遍——改名或真双构建）；maintenance 四项（docstring 任务清单/非法窗口每 300s 告警噪音/daily 投递审计事件/pending 去重 payload 精确匹配与 force 形态互不去重）；`_audit_build` 重复 import、annotate 仅捕 ValueError。**R3 用例空转两项**（P1-1 报告面断言 fixture 未构成跨实体共享/P3-1 用例用歧义 mention 未覆盖非歧义分支——下轮触碰时补强）。
-- **重开条件**：M2-S3 权限面/m2-5 收口段（方案 A 承接）。
+- **状态**：**已收口（2026-10-31 随 m2s-5 方案 A 交付——0008 `sem_build_snapshots` 双方言附表；switch/reactivate 同事务写快照；get_annotator/render_l0 按 current build id 取快照；冷缓存/重启服务 build 产物〔评测拦下词典重启不再被服务〕；无快照回退 live+告警；快照含 relations——共现/L0 消解冷热等价必需）**。
+- **问题**：（历史）annotate（get_annotator 缓存 miss）与 `/semantic/l0` 恒读 live 快照：①进程重启/冷缓存在构建中或构建失败后按 live 字典服务但响应旧 `dict_rev`；②评测门槛拦下的词典已写入 live 表——进程重启后直接被服务；③sync→build 窗口内容/rev 错配。
+- **对冲**：（历史）m2s-4 方案 B：同锚点+冷缓存行为钉死用例。
+- **m2s-4 P3 清单核销（m2s-5 R1 后）**：**已闭**——ambiguity 分子收紧（B1：ambiguous=true 不计正确）/歧义缺省读法显式化（B2：default_reading YAML 字段+消歧第⑤级）/`_build_stats.ambiguous_aliases` 滤 fuzzy_only（r6 随手）/`_audit_build` 重复 import（已删）/R3 用例空转两项（B4 补强）/latin 全角永久用例。**未闭（挂 m2s-6/m2-5 顺手）**——TC-BUILD-04「需人工确认」无确认入口/l0_extra 未被 render_l0 消费/拉丁去空白粘接/alias confidence=0.95 与中间件交互（M2-S3 确认设计意图）/precision 分母不含 neg 预测（口径化）/mixed-mode context 候选级门槛/double_build 测试名实/maintenance 前代四项（m2s-4 期——本段 retag 对账为新代码）。
+- **残留登记（m2s-5 R1 Committer 审查）**：①PG `snapshot_json` 无 `json_valid` CHECK（写入方受控、sqlite 有——可选 `IS JSON` 补强）；②0008 前存量 ready 行无快照→回退 live，同 rev skipped build 不回填（仅新 rev/重激活写）；③快照含 relations 必需但体积较大（10⁵ 量级或数十 MB）且**无旧 build 快照 GC**（POC 接受，裁剪最小字段/保留策略后续）；④外部篡改快照 JSON 时 get_annotator 抛错不回退 live；⑤**对账双层口径（用户 2026-10-31 裁定接受）**：构建侧仅别名增删投 retag（防风暴）+对账 lagging>0 即投·done 24h 节流（保最终一致）——仅改 definition/sensitivity 的构建当天不投、次日对账补投属预期；⑥无行块恒为 retag 候选（无标记字段——A-14 已知，每日全扫一次）；⑦**YAML 外部语义仓 `_schema/entry.schema.json` 需同步放开 `default_reading` 属性**（ops 项——仓外 schema additionalProperties:false 会拒新字段）；⑧歧义打标 skip 口径（用户裁定——消歧未定不落标）。
+- **重开条件**：无（已收口；残留项见上——③⑦随 M2-S3/m2-5 收口或运维处理）。

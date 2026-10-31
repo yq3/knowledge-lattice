@@ -46,8 +46,11 @@ def compute_sem_tags(
     """chunks → sem_tags（纯计算面——store insert 事务内消费）。
 
     每 chunk 跑 annotate 第 1 层识别，(chunk, entity) 聚合 hits；
-    restricted 实体防御性过滤（Annotator 已不入机——双层保险，T-S9）；
-    超长块跳过（chunking 上限 512 << 4000，防御性兜底不阻断）。"""
+    **ambiguous=true 的 mention 不落标**（用户裁定①/m2s-5 R2：消歧未定案
+    不贴——fail-closed，防未定案证据进入未来实体召回；定案命中〔含
+    default⑤ 显式缺省主读档〕照常落）；restricted 实体防御性过滤
+    （Annotator 已不入机——双层保险，T-S9）；超长块跳过（chunking 上限
+    512 << 4000，防御性兜底不阻断）。"""
     rows: list[tuple[int, int, int]] = []
     for ch in chunks:
         content = ch.get("content") or ""
@@ -56,6 +59,8 @@ def compute_sem_tags(
         mentions = annotator.annotate(content)["mentions"]
         agg: dict[int, int] = {}
         for m in mentions:
+            if m.get("ambiguous"):
+                continue    # 裁定①：未消解定案不贴标（fail-closed）
             eid = m["entity_id"]
             ent = annotator.entities.get(eid)
             if ent is None or ent.get("sensitivity") == "restricted":
@@ -151,8 +156,17 @@ def run_retag_task(
 
     ann, rev = get_annotator(backend, org_id, settings)
     if ann is None or rev != target_rev:
-        ann = Annotator(json.loads(
-            backend.sem_load_build_snapshot(org_id, current["id"])))
+        # P3-2/R2：缓存锚与目标不一致（并发切 build）时按快照附表重建；
+        # 0008 前存量行无快照 → 回退 live + 告警（防 json.loads(None) TypeError）
+        snap_json = backend.sem_load_build_snapshot(org_id, current["id"])
+        if snap_json is not None:
+            ann = Annotator(json.loads(snap_json))
+        else:
+            logger.warning(
+                "retag target build has no snapshot: org=%s build_id=%s"
+                "——fallback to live snapshot（0008 前存量行兼容路径）",
+                org_id, current["id"])
+            ann = Annotator(backend.sem_active_snapshot(org_id))
     batch = max(1, int(getattr(settings, "semantic_batch_rows", 1000)))
     retagged = 0
     cursor = 0
@@ -167,7 +181,11 @@ def run_retag_task(
             org_id, target_rev, limit=batch, after_rid=cursor)
         if not candidates:
             break
-        # 候选携 doc_id/version（整替行的携带面——批间被删块由 untag 已清）
+        # P1/R2：**整替**以本批全部候选为清理面（三元组收窄）——零命中候选
+        # 块（别名删除/restricted 化/裁定① 歧义 skip）的旧标随批清除，lagging
+        # 可收敛；rows 为空也进事务清理（不早退）
+        clear = [{"chunk_rid": c["rid"], "doc_id": c["doc_id"],
+                  "version": c["version"]} for c in candidates]
         rows: list[dict] = []
         for c in candidates:
             tags = compute_sem_tags(ann, target_rev, [{"seq": 0, "content":
@@ -176,8 +194,7 @@ def run_retag_task(
                 rows.append({"chunk_rid": c["rid"], "doc_id": c["doc_id"],
                              "version": c["version"], "entity_id": entity_id,
                              "hits": hits, "dict_rev": target_rev})
-        if rows:
-            backend.sem_replace_chunk_tags(org_id, rows)
+        backend.sem_replace_chunk_tags(org_id, rows, clear=clear)
         retagged += len(candidates)
         # 游标推进（无命中块无行可写、不消候选——防原地死循环；重跑从头幂等）
         cursor = candidates[-1]["rid"]

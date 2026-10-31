@@ -2391,21 +2391,31 @@ class PgBackend:
         return [{"rid": r[0], "content": r[1], "doc_id": r[2], "version": r[3]}
                 for r in rows]
 
-    def sem_replace_chunk_tags(self, org_id: str, rows: Sequence[dict]) -> int:
-        """块级标签整替（同事务；与 sqlite 同语义——调用方只投活跃块）。"""
-        if not rows:
+    def sem_replace_chunk_tags(
+        self, org_id: str, rows: Sequence[dict], *,
+        clear: Sequence[dict] | None = None,
+    ) -> int:
+        """块级标签整替（同事务；与 sqlite 同语义——P1/R2：clear 集先 DELETE
+        再插命中行、rows 空也进事务、(chunk_rid, doc_id, version) 三元组收窄）。"""
+        clear_rows = list(clear) if clear is not None else list(rows)
+        if not clear_rows and not rows:
             return 0
         conn = self._conn
-        rids = sorted({r["chunk_rid"] for r in rows})
         conn.execute("BEGIN")
         try:
-            for chunk in _sem_chunks(rids, 500):
-                marks = ",".join(f"%(r{i})s" for i in range(len(chunk)))
+            for chunk in _sem_chunks(clear_rows, 200):
+                conds = " OR ".join(
+                    f"(chunk_rid = %(c{i})s AND doc_id = %(d{i})s"
+                    f" AND version = %(v{i})s)"
+                    for i in range(len(chunk)))
+                params: dict[str, object] = {"org": org_id}
+                for i, r in enumerate(chunk):
+                    params[f"c{i}"] = r["chunk_rid"]
+                    params[f"d{i}"] = r["doc_id"]
+                    params[f"v{i}"] = r["version"]
                 conn.execute(
                     f"DELETE FROM sem_chunk_entities WHERE org_id = %(org)s"
-                    f" AND chunk_rid IN ({marks})",
-                    {"org": org_id, **{f"r{i}": v for i, v in enumerate(chunk)}},
-                )
+                    f" AND ({conds})", params)
             for r in rows:
                 conn.execute(
                     "INSERT INTO sem_chunk_entities(org_id, chunk_rid, doc_id,"
@@ -2426,7 +2436,8 @@ class PgBackend:
         return len(rows)
 
     def sem_reconcile_chunk_tags(self) -> list[dict]:
-        """打标对账（与 sqlite 同语义）：悬挂/实体亡行清理 + dict_rev 落后计数。"""
+        """打标对账（与 sqlite 同语义——P2-1/R2：存活谓词含 pending、三元组
+        收窄防误判）：悬挂/实体亡行清理 + dict_rev 落后计数。"""
         conn = self._conn
         conn.execute("BEGIN")
         try:
@@ -2434,15 +2445,21 @@ class PgBackend:
                 "SELECT ce.org_id, COUNT(*) FROM sem_chunk_entities ce"
                 " WHERE NOT EXISTS ("
                 "   SELECT 1 FROM chunks c JOIN documents d ON d.id = c.doc_id"
-                "   WHERE c.rid = ce.chunk_rid AND c.tombstone = 0"
-                "     AND c.version = d.active_version)"
+                "   WHERE c.rid = ce.chunk_rid AND c.doc_id = ce.doc_id"
+                "     AND c.version = ce.version AND c.tombstone = 0"
+                "     AND (c.version = d.active_version"
+                "          OR c.version = d.pending_version))"
                 " GROUP BY ce.org_id",
             ).fetchall())
             conn.execute(
                 "DELETE FROM sem_chunk_entities WHERE NOT EXISTS ("
                 "  SELECT 1 FROM chunks c JOIN documents d ON d.id = c.doc_id"
-                "  WHERE c.rid = sem_chunk_entities.chunk_rid AND c.tombstone = 0"
-                "    AND c.version = d.active_version)",
+                "  WHERE c.rid = sem_chunk_entities.chunk_rid"
+                "    AND c.doc_id = sem_chunk_entities.doc_id"
+                "    AND c.version = sem_chunk_entities.version"
+                "    AND c.tombstone = 0"
+                "    AND (c.version = d.active_version"
+                "         OR c.version = d.pending_version))",
             )
             retired_by_org = dict(conn.execute(
                 "SELECT ce.org_id, COUNT(*) FROM sem_chunk_entities ce"
@@ -2470,8 +2487,10 @@ class PgBackend:
                 " WHERE ce.org_id = %(org)s AND ce.dict_rev <> %(rev)s"
                 "   AND EXISTS ("
                 "     SELECT 1 FROM chunks c JOIN documents d ON d.id = c.doc_id"
-                "     WHERE c.rid = ce.chunk_rid AND c.tombstone = 0"
-                "       AND c.version = d.active_version)",
+                "     WHERE c.rid = ce.chunk_rid AND c.doc_id = ce.doc_id"
+                "       AND c.version = ce.version AND c.tombstone = 0"
+                "       AND (c.version = d.active_version"
+                "            OR c.version = d.pending_version))",
                 {"org": org, "rev": rev},
             ).fetchone()
             lagging[org] = row[0] if row else 0
@@ -2479,9 +2498,11 @@ class PgBackend:
                 "SELECT COUNT(*) FROM chunks c"
                 " JOIN documents d ON d.id = c.doc_id"
                 " WHERE d.org_id = %(org)s AND c.tombstone = 0"
-                "   AND c.version = d.active_version"
+                "   AND (c.version = d.active_version"
+                "        OR c.version = d.pending_version)"
                 "   AND NOT EXISTS (SELECT 1 FROM sem_chunk_entities ce"
-                "     WHERE ce.chunk_rid = c.rid)",
+                "     WHERE ce.chunk_rid = c.rid AND ce.doc_id = c.doc_id"
+                "       AND ce.version = c.version)",
                 {"org": org},
             ).fetchone()
             untagged[org] = row2[0] if row2 else 0
