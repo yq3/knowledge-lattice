@@ -198,7 +198,15 @@ class Annotator:
     # ---- 内部 ----
 
     def _scan(self, norm: str) -> list[dict]:
-        """AC 扫描 + overlap 择优（最长优先，等长 weight 高者——TC-SEM-02）。"""
+        """AC 扫描 + overlap 择优（最长优先，等长 weight 高者——TC-SEM-02）。
+
+        空自动机防御（R2/IMPL_BUG）：零可用别名（全 restricted/全 fuzzy_only/
+        零实体——T-S9「表现为不存在」与 TC-BUILD-02 的合法极端形态）下
+        pyahocorasick 空 trie `make_automaton()` 不生效、`iter()` 抛
+        AttributeError——len()==0 短路返回零命中（fail-closed 不变 crash，
+        该 org 任何文本零标注）。"""
+        if not len(self.automaton):
+            return []
         raw = []
         for end_idx, recs in self.automaton.iter(norm):
             j = end_idx + 1

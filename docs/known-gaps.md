@@ -28,7 +28,7 @@
 | [G-16](#g-16-语义同步触发侧-create_task--append_outbox-两事务崩溃丢触发审计) | **已收口**（m2s-2 R1 触发侧+R2 构建侧 audit= 同事务——崩溃注入双方言实证） | api 触发路径 create_task 提交与 append_outbox 独立两事务——进程恰在两者间崩溃时丢触发审计事件（任务行仍在、可查）。修复口径：create_task 增 audit= 同事务参数（m2-2 outbox 先例），m2s-2/m2s-3 给任务创建面统一收口时一并落 | FR-6 / design §5.8·§6.2 · M2-S1 | 2026-10-29 |
 | [G-17](#g-17-semantic_build-的-dict_rev-输入未含-yaml_rev--curated-内容m2-s3-接-yaml-前置) | **已收口**（m2s-3 R1——curated_json 入快照+yaml_rev 入 dict_rev） | design §5.8 明确 dict_rev 含 YAML commit；YAML 改 definition 若不触发重建则 L0/模糊索引陈旧。M2-S3 接 YAML 时必须同时接 yaml_rev（或 curated_json 纳入快照） | FR-S1 / design §5.8 · M2-S1 | 2026-10-30 |
 | [G-18](#g-18-sem_builds当前构建按最新-ready-取值rev-回退场景-current锚点失真) | **已收口**（m2s-3 R1——0007 activated_at 指针+条件 upsert） | design §4 status 枚举无 superseded/is_current，「最新 ready by id」在 rev 回退时 current/锚点失真（查询面走实时表不受影响）；sqlite 同 rev 竞态双 ready 事件（O-1） | FR-S1 / design §4·§5.8 · M2-S1 | 2026-10-30 |
-| [G-19](#g-19-五源每天一次兜底调度未接线design-§58-适配器表半句) | 已接受（cron 运维路径兜底；**M2-S4 承接**——窗口/幂等/与 webhook 去重口径） | design §5.8 适配器表「每天一次兜底」半句——五源仅 webhook/手动两路径，app 兜底循环只认领任务行不投递同步；长期无 webhook 的源停留旧快照 | FR-S1 / design §5.8 · M2-S1 | 2026-10-31 |
+| [G-19](#g-19-五源每天一次兜底调度未接线design-§58-适配器表半句) | **已收口**（m2s-4 R1——maintenance 挂载 semantic_daily_sync：五源/日·窗口跨零点·pending 幂等·sem_sync_runs 24h 与 webhook 去重） | design §5.8 适配器表「每天一次兜底」半句——五源仅 webhook/手动两路径，app 兜底循环只认领任务行不投递同步；长期无 webhook 的源停留旧快照 | FR-S1 / design §5.8 · M2-S1 | 2026-10-31 |
 | [G-20](#g-20-webhook-验签前读取完整请求体无大小上限公网入口内存放大) | 已接受（私有化内网面+部署侧反代限流兜底） | webhook 验签前 `await request.body()` 无上限——公网入口内存放大（design 未要求）；公网直曝部署时补应用层上限 | 安全 / design §6.2 · M2-S2 | 2026-10-31 |
 
 ---
@@ -207,10 +207,10 @@
 
 ## G-19 五源「每天一次兜底」调度未接线（design §5.8 适配器表半句）
 
-- **状态**：已接受（2026-10-31 随 m2s-3 R1 登记——Committer N5 裁定、用户拍板，M2-S4 承接）。
+- **状态**：**已收口（2026-10-31 随 m2s-4 R1 交付——worker maintenance 挂载 semantic_daily_sync：五源各一次/日〔interval 可配、0=关〕/窗口口径 night_window 起效于兜底且支持跨零点/幂等同参 pending 在队去重 pending_task_exists/与 webhook 去重以 sem_sync_runs 成功 run 24h 为锚〔失败 run 不作锚〕；Tester 专项全过含跨零点探针 D1~D7）**。
 - **问题**：design §5.8 适配器表「每天一次兜底」半句——五源（template_center/metadata/yaml/scenario_config/report_center）当前仅有 webhook 触发与手动 POST 两条触发路径，**app 兜底循环只认领任务行不投递语义源同步**；同步全靠外部触发时，长期无 webhook 的源将停留在旧快照（missing/retired 宽限推进也随之停滞）。
-- **对冲**：运维可经 cron 调 `POST /semantic/sync/{adapter}`（m2s-3 交付的运维路径）；sync 幂等+同 rev 构建跳过使重复触发无害。
-- **重开条件**：M2-S4 开工（L0/构建报告段一并接调度——需明确调度窗口/幂等/与 webhook 触发去重口径）。
+- **对冲**：（历史）运维可经 cron 调 `POST /semantic/sync/{adapter}`。
+- **重开条件**：无（已收口）。
 
 ## G-20 webhook 验签前读取完整请求体（无大小上限——公网入口内存放大）
 
