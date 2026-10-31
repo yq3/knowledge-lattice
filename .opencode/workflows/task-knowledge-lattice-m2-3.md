@@ -5,18 +5,18 @@ target: knowledge-lattice
 coderTaskId: ses_e7565e421ffeibNhg99G5B37wU
 testerTaskId: ses_e75356242ffeqpGuedInlPvXe0
 committerTaskId: ses_e74efae1dffeocAWiS1Yfl3633
-status: approved
+status: done
 round: 3
 maxRounds: 3
 testVerdict: PASS
 reviewVerdict: APPROVED
 testedSha: dcf3923732ae89a5ca26e977c1eb108be5d8881b
-reviewedSha: dcf3923732ae89a5ca26e977c1eb108be5d8881b
+reviewedSha: 6633914
 # 以上 SHA = coder 最近一轮本地 commit（[taskId] R<n>）后的 HEAD；修复轮 commit 后 reviewedSha 置空待重审
 filesChanged: [store/backend.py, store/sqlite/backend.py, store/postgres/backend.py, store/audit_chain.py, store/postgres/audit.py, store/sqlite/backup.py, store/postgres/backup.py, api/admin.py, domain/audit_events.py, core/docs/credentials.py, worker/maintenance.py, web/index.html, web/app.js, web/i18n.js, web/style.css, scripts/test_gate.sh, benchmarks/dr_ops05_drill.py, tests/test_ops_chain_read.py, tests/test_ops_03_audit_access.py, tests/test_ops_06_csv_grants.py, tests/test_ops_07_dim_governance.py, tests/test_ops_08_grants_replace.py, tests/test_admin_manage.py, tests/test_admin_store_reads.py, tests/test_ops_05_backup.py, docs/TEST-CASES.md, RUNBOOK.md, AGENTS.md, .opencode/workflows/_m2-plan.md, .opencode/workflows/task-knowledge-lattice-m2s-1.md]
 endReason: null
 createdAt: 2026-10-30T10:14:29+0800
-updatedAt: 2026-10-30T15:05:57+0800
+updatedAt: 2026-10-30T15:14:50+0800
 ---
 
 # task-knowledge-lattice-m2-3: M2.3 管理面 API + 最小 UI + m2-2 移交 B1~B6 收编
@@ -114,6 +114,10 @@ updatedAt: 2026-10-30T15:05:57+0800
 **R3 Committer 终审**（ses_e74efae1dffeocAwiS1Yfl3633 续接，2026-10-30 15:02）：**reviewVerdict=APPROVED**（reviewedSha=dcf3923=testedSha=HEAD 三一致——docs 批已含于 R3 commit 无需补轮）。P1:0 P2:0；**P3×10 登记放行不突破 maxRounds=3**：①RUNBOOK §4.1 产物清单旧行残留（监督侧交付 chore 顺手）②B5 读回行 row_hash 不自洽未入 m2-6 登记（补）③「ULID」注释字样（实为 uuid4——注释级）④P3-1 用例值序与时间序同向未锁死 reversed+双分支写法松⑤UI fresh 残余 UX（不预填/不显示既有值/langchange 清空——m2-6）⑥格式常量双源（store strftime 字面量 vs api _EXPIRES_LIB_FORMAT）⑦协议 list_grants_for_export 字符串契约 docstring ⑧API 级 pg diff 断言（现 store 级+Tester 临时验证）⑨测试注释 ULID 字样 ⑩v1.9.3 版本行「R2 批」措辞（实 R2/R3 两批）。**关键面**：P2-1 通过（store 单点归一优于 api 归一——datetime 不外泄、三消费面同源、created_at 先例一致）；P2-2 通过（fresh 集「不动=不变，动=显式」、静默清除根除、两步显式可接受）；D-1 闭环；零回归（964→994→1000 单调、零删除零弱化）。**双通过达成（round=3 收敛）**。交付前置两件：检查点入库+manifest（若 chore 推进 HEAD 按 m2-2/m1-4 先例记 reviewedSha=docs-only HEAD、testedSha 保持 dcf3923）；supervised-coding.md 不入库。报告全文见「最新验证意见原文」details 块（R3 Committer）。
 
 **交付链**（2026-10-30 15:06 用户确认交付）：① 监督侧 docs nit 落笔（RUNBOOK §4.1 旧行合并/v1.9.3 版本行 R2→R2·R3 措辞/_m2-plan m2-6 行补 B5 登记）+ 检查点归档 docs-only commit（reviewedSha 按 m2-2/m1-4 先例更新为归档 HEAD、testedSha 保持 dcf3923）→ ② Coder push+PR → ③ Committer 留痕 → ④ manifest → ⑤ 待用户合入。
+
+**交付链执行**（2026-10-30 15:12 三步完毕）：① 监督侧 docs nit 落笔+归档 commit **`6633914`**（docs-only——reviewedSha 按先例更新、testedSha 保持 dcf3923；push b82a723..6633914）；② **PR #5**（base=develop，5 commits，OPEN）；③ Committer 评审留痕 **PRR_kwDOVZ9dhM8AAAABVEqvmQ**（2026-10-30T07:10:51Z，COMMENTED 载体正文首行 APPROVED）；④ evidence manifest 入 PR description（15 键——双 SHA/门禁四段基线/rounds=3/specRulings×4/handover，校验通过）。**待用户合入指令**（不自动合入）。
+
+**合入完成**（2026-10-30 15:14 用户指令「合入」）：`gh pr merge 5 --merge` → **MERGED**，mergeCommit **`ad5ab2ae9f434cdaf33e1597105d43ec0d1b22dd`**；origin/develop 428c67f→ad5ab2a，本地 develop_opencode 已 ff 同步。收尾：检查点 status=done；TEST-CASES v1.9.4（§六 M2 行 m2-3 段完成态——工作区随下段 chore 批）；_m2-plan/AGENTS.md 进度更新。任务闭环（3 轮，911+1→1000+1）。
 
 ## 最新验证意见原文
 

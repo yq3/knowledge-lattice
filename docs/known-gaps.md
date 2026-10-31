@@ -182,7 +182,21 @@
 
 ## G-16 语义同步触发侧 create_task → append_outbox 两事务（崩溃丢触发审计）
 
-- **状态**：已接受（2026-10-29 随 m2s-1 R1 登记——Committer N2 裁定，M2-S2/S3 承接）。
+- **状态**：**已收口（2026-10-30 随 m2s-2 R1 交付——create_task 增 `audit=` 同事务参数，sync/build 两触发面接入；Tester 崩溃注入双方言实证：audit 写失败 → 任务行+审计零残留 rollback）**。
 - **问题**：`POST /semantic/sync/{adapter}` 触发路径为 create_task 提交与 append_outbox **独立两事务**——进程恰在两者之间崩溃时丢触发审计事件（任务行本身仍在、可查可追溯，不丢执行）。
-- **对冲**：run 行（sem_sync_runs）可追溯执行事实；m2s-1 R2 起 force 放行同样落 outbox。修复口径：create_task 增 `audit=` 同事务参数（沿 m2-2 outbox 接入面先例），m2s-2/m2s-3 统一收口任务创建面时一并落。
-- **重开条件**：M2-S2 开工（semantic_build 任务创建面）或 M2-S3（yaml 同步触发面）。
+- **对冲**：（历史）run 行（sem_sync_runs）可追溯执行事实；m2s-1 R2 起 force 放行同样落 outbox。修复口径：create_task 增 `audit=` 同事务参数（沿 m2-2 outbox 接入面先例）。
+- **重开条件**：无（已收口——触发侧随 m2s-2 R1、**构建侧终态事件同事务〔switch/fail audit=〕随 R2 P3-5 亦收口**，Tester 双方言崩溃注入实证零残留）。
+
+## G-17 semantic_build 的 dict_rev 输入未含 yaml_rev / curated 内容（M2-S3 接 YAML 前置）
+
+- **状态**：已接受（2026-10-30 随 m2s-2 R1 登记——Committer 边界 7，用户拍板登记）。
+- **问题**：design §5.8 明确 dict_rev 含 YAML commit；`compute_dict_rev` 已留 `yaml_rev` 参数但 `run_build` 未传、`sem_active_snapshot` 未取 `curated_json`。当前 YAML 源未接入（M2-S2 前过渡）属可理解；但 **M2-S3 接 YAML 时必须同时接 `yaml_rev`（或把 curated_json 纳入快照）**，否则 YAML 改 definition 不触发重建——L0 召回/模糊索引将陈旧。
+- **对冲**：登记为 M2-S3 开工前置项（YAML 适配器接入与 dict_rev 输入扩展同批交付）。
+- **重开条件**：M2-S3 开工（yaml 同步触发面）。
+
+## G-18 sem_builds「当前构建」按最新 ready 取值——rev 回退场景 current/锚点失真
+
+- **状态**：已接受（2026-10-30 随 m2s-2 R1 登记——Committer 边界 1，用户拍板登记）。
+- **问题**：design §4 status CHECK 枚举无 superseded/is_current，实现取「最新 ready by id + 旧 ready 保留」。正常单调 rev 序列成立；但 **rev 回退**（A ready id1 → B ready id2 → 源快照/YAML 回到 A）时 upsert 复用 id1 置 ready，而 current 仍取 id2(B)——`GET /semantic/builds` 的 current 与 get_entity 的 dict_rev 锚点失真（工具查询面走 store 实时表**不受影响**）。
+- **对冲**：rev 回退属异常运维场景（源快照/YAML 回退），查询正确性无损；M2-S3 接 YAML 时与 G-17 一并收口（加 `activated_at` 或独立指针）。**关联 O-1**（m2s-2 R2 登记）：sqlite 同 rev 竞态输者 upsert 可把已 ready 行重断 building→ready——同 build_id 双 ready 事件+瞬态 current 缺失（at-least-once 审计可容纳、行终态正确）；M2-S3 一并以条件 upsert（`DO UPDATE … WHERE status != 'ready'` 或同 rev ready 直接返回 existing id）收口。
+- **重开条件**：M2-S3 开工（与 G-17 同批）。

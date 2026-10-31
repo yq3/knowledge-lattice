@@ -125,6 +125,7 @@ class Settings:
     semantic_dim_alert_baseline: float = 0.8  # 维度填充率骤降告警：库内基线携带率 ≥ 此值才参与判定（口径注记见 core/semantic/sync.py）
     semantic_dim_alert_drop: float = 0.5  # 快照携带率 < 基线 × 此值 → 告警（防缺值静默变宽——TC-SYNC-06②）
     semantic_night_window: str = ""  # 错峰窗口登记（如 "01:00-05:00"——本段不强制生效，分批即天然限速）
+    semantic_describe_cache_s: float = 300.0  # describe_table 透传缓存 TTL（T-S11④：5min；0=关缓存——m2s-2）
     # semantic_batch_rows 上界 1000 = design §5.8「每批 ≤1000 行提交」硬约束
     # （NFR-11 写锁治理）——校验收口（P3-5/R2），不可配置突破
 
@@ -219,6 +220,7 @@ def get_settings() -> Settings:
         semantic_dim_alert_baseline=float(_num("LATTICE_SEM_DIM_ALERT_BASELINE", 0.8)),
         semantic_dim_alert_drop=float(_num("LATTICE_SEM_DIM_ALERT_DROP", 0.5)),
         semantic_night_window=_f("LATTICE_SEM_NIGHT_WINDOW", ""),
+        semantic_describe_cache_s=float(_num("LATTICE_SEM_DESCRIBE_CACHE_S", 300.0)),
         log_level=env("LATTICE_LOG_LEVEL", "INFO"),
         log_format=env("LATTICE_LOG_FORMAT", "json"),
     )
@@ -239,6 +241,7 @@ def _validate(s: Settings) -> None:
         "worker_restart_backoff_s", "task_max_attempts",
         "maintenance_keep_days", "maintenance_keep_count", "tombstone_keep_days",
         "audit_keep_months", "upload_credential_ttl_s", "maintenance_interval_s",
+        "semantic_describe_cache_s",
     ):
         value = getattr(s, name)
         if value < 0:
@@ -265,5 +268,8 @@ def _validate(s: Settings) -> None:
             numeric_failures.append(f"{name}={value!r}（须 ∈ [0,1]）")
     if numeric_failures:
         raise ValueError(
-            "invalid config values (must be >= 0): " + "; ".join(numeric_failures)
+            # P3-r5（m2s-1 移交）：前缀改范围语义——失败项不再全是「≥0」（还有
+            # [0,1] 区间与 ≥1/≤1000 边界），旧文案 "must be >= 0" 以偏概全
+            "invalid config values (value out of allowed range): "
+            + "; ".join(numeric_failures)
         )

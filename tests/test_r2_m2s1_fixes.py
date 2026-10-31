@@ -70,14 +70,17 @@ def test_p2_1_cross_batch_parent_resolution(sync_env) -> None:
     ).fetchone()[0]
     assert null_parents == 0, "跨批字段的 parent_id 解析丢失（P2-1）"
 
-    # 每个 field.parent_id == 对应 template.id（逐行核对，非仅计数）
+    # 每个 field.parent_id == 对应 template.id（逐行核对，非仅计数；P3-r3①：
+    # LEFT JOIN——parent 指向**非 template 行**（同 key 不同 type）或 NULL 同样算败，
+    # 不因 INNER JOIN 的 t.type='template' 前置过滤而漏捕）
     bad = sync_env.db.execute(
-        "SELECT count(*) FROM sem_entities f JOIN sem_entities t"
-        "   ON f.parent_id = t.id AND t.type = 'template'"
+        "SELECT count(*) FROM sem_entities f"
+        " LEFT JOIN sem_entities t ON f.parent_id = t.id"
         " WHERE f.type = 'template_field'"
-        "   AND t.key != substr(f.key, 1, length(f.key) - 3)"
+        "   AND (t.id IS NULL OR t.type != 'template'"
+        "        OR t.key != substr(f.key, 1, length(f.key) - 3))"
     ).fetchone()[0]
-    assert bad == 0  # substr(key) 去 ".F1" = 模板键——父指错也算失败
+    assert bad == 0  # substr(key) 去 ".F1" = 模板键——NULL/非 template 行/父指错都算败
 
     # 二跑：parent 稳定不变（若首跑曾写 NULL、二跑修正会表现为 updated≠0）
     r2 = run(sync_env, records)
@@ -244,3 +247,74 @@ def test_p3_6_entity_type_check_matches_constants(backend) -> None:
     assert values == set(SEM_ENTITY_TYPES), (
         f"DDL CHECK {sorted(values)} ≠ 常量 {sorted(SEM_ENTITY_TYPES)}"
     )
+
+
+# ---- P3-r3②（m2s-1 Committer 移交）：父转 missing / 悬挂父两场景固化 ----
+
+
+def test_p3_r3_parent_missing_keeps_parent_id(sync_env) -> None:
+    """父行转 missing（不在快照）→ 子行 parent_id **保持指向**（存在即解析——
+    不过滤 status），不写 NULL、不覆写；后续幂等。"""
+    from knowledge_lattice.core.semantic.records import EntityRecord
+
+    # 6 模板（6 字段）基线——消失 1/6 < 20% 阈值，guard 不触发
+    base: list = []
+    for i in range(6):
+        base.append(tpl_entity(f"TPL_{i}"))
+        base.append(EntityRecord(
+            type="template_field", key=f"TPL_{i}.F1", name=f"字段{i}",
+            parent_key=f"template:TPL_{i}"))
+    r1 = run(sync_env, base)
+    assert r1["status"] == "succeeded"
+    parent_id = sync_env.db.execute(
+        "SELECT id FROM sem_entities WHERE key = 'TPL_5'").fetchone()[0]
+
+    # 快照移除 TPL_5（模板本体）但保留其字段 → 父转 missing、子行 parent_id 保持
+    shrunk = [r for r in base if r.key != "TPL_5"]
+    r2 = run(sync_env, shrunk)
+    assert r2["status"] == "succeeded"
+    assert sync_env.db.execute(
+        "SELECT status FROM sem_entities WHERE key = 'TPL_5'"
+    ).fetchone()[0] == "missing"
+    row = sync_env.db.execute(
+        "SELECT parent_id FROM sem_entities WHERE key = 'TPL_5.F1'"
+    ).fetchone()
+    assert row[0] == parent_id, "父转 missing 后子行 parent_id 不得丢（P2-1 语义）"
+
+    # 再跑一次：幂等（父仍 missing、指向不变——updated 不因父态漂移虚增）
+    r3 = run(sync_env, shrunk)
+    assert r3["status"] == "succeeded"
+    assert sync_env.db.execute(
+        "SELECT parent_id FROM sem_entities WHERE key = 'TPL_5.F1'"
+    ).fetchone()[0] == parent_id
+
+
+def test_p3_r3_dangling_parent_then_linked(sync_env) -> None:
+    """悬挂父（GHOST 从未存在）→ parent_id=NULL；父后续出现 → 接上真实 id 且
+    updated 诚实计数（≥1——NULL→id 属事实列变更）。"""
+    from knowledge_lattice.core.semantic.records import EntityRecord
+
+    ghost_child = EntityRecord(
+        type="template_field", key="TPL_GHOST.F1", name="幽灵字段",
+        parent_key="template:TPL_GHOST")
+    r1 = run(sync_env, [tpl_entity("TPL_OTHER"), ghost_child])
+    assert r1["status"] == "succeeded"
+    assert sync_env.db.execute(
+        "SELECT parent_id FROM sem_entities WHERE key = 'TPL_GHOST.F1'"
+    ).fetchone()[0] is None, "悬挂父解析不到 → NULL"
+
+    # 父出现（同快照补 TPL_GHOST）→ 接上
+    r2 = run(sync_env, [tpl_entity("TPL_OTHER"), tpl_entity("TPL_GHOST"),
+                        ghost_child])
+    assert r2["status"] == "succeeded"
+    ghost_id = sync_env.db.execute(
+        "SELECT id FROM sem_entities WHERE key = 'TPL_GHOST'").fetchone()[0]
+    assert sync_env.db.execute(
+        "SELECT parent_id FROM sem_entities WHERE key = 'TPL_GHOST.F1'"
+    ).fetchone()[0] == ghost_id, "父出现后子行必须接上（库内回查）"
+    assert r2["stats"]["updated"] >= 1  # NULL→id 是事实列变更——诚实计数
+
+    # 三跑幂等
+    r3 = run(sync_env, [tpl_entity("TPL_OTHER"), tpl_entity("TPL_GHOST"),
+                        ghost_child])
+    assert r3["stats"]["updated"] == 0

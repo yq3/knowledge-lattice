@@ -5,7 +5,7 @@
 引用面 refs 从**本次同步快照的 RelationRecord** 推导（derive_refs——见
 adapters/__init__.py；冷启动接力：template_center 首轮的端点冲突在 table /
 column 落库后自动消解）。列详情（类型/样例/分区/血缘）**不落库**——
-describe_table 实时透传（§5.8 三种内容分工表；T-S11 归 m2s-2）。
+`describe_table` 实时透传（本类自带透传客户端——§5.8 三种内容分工表；T-S11）。
 
 端点契约：GET {endpoint}/tables/{key} → `{name, columns: [{name, type?, comment?}]}`。
 column key = "{table_key}.{column_name}"、parent_key="table:{table_key}"。
@@ -44,6 +44,19 @@ class MetadataAdapter:
                 self._config.endpoint, f"/tables/{table_key}", None
             )
             yield from self._expand_table(table_key, detail)
+
+    def describe_table(self, table_key: str) -> dict:
+        """表详情透传客户端（design §3 metadata.py 职责 / T-S11——m2s-2 R2 补）：
+        GET {endpoint}/tables/{key} → `{name, columns: [{name, type?, comment?}]}`。
+        describe_table 工具的默认通道（lookup._default_fetcher）；超时由
+        SourceConfig.timeout_s 承载（默认通道钳制 3s——T-S11）。"""
+        return self._transport(self._config.endpoint, f"/tables/{table_key}", None)
+
+    def close(self) -> None:
+        """关闭底层传输客户端（默认 HTTP 传输持有 httpx.Client——P1-1④）。"""
+        closer = getattr(self._transport, "close", None)
+        if callable(closer):
+            closer()
 
     # ---- 内部 ----
 

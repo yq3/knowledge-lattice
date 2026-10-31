@@ -1049,6 +1049,7 @@ class SqliteBackend:
         self, doc_id: str | None, *, task_type: str = "ingest",
         target_version: int | None = None, task_id: str | None = None,
         payload: str | None = None,
+        audit: tuple[str, str] | None = None,
     ) -> str:
         """新建任务行（maintenance 等无文档任务 doc_id=None——P3-19 注解口径；
         tasks.doc_id ON DELETE SET NULL 允许 NULL）。
@@ -1061,8 +1062,30 @@ class SqliteBackend:
 
         payload（0006/M2-S1）：任务参数 JSON 文本（semantic_sync 携带
         {org, adapter}——executor 分发面读取；NULL=无参数任务）。
-        """
+
+        audit（m2s-2，G-16 收口）：(event_type, payload_json) 与任务行**同一
+        事务**（BEGIN IMMEDIATE…COMMIT——触发侧两事务崩溃丢审计窗口闭合）。"""
         task_id = task_id or f"tsk_{uuid.uuid4()}"
+        if audit is not None:
+            conn = self._conn
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "INSERT INTO tasks(id, doc_id, type, status, target_version,"
+                    " payload) VALUES(:id, :doc, :type, 'pending', :tv, :payload)",
+                    {"id": task_id, "doc": doc_id, "type": task_type,
+                     "tv": target_version, "payload": payload},
+                )
+                conn.execute(
+                    "INSERT INTO audit_outbox(id, event_type, payload_json)"
+                    " VALUES(:id, :t, :p)",
+                    {"id": f"aud_{uuid.uuid4()}", "t": audit[0], "p": audit[1]},
+                )
+                conn.execute("COMMIT")
+            except BaseException:
+                self._rollback()
+                raise
+            return task_id
         self._conn.execute(
             "INSERT INTO tasks(id, doc_id, type, status, target_version, payload)"
             " VALUES(:id, :doc, :type, 'pending', :tv, :payload)",
@@ -2435,25 +2458,174 @@ class SqliteBackend:
         )
         self._conn.commit()
 
-    def sem_list_sync_runs(self, org_id: str, *, limit: int = 50) -> list[dict]:
+    def sem_list_sync_runs(
+        self, org_id: str, *, limit: int = 50,
+        adapter: str | None = None, status: str | None = None,
+    ) -> list[dict]:
         cols = ("id", "org_id", "adapter", "started_at", "finished_at",
                 "status", "stats_json", "error")
-        rows = self._conn.execute(
-            "SELECT id, org_id, adapter, started_at, finished_at, status, stats_json,"
-            " error FROM sem_sync_runs WHERE org_id = ? ORDER BY id DESC LIMIT ?",
-            (org_id, limit),
-        ).fetchall()
+        sql = ("SELECT id, org_id, adapter, started_at, finished_at, status,"
+               " stats_json, error FROM sem_sync_runs WHERE org_id = ?")
+        params: list[object] = [org_id]
+        if adapter is not None:
+            sql += " AND adapter = ?"
+            params.append(adapter)
+        if status is not None:
+            sql += " AND status = ?"
+            params.append(status)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(sql, params).fetchall()
         return [_sem_run_dict(cols, r) for r in rows]
 
-    def sem_list_builds(self, org_id: str) -> list[dict]:
+    def sem_list_builds(
+        self, org_id: str, *, limit: int = 200, status: str | None = None,
+    ) -> list[dict]:
         cols = ("id", "org_id", "dict_rev", "yaml_rev", "sync_run_id",
                 "status", "stats_json", "created_at")
-        rows = self._conn.execute(
-            "SELECT id, org_id, dict_rev, yaml_rev, sync_run_id, status, stats_json,"
-            " created_at FROM sem_builds WHERE org_id = ? ORDER BY id DESC",
-            (org_id,),
-        ).fetchall()
+        sql = ("SELECT id, org_id, dict_rev, yaml_rev, sync_run_id, status,"
+               " stats_json, created_at FROM sem_builds WHERE org_id = ?")
+        params: list[object] = [org_id]
+        if status is not None:
+            sql += " AND status = ?"
+            params.append(status)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(sql, params).fetchall()
         return [_sem_run_dict(cols, r) for r in rows]
+
+    def sem_get_build(self, org_id: str, build_id: int) -> dict | None:
+        row = self._conn.execute(
+            "SELECT id, org_id, dict_rev, yaml_rev, sync_run_id, status, stats_json,"
+            " created_at FROM sem_builds WHERE org_id = ? AND id = ?",
+            (org_id, build_id),
+        ).fetchone()
+        if row is None:
+            return None
+        cols = ("id", "org_id", "dict_rev", "yaml_rev", "sync_run_id",
+                "status", "stats_json", "created_at")
+        return _sem_run_dict(cols, row)
+
+    def sem_current_build(self, org_id: str) -> dict | None:
+        """当前构建 = 最新 ready 行（design §5.8：旧 ready 保留服务按 (org,
+        dict_rev) 懒加载——CHECK 枚举无 superseded，最新 ready 即指针）。"""
+        row = self._conn.execute(
+            "SELECT id, org_id, dict_rev, yaml_rev, sync_run_id, status, stats_json,"
+            " created_at FROM sem_builds WHERE org_id = ? AND status = 'ready'"
+            " ORDER BY id DESC LIMIT 1",
+            (org_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        cols = ("id", "org_id", "dict_rev", "yaml_rev", "sync_run_id",
+                "status", "stats_json", "created_at")
+        return _sem_run_dict(cols, row)
+
+    def sem_active_snapshot(self, org_id: str) -> dict:
+        """构建输入快照（§5.8 第 1 步——active 实体 + 全部别名 + active 关系，
+        稳定序输出供 dict_rev 哈希）。"""
+        entities = [
+            {"id": r[0], "type": r[1], "key": r[2], "name": r[3],
+             "parent_id": r[4], "attrs_json": r[5], "sensitivity": r[6]}
+            for r in self._conn.execute(
+                "SELECT id, type, key, name, parent_id, attrs_json, sensitivity"
+                " FROM sem_entities WHERE org_id = ? AND status = 'active'"
+                " ORDER BY id", (org_id,),
+            )
+        ]
+        aliases = [
+            {"entity_id": r[0], "alias": r[1], "alias_norm": r[2], "kind": r[3],
+             "match_mode": r[4], "weight": r[5]}
+            for r in self._conn.execute(
+                "SELECT a.entity_id, a.alias, a.alias_norm, a.kind, a.match_mode,"
+                " a.weight FROM sem_aliases a"
+                " JOIN sem_entities e ON e.id = a.entity_id"
+                " WHERE a.org_id = ? AND e.status = 'active'"
+                " ORDER BY a.entity_id, a.alias_norm", (org_id,),
+            )
+        ]
+        relations = [
+            {"src_id": r[0], "rel_type": r[1], "dst_id": r[2],
+             "attrs_json": r[3], "source": r[4]}
+            for r in self._conn.execute(
+                "SELECT src_id, rel_type, dst_id, attrs_json, source"
+                " FROM sem_relations WHERE org_id = ? AND status = 'active'"
+                " ORDER BY src_id, rel_type, dst_id", (org_id,),
+            )
+        ]
+        return {"entities": entities, "aliases": aliases, "relations": relations}
+
+    def sem_insert_build(
+        self, org_id: str, dict_rev: str, stats_json: str, *,
+        yaml_rev: str | None = None, sync_run_id: int | None = None,
+    ) -> int:
+        """building 行 upsert（UNIQUE(org,dict_rev)——失败行同 rev 重试复用行）。"""
+        cur = self._conn.execute(
+            "INSERT INTO sem_builds(org_id, dict_rev, yaml_rev, sync_run_id,"
+            " status, stats_json) VALUES(?, ?, ?, ?, 'building', ?)"
+            " ON CONFLICT(org_id, dict_rev) DO UPDATE SET"
+            "   status = 'building', stats_json = excluded.stats_json,"
+            "   yaml_rev = excluded.yaml_rev, sync_run_id = excluded.sync_run_id"
+            " RETURNING id",
+            (org_id, dict_rev, yaml_rev, sync_run_id, stats_json),
+        )
+        build_id = cur.fetchone()[0]
+        self._conn.commit()
+        return build_id
+
+    def sem_switch_build_ready(
+        self, org_id: str, build_id: int, stats_json: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> bool:
+        """原子切换：building → ready + ready 事件同一事务（P3-5/R2——audit 仅
+        rowcount==1 真生效时写；并发输者零行生效零事件，P2-2）。"""
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = conn.execute(
+                "UPDATE sem_builds SET status = 'ready', stats_json = ?"
+                " WHERE org_id = ? AND id = ? AND status = 'building'",
+                (stats_json, org_id, build_id),
+            )
+            effective = cur.rowcount == 1
+            if effective and audit is not None:
+                conn.execute(
+                    "INSERT INTO audit_outbox(id, event_type, payload_json)"
+                    " VALUES(:id, :t, :p)",
+                    {"id": f"aud_{uuid.uuid4()}", "t": audit[0], "p": audit[1]},
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return effective
+
+    def sem_fail_build(
+        self, org_id: str, build_id: int, stats_json: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> bool:
+        """失败收尾：building → failed + failed 事件同一事务；仅真生效返回 True
+        （已终态行幂等零生效——P2-2/R2 防脏 failed 审计）。"""
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = conn.execute(
+                "UPDATE sem_builds SET status = 'failed', stats_json = ?"
+                " WHERE org_id = ? AND id = ? AND status = 'building'",
+                (stats_json, org_id, build_id),
+            )
+            effective = cur.rowcount == 1
+            if effective and audit is not None:
+                conn.execute(
+                    "INSERT INTO audit_outbox(id, event_type, payload_json)"
+                    " VALUES(:id, :t, :p)",
+                    {"id": f"aud_{uuid.uuid4()}", "t": audit[0], "p": audit[1]},
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return effective
 
     def save_build(self, org_id: str, dict_rev: str, stats_json: str) -> int:
         cur = self._conn.execute(
@@ -2480,6 +2652,181 @@ class SqliteBackend:
         """L0 术语片段导出——构建产物落地归 m2s-2（本段空串占位，语义轨道后段实装）。"""
         return ""
 
+    # ---- m2s-2 首批语义工具读取面（get_entity / search_entities / describe_table） ----
+
+    _SEM_ENTITY_COLS = ("id", "org_id", "type", "key", "name", "parent_id",
+                        "attrs_json", "curated_json", "source", "source_system",
+                        "status", "sensitivity", "synced_at", "curated_rev")
+
+    def _sem_entity_row(self, row) -> dict:
+        return dict(zip(self._SEM_ENTITY_COLS, row))
+
+    def sem_entity_by_id(self, org_id: str, entity_id: int) -> dict | None:
+        row = self._conn.execute(
+            "SELECT id, org_id, type, key, name, parent_id, attrs_json,"
+            " curated_json, source, source_system, status, sensitivity,"
+            " synced_at, curated_rev FROM sem_entities WHERE org_id = ? AND id = ?",
+            (org_id, entity_id),
+        ).fetchone()
+        return self._sem_entity_row(row) if row is not None else None
+
+    def sem_entity_by_key(self, org_id: str, type_: str, key: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT id, org_id, type, key, name, parent_id, attrs_json,"
+            " curated_json, source, source_system, status, sensitivity,"
+            " synced_at, curated_rev FROM sem_entities"
+            " WHERE org_id = ? AND type = ? AND key = ?",
+            (org_id, type_, key),
+        ).fetchone()
+        return self._sem_entity_row(row) if row is not None else None
+
+    def sem_entity_aliases(
+        self, org_id: str, entity_ids: Sequence[int]
+    ) -> list[dict]:
+        out: list[dict] = []
+        for chunk in _sem_chunks(list(entity_ids), self._SEM_IN_CHUNK):
+            marks = ",".join("?" for _ in chunk)
+            out.extend(
+                {"entity_id": r[0], "alias": r[1], "alias_norm": r[2],
+                 "kind": r[3], "match_mode": r[4], "weight": r[5]}
+                for r in self._conn.execute(
+                    f"SELECT entity_id, alias, alias_norm, kind, match_mode, weight"
+                    f" FROM sem_aliases WHERE org_id = ? AND entity_id IN ({marks})"
+                    f" ORDER BY entity_id, alias_norm",
+                    (org_id, *chunk),
+                )
+            )
+        return out
+
+    def sem_expand_graph(
+        self, org_id: str, root_id: int, *,
+        outgoing: Sequence[str], incoming: Sequence[str],
+        depth: int, fanout_limit: int, node_limit: int,
+    ) -> dict:
+        """BFS 逐层批量展开（递归 CTE 的等价 SQL——双方言同策略；防环=visited）。
+
+        fanout_limit 按展开节点计（每节点每方向出边上限）；node_limit 为新增
+        节点总量上限——命中任一截断 → truncated=True（T-S6）。restricted 端点
+        与非 active 端点不出现（fail-closed——T-S9；active 关系才走）。
+        P3-2/R2：edges 以 (src,rel,dst) 去重（双向查询同关系行不重复）且
+        端点恒 ∈ {root} ∪ nodes（节点截断后不产悬挂边）。"""
+        nodes: dict[int, dict] = {}
+        edges: list[dict] = []
+        seen_edges: set[tuple[int, str, int]] = set()
+        truncated = False
+        visited = {root_id}
+        depth_of = {root_id: 0}
+        frontier = [root_id]
+        for _level in range(1, depth + 1):
+            if not frontier:
+                break
+            next_frontier: list[int] = []
+            for node in frontier:
+                for rels, forward in ((outgoing, True), (incoming, False)):
+                    if not rels:
+                        continue
+                    rows = self._conn.execute(
+                        "SELECT r.src_id, r.rel_type, r.dst_id, r.source,"
+                        " e.id, e.type, e.key, e.name"
+                        " FROM sem_relations r JOIN sem_entities e"
+                        f"   ON e.id = {'r.dst_id' if forward else 'r.src_id'}"
+                        " WHERE r.org_id = ? AND r.status = 'active'"
+                        "   AND e.status = 'active' AND e.sensitivity = 'normal'"
+                        f"   AND {'r.src_id' if forward else 'r.dst_id'} = ?"
+                        f"   AND r.rel_type IN ({','.join('?' for _ in rels)})"
+                        " ORDER BY r.rel_type,"
+                        f" {'r.dst_id' if forward else 'r.src_id'}",
+                        (org_id, node, *rels),
+                    ).fetchall()
+                    fan = 0
+                    for src, rel, dst, rel_source, oid, otype, okey, oname in rows:
+                        if fan >= fanout_limit:
+                            truncated = True
+                            break
+                        edge_key = (src, rel, dst)
+                        if edge_key in seen_edges:
+                            continue  # P3-2/R2：同一关系行双向查询只计一次
+                        if oid not in visited and len(nodes) >= node_limit:
+                            # P3-2/R2：节点截断后不再 append 悬挂边（边端点
+                            # 必 ∈ {root} ∪ nodes——契约与 nodes 断言一致）
+                            truncated = True
+                            continue
+                        fan += 1
+                        seen_edges.add(edge_key)
+                        edges.append({"src": src, "rel": rel, "dst": dst,
+                                      "source": rel_source})
+                        if oid not in visited:
+                            visited.add(oid)
+                            nodes[oid] = {"id": oid, "type": otype, "key": okey,
+                                          "name": oname, "depth": _level}
+                            next_frontier.append(oid)
+            frontier = next_frontier
+        return {"nodes": list(nodes.values()), "edges": edges, "truncated": truncated}
+
+    def sem_search_entities(
+        self, org_id: str, q_norm: str, q_raw: str, *,
+        types: Sequence[str] | None, top_k: int,
+    ) -> list[dict]:
+        """三层 UNION：alias_norm 精确(1.0) > alias_norm 前缀(0.8) > name 模糊(0.5)
+        ——实体去重保最优在 core 侧收口（此处拉 top_k×3 候选）。
+        LIKE 匹配统一 LOWER + ESCAPE（双方言语义一致：%/_ 通配转义）。"""
+        esc_norm = _like_escape(q_norm)
+        esc_raw = _like_escape(q_raw)
+        type_filter = ""
+        params: list[object] = [org_id]
+        if types:
+            type_filter = f" AND e.type IN ({','.join('?' for _ in types)})"
+            params.extend(types)
+        base = (
+            " FROM sem_aliases a JOIN sem_entities e ON e.id = a.entity_id"
+            " WHERE a.org_id = ? AND e.status = 'active'"
+            " AND e.sensitivity = 'normal'" + type_filter
+        )
+        sql = (
+            "SELECT * FROM ("
+            "  SELECT e.id, e.type, e.key, e.name, e.attrs_json, e.curated_json,"
+            "         1.0 AS score, 'alias-exact' AS via" + base
+            + "   AND a.alias_norm = ?"
+            "  UNION ALL"
+            "  SELECT e.id, e.type, e.key, e.name, e.attrs_json, e.curated_json,"
+            "         0.8 AS score, 'alias-prefix' AS via" + base
+            + "   AND a.alias_norm LIKE ? ESCAPE '\\'"
+            "  UNION ALL"
+            "  SELECT e.id, e.type, e.key, e.name, e.attrs_json, e.curated_json,"
+            "         0.5 AS score, 'name' AS via"
+            "  FROM sem_entities e WHERE e.org_id = ? AND e.status = 'active'"
+            "   AND e.sensitivity = 'normal'" + type_filter
+            + "   AND LOWER(e.name) LIKE LOWER(?) ESCAPE '\\'"
+            ") ORDER BY score DESC, id ASC LIMIT ?"
+        )
+        query_params = (
+            params + [q_norm]
+            + params + [f"{esc_norm}%"]
+            + params + [f"%{esc_raw}%"]
+            + [max(top_k * 3, top_k)]
+        )
+        rows = self._conn.execute(sql, query_params).fetchall()
+        cols = ("id", "type", "key", "name", "attrs_json", "curated_json",
+                "score", "via")
+        return [dict(zip(cols, r)) for r in rows]
+
+    def sem_table_columns(self, org_id: str, table_id: int) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT c.key, c.name FROM sem_relations r"
+            " JOIN sem_entities c ON c.id = r.dst_id"
+            " WHERE r.org_id = ? AND r.src_id = ? AND r.rel_type = 'has_column'"
+            "   AND r.status = 'active' AND c.status = 'active'"
+            "   AND c.sensitivity = 'normal'"
+            " ORDER BY c.key",
+            (org_id, table_id),
+        ).fetchall()
+        return [{"key": r[0], "name": r[1]} for r in rows]
+
+    def expand_relations(self, org_id: str, seed_ids, rels, *, depth: int = 1) -> dict:
+        """P3-3/R2 薄适配：sem_expand_graph 多 seed 归并（design §3/NFR-4 命名
+        保留给 M2-S3 实体召回路；fanout/node 缺省与 core/expand.py 常量一致）。"""
+        return _expand_relations_thin(self, org_id, seed_ids, rels, depth=depth)
+
 
 def _month_upper(month: str) -> str:
     """月排他上界（次月首日 0 点——'YYYY-MM-DD HH:MM:SS'）。"""
@@ -2487,6 +2834,39 @@ def _month_upper(month: str) -> str:
 
     nxt = month_shift(month, 1)
     return f"{nxt[:4]}-{nxt[4:6]}-01 00:00:00"
+
+
+def _like_escape(text: str) -> str:
+    """LIKE 通配转义（%/_/\——配合 ESCAPE '\\' 子句双方言同语义）。"""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _expand_relations_thin(backend, org_id, seed_ids, rels, *, depth: int) -> dict:
+    """expand_relations 薄适配共用体（双方言同实现——P3-3/R2）：
+    逐 seed 调 sem_expand_graph（rels 双向）后归并去重；truncated 任一命中即真。"""
+    merged_nodes: dict[int, dict] = {}
+    merged_edges: set[tuple[int, str, int]] = set()
+    edge_rows: dict[tuple[int, str, int], dict] = {}
+    truncated = False
+    rel_list = list(rels)
+    for seed in seed_ids:
+        graph = backend.sem_expand_graph(
+            org_id, seed, outgoing=rel_list, incoming=rel_list,
+            depth=depth, fanout_limit=50, node_limit=200,
+        )
+        truncated = truncated or graph["truncated"]
+        for node in graph["nodes"]:
+            merged_nodes.setdefault(node["id"], node)
+        for edge in graph["edges"]:
+            key = (edge["src"], edge["rel"], edge["dst"])
+            if key not in merged_edges:
+                merged_edges.add(key)
+                edge_rows[key] = edge
+    return {
+        "nodes": list(merged_nodes.values()),
+        "edges": list(edge_rows.values()),
+        "truncated": truncated,
+    }
 
 
 def _sem_chunks(seq, n: int):
