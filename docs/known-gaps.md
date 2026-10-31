@@ -25,7 +25,11 @@
 | [G-13](#g-13-sqlite-审计月库-rowid-跨-vacuum-不保证保留按读序的链验证在恢复产物上理论可断) | 已接受（现码无月库 VACUUM 路径；m2-3 审计读路径按 prev_hash 链遍历对冲） | sqlite 月库表无 INTEGER PRIMARY KEY，rowid 不保证跨 VACUUM 保留——若月库纳入备份/压缩（VACUUM/VACUUM INTO），恢复产物按读序（rowid）做链验证可断（row_hash/prev_hash 内容自洽不受影响） | FR-6 / design §4 注 · M2-2 | 2026-10-29 |
 | [G-14](#g-14-pg-audit_events-seq-列首次部署触发全表-rewrite-的运维窗口) | 已接受（POC 量级可忽略；RUNBOOK 注记升级序列） | pg 侧 `audit_events` 加 seq 列（volatile DEFAULT nextval）首次 ensure 时触发全表 rewrite（ACCESS EXCLUSIVE）；ensure_audit 每连接 DDL 并发面同族 | FR-6 / design §4 注 · M2-2 | 2026-10-29 |
 | [G-15](#g-15-关系级消失流程未定义sem_relations-独立删边场景) | 已接受（M2-S1 无现实触发面；**M2-S3 承接**——用户 2026-10-29 拍板 B1=登记） | design §4 sem_relations 有 missing/retired 列但 §5.8 只定义实体消失——源端独立删边（两端实体仍在）旧关系永久 active；跨源 upsert 可能把指向 retired 端点的关系重新写回 active。M2-S1 两适配器关系均由实体结构派生（字段随模板/列随表消失——实体级已覆盖），scenario_config（uses/derived_from 独立删边大户）M2-S3 接入时补：关系级 missing + upsert 前端点状态过滤 | FR-S1 / design §4·§5.8 · M2-S1 | 2026-10-29 |
-| [G-16](#g-16-语义同步触发侧-create_task--append_outbox-两事务崩溃丢触发审计) | 已接受（run 行可追溯；**M2-S2/S3 承接**——m2s-1 R1 Committer N2 裁定） | api 触发路径 create_task 提交与 append_outbox 独立两事务——进程恰在两者间崩溃时丢触发审计事件（任务行仍在、可查）。修复口径：create_task 增 audit= 同事务参数（m2-2 outbox 先例），m2s-2/m2s-3 给任务创建面统一收口时一并落 | FR-6 / design §5.8·§6.2 · M2-S1 | 2026-10-29 |
+| [G-16](#g-16-语义同步触发侧-create_task--append_outbox-两事务崩溃丢触发审计) | **已收口**（m2s-2 R1 触发侧+R2 构建侧 audit= 同事务——崩溃注入双方言实证） | api 触发路径 create_task 提交与 append_outbox 独立两事务——进程恰在两者间崩溃时丢触发审计事件（任务行仍在、可查）。修复口径：create_task 增 audit= 同事务参数（m2-2 outbox 先例），m2s-2/m2s-3 给任务创建面统一收口时一并落 | FR-6 / design §5.8·§6.2 · M2-S1 | 2026-10-29 |
+| [G-17](#g-17-semantic_build-的-dict_rev-输入未含-yaml_rev--curated-内容m2-s3-接-yaml-前置) | **已收口**（m2s-3 R1——curated_json 入快照+yaml_rev 入 dict_rev） | design §5.8 明确 dict_rev 含 YAML commit；YAML 改 definition 若不触发重建则 L0/模糊索引陈旧。M2-S3 接 YAML 时必须同时接 yaml_rev（或 curated_json 纳入快照） | FR-S1 / design §5.8 · M2-S1 | 2026-10-30 |
+| [G-18](#g-18-sem_builds当前构建按最新-ready-取值rev-回退场景-current锚点失真) | **已收口**（m2s-3 R1——0007 activated_at 指针+条件 upsert） | design §4 status 枚举无 superseded/is_current，「最新 ready by id」在 rev 回退时 current/锚点失真（查询面走实时表不受影响）；sqlite 同 rev 竞态双 ready 事件（O-1） | FR-S1 / design §4·§5.8 · M2-S1 | 2026-10-30 |
+| [G-19](#g-19-五源每天一次兜底调度未接线design-§58-适配器表半句) | 已接受（cron 运维路径兜底；**M2-S4 承接**——窗口/幂等/与 webhook 去重口径） | design §5.8 适配器表「每天一次兜底」半句——五源仅 webhook/手动两路径，app 兜底循环只认领任务行不投递同步；长期无 webhook 的源停留旧快照 | FR-S1 / design §5.8 · M2-S1 | 2026-10-31 |
+| [G-20](#g-20-webhook-验签前读取完整请求体无大小上限公网入口内存放大) | 已接受（私有化内网面+部署侧反代限流兜底） | webhook 验签前 `await request.body()` 无上限——公网入口内存放大（design 未要求）；公网直曝部署时补应用层上限 | 安全 / design §6.2 · M2-S2 | 2026-10-31 |
 
 ---
 
@@ -207,3 +211,10 @@
 - **问题**：design §5.8 适配器表「每天一次兜底」半句——五源（template_center/metadata/yaml/scenario_config/report_center）当前仅有 webhook 触发与手动 POST 两条触发路径，**app 兜底循环只认领任务行不投递语义源同步**；同步全靠外部触发时，长期无 webhook 的源将停留在旧快照（missing/retired 宽限推进也随之停滞）。
 - **对冲**：运维可经 cron 调 `POST /semantic/sync/{adapter}`（m2s-3 交付的运维路径）；sync 幂等+同 rev 构建跳过使重复触发无害。
 - **重开条件**：M2-S4 开工（L0/构建报告段一并接调度——需明确调度窗口/幂等/与 webhook 触发去重口径）。
+
+## G-20 webhook 验签前读取完整请求体（无大小上限——公网入口内存放大）
+
+- **状态**：已接受（2026-10-31 随 m2s-3 R1 登记——Committer P3-12，用户拍板登记）。
+- **问题**：`POST /semantic/yaml/webhook` 在 HMAC 验签**之前** `await request.body()` 读取完整请求体且无大小上限——公网入口可被超大 body 打出内存放大（design §6.2 未要求上限）。
+- **对冲**：部署侧反代/网关限流（body 大小限制）兜底；私有化部署默认内网面（FR 部署形态）暴露面有限。
+- **重开条件**：公网直曝部署或网关层无法限流时补应用层上限（如 Content-Length 预检 413）。

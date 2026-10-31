@@ -112,7 +112,15 @@ def test_p2_1_alias_only_overlay_writes_and_clears(env) -> None:
 
 
 def test_p2_1_delete_aliases_clears_old_manual(env) -> None:
-    """② 既有条目删空别名（保留 definition）→ 先删后插清空旧 manual/abbr。"""
+    """② 既有条目删空别名（保留 definition）→ 先删后插清空旧 manual/abbr。
+    R3：补前序 merge（带别名）——R1 缺陷代码下无旧别名可清，空转修复。"""
+    (env.repo / "templates" / "t.yaml").write_text(
+        "- id: template:TPL_1\n  owner: tax-domain\n"
+        "  definition: 第一版定义\n  aliases: [进项采集模板, {value: 抵扣项, match_mode: context}]\n"
+        "  abbr: [JXDK]\n", encoding="utf-8")
+    assert _merge(env)["status"] == "succeeded"
+    assert _manual_norms(env, "template:TPL_1"), "前置：旧 manual/abbr 在场"
+
     (env.repo / "templates" / "t.yaml").write_text(
         "- id: template:TPL_1\n  owner: tax-domain\n"
         "  definition: 只有定义没有别名\n", encoding="utf-8")
@@ -193,6 +201,14 @@ def test_p2_2_colliding_pure_entry_leaves_sync_entity_untouched(env) -> None:
                for c in result["stats"]["entity_conflicts"])
     assert any("collides with synced entity" in c["reason"]
                for c in result["stats"]["curated"]["conflicts"])
+
+    # R3/误 retire 链永久断言：删除冲突 YAML 条目后再跑 yaml sync——冲突键
+    # 从未进入 yaml 基数（预过滤先于 upsert）→ 不标 missing，同步实体仍 active
+    (env.repo / "concepts" / "dup.yaml").unlink()
+    result2 = _merge(env)
+    assert result2["status"] == "succeeded"
+    assert result2["stats"]["missing"] == 0, "同步实体不得因 YAML 删条目被误标 missing"
+    assert _entity(env, "concept:dup.key")["status"] == "active"
 
 
 # ---- 边界 1（升 P2）：_schema JSON Schema 条目级校验 ----
@@ -623,3 +639,103 @@ def repo_baseline(tmp_path):
         "- id: concept:ok\n  name: 合规概念\n  owner: o\n"
         "  aliases: [合规别名]\n  l0: true\n", encoding="utf-8")
     return repo
+
+
+# ---- R3/N6：schema 语义非法——可定位 error 不崩溃 + 双路径对称 ----
+
+
+_INVALID_SCHEMA = json.dumps({"type": "not-a-type", "required": "id"})
+
+
+def test_n6_invalid_schema_locatable_error_not_crash(tmp_path) -> None:
+    """有效 JSON 但语义非法的 entry.schema.json（type 非法/required 非数组）：
+    jsonschema 在场路径**一次性自校验** → 可定位 error（_schema/entry.schema.json）
+    + entry_schema 置 None（条目走手写补充面）——validate_corpus 不崩溃。"""
+    from knowledge_lattice.core.semantic.yaml_corpus import load_corpus, validate_corpus
+
+    repo = tmp_path / "n6"
+    (repo / "_schema").mkdir(parents=True)
+    (repo / "_schema" / "entry.schema.json").write_text(_INVALID_SCHEMA,
+                                                        encoding="utf-8")
+    (repo / "concepts").mkdir()
+    (repo / "concepts" / "c.yaml").write_text(
+        "- id: concept:ok\n  name: 合规\n  owner: o\n", encoding="utf-8")
+
+    issues = validate_corpus(load_corpus(repo))  # 不得抛 SchemaError
+    schema_errs = [i for i in issues if i.severity == "error"
+                   and i.file == "_schema/entry.schema.json"]
+    assert schema_errs, "schema 语义非法须产可定位 error（非 traceback）"
+    assert not [i for i in issues if "schema violation" in i.message], \
+        "schema 已废弃 → 条目不再走 schema 面（手写补充面接管）"
+
+
+def test_n6_non_object_schema_reports_error(tmp_path) -> None:
+    """非对象 schema 文件（合法 JSON 数组）→ error。"""
+    from knowledge_lattice.core.semantic.yaml_corpus import load_corpus, validate_corpus
+
+    repo = tmp_path / "n6b"
+    (repo / "_schema").mkdir(parents=True)
+    (repo / "_schema" / "entry.schema.json").write_text("[1, 2]", encoding="utf-8")
+    (repo / "concepts").mkdir()
+    (repo / "concepts" / "c.yaml").write_text(
+        "- id: concept:ok\n  name: 合规\n  owner: o\n", encoding="utf-8")
+    issues = validate_corpus(load_corpus(repo))
+    assert any(i.severity == "error" and i.file == "_schema/entry.schema.json"
+               for i in issues)
+
+
+def test_n6_fallback_path_symmetric(tmp_path, monkeypatch) -> None:
+    """回退路径（jsonschema 缺席）双对称：①同一批条目违例的**定位等价**
+    （文件+路径前缀）；②同一份语义非法 schema 同样报可定位 error（回退侧
+    最小 schema 合法性检查——零依赖环境门禁不静默削弱）。"""
+    import sys as _sys
+
+    from knowledge_lattice.core.semantic.yaml_corpus import load_corpus, validate_corpus
+
+    repo = tmp_path / "n6c"
+    (repo / "_schema").mkdir(parents=True)
+    (repo / "_schema" / "entry.schema.json").write_text(json.dumps({
+        "type": "object",
+        "required": ["id", "name", "owner"],
+        "properties": {
+            "id": {"type": "string"},
+            "name": {"type": "string"},
+            "l0": {"type": "boolean"},
+        },
+    }), encoding="utf-8")
+    (repo / "concepts").mkdir()
+    (repo / "concepts" / "c.yaml").write_text(
+        "- id: concept:bt\n  name: 123\n  owner: o\n", encoding="utf-8")       # name 类型
+    (repo / "concepts" / "d.yaml").write_text(
+        "- id: concept:bl\n  name: 布尔错\n  owner: o\n  l0: yes-please\n",
+        encoding="utf-8")                                                        # l0 类型
+
+    # jsonschema 在场路径基线（双路径等价的参照侧）
+    lib_result = validate_corpus(load_corpus(repo))
+    lib_schema_errs = [i for i in lib_result if "schema violation" in i.message]
+    lib_files = {i.file for i in lib_schema_errs}
+    assert lib_files == {"concepts/c.yaml", "concepts/d.yaml"}
+
+    monkeypatch.setitem(_sys.modules, "jsonschema", None)  # 强制 ImportError 回退
+    try:
+        fb_issues = validate_corpus(load_corpus(repo))
+    finally:
+        monkeypatch.undo()
+    fb_schema_errs = [i for i in fb_issues if "schema violation" in i.message]
+    # 定位等价：同两条目（bad_type/bad_l0）各报 error、文件定位与库路径一致
+    assert {i.file for i in fb_schema_errs} == lib_files, \
+        f"回退路径定位等价（got { {i.file for i in fb_schema_errs} }）"
+    assert any("name" in i.message for i in fb_schema_errs)
+    assert any("l0" in i.message for i in fb_schema_errs)
+
+    # ② 同一份语义非法 schema：回退侧同样报可定位 error、不崩溃
+    (repo / "_schema" / "entry.schema.json").write_text(_INVALID_SCHEMA,
+                                                        encoding="utf-8")
+    monkeypatch.setitem(_sys.modules, "jsonschema", None)
+    try:
+        issues2 = validate_corpus(load_corpus(repo))
+    finally:
+        monkeypatch.undo()
+    assert any(i.severity == "error" and i.file == "_schema/entry.schema.json"
+               for i in issues2), "回退路径对语义非法 schema 须对称报 error"
+    assert not [i for i in issues2 if "schema violation" in i.message]

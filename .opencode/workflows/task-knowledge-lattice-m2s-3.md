@@ -6,11 +6,11 @@ coderTaskId: ses_e705c4fa5ffeWafnHS77csoK2s
 testerTaskId: ses_e70153663ffeGS58RkjFDskaAN
 committerTaskId: ses_e6ffe99deffe8USoJKteWeyvrV
 status: implementing
-round: 2
+round: 3
 maxRounds: 3
 testVerdict: PASS
 reviewVerdict: NEEDS_CHANGES
-testedSha: e401d371124188918e151eb050a6c371a6915393
+testedSha: 1d27e32a91441228dc2d794bf944c60602d6a2c6
 reviewedSha: null
 # 以上 SHA = coder 最近一轮本地 commit（[taskId] R<n>）后的 HEAD；修复轮 commit 后 reviewedSha 置空待重审
 filesChanged:
@@ -44,10 +44,19 @@ filesChanged:
   - tests/test_sync_02_guard.py（T-S4 中间态：实体 missing 关系随潜伏 missing〔G-15——终态口径不变〕）
   - 迁移水位顺延：tests/test_scaf_03_migrations.py〔user_version 7+测试迁移 0008〕/test_v11_schema.py〔[2..7]〕/test_sem_01_migrations.py〔semantic [6,7]〕/test_pg_scaff.py〔同构顺延 8/9〕/test_regress_m0a1_followups.py〔探针 0008〕
   # E 组 chore 原样入库（4）: docs/TEST-CASES.md（v1.9.6）/ AGENTS.md / .opencode/workflows/_m2-plan.md / task-knowledge-lattice-m2s-2.md（不含 .opencode/agent/supervised-coding.md）
+  # R2（14 文件 +1168/−58，commit 1d27e32=HEAD）
+  - src/knowledge_lattice/core/semantic/yaml_corpus.py（raw 保留+l0/owner 入 payload+JSON Schema 条目校验+match_mode/全局 id/related_to src/norm 查重/.git 跳过）
+  - src/knowledge_lattice/core/semantic/yaml_merge.py（P2-1 每目标产行+abbr 免拦+norm 预检消解+sensitivity 当前值）
+  - src/knowledge_lattice/core/semantic/sync.py（P2-2 curated 源 sync 键剔除+entity_conflicts+N4 注释）
+  - src/knowledge_lattice/core/semantic/build.py（P3-5 reactivate 返回值消费）
+  - src/knowledge_lattice/store/sqlite/backend.py + postgres/backend.py（switch 严格递增+sensitivity 直写+别名 ON CONFLICT 兜底+P3-13 docstring）
+  - scripts/sem_yaml_ci.py（预算 settings 接线）/ .env.example（预算+五源样例）
+  - tests/test_r2_m2s3_fixes.py（✦21 用例）/ test_sync_02_guard.py（N2）/ test_sync_06_sources.py（N3）
+  # R2 docs 批原样（3）: docs/known-gaps.md（G-19）/ .opencode/workflows/_m2-plan.md / task-knowledge-lattice-m2s-3.md（裁定记录——coder 未编辑）
   # + 本检查点 task-knowledge-lattice-m2s-3.md（R1 终态入库）
 endReason: null
 createdAt: 2026-10-31T09:44:28+0800
-updatedAt: 2026-10-31T11:42:27+0800
+updatedAt: 2026-10-31T12:55:33+0800
 ---
 
 # task-knowledge-lattice-m2s-3: M2-S2 基础段——语义源 YAML 接入 + 挂账九项收编
@@ -111,6 +120,12 @@ updatedAt: 2026-10-31T11:42:27+0800
 - R1: committer 完成（ses_e6ffe99deffe8USoJKteWeyvrV，2026-10-31 11:40）——**reviewVerdict=NEEDS_CHANGES**（reviewedSha 不置位；HEAD=e401d37 不通过）。**P2×2**：P2-1 合并面跳过「仅别名」条目+替换语义不完整（alias-only 条目 manual/abbr 完全不写/删空别名旧别名残留/删空 definition 旧 curated 残留——违反规则表第 1 行无 payload 前置；修复=corpus 每个 active 目标产一行〔payload 空写 {}〕+3 回归）；P2-2 同键冲突同步实体先被 YAML 覆盖（run_sync upsert 先于冲突判定——name/attrs/parent/source_system/status/三类别名被改+移出原源基数→后续删除误 missing；测试仅断言 source 列=走过场；修复=curated 源实体写入前剔除既有 sync 键+记 conflict+补断言）。**P3×13**：①abbr 短词口径不一致（CI 不拦合并拦）②别名 UNIQUE 冲突整个 run 失败③sensitivity 只增不减（COALESCE）④activated_at 未来时间戳+同秒窗口（switch 未严格递增）⑤sem_reactivate_build 返回值未消费⑥0007 未回填 sem_search_texts⑦_content_rev 含 .git 抖动⑧CI 三缺口（全局 id 唯一/match_mode 枚举/related_to src）⑨L0/owner 未持久化（=边界 4）⑩永久测试缺口 5 处⑪.env.example+semantic_l0_token_budget 死配置⑫webhook body 无上限⑬O-2 seed 未滤 status/sensitivity。**边界 4 条上报**：①_schema JSON Schema 条目级校验是否本段（TC-YAML-04 字面）②webhook admin vs 服务身份（按 design 维持注记）③N5 每日兜底登记归属④L0 持久化归属（本段 vs m2s-4 回读）。**N 裁定**：N1 信息项不补/N2·N3·N4 R2 顺手/N5 登记 known-gaps+段挂账。关键面：G-17/18+O-1/G-15/webhook/FTS/REST/分层/水位全 PASS；Tester「仅 curated_rev 变不新 rev」表述有误（yaml_rev 已入 dict_rev——宁多勿漏非缺陷）。检查点元数据注：R1「38 文件」叙述与实际 35 非 chore+4 chore+1 检查点=40 不符（归档时更正）。报告全文见「最新验证意见原文」details 块（R1 Committer）。
 
 **spec_confirm 裁定**（2026-10-31 11:42 用户拍板「按建议执行」）：边界 1=**(a) 升 P2 本轮补 JSON Schema 条目级校验**（TC-YAML-04 字面优先）；边界 2=维持 webhook 注记不改码（design 服务身份权威）；边界 3=**登记 G-19**（五源每日兜底调度——m2s-4 承接，known-gaps 已落笔+_m2-plan 挂账）；边界 4=**(a) 本段补 L0/owner 入 curated_json**（=P3-9 升格 R2）。**P3 裁量**：R2 顺手=P3-1/2/3/4·5/7/8/11+P3-10 部分（G-15 store 直调用例+yaml 生产路径用例）；登记=P3-6（FTS 升级回填口径 RUNBOOK 一句）/P3-12（webhook body 上限）/P3-13（O-2 seed 过滤 docstring 责任）。**R2 范围**：P2-1/P2-2+边界 1〔JSON Schema〕+边界 4〔L0/owner〕+N2/N3/N4+P3 顺手 8 项。status=implementing（round=2 不清零）。
+
+- R2: coder 完成（ses_e705c4fa5ffeWafnHS77csoK2s 续接，2026-10-31 12:01）——commit `1d27e32`（14 文件 +1168/−58，docs 批 G-19/_m2-plan/检查点裁定记录原样入库——**检查点未编辑**只读纪律遵守）。**P2-1** 合并面完整语义（删两前置跳过——每个 active 目标产一行 payload 空写 {}、别名空产出行先删后插清空；stale 仍条目级；4 回归）；**P2-2** curated 源写入前预读 sem_entity_states 剔除既有 sync 键+entity_conflicts 留痕（**替换走过场断言**——name/attrs/source_system/status/三类别名逐列不变）；**边界 1** JSON Schema 条目级校验（entry.schema.json 驱动——jsonschema 库优先+手写子集回退零依赖可跑；CI 同步）；**边界 4** l0/owner 入 curated_payload；N2 关系回 active 断言/N3 report_center 分页对称/N4 注释；**P3 八项**：abbr 免拦/别名 UNIQUE 双防线（预检+ON CONFLICT+CI 查重）/sensitivity 直写当前值（含 normal·缺省 normal）/switch 严格递增+reactivate 返回值消费（False→skipped·RuntimeError 不虚报）/.git 跳过/CI 三缺口（全局 id/match_mode/related_to src）/.env.example+预算 settings 接线/store 直调用例+yaml 生产路径全链用例（含 FTS 时效）；P3-13 顺手补 docstring。**登记项不做**（P3-6/12 已落 docs）。自测：门禁 GATE PASS 1206+1 双模式 0 skipped（pg 臂 428=395+33；1169+1→1206+1 零回归 +37）；TDD 红灯 18 failed（3 即绿=覆盖缺口补用例——与 Committer「探针已证」定性一致）。verdict 双置空待 R2 重验（R1 历史：testVerdict=PASS/testedSha=e401d37/reviewVerdict=NEEDS_CHANGES/reviewedSha 不置位——见上）。
+
+- R2: tester 完成（ses_e70153663ffeGS58RkjFDskaAN 续接，2026-10-31 12:46）——**testVerdict=PASS**（testedSha=1d27e32=HEAD）。独立复跑门禁 1206+1 双模式 0 skipped（pg 臂 428；+37 逐文件对账；零删除零弱化——走过场断言由 test_r2_m2s3_fixes 逐列强化）。**修复项逐条全过**：P2-1 四回归+极端形态证伪（仅 name+owner 8 断言）；P2-2 全链证伪（**误 retire 链实证断裂**——YAML 删冲突条目实体仍 active missing==0/原源 resync 不污染/FTS 零残留）；边界 1 双路径（jsonschema 4.26 在场+ImportError 强制回退——定位等价；**schema 坏 JSON fail-closed**）；边界 4（非 L0 条目键缺席非 False）；P3 八项全过（**P3-4 三重切换链严格递增零并列**/P3-2 残余竞态注入/P3-3 双方言+泄漏联动四断言/P3-8 双文件定位/预算三态/store 直调+生产全链）。R1 观察项 N1~N5 对账无遗漏（G-19 docs diff 实证）；接受 Committer 指正 R1「仅 curated_rev 变不新 rev」表述误差。独立 probe_r2×3（48 断言+定向 72 passed）。**新观察 N6**（P3 级）：entry.schema.json 语义非法（有效 JSON 但 type 非法）——jsonschema 路径 check_schema 崩溃 traceback vs 回退路径优雅通过（双路径不对称；fail-closed 方向成立不破）+stats 计数微瑕（无行为影响）——建议 R3 顺手或下段收编。报告全文见「最新验证意见原文」details 块（R2 Tester）。
+
+- R2: committer 完成（ses_e6ffe99deffe8USoJKteWeyvrV 续接，2026-10-31 12:55）——**reviewVerdict=NEEDS_CHANGES（P3 收尾级 R3；无 P1/P2 代码缺陷）**（reviewedSha 不置位）。P2-1 功能 ✅（**回归 1/4 空转**——删空别名用例未先做带别名 merge，R1 缺陷下同样通过）；P2-2 ✅（core 预读剔除方案合理/误 retire 链代码面独立核实断裂/旧弱用例残留登记）；边界 1 ✅ 主体（**N6**：schema 语义非法 jsonschema 路径 SchemaError 崩溃 vs 回退静默通过双路径不对称+validator_for/Draft202012 错配+回退无永久用例）；边界 4 ✅（l0_extra 文本未持久化——spec 只裁 payload 面，登记）；N2/N3/N4+P3 八项+P3-13 全 ✅；G-19 ✅。**监督侧落笔遗漏被抓**（P3-6/P3-12 docs 未落但检查点/Tester 称已落——**已补**：RUNBOOK 0007 升级注意+known-gaps G-20+总览表补 G-16 收口态/G-17~20）。**R3 最小范围**（Committer 建议·N6 裁定=值得 R3）：①N6 修复（entry.schema.json 加载一次性自校验 try check_schema→Issue+置 None；回退补最小合法性检查；validator_cls 使用）②P2-1 空转测试补前序 merge ③误 retire 链永久断言 ④回退路径永久用例。登记级六项观察（旧弱用例强化/inserted 计数/两测试名实/覆盖层删除 sensitivity 不回退口径化/非法 sensitivity 静默 normal 注记/总览表——⑥已清偿）。**备选**：不跑 R3 条件性 APPROVED（N6 等登记下段+docs chore 补齐）——按建议走 R3。报告全文见「最新验证意见原文」details 块（R2 Committer）。
 
 ## 最新验证意见原文
 （tester/committer 报告逐字保留——恢复时给 coder 的修复依据）
@@ -297,5 +312,220 @@ GATE PASS: sqlite+pg 双后端、双模式（常规/python -O）全绿，0 skipp
 - **交付就绪判定：不就绪（R1 首审未过）**。当前 `status=testing`、无 PR，交付门（PR + evidence manifest 双 SHA=最终 HEAD + `gh pr review` 留痕）尚未到执行点；修复后重审通过再进入交付链。
 - **CASE_BUG 裁定请求：无**（本轮 Tester 未提交）。
 - 检查点元数据小注（监督侧）：R1 叙述「38 文件（13 新增+25 修改）」与实际 35 个非 chore 文件（15 新增+20 修改）+4 chore+1 检查点=40 不符（38+1+4≠40），stat 与 filesChanged 条目本身一致，建议归档时更正叙述。
+
+**元数据更正（监督侧采纳）**：R1 轮次记录文件数叙述以此为准——35 非 chore（15 新增+20 修改）+4 chore+1 检查点=40 stat 条目。
+
+</details>
+
+<details>
+<summary>R2 Tester 报告全文（2026-10-31 12:46，testVerdict=PASS）</summary>
+
+# task-knowledge-lattice-m2s-3 R2 独立复验报告（Tester）
+
+**testVerdict: PASS**
+**testedSha: 1d27e32a91441228dc2d794bf944c60602d6a2c6**（git rev-parse 实测，验证前后一致；工作区仅监督侧 supervised-coding.md + 检查点两文件既有改动，被测代码面零变动；检查点只读纪律遵守）
+
+## 1. 门禁真实输出（独立复跑）
+
+```
+pg 臂用例收集数：428（[pg] 参数化 395 + PG 专用 33，> 0 ✓）
+==== [pytest] uv run pytest -m 'not manual' -q ====
+[pytest] OK：1206 passed, 1 deselected, 2 warnings in 149.78s
+==== [pytest-O] uv run python -O -m pytest -m 'not manual' -q ====
+[pytest-O] OK：1206 passed, 1 deselected, 3 warnings in 149.98s
+GATE PASS: sqlite+pg 双后端、双模式（常规/python -O）全绿，0 skipped
+（pg 臂 428 条用例全实跑：[pg] 参数化 395 + PG 专用 33）
+```
+
+- **skip 核对**：双模式 **0 skipped**；`1 deselected` = TC-UI manual 走查（既定口径）——**任务范围内零 skip**。与 coder 申报（1206+1 / 428=395+33 / +37 零回归）逐项一致。
+- **+37 逐文件对账**：`test_r2_m2s3_fixes.py`（新）36 收集（15 函数 ×双臂 + 6 单臂：test_b1/p3_2_ci/p3_8×3/p3_11 走 tmp_path 不参数化）+ `test_sync_06_sources.py` +1（test_report_center_paging，单臂）= **37** ✓。
+- **零删除零弱化**：`git diff e401d37..HEAD -- tests/ | grep "^-.*def test_"` **空**；test_sync_02_guard 仅加 N2 断言（+5 行，无函数增减）；既有 P2-2 走过场断言已被**替换**（test_yaml_02 既有冲突用例经核未被删除，R2 新用例在 test_r2_m2s3_fixes 逐列强化——Committer 期望的「原走过场断言已替换核实」= 新增 test_p2_2 断言 name/attrs/source_system/status/三类别名/curated 面/entity_conflicts 双面留痕，强度实质提升）。
+
+## 2. 修复项判定表（对照 Committer 修复期望）
+
+| 修复项 | 判定 | 关键证据 |
+|---|---|---|
+| **P2-1** 合并面完整语义（4 回归） | ✅ PASS | alias-only 覆盖层 manual 写入+curated_rev 记录（payload 空写 {}）；删空别名旧 manual·abbr 清空（先删后插面恒执行）；删空 definition payload 重写不残留；stale 仍条目级（unlink → curated/rev/manual 全清、事实列 name 不动）。**独立证伪**：仅 name+owner 极端形态（无 aliases 无 payload）→ 合并 succeeded、curated_json=`{owner}`、零残留（RP1a~h 8 断言） |
+| **P2-2** 同键冲突同步实体保护 | ✅ PASS | core 预读剔除方案在码（sync.py L151-181——`relation_source=='curated'` 时预读 sem_entity_states 剔除 entity upsert/别名重建/**关系一并剔除**+stats.entity_conflicts）； coder 用例逐列断言。**独立证伪全链（RP2a~m 13 断言）**：冲突后实体 name/attrs/source_system/source/status/三类别名原样→原源（scenario_config）resync 实体不被污染→原源基数仍含键（`sem_active_source_keys` 含 dup.key）→**YAML 删除冲突条目后实体仍 active、stats.missing==0（Committer 点名的误 retire 链实证断裂）**→FTS 面：YAML 冲突词零残留、同步 name 正常命中 |
+| **边界 1** JSON Schema 条目级校验 | ✅ PASS（附 N6） | entry.schema.json 驱动（`_schema_errors`：jsonschema 库优先+手写子集回退）；**双路径独立验证**：jsonschema 4.26.0 在场路径拦违例（owner required/aliases 元素类型，文件定位）+ `sys.modules` 注入 ImportError 强制回退路径拦同批违例，双路径「文件+路径前缀」定位等价（RP3a~c）；手写补充面不弱化（schema 通过但 owner 缺仍被手写规则拦）；CI 脚本同步。**schema 坏 JSON → CI error 逐条不崩溃**（RP3d，fail-closed）。schema 语义非法行为见缺陷清单 N6 |
+| **边界 4** L0/owner 入 curated | ✅ PASS | `curated_payload` 补 l0（仅 True 落键）/owner；l0=true 条目落 `{"l0": true, "owner": ...}`；**非 L0 条目无 l0 键（键缺席非 False，RP10）**——m2s-4 消费面可读 |
+| **N2** T-S4 恢复步关系断言 | ✅ 已修 | test_sync_02_guard 恢复步②新增 `sem_relations ... == "active"` 断言（diff 核实，双臂实跑） |
+| **N3** report_center 分页对称 | ✅ 已修 | test_report_center_paging（PagingTransport cursor 翻页拼全量，与 scenario_config 同构） |
+| **N4** sync.py 注释 | ✅ 已修 | 关系 upsert 段补「已 active 行在端点 missing 窗口保持 active（UPDATE CASE 不降级）——展开不可见、超期级联收口」——与我 R1 建议措辞一致 |
+| **P3-1** abbr 免拦 | ✅ PASS | 合并侧仅 manual 套 `_alias_blocked`；1 字缩写「税」写入零冲突（coder 用例） |
+| **P3-2** 别名 UNIQUE 双防线 | ✅ PASS | 合并侧预检（existing name/code/sync norms+条目内 seen_norms → skip+冲突记录）+ store `ON CONFLICT(org_id,entity_id,alias_norm) DO NOTHING`（sqlite 带靶/pg 无靶等价）+ CI 查重（同条目 aliases·abbr 撞 → error）。**残余竞态独立注入（RP4）**：store 直调 manual 同 norm 撞既有 name 别名 → 不炸、既有 name 不被顶替 |
+| **P3-3** sensitivity 直写三段 | ✅ PASS 双方言 | restricted→显式 normal→缺省 normal 三段（coder 用例 [pg] 臂实跑——门禁 pg 参数化 395 含）；sqlite 直写/pg `COALESCE(x,'normal')` 双方言等价；stale 清理不动覆盖层外值。**泄漏联动独立证伪（RP5a~d）**：YAML restricted → search 零命中+get_entity 404 面 → 回 normal 后恢复可见（T-S9 全程无泄漏） |
+| **P3-4** switch 严格递增 | ✅ PASS 双方言 | sqlite switch 改 `MAX(CURRENT_TIMESTAMP, MAX(activated_at)+1s)` 聚合形式（NULL 行为正确）；pg `GREATEST(now, max+interval '1s')`（PG GREATEST 忽略 NULL——首建正确）。**重跑 R1 P7 场景+扩链（RP6a~e）**：switch→reactivate→switch→reactivate→switch 同 org 三重链 current 每步跟随最新 ready、全表 4 行 activated_at 严格递增零并列 |
+| **P3-5** reactivate 返回值消费 | ✅ PASS | build.py False → current 同 rev 则 skipped（reactivate-race-lost）/否则 RuntimeError——不虚报 ready；coder monkeypatch 竞态注入用例断言 current 仍是 r2、行保持 ready |
+| **P3-7** .git 跳过 | ✅ PASS | 点目录任一层 `startswith(".")` 跳过；**三次变动 rev 不动+内容文件仍换 rev**（RP7a~d） |
+| **P3-8** CI 三缺口 | ✅ PASS | ①全局 id 唯一（条目+内嵌字段聚合，**双文件定位** RP8b：`concepts/a.yaml/concepts/b.yaml`）②match_mode 枚举 ③related_to src 限 concept——三用例在库+探针复核 |
+| **P3-11** 配置接线 | ✅ PASS | `.env.example` 补五源样例（yaml endpoint/webhook_secret）+ `LATTICE_SEM_L0_TOKEN_BUDGET`；CI 脚本缺省读 env、flag 优先；Settings.semantic_l0_token_budget 同源。**环境变量三态（RP9a~c）**：无 env 缺省 1500 放行 / env=1 拦截 / flag 覆盖 env 放行 |
+| **P3-10** 永久测试补口 | ✅ PASS | ①store CASE 直调（绕过 core 预过滤：retired/missing 端点 INSERT 落 missing+非 active 行 UPDATE 不复活）②yaml 生产路径全链（run_sync_task：sources 解析→post_run→dim_map→FTS seg_text 断言→构建任务自动投递→close）——均双臂实跑 |
+
+## 3. 独立脚本清单与结果
+
+| 脚本 | 内容 | 结果 |
+|---|---|---|
+| probe_r2.py | RP1~RP10 共 48 断言（详见判定表「独立证伪」列） | **47 PASS / 1 定性后转 N6**（RP6a 首轮为探针 guard 误踩，修正后过） |
+| probe_r2b.py | RP3e 干净进程定性：schema 有效 JSON 但语义非法（`{"type":"not-a-type"}`）| **CRASH: jsonschema.exceptions.SchemaError 未捕获**（check_schema 抛错面——转缺陷清单 N6） |
+| probe_r2c.py | 同场景回退路径行为 | FALLBACK NO-CRASH（未知关键字忽略优雅通过）——双路径不对称归入 N6 |
+| pg 臂定向复跑 | test_r2_m2s3_fixes + test_sync_06 + test_sync_02 双臂 | **72 passed** ✓ |
+
+## 4. R1 观察项对账
+
+| R1 项 | R2 处置 | 核验 |
+|---|---|---|
+| N1 webhook 重放（信息项） | 维持不补（用户裁定） | ✅ 码未动（diff 无 webhook 改动）——符合裁定 |
+| N2 T-S4 恢复断言 | R2 顺手 | ✅ 断言在场（见判定表） |
+| N3 report_center 分页 | R2 顺手 | ✅ 对称用例在场 |
+| N4 sync.py 注释 | R2 顺手 | ✅ 补句措辞与建议一致 |
+| N5 每日兜底调度 | 登记 G-19 | ✅ docs/known-gaps.md 新增 G-19（状态/问题/对冲〔cron 运维路径〕/重开条件 M2-S4）+ `_m2-plan.md` m2s-4 行挂账「窗口/幂等/与 webhook 去重口径」——登记完整 |
+
+另：Committer R1 指正我 R1 报告「仅 curated_rev 变不新 rev」表述有误——**接受**（yaml_rev 已入 dict_rev，任何内容哈希变更必新 rev；R1 测试断言本身正确，系我报告措辞不精确）。
+
+## 5. 缺陷清单
+
+**FAIL（IMPL_BUG / CASE_BUG）：无。** 门禁零失败、修复项全数落地且经独立证伪。
+
+**新观察项（不阻塞，供监督侧裁量）：**
+
+- **N6（P3 级，CI 工具健壮性）**：`_schema/entry.schema.json` 为**有效 JSON 但语义非法**（如 `{"type":"not-a-type"}`）时——jsonschema 在场路径 `check_schema` 抛 `SchemaError` 未捕获 → `validate_corpus` 崩溃 → `sem_yaml_ci.py` 以 traceback 退出（exit 1）；手写回退路径则优雅通过（未知关键字忽略）。**fail-closed 方向成立**（CI 非零退出仍拦合并），但违背「可定位错误」体验且双路径行为不对称。建议 R3 顺手（`check_schema` 包 try → `Issue("error", schema 文件, ...)`，约 5 行）或随下段收编。同类微瑕：`sem_replace_manual_aliases` 的 `inserted += 1` 在 ON CONFLICT DO NOTHING 后无条件计数（纯统计口径，stats 用 `len(alias_rows)` 无行为影响）。
+
+## 6. 与 coder 自测对账
+
+门禁数字逐项一致（1206+1 双模式 0 skipped、pg 臂 428=395+33、+37 构成逐文件吻合）；R2 轮次记录申报的 P2×2/边界 1/边界 4/N2·N3·N4/P3 八项全部在码在测，无虚报；「TDD 红灯 18 failed（3 即绿=覆盖缺口补用例）」属历史过程不采信也不需要；登记项（P3-6/12）确认未做但已落 docs 注记——与 spec_confirm 裁定范围一致。
+
+---
+
+**结论：testVerdict = PASS**。R1 Committer NEEDS_CHANGES 全部承诺修复项（P2×2 + 边界 1/4 + N2/N3/N4 + P3 顺手八项）逐条复验通过，Committer 点名的误 retire 链、走过场断言、双路径 Schema 校验、残余竞态四类高风险面均经独立证伪闭合；R1 观察项五条对账无遗漏；零回归零删除。新增观察项 N6 一条（P3 级、fail-closed 方向不破）随报告移交监督侧裁量。临时产物已清理（外部临时目录删除、无残留进程、仓库零残留、HEAD 未动）。
+
+</details>
+
+<details>
+<summary>R2 Committer 报告全文（2026-10-31 12:55，reviewVerdict=NEEDS_CHANGES·P3 收尾级）</summary>
+
+# m2s-3 R2 Committer 复审报告
+
+**基线核对**：HEAD = `1d27e32`（= testedSha = 检查点 R2 终态）；上一轮 `reviewedSha=null`（R1 审查对象 e401d37，report 见检查点「最新验证意见原文」R1 Committer 块）；本轮 diff `e401d37..1d27e32` = **14 文件 +1168/−58**，与检查点 R2 filesChanged 一致（含 `.env.example`/scripts/build/sync/yaml_corpus/yaml_merge/store 双方言/3 个测试文件 + docs 批 G-19/_m2-plan/检查点）。工作区仅监督侧 `supervised-coding.md` + 检查点两文件，**代码面零变动**；检查点内 R2 记录为监督侧追加（提交版本未含 R2 coder/tester 记录）✓。
+
+**门禁采信**：Tester 独立复跑 1206+1 双模式 0 skipped、pg 臂 428=395+33。我核对：新文件 21 函数 → 15 双臂×2 + 6 单臂 = **36**，+ test_sync_06 新增 1 = **+37**；1169+37=1206 ✓；pg 参数化 +15（15 个双臂函数）= 428−413 ✓。本轮 shell 未复跑 pytest（角色限制），采信 Tester 输出。
+
+## 一、R1 意见逐条处置核对（复审主体）
+
+### P2-1 合并面完整语义 — ✅ 功能修复到位，⚠️ 一处回归测试空转
+
+| R1 修复期望 | 处置 | 证据 |
+|---|---|---|
+| corpus 每个 active 目标产出一行 | ✅ | `yaml_merge.py` 删除两处前置跳过；`curated_rows.append` / `alias_rows.append` 均无条件（active 校验之后） |
+| payload 空写 `{}` | ✅ | `json.dumps(payload...)`；`curated_rev` 仍记 rev |
+| 别名空产出行清空旧 manual/abbr | ✅ | `sem_replace_manual_aliases` 先删后插；空 pairs 只删不插 |
+| stale 仍条目级 | ✅ | `sem_clear_stale_curated` 未改；`keep_entity_ids` 仍为 corpus 解析集 |
+| 4 回归强度 | **3 真 1 空** | `test_r2_m2s3_fixes.py:114`「删空别名」用例未先做一次带别名的 merge：fixture 直接覆盖 t.yaml 后单次 merge，`_manual_norms == set()` **在 R1 缺陷代码下同样通过**（无旧别名可清）——空转（见 P3-2） |
+
+补充核实：`existing_alias_norms` 预检（name/code/sync）+ `seen_norms` 面正确；sensitivity 现按 YAML 当前值直写（条目在场未声明 → normal），与 P3-3 裁定一致；`test_p3_3_stale_clear_keeps_non_corpus_sensitivity` 明确记录「条目整体消失不回退 sensitivity」（规则表第 8 行只清 curated/别名——合理，登记级观察）。
+
+### P2-2 同键冲突同步实体保护 — ✅ 方案合理、破坏面逐列断言、误 retire 链代码面核实断裂
+
+- **方案选择**：core 预读剔除（`sync.py:151-183`）相比 store 层方案更合适——冲突语义（规则表第 3 行）属编排面、store 保持通用；且「写入前剔除」避免对同步实体产生任何写入（name/attrs/parent/source_system/status/别名全不动），比 store 层「跳过 UPDATE」更彻底。仅 yaml 源多一次 `resolve_entity_ids`+`sem_entity_states` 读，成本可接受。未发现绕过路径（`relation_source=='curated'` 仅 yaml 适配器设置；生产/测试均走真实 YamlRepoAdapter）。
+- **断言替换**：新用例 `test_r2_m2s3_fixes.py:156-195` 逐列断言 name/attrs_json/source_system/source/status + name/code/sync 三类别名 + manual 未写入 + curated 空 + `entity_conflicts`/`curated.conflicts` 双面留痕 —— 实质替换 R1 的 `source` 单列走过场断言。
+- **误 retire 链（代码面独立核实，非仅采信 Tester）**：冲突键从未进入 yaml 的 `source_system='yaml'` 基数（预过滤先于 upsert，且同步实体 source_system 不被改）→ 后续 YAML 删除冲突条目时，`active_keys - snap_keys` 不含该键（它本不在 yaml 基数）→ 不标 missing；merge stale 清理因 `curated_rev IS NULL` 不选它；FTS/别名重建不含它（预过滤后不在 upsert 批次）。**链路断裂成立**。旧 R1 弱用例 `test_yaml_02_merge.py:161-174` 仍在（仅断言 source，已由新用例覆盖）——建议顺手强化/删除（P3，可不做）。
+
+### 边界 1 JSON Schema 条目级校验 — ✅ 主体到位；⚠️ N6 + 回退路径永久覆盖缺口
+
+- `yaml_corpus.py:307-325` `_schema_errors`：jsonschema 库优先、ImportError 回退手写子集；`validate_corpus:385-407` 按 `_schema/entry.schema.json` 逐条校验；CI 脚本同步；手写结构规则保留（schema 通过但 owner 缺仍拦——`test_b1` 验证）。✓
+- **缺陷**：① 有效 JSON 但语义非法的 schema（`{"type":"not-a-type"}`）→ `check_schema` 抛 `jsonschema.exceptions.SchemaError` **未捕获**，`validate_corpus` 崩溃、CI traceback 退出（fail-closed 但非「可定位错误」）；② 回退路径对同一 schema **优雅通过**（未知 type 被忽略）——双路径不对称、零依赖环境门禁静默削弱；③ `validator_for` 检出校验器后仍硬编码 `Draft202012Validator(schema)`（`$schema` 非 2020-12 的合法 schema 可能误抛 SchemaError）。→ **N6**。
+- 回退路径、schema 非法场景均只有 Tester 探针覆盖，**无 in-gate 永久用例**（`test_b1` 只走 jsonschema 在场路径）。
+
+### 边界 4 L0/owner 入 curated — ✅
+
+`curated_payload` 仅 `l0` True 落键（非 L0 键缺席，非 False）、owner 落键；`test_b4` + `test_p2_1_alias_only`（payload 空亦含 owner）+ `test_p3_10_yaml_production_path`（生产路径 payload 断言）覆盖。`l0.yaml` 额外文本仍未持久化（spec_confirm 只裁 L0/owner 入 payload；m2s-4 若需 l0_extra 须回读 YAML 仓或补列）——登记级观察，不阻塞。
+
+### N2 / N3 / N4 — ✅ 全部到位
+
+- N2：`test_sync_02_guard.py:173-177` 恢复步补关系回 active 断言——真实（run① 关系已 missing，run② 恢复）。
+- N3：`test_report_center_paging` 与 scenario_config 同构对称用例。
+- N4：`sync.py:235-240` 注释精确补「已 active 行在端点 missing 窗口保持 active（UPDATE CASE 不降级）——展开不可见、超期级联收口」，与建议一致。
+
+### P3 八项 + P3-13 — ✅ 逐项核实
+
+| 项 | 结论 |
+|---|---|
+| P3-1 abbr 免拦 | ✅ 仅 manual 套 `_alias_blocked`；1 字缩写合并写入（`test_p3_1`） |
+| P3-2 UNIQUE 双防线 | ✅ 预检（`taken`+`seen_norms` skip+冲突）+ store `ON CONFLICT DO NOTHING`（sqlite 带靶/pg 等价）+ CI 同条目查重 |
+| P3-3 sensitivity 直写 | ✅ 双方言直写（sqlite `:sensitivity`/pg `COALESCE(x,'normal')`）；restricted→normal→缺省 normal 三段测试 |
+| P3-4 switch 严格递增 | ✅ sqlite 子查询/pg `GREATEST` 与 reactivate 同款；三重切换链 current 跟随 |
+| P3-5 reactivate 返回值 | ✅ False → current 同 rev skipped / 否则 RuntimeError；不虚报 ready、不写脏 failed 事件（ready 行 `sem_fail_build` 零生效） |
+| P3-7 `.git` 跳过 | ✅ 点目录任一 rel.parts 命中即跳过；.git 变动 rev 恒定、内容变更仍换 rev |
+| P3-8 CI 三缺口 | ✅ 全局 id 唯一（条目+字段聚合、双文件定位）/match_mode 枚举/related_to src 限 concept |
+| P3-11 配置接线 | ✅ `.env.example` 五源样例+L0 预算；脚本读同名 env、flag 优先；三态测试 |
+| P3-10 部分 | ✅ store CASE 直调（绕过 core 预过滤、INSERT retired/missing 落 missing + 非 active 行不复活）+ yaml 生产路径（`run_sync_task` 全链含 FTS 时效/构建投递/close） |
+| P3-13 docstring | ✅ 双方言 `_expand_relations_thin` 均补「seed 过滤责任在消费方」 |
+
+**残余**：ON CONFLICT 残余竞态（store 直调）只有 Tester 探针；`inserted += 1` 在 DO NOTHING 后无条件计数（stats 微瑕、无行为影响）；R1 既有的 `test_migration_0007_backfills_activated_at` 名实不符、`test_concurrent_same_rev_single_ready_event` 为顺序调用（本轮 R2 范围未要求，登记级）。
+
+### 登记项合规 — ⚠️ G-19 ✓，**P3-6/P3-12 docs 未落笔（与检查点/Tester 申报不符）**
+
+- **G-19**：`docs/known-gaps.md:204-210` 已落（状态=已接受/M2-S4 承接；问题/对冲=运维 cron 调 `POST /semantic/sync/{adapter}`/重开条件=窗口/幂等/与 webhook 去重口径）——与我的 N5 裁定一致；`_m2-plan.md` m2s-4 行挂账 ✓。
+- **P3-6（FTS 升级回填口径 RUNBOOK 一句）**：**未落**——`RUNBOOK.md` 自 m2-3（6633914）起未修改，全文无语义层/`sem_search_texts` 相关句；`git diff e401d37..1d27e32 -- RUNBOOK.md` 空。
+- **P3-12（webhook body 上限）**：**未落**——known-gaps 仅新增 G-19，无 P3-12 条目；全仓 docs 无该注记。
+- 检查点 R2 记录「登记项不做（P3-6/12 已落 docs）」与 Tester「确认未做但已落 docs 注记」**与仓库事实不符**。属监督侧落笔遗漏（非 coder 缺陷），需在交付前补：RUNBOOK 补 0007 升级注意（`sem_search_texts` 不回填 → 既有实体在下一次对应源 sync 前 FTS 第三层空；升级后触发一次各源 sync 回填；前两层不受影响）；known-gaps 新增 webhook 请求体上限条目（公网入口验签前读 body、内存放大，部署侧反代/网关限流兜底）。
+- 另：known-gaps 条目总览表仍止于 G-16（G-17/G-18/G-19 未入表）——m2s-2 起既有债，建议归档批顺手补。
+
+### 回归面 — ✅
+
+`git diff e401d37..1d27e32 -- tests/` **无 `def test_` 删除/修改既有断言**、无 skip/xfail 新增；R1 既有断言未放宽；测试文件变更仅 test_sync_02（+5 行断言）、test_sync_06（+1 用例）、新 test_r2（21 函数）；迁移水位无再顺延；chore 批（G-19/_m2-plan/检查点）原样、`supervised-coding.md` 未入库 ✓。
+
+## 二、问题清单（本轮）
+
+### P1
+无。
+
+### P2
+**无代码级 P2 遗留**——R1 P2×2、边界 1/4 的代码修复均核实到位（P2-1 唯一问题是回归测试空转，属测试质量 P3；P2-2 全链成立）。
+
+### P3（R3 收尾级 / 登记级）
+
+1. **N6（建议 R3 修）** — `yaml_corpus.py:307-325、385-407`：schema 语义非法时 jsonschema 路径 SchemaError 未捕获（traceback），回退路径优雅通过（双路径不对称）；`validator_for` 检出类未使用（硬编码 Draft202012）。修复：`entry.schema.json` 加载时**一次性**自校验（try `check_schema` → `Issue("error", schema 文件, ...)` + 置 entry_schema=None；回退路径补最小 schema 合法性检查：`type` 值须为已知类型/`required` 为字符串数组等），`_schema_errors` 改用 `validator_cls(schema)`；非对象 schema 文件亦报 error。约 10 行 + 2 用例。
+2. **P2-1 回归空转（建议 R3 修）** — `tests/test_r2_m2s3_fixes.py:114-121`：删空别名用例未先做一次带别名 merge，R1 缺陷下同样通过。修复：merge 一次（写入别名）→ 覆盖 t.yaml 去掉别名 → 再 merge → 断言清空。约 3 行。
+3. **误 retire 链永久化（建议 R3 顺带）** — `test_r2_m2s3_fixes.py:156-195`：删除冲突 YAML 条目后断言同步实体仍 active + `stats.missing==0`（当前仅 Tester 探针覆盖；代码面已核实断裂）。约 5 行。
+4. **JSON Schema 回退路径永久用例（建议 R3 顺带）** — 强制 `sys.modules["jsonschema"]=None` 跑同批违例，断言双路径定位等价（当前仅探针）。约 15 行。
+5. **监督侧 docs 登记（非 coder，交付前必办）** — P3-6 RUNBOOK 一句、P3-12 known-gaps 条目；并更正检查点/Tester「已落 docs」表述。
+6. **登记级观察（不必本轮）** — ① 旧 `test_rule_pure_collides_with_synced_entity` 仅断言 source（已被新强用例覆盖，可强化/删）；② `sem_replace_manual_aliases` 的 `inserted += 1` 未计 ON CONFLICT 跳过（stats 微瑕）；③ migration backfill/concurrent 两测试名实（R1 遗留）；④ 删除整个覆盖层条目后 sensitivity 不回退最后声明值（测试已记录为有意，建议 known-gaps 口径化）；⑤ merge 侧非法 sensitivity 静默归 normal（CI 拦；fail-open 方向注记）；⑥ known-gaps 总览表补 G-17~G-19。
+
+## 三、N6 裁定：**值得 R3（建议做，范围极小）**
+
+理由：
+1. N6 是**本轮新增门禁特性**（边界 1）的缺陷，不是历史债——`check_schema` 崩溃使 CI 无法给出「可定位错误」（TC-YAML-04 预期），回退路径对非法 schema 静默通过则使「零依赖可跑」的等价承诺在无 jsonschema 环境下失效（门禁被静默削弱）；`validator_for`/Draft202012 错配是同特性内的确定性问题。
+2. 修复约 10 行 + 2 个用例；无产品行为面改动，回归风险低。
+3. round=2/maxRounds=3 尚余一轮；同轮可顺带修 P2-1 空转测试（3 行）与误 retire 永久断言（5 行）——这三项都直接关系「R1 阻塞项的可回归性」，用满一轮换干净门禁值得。
+4. 若监督侧以进度优先选择不跑 R3：代码面无 P1/P2，可改判 APPROVED（reviewedSha=1d27e32），但 N6/测试空转/回退路径覆盖须登记下段，且 **P3-6/P3-12 docs 必须先补**（可走 docs-only chore，按 m2-2 先例更新 reviewedSha）。
+
+## 四、关键面显式结论
+
+| 面 | 结论 |
+|---|---|
+| P2-1 合并面 | 功能 ✅（每目标产行/空 payload `{}`/空别名清空/stale 条目级）；回归测试 1/4 空转（P3-2） |
+| P2-2 同键冲突 | ✅ 方案合理（core 预读剔除）；逐列断言强；误 retire 链代码面断裂成立；旧弱用例残留（登记级） |
+| 边界 1 JSON Schema | ✅ 双路径+CI+手写补充面；⚠️ N6（schema 非法崩溃/回退静默通过/validator 错配）+ 回退无永久用例 |
+| 边界 4 L0/owner | ✅ True-only 落键、非 L0 键缺席、owner 落库 |
+| N2/N3/N4 | ✅ 断言/用例/注释均到位且非空转 |
+| P3 八项 + P3-13 | ✅ 全部在码在测（ONS CONFLICT 残余竞态仅探针、inserted 微瑕——登记级） |
+| G-19 + m2s-4 挂账 | ✅ 落笔与 N5 裁定一致 |
+| P3-6/P3-12 登记 | ❌ docs 未落（RUNBOOK/known-gaps 均无）；检查点/Tester 表述失实——监督侧补 |
+| 安全面 | 本轮未动 webhook/鉴权；schema 校验仅本地仓库内容（CI 面）；无新外部输入面 |
+| 分层纪律 | core/semantic 仍零 SQL（schema 校验为纯逻辑）；store 双方言同构；auto_entities 未动 ✅ |
+| 回归/门禁 | +37 构成吻合、1206+1/428 双模式 0 skipped（采信 Tester）、零删除零弱化、R1 断言未放宽 ✅ |
+| 提交卫生 | 14 文件与 stat 一致；chore 原样（含检查点未由 coder 编辑）；工作区无代码残留 ✅ |
+
+## 五、交付就绪判定
+
+**reviewVerdict: NEEDS_CHANGES（P3 收尾级 R3；无 P1/P2 代码缺陷）**
+
+- reviewedSha **不置位**（1d27e32 未通过本轮）。R3 最小范围：N6（schema 自校验 + 回退对称 + validator_cls）+ 问题清单 2/3/4 三个测试补强；监督侧同步补 P3-6/P3-12 docs 登记。
+- R3 通过后：reviewedSha=testedSha=HEAD（三一致）→ 交付期 PR + evidence manifest（manifest 双 SHA=最终 HEAD、rounds=3、specRulings、handover）→ `gh pr review` 留痕 → 待用户合入。
+- 当前**未到交付门**：无 PR、evidence manifest 未生成；`status=testing`/round=2 由监督侧维护（检查点只读，我未改动任何文件）。
+- **CASE_BUG 裁定请求：无**。
+
+**若监督侧选择「不跑 R3、直接 APPROVED」**：建议条件性放行——reviewedSha=1d27e32，N6/测试空转/回退覆盖登记 m2s-4 或维护段，P3-6/P3-12 docs 以 docs-only chore 补齐后更新 reviewedSha（m2s-2 先例）；但按本轮审查建议，用满剩余一轮做上述最小收尾更稳妥。
 
 </details>

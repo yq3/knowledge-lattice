@@ -304,25 +304,77 @@ _VALID_MATCH_MODES = ("exact", "fuzzy_only", "context")
 _ENTRY_SCHEMA_NAME = "entry.schema.json"
 
 
-def _schema_errors(instance: dict, schema: dict) -> list[str]:
-    """JSON Schema 校验（最小实现——R2/边界 1）：优先 `jsonschema` 库（可用
-    时全量方言）；不可用时回退手写子集（type/required/properties/enum/items/
-    additionalProperties——CI 环境无第三方依赖也能跑）。"""
+def _schema_self_check(schema: dict) -> str | None:
+    """schema 一次性自校验（R3/N6）：jsonschema 在场走 `validator_for`
+    .check_schema；缺席时走 `_minimal_schema_self_check`（与条目校验同一
+    回退口径——语义非法 schema 在零依赖环境同样被拦，门禁不静默削弱）。
+    返回问题描述（None=合法）。"""
     try:
         import jsonschema
+    except ImportError:
+        return _minimal_schema_self_check(schema)
+    try:
+        jsonschema.validators.validator_for(schema).check_schema(schema)
+        return None
+    except jsonschema.exceptions.SchemaError as exc:
+        return str(exc)
 
-        validator_cls = jsonschema.validators.validator_for(schema)
-        validator_cls.check_schema(schema)
-        errors = sorted(
-            jsonschema.Draft202012Validator(schema).iter_errors(instance),
-            key=lambda e: list(e.absolute_path),
-        )
-        return [
-            f"{'/'.join(map(str, e.absolute_path)) or '$'}: {e.message}"
-            for e in errors
-        ]
+
+_MINIMAL_SCHEMA_TYPES = frozenset({
+    "object", "array", "string", "integer", "number", "boolean", "null",
+})
+
+
+def _minimal_schema_self_check(schema: object, path: str = "$") -> str | None:
+    """回退路径最小 schema 合法性检查（R3/N6——与 jsonschema 路径对称）：
+    type 值须为已知类型、required 须为字符串数组、properties/items/enum
+    形状合法；未知关键字忽略（方言子集口径）。"""
+    if not isinstance(schema, dict):
+        return f"{path}: schema 须为对象"
+    stype = schema.get("type")
+    if stype is not None and stype not in _MINIMAL_SCHEMA_TYPES:
+        return f"{path}: 未知 type {stype!r}（合法：{sorted(_MINIMAL_SCHEMA_TYPES)}）"
+    if "required" in schema and not (
+        isinstance(schema["required"], list)
+        and all(isinstance(r, str) for r in schema["required"])
+    ):
+        return f"{path}: required 须为字符串数组"
+    if "enum" in schema and not isinstance(schema["enum"], list):
+        return f"{path}: enum 须为数组"
+    for key in ("properties",):
+        if key in schema and not isinstance(schema[key], dict):
+            return f"{path}: {key} 须为对象"
+    if "items" in schema and not isinstance(schema["items"], dict):
+        return f"{path}: items 须为对象"
+    for key, sub in (schema.get("properties") or {}).items():
+        problem = _minimal_schema_self_check(sub, f"{path}.{key}")
+        if problem:
+            return problem
+    if isinstance(schema.get("items"), dict):
+        return _minimal_schema_self_check(schema["items"], f"{path}.items")
+    return None
+
+
+def _schema_errors(instance: dict, schema: dict) -> list[str]:
+    """JSON Schema 校验（最小实现——R2/边界 1）：优先 `jsonschema` 库（可用
+    时全量方言——R3/N6：按 `validator_for` 检出的校验器实例化，不硬编码
+    Draft 版本，`$schema` 非 2020-12 的合法 schema 不误抛）；不可用时回退
+    手写子集（type/required/properties/enum/items/additionalProperties——CI
+    环境无第三方依赖也能跑）。schema 自身合法性由加载时 `_schema_self_check`
+    一次性保证（本方法不重复 check_schema）。"""
+    try:
+        import jsonschema
     except ImportError:
         return _minimal_schema_errors(instance, schema)
+    validator = jsonschema.validators.validator_for(schema)(schema)
+    errors = sorted(
+        validator.iter_errors(instance),
+        key=lambda e: list(e.absolute_path),
+    )
+    return [
+        f"{'/'.join(map(str, e.absolute_path)) or '$'}: {e.message}"
+        for e in errors
+    ]
 
 
 def _minimal_schema_errors(instance: dict, schema: dict, path: str = "$") -> list[str]:
@@ -375,15 +427,26 @@ def validate_corpus(corpus: Corpus, *, l0_budget: int = 1500) -> list[Issue]:
         issues.append(Issue("warning", "_schema/", "schema 自描述目录缺失（建议随仓维护）"))
     else:
         for f in sorted((corpus.root / "_schema").glob("*.json")):
+            rel = f.relative_to(corpus.root).as_posix()
             try:
                 parsed = json.loads(f.read_text(encoding="utf-8"))
             except ValueError as exc:
                 issues.append(Issue(
-                    "error", f.relative_to(corpus.root).as_posix(),
-                    f"schema JSON 解析失败: {exc}"))
+                    "error", rel, f"schema JSON 解析失败: {exc}"))
                 continue
-            if f.name == _ENTRY_SCHEMA_NAME and isinstance(parsed, dict):
-                entry_schema = parsed
+            if f.name != _ENTRY_SCHEMA_NAME:
+                continue
+            # R3/N6：entry.schema.json 加载时一次性自校验——语义非法 → 可定位
+            # error + entry_schema 置 None（条目走手写补充面，不崩溃不静默）
+            if not isinstance(parsed, dict):
+                issues.append(Issue(
+                    "error", rel, "entry.schema.json 须为 JSON 对象（schema 文件）"))
+                continue
+            problem = _schema_self_check(parsed)
+            if problem is not None:
+                issues.append(Issue("error", rel, f"schema 语义非法: {problem}"))
+                continue
+            entry_schema = parsed
 
     l0_tokens = 0
     # 别名冲突检测的聚合面：alias_norm → [(entity_id, has_disambiguation, marked)]
