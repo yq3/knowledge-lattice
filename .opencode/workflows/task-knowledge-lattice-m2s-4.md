@@ -5,18 +5,18 @@ target: /Users/youqi/develop/knowledge-lattice
 coderTaskId: ses_e6f5be028ffe5bMFEHHmfwOCDu
 testerTaskId: ses_e6f196342ffe3ySUnVnz3XPtNM
 committerTaskId: ses_e6eec3950ffenSwI5aZRZxh10g
-status: approved
+status: done
 round: 3
 maxRounds: 3
 testVerdict: PASS
 reviewVerdict: APPROVED
 testedSha: 8d32750de7225afb822286751fb3e0e2e99bae49
-reviewedSha: 8d32750de7225afb822286751fb3e0e2e99bae49
+reviewedSha: 0ae9c8a
 # 以上 SHA = coder 最近一轮本地 commit（[taskId] R<n>）后的 HEAD；修复轮 commit 后 reviewedSha 置空待重审
 filesChanged: ["src/knowledge_lattice/core/semantic/annotator.py", "src/knowledge_lattice/core/semantic/evalrun.py", "src/knowledge_lattice/core/semantic/build.py", "src/knowledge_lattice/core/semantic/yaml_corpus.py", "src/knowledge_lattice/core/semantic/yaml_merge.py", "src/knowledge_lattice/api/semantic.py", "src/knowledge_lattice/mcp/server.py", "src/knowledge_lattice/config.py", "src/knowledge_lattice/store/backend.py", "src/knowledge_lattice/store/sqlite/*", "src/knowledge_lattice/store/postgres/*", "src/knowledge_lattice/worker/maintenance.py", "eval/semantic_seed.py", "eval/semantic_golden.jsonl", "eval/semantic_golden.README.md", "tests/test_sem_02_annotate.py", "tests/test_sem_04_api.py", "tests/test_build_05_report_eval.py", "tests/test_sem_eval_golden.py", "tests/test_g19_daily_fallback.py", "tests/test_m2s4_followups.py", "tests/test_yaml_02_merge.py", "tests/test_build_04_current_ptr.py", "pyproject.toml", "uv.lock", ".env.example", "docs/TEST-CASES.md(v1.9.7 批)", "AGENTS.md(批)", ".opencode/workflows/_m2-plan.md(批)", ".opencode/workflows/task-knowledge-lattice-m2s-3.md(终态批)", "tests/test_r2_m2s4_fixes.py(R2 新增)", "docs/known-gaps.md(R2 批——G-19 收口回写)", "R3 增量: worker/runner.py、tests/test_r3_m2s4_fixes.py、docs 批 v1.9.8（TEST-CASES/known-gaps G-21/AGENTS.md/_m2-plan——annotator/evalrun/build/api·semantic/yaml_corpus 已在列、semantic_golden.README 同批）"]
 endReason: null
 createdAt: 2026-10-31T14:26:07+0800          # 创建时间（30 天清理审计用，见 README §4.5）
-updatedAt: 2026-10-31T17:20:16+0800          # 每次写检查点必更新为当前时间（ISO 8601 含时区），不得沿用旧值
+updatedAt: 2026-10-31T17:26:52+0800          # 每次写检查点必更新为当前时间（ISO 8601 含时区），不得沿用旧值
 ---
 
 # task-knowledge-lattice-m2s-4: M2-S2 面上段——AC 自动机 + annotate 四步消歧 + 识别评测集与门槛 + G-19 收口
@@ -71,6 +71,12 @@ R3: coder 完成（2026-10-31 16:59，commit `8d32750`，12 文件 +565/−25；
 R3: tester **PASS+收敛判定**（2026-10-31 17:10，testedSha=8d32750）：独立探针 32 断言全过——P1-1 四面封堵（REST 直打 restricted+l0：片段/报告/annotate 零出现+不误伤正常实体）；P2-1 同锚点实证（单例/sync→build 窗口双面 rev 逐位一致/冷缓存钉死用例与 G-21 逐句对照/G-21 docs 在库）；P2-2 独立重算（自写计算器分母 20 逐位一致/答错 3=0.85 卡线·4=0.80 拦/旧口径 0.88 放行算术实证/README 伴随 qid 明细）；P2-3 七字段（memory_bytes=28472/edges≥keys≥words）；全角三条+P3×4 全过；docs 批六注记+整行收口+移行+段序与裁定逐项一致。门禁 **GATE PASS 1323+1**（pg 臂 459=426+33，双模式 0 skipped；+16 对账吻合；tests/ 零删除零改动）。回归抽核 30 passed（P2-2 口径变更后既有评测用例仍真在测——新口径更严断言仍有效）。SPEC_GAP 闭环（TC-BUILD-05 已移行）；O4/O5/O6 随 v1.9.8 注记闭环；无新增观察。**「修复面已收敛，无新阻断——round=3 收敛，建议 Committer 终审 APPROVED」**。
 
 R3: committer **APPROVED**（2026-10-31 17:16 终审，reviewedSha=8d32750 三一致）：P1/P2 六项逐条闭环核验全闭合（P1-1 与建议一致+_build_stats 加固正确；P2-1 方案 B 同锚点+冷缓存钉死+G-21 逐句一致+方案 A 挂 m2s-5；P2-2 词典侧判定=首选建议+卡边算术实证；P2-3 实测 28472；P2-4/P2-5 docs 与裁定逐项一致——本轮再核通过）；P3 顺手 4 项质量过（P3-1 用例未覆盖非歧义分支→P3-r2 登记）；新引入面审查无新 P1/P2（render_l0 无副作用/l0 无 build 返回空=合理收敛 P3-r8/evalrun 歧义段无新崩溃）；边界⑦~⑭ 落实核对一致。**P3 残留 r1~r10 登记放行**（r1 报告面断言空转/r2 P3-1 用例歧义分支/r3 同锚内容断言弱/r4 stub 注释口径/r5 ambiguity 分子主候选口径 M2-S3 收紧/r6 ambiguous_aliases 未滤 fuzzy_only 注释出入/r7 README qid 明细/r8 TC-SEM-06 无 build 注句/r9 五项 R2 P3 补登记/r10 filesChanged 增补+归档终态——随交付归档 docs 批补登记）。三面评价：Coder 修复小而准/Tester 证据链扎实（未识别两空转用例与 P3 登记缺口）/监督侧 docs 一致（剩归档终态）。**交付归档清单建议**：reviewedSha=归档 docs-only HEAD（沿先例）、检查点终态+filesChanged 增补 R3 12 文件、G-21/_m2-plan 补登 r5/r6/r9、AGENTS/_m2-plan ✅ 终态、PR+manifest（双 SHA/1323+1/rounds=3/specRulings 全量/gapClosures G-19·G-21·TC-BUILD-05·TC-PERF-05·O4~O6/handover m2s-5 五项+P3 残留）。**双通过达成（round=3 收敛）**。
+
+**交付链**（2026-10-31 17:20 用户确认交付）：① 归档 commit **`0ae9c8a`**（docs-only——检查点终态〔status=approved→done 待合入后置〕+G-21 R3 终审补登记 r5/r6/r8/r9+AGENTS/_m2-plan 终态；reviewedSha 按先例更新为 0ae9c8a、testedSha 保持 8d32750）→ ② Coder push+PR → ③ Committer 留痕 → ④ manifest → ⑤ 待用户合入。
+
+**交付链执行**（2026-10-31 17:25 三步完毕）：① 归档 commit **`0ae9c8a`**（push 2f2244a..0ae9c8a）；② **PR #8**（base=develop，4 commits：2c798bf/9100bfb/8d32750/0ae9c8a，OPEN）；③ Committer 评审留痕 **PRR_kwDOVZ9dhM8AAAABVREe0Q**（2026-10-31T09:24:04Z，COMMENTED 载体正文首行 APPROVED）；④ evidence manifest 入 PR description（22 键——双 SHA/门禁三段基线 1294→1307→1323/rounds=3/specRulings/gapClosures×4/handover，远端回读 json.loads 通过）。**待用户合入指令**（不自动合入）。
+
+**合入完成**（2026-10-31 17:26 用户指令「合入」）：`gh pr merge 8 --merge` → **MERGED**，mergeCommit **`2cb2277800f78bf8774908dc32613584c03d9016`**；origin/develop e870fd1→2cb2277，本地 develop_opencode 已 ff 同步。收尾：检查点 status=done；_m2-plan row 8 补 PR #8/mergeCommit、AGENTS.md「待 PR」→ PR #8（工作区随下段 chore 批）。任务闭环（3 轮，1294+1→1323+1）。
 
 ## 最新验证意见原文
 （tester/committer 报告逐字保留——恢复时给 coder 的修复依据）

@@ -80,24 +80,31 @@ def _build(env, **kw):
 def test_p1_1_restricted_l0_entity_invisible_in_l0_and_report(env) -> None:
     """YAML 覆盖层造 restricted+l0 实体：`/semantic/l0` 片段不可见、构建
     报告 ambiguous_aliases 不含其 alias_norm（识别面 restricted 不参与——
-    P1-1 fail-closed；M2-S3 权限面后按 semantic:restricted 放行）。"""
+    P1-1 fail-closed；M2-S3 权限面后按 semantic:restricted 放行）。
+
+    m2s-5/B4-1（r1 补强）：「公共面」由两个**公开**实体真实共享 + restricted
+    实体同挂（三方共享面）——断言报告歧义清单含该 norm 且 entity_ids 不含
+    restricted 侧（旧 fixture 单侧挂靠不构成跨实体共享，报告面断言空转）。"""
     from knowledge_lattice.core.semantic.records import EntityRecord
 
-    # 两同步模板实体 + templates/ 覆盖层（concepts/=纯人工域，撞同步实体
-    # 会被规则表第 3 行剔除——restricted+l0 的合法 YAML 形态走覆盖层）：
-    # 正常 l0 条目 + restricted+l0 条目（别名「共享面」与公开侧构成歧义
-    # ——报告歧义清单的识别面口径不含 restricted 侧）
+    # 两公开模板共享「公共面」+ restricted 模板同挂（跨实体真实共享面）
     _sync(env, [
-        EntityRecord(type="template", key="TPL_OPEN", name="公开模板"),
+        EntityRecord(type="template", key="TPL_OPEN", name="公开模板",
+                     aliases=("公共面",)),
+        EntityRecord(type="template", key="TPL_OPEN2", name="公开模板二",
+                     aliases=("公共面",)),
         EntityRecord(type="template", key="TPL_SECRET", name="机密模板",
-                     aliases=("共享面",)),
+                     aliases=("公共面",)),
     ])
     _yaml_sync(env, {
         "templates/a.yaml": (
             "- id: template:TPL_OPEN\n  owner: o\n"
-            "  definition: 公开模板的定义正文。\n  l0: true\n"),
+            "  definition: 公开模板的定义正文。\n  l0: true\n"
+            "  aliases: [{value: 容错共享, match_mode: fuzzy_only}]\n"
+            "- id: template:TPL_OPEN2\n  owner: o\n"
+            "  aliases: [{value: 容错共享, match_mode: fuzzy_only}]\n"),
         "templates/b.yaml": (
-            "- id: template:TPL_SECRET\n  owner: o\n  aliases: [共享面]\n"
+            "- id: template:TPL_SECRET\n  owner: o\n  aliases: [公共面]\n"
             "  definition: 机密模板的限制正文。\n  l0: true\n"
             "  sensitivity: restricted\n"),
     })
@@ -117,24 +124,40 @@ def test_p1_1_restricted_l0_entity_invisible_in_l0_and_report(env) -> None:
     assert "公开模板" in texts
     assert "机密模板" not in texts and "限制正文" not in texts
 
-    # 构建报告：识别面歧义别名清单不含 restricted 实体的 alias_norm
+    # 构建报告：真实跨实体共享面「公共面」在歧义清单；restricted 侧被滤
+    #（entity_ids 只含两个公开实体——识别面口径不含 restricted 侧）
     from knowledge_lattice.core.semantic.build import build_report
 
     report = build_report(env.backend, ORG, result["build_id"])
+    entry = next(a for a in report["ambiguous_aliases"]
+                 if a["alias_norm"] == "公共面")
+    secret_id = env.backend.resolve_entity_ids(
+        ORG, [("template", "TPL_SECRET")])[("template", "TPL_SECRET")]
+    open_ids = {env.backend.resolve_entity_ids(ORG, [(t, k)])[(t, k)]
+                for t, k in (("template", "TPL_OPEN"),
+                             ("template", "TPL_OPEN2"))}
+    assert set(entry["entity_ids"]) == open_ids, \
+        "共享面歧义在报告且 restricted 侧不出现（P1-1/B4-1 补强）"
+    assert secret_id not in entry["entity_ids"]
+    # G-21 r6/m2s-5 随手：fuzzy_only 别名不入识别面——即使构成 norm 共享也
+    # 不进歧义清单（与 build_automaton/evalrun 三处同口径）
     norms = [a["alias_norm"] for a in report["ambiguous_aliases"]]
-    assert "共享面" not in norms          # restricted 侧不构成识别面歧义
-    # restricted 实体本身在 annotate 面亦不可见（T-S9 既有口径复核）
-    assert ann.annotate("机密模板与共享面的口径")["mentions"] == []
+    assert "容错共享" not in norms, "fuzzy_only 共享面不进歧义清单（识别可用面口径）"
+    # restricted 实体本身在 annotate 面亦不可见（T-S9 既有口径复核）：
+    # 「公共面」共享命中只落公开实体、restricted 实体零出现
+    out = ann.annotate("机密模板与公共面的口径")
+    assert all(m["entity_id"] != secret_id for m in out["mentions"]), \
+        "restricted 实体不得经共享面泄露（T-S9）"
 
 
 # ---- P2-1 方案 B：/semantic/l0 与 annotate 同锚点 + 冷缓存行为钉死 ----
 
 
-def test_p2_1_l0_same_anchor_and_cold_cache_live_with_old_rev(env) -> None:
+def test_p2_1_l0_same_anchor_and_cold_cache_serves_build_snapshot(env) -> None:
     """构建中冷缓存（sync→build 窗口/重启形态）：annotate 与 /semantic/l0
-    **同一 get_annotator 实例**——服务 live 字典 + 响应旧 ready dict_rev
-    （known-gaps **G-21** 方案 B 钉死：内容/rev 错配两侧一致、不再 l0 独读
-    live；方案 A〔build 快照附表〕M2-S3/m2-5 承接）。"""
+    **同一 get_annotator 实例**——**服务 build 快照产物**（G-21 方案 A/m2s-5
+    反转：原方案 B「服务 live+响应旧 rev」的 rev 锚点失真窗口消除——窗口
+    新概念不可命中；同锚点单例语义不变）。"""
     from knowledge_lattice.core.semantic.annotator import (
         annotate_text, clear_annotator_cache, get_annotator, render_l0,
     )
@@ -152,20 +175,21 @@ def test_p2_1_l0_same_anchor_and_cold_cache_live_with_old_rev(env) -> None:
     ann_a, rev_a = get_annotator(env.backend, ORG, env.settings)
     ann_b, rev_b = get_annotator(env.backend, ORG, env.settings)
     assert ann_a is ann_b and rev_a == rev_b == r1["dict_rev"]  # 同锚点单例
-    # 服务 live 字典（窗口新概念可命中）+ 响应旧 ready rev——G-21 登记形态
-    assert ann_a.annotate("窗口新概念是什么")["mentions"]
+    # G-21 反转：服务 **build 快照**（窗口新概念仅 live 有——不可命中）
+    assert ann_a.annotate("窗口新概念是什么")["mentions"] == []
     out = annotate_text(env.backend, env.settings, ORG, "窗口新概念是什么")
-    assert out["mentions"] and out["dict_rev"] == r1["dict_rev"]
-    # /semantic/l0 同锚点：内容与 rev 与 annotate 一致（不再恒读 live 裸快照）
+    assert out["mentions"] == [] and out["dict_rev"] == r1["dict_rev"]
+    # /semantic/l0 同锚点：内容与 rev 与 annotate 一致（build 快照渲染）
     l0 = render_l0(ann_a.snapshot)
     assert l0["fragments"] or l0["token_estimate"] >= 0
     assert get_annotator(env.backend, ORG, env.settings)[1] == out["dict_rev"]
 
 
-def test_p2_1_eval_blocked_cold_cache_serves_gated_dict_g21(env) -> None:
-    """评测拦下后冷缓存：被拦词典已在 live 表、build failed 不切 ready——
-    重启（清缓存）后 annotate 服务被拦词典 + 响应旧 ready dict_rev（G-21：
-    评测门禁治理语义仅进程生命周期内的对冲已登记；门禁在构建路径内仍有效）。"""
+def test_p2_1_eval_blocked_cold_cache_does_not_serve_gated_dict(env) -> None:
+    """评测拦下后冷缓存：被拦词典虽已写入 live 表、build failed 不切 ready
+    ——重启（清缓存）后 annotate **不服务被拦词典**（G-21 问题②随 m2s-5
+    方案 A 收口：服务 last ready 快照 + 响应 ready rev；门禁治理跨进程
+    生命周期持久）。"""
     from knowledge_lattice.core.semantic.annotator import (
         annotate_text, clear_annotator_cache,
     )
@@ -187,8 +211,8 @@ def test_p2_1_eval_blocked_cold_cache_serves_gated_dict_g21(env) -> None:
 
     clear_annotator_cache()   # 重启/冷缓存形态
     out = annotate_text(env.backend, env.settings, ORG, "被拦概念的口径")
-    # G-21 钉死：服务 live（被拦）词典 + 响应旧 ready rev
-    assert out["mentions"], "冷缓存应服务 live 字典（G-21 登记行为）"
+    # G-21 反转：不服务被拦词典（last ready 快照——被拦概念零命中）
+    assert out["mentions"] == [], "冷缓存不得服务被拦词典（G-21 收口）"
     assert out["dict_rev"] == r1["dict_rev"]
 
 
@@ -364,13 +388,27 @@ def test_fullwidth_and_case_boundary_permanent() -> None:
 
 def test_p3_1_mentions_have_no_private_keys() -> None:
     """非歧义 mention 也无 `_cand_ids`（统一 pop——P3-1；API/MCP JSON 面
-    不带内部字段）。"""
+    不带内部字段）。
+
+    m2s-5/B4-2（r2 补强）：用例改**非歧义** mention——旧代码对歧义 mention
+    本来就 pop（candidates 生成路径），非歧义分支（single 定案）才是 P3-1
+    统一 pop 的实际覆盖面。"""
     from knowledge_lattice.core.semantic.annotator import Annotator
 
     snap = _p2_2_snapshot()
+    # 单实体独占别名「丙」→ 非歧义命中（resolved_by='single'）
+    snap["entities"].append(
+        {"id": 9, "type": "concept", "key": "solo", "name": "丙",
+         "parent_id": None, "attrs_json": "{}", "sensitivity": "normal",
+         "curated_json": "{}", "curated_rev": None})
+    snap["aliases"].append(
+        {"entity_id": 9, "alias": "丙", "alias_norm": "丙", "kind": "manual",
+         "match_mode": "exact", "weight": 1.0})
     ann = Annotator(snap)
-    result = ann.annotate("这里是甲的用法")
-    assert result["mentions"]
+    result = ann.annotate("这里是丙的用法")
+    assert result["mentions"], "非歧义命中（single 定案）"
+    assert result["mentions"][0]["resolved_by"] == "single"
+    assert not result["candidates"], "非歧义不出候选（对照组）"
     for m in result["mentions"]:
         assert not [k for k in m if k.startswith("_")], \
             f"私有键泄露: {[k for k in m if k.startswith('_')]}"
@@ -418,16 +456,19 @@ def test_p3_2_annotate_malformed_json_400(tmp_path) -> None:
 
 def test_p3_10_worker_env_sem_keys_closed(tmp_path) -> None:
     """全 LATTICE_SEM_* 往返闭合：新增 DAILY_SYNC_INTERVAL_S /
-    EVAL_GOLDEN_PATH 两键显式映射（程序化 Settings 子进程不漂移）。"""
+    EVAL_GOLDEN_PATH 两键显式映射（程序化 Settings 子进程不漂移）；
+    m2s-5 补 RETAG_RECONCILE_INTERVAL_S（对账节流）。"""
     from knowledge_lattice.config import Settings
     from knowledge_lattice.worker.runner import WorkerSupervisor
 
     settings = Settings(environment="test", data_dir=tmp_path,
                         semantic_daily_sync_interval_s=3600.0,
-                        semantic_eval_golden_path="/abs/golden.jsonl")
+                        semantic_eval_golden_path="/abs/golden.jsonl",
+                        semantic_retag_reconcile_interval_s=7200.0)
     envmap = WorkerSupervisor._worker_env(settings)
     assert envmap["LATTICE_SEM_DAILY_SYNC_INTERVAL_S"] == "3600.0"
     assert envmap["LATTICE_SEM_EVAL_GOLDEN_PATH"] == "/abs/golden.jsonl"
+    assert envmap["LATTICE_SEM_RETAG_RECONCILE_INTERVAL_S"] == "7200.0"
     assert envmap["LATTICE_SEM_NIGHT_WINDOW"] == settings.semantic_night_window
 
 

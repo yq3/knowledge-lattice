@@ -18,7 +18,9 @@ entity_key 形如 "type:key"；负样本 labels 恒空。
   标注**——P2-2/R3 口径：标注 surface 的 alias_norm 为多实体共享〔词典侧
   判定，与识别可用面同口径——restricted/fuzzy_only 不计〕的 span 才进
   分子分母；条目内伴随的确定性标注不计——不稀释 ≥0.85 门槛）= 选中正确
-  实体数 / 歧义 span 标注数；
+  实体数 / 歧义 span 标注数；**B1/m2s-5 收紧分子**：`ambiguous=true` 的
+  主候选命中**不计**正确——未消解定案不算答对（G-21 R3 终审补登记项：
+  严格口径 18/20=0.90 仍过门；定案〔含 B2 显式缺省主读 default 档〕才计）；
 - neg_fp（负样本误报率）= 含 ≥1 预测 mention 的负样本条数 / 负样本条数。
 
 匹配口径：span 完全相等（start/end 逐位）且实体 key 相等。评测确定性
@@ -121,12 +123,12 @@ def run_recognition_eval(
             if mentions:
                 neg_flagged += 1
             continue
-        pred = {(m["span"][0], m["span"][1], m["entity_key"])
+        pred = {(m["span"][0], m["span"][1], m["entity_key"]): m
                 for m in mentions}
         gold = {(s, e, k) for k, s, e in labels}
         predicted_total += len(pred)
         labeled_total += len(gold)
-        matched += len(pred & gold)
+        matched += len(set(pred) & gold)
         if item["kind"] == "pos_ambiguous":
             for k, s, e in labels:
                 # 只统计歧义 span 标注（surface 规范化后为共享别名）——
@@ -134,7 +136,10 @@ def run_recognition_eval(
                 if normalize_alias(item["text"][s:e]) not in ambiguous_norms:
                     continue
                 ambiguous_labeled += 1
-                if (s, e, k) in pred:
+                hit = pred.get((s, e, k))
+                # B1/m2s-5 收紧：ambiguous=true（未消解定案）的主候选命中
+                # 不计正确——只有定案命中才计分子
+                if hit is not None and not hit.get("ambiguous"):
                     ambiguous_correct += 1
 
     precision = (matched / predicted_total) if predicted_total else 1.0

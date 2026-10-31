@@ -56,9 +56,13 @@ logger = logging.getLogger(__name__)
 
 # 本段 runner 认领的任务类型（semantic_sync 于 M2-S1 接入——payload {org, adapter}
 # 经 core.semantic.sync.run_sync_task 执行；semantic_build 于 m2s-2 接入——payload
-# {org} 经 core.semantic.build.run_build_task 执行；reindex/reembed/delete 仍为
-# 预留分发位，不认领不误伤：未知类型的任务行原地留 pending）
-CLAIMABLE_TASK_TYPES = ("ingest", "maintenance", "semantic_sync", "semantic_build")
+# {org} 经 core.semantic.build.run_build_task 执行；semantic_retag 于 m2s-5 接入
+# ——payload {org, dict_rev} 经 core.semantic.tagging.run_retag_task 执行，认领
+# 排序**尾部**（最低优先级——design §5.3「重标不与 ingest 抢资源」）；reindex/
+# reembed/delete 仍为预留分发位，不认领不误伤：未知类型的任务行原地留 pending）
+CLAIMABLE_TASK_TYPES = (
+    "ingest", "maintenance", "semantic_sync", "semantic_build", "semantic_retag",
+)
 
 
 @dataclass
@@ -102,6 +106,7 @@ class TaskRunner:
             "maintenance": self._exec_maintenance,
             "semantic_sync": self._exec_semantic_sync,
             "semantic_build": self._exec_semantic_build,
+            "semantic_retag": self._exec_semantic_retag,
         }
         if executors:
             self._executors.update(executors)
@@ -259,6 +264,16 @@ class TaskRunner:
         from knowledge_lattice.core.semantic.build import run_build_task
 
         run_build_task(
+            self._backend, self._settings, task["id"],
+            should_continue=self._should_continue(task["id"], claim_id),
+        )
+
+    def _exec_semantic_retag(self, task: dict, claim_id: str) -> None:
+        """semantic_retag 任务体（m2s-5——TC-TAG-02：dict_rev 落后块分批重标；
+        最低优先级由 claim ORDER BY 尾部保证——本 executor 只管执行）。"""
+        from knowledge_lattice.core.semantic.tagging import run_retag_task
+
+        run_retag_task(
             self._backend, self._settings, task["id"],
             should_continue=self._should_continue(task["id"], claim_id),
         )
@@ -464,6 +479,9 @@ class WorkerSupervisor:
             "LATTICE_SEM_DAILY_SYNC_INTERVAL_S": str(
                 settings.semantic_daily_sync_interval_s),
             "LATTICE_SEM_EVAL_GOLDEN_PATH": settings.semantic_eval_golden_path,
+            # m2s-5：对账 retag 补投节流（全 LATTICE_SEM_* 往返闭合）
+            "LATTICE_SEM_RETAG_RECONCILE_INTERVAL_S": str(
+                settings.semantic_retag_reconcile_interval_s),
         }
 
 
@@ -499,9 +517,13 @@ def build_default_services(settings: Settings) -> WorkerServices:
     gate = EmbeddingGate()
     embedder = OpenAICompatEmbedder(settings)
     quality = build_quality_service(backend, settings)
+    # 语义打标签（m2s-5——与 app.create_app 同款装配：依赖注入防跨包 import）
+    from knowledge_lattice.core.semantic.tagging import make_ingest_tagger
+
     ingest = IngestService(
         backend, embedder, settings, gate, settings.data_dir / "objects",
         quality=quality,
+        tagger=make_ingest_tagger(backend, settings),
     )
     credentials = CredentialService(backend, settings, settings.data_dir / "objects")
     return WorkerServices(

@@ -112,6 +112,49 @@ def _yaml_rev_of(snapshot: dict) -> str | None:
     return max(revs) if revs else None
 
 
+def _snapshot_json(snapshot: dict) -> str:
+    """G-21 方案 A/m2s-5：构建快照序列化（实体〔含 curated_json〕+ 别名 +
+    关系〔消歧共现/L0 佐证必需面〕的最小 JSON——迁移 0008 附表载体；与
+    ready 切换同一事务写入）。"""
+    return json.dumps(snapshot, ensure_ascii=False, sort_keys=True)
+
+
+def _maybe_enqueue_retag(
+    backend, org_id: str, dict_rev: str, stats: dict, prev_build: dict | None,
+) -> bool:
+    """TC-BUILD-05 消费面（m2s-5）：构建涉及**别名增删**才投递 semantic_retag
+    ——新/旧构建的 dict_rev_components.aliases 分量摘要对比（变化 ⟺ 别名集
+    增删/改动；仅 definition 变化不动别名面 → 不投，避免无谓重标风暴）。
+    prev 缺省（首建/存量行无分量）→ 宁投勿漏（存量无行块由 retag 补标；
+    无块时零候选幂等收尾）。stats.retag_enqueued 已在返回前落值。
+
+    P3-3/R2：投递失败不让**已 ready** 的构建失败（切换已提交——fail_build
+    零生效但任务重试徒劳；记 warning，补投交对账兜底）。"""
+    from knowledge_lattice.core.semantic.tagging import alias_set_changed, enqueue_retag
+
+    try:
+        prev_stats = None
+        if prev_build is not None:
+            prev_json = prev_build.get("stats_json") or "{}"
+            if isinstance(prev_json, str):
+                try:
+                    prev_json = json.loads(prev_json)
+                except (TypeError, ValueError):
+                    prev_json = {}
+            prev_stats = prev_json if isinstance(prev_json, dict) else None
+        if not alias_set_changed(prev_stats, stats):
+            logger.info(
+                "semantic build alias set unchanged: org=%s rev=%s——不投 retag"
+                "（仅非别名面变化，TC-BUILD-05）", org_id, dict_rev)
+            return False
+        return enqueue_retag(backend, org_id, dict_rev)
+    except Exception:  # noqa: BLE001 —— 已 ready 构建不受投递失败影响（P3-3）
+        logger.exception(
+            "retag enqueue failed after build ready: org=%s rev=%s"
+            "（构建终态不受影响——补投交对账兜底）", org_id, dict_rev)
+        return False
+
+
 def _build_stats(snapshot: dict, *, annotator=None) -> dict:
     """构建报告统计（§5.8 产物之「构建报告」——冲突面随 sync run、此处为图
     统计 + 结构异常 + m2s-4 产物指标）。annotator 复用调用方已建实例（评测
@@ -134,11 +177,15 @@ def _build_stats(snapshot: dict, *, annotator=None) -> dict:
             broken.append({"src_id": r["src_id"], "rel_type": r["rel_type"],
                            "dst_id": r["dst_id"]})
     # P1-1/R3：歧义别名清单按**识别可用面**——restricted 实体别名不入机
-    # （T-S9 表现为不存在），其歧义面不存在、列入报告即误导+泄露 alias 面
+    # （T-S9 表现为不存在），其歧义面不存在、列入报告即误导+泄露 alias 面；
+    # G-21 r6/m2s-5 随手：fuzzy_only 同滤（不入自动机——与 build_automaton/
+    # evalrun 的识别可用面三处同口径）
     sensitivity = {e["id"]: e.get("sensitivity") for e in snapshot["entities"]}
     by_norm: dict[str, set[int]] = {}
     for a in snapshot["aliases"]:
         if sensitivity.get(a["entity_id"]) == "restricted":
+            continue
+        if a["match_mode"] not in ("exact", "context"):
             continue
         by_norm.setdefault(a["alias_norm"], set()).add(a["entity_id"])
     ambiguous = [
@@ -178,8 +225,6 @@ def _build_stats(snapshot: dict, *, annotator=None) -> dict:
 
 def _audit_build(backend, org_id: str, status: str, stats: dict) -> None:
     """semantic.build 事件（ready/skipped/failed 全终态——TC-BUILD-03）。"""
-    from knowledge_lattice.domain.audit_events import EVENT_SEMANTIC_BUILD
-
     backend.append_outbox(
         EVENT_SEMANTIC_BUILD,
         json.dumps(
@@ -292,6 +337,8 @@ def run_build(
                         org_id, dict_rev)
             return {"build_id": current["id"], "dict_rev": dict_rev,
                     "status": "skipped", "stats": stats}
+        # prev 保留引用（retag 投递判定的 diff 基线——TC-BUILD-05）
+        prev_build = current
 
         if should_continue is not None and not should_continue():
             raise BuildInterrupted("build interrupted before switch (lease lost)")
@@ -364,6 +411,7 @@ def run_build(
             # P3-5/R2：消费 sem_reactivate_build 返回值——False（竞态下行已非
             # ready）不得虚报 ready：current 同 rev（他者已接手）→ skipped；
             # 否则真异常（不重试不写脏事件）
+            # snapshot_json（G-21 方案 A/m2s-5）：快照附表随重激活同事务 upsert
             if not backend.sem_reactivate_build(
                 org_id, build_id, stats_json,
                 audit=(
@@ -373,6 +421,7 @@ def run_build(
                                 "stats": stats, "reactivated": True},
                                ensure_ascii=False, default=str),
                 ),
+                snapshot_json=_snapshot_json(snapshot),
             ):
                 now_current = backend.sem_current_build(org_id)
                 if now_current is not None and now_current["dict_rev"] == dict_rev:
@@ -390,6 +439,8 @@ def run_build(
                 )
             logger.info("semantic build reactivated (rev rollback): org=%s"
                         " build=%s rev=%s", org_id, build_id, dict_rev)
+            stats["retag_enqueued"] = _maybe_enqueue_retag(
+                backend, org_id, dict_rev, stats, prev_build)
             return {"build_id": build_id, "dict_rev": dict_rev, "status": "ready",
                     "stats": stats}
         ready_audit = (
@@ -398,8 +449,12 @@ def run_build(
                         "status": "ready", "stats": stats},
                        ensure_ascii=False, default=str),
         )
-        if not backend.sem_switch_build_ready(org_id, build_id, stats_json,
-                                              audit=ready_audit):
+        # snapshot_json（G-21 方案 A/m2s-5）：快照附表与 ready 切换同一事务
+        # ——ready 可见时快照必已在位（冷缓存/重启服务 build 产物的数据基础）
+        if not backend.sem_switch_build_ready(
+            org_id, build_id, stats_json,
+            audit=ready_audit, snapshot_json=_snapshot_json(snapshot),
+        ):
             # P2-2/R2：rowcount=0——行非 building。若 current 已是同 rev ready
             #（并发赢家先切），本执行者按 skipped 收场（不抛错不重试不写
             # failed 事件——行终态与 ready 事件属赢家）；否则才是真异常。
@@ -418,6 +473,8 @@ def run_build(
             )
         logger.info("semantic build ready: org=%s build=%s rev=%s entities=%s",
                     org_id, build_id, dict_rev, stats["entities"])
+        stats["retag_enqueued"] = _maybe_enqueue_retag(
+            backend, org_id, dict_rev, stats, prev_build)
         return {"build_id": build_id, "dict_rev": dict_rev, "status": "ready",
                 "stats": stats}
     except BaseException as exc:

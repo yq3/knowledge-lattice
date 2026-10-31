@@ -220,14 +220,19 @@ class PgBackend:
         " heading_path, page_no, sheet_name, bbox_json, keywords, llm_keywords, tags"
     )
 
-    def insert(self, doc_id: str, version: int, chunks: list[dict]) -> None:
+    def insert(
+        self, doc_id: str, version: int, chunks: list[dict], *,
+        sem_tags: dict | None = None,
+    ) -> None:
         """chunks + 阶段状态 + 首次上传 D20 切换——同一事务（BEGIN … COMMIT）。
 
         幂等（TC-ING-07）与 pending_dims 解析防护（P3-7：逐值命中校验，不符
         raise → 整事务回滚）与 SqliteBackend 逐条同源。M2.1 并发面收口：事务内
         pending 存活复核（pending_status='failed' → raise，防取消窗口复活——
         FOR UPDATE 行锁与 set_doc_pending_failed 串行化，sqlite 同构）。
-        """
+
+        sem_tags（M2-S3/m2s-5 同事务打标——TC-TAG-01；与 sqlite 同语义：
+        seq 经 INSERT … RETURNING rid 收集映射，标签行随块同事务写入）。"""
         conn = self._conn
         conn.execute("BEGIN")
         try:
@@ -246,13 +251,20 @@ class PgBackend:
                 "DELETE FROM chunks WHERE doc_id = %(doc)s AND version = %(v)s",
                 {"doc": doc_id, "v": version},
             )
+            # 幂等重跑的标签同批清（与块行先删后插同步——防同版本重跑双写 tag）
+            conn.execute(
+                "DELETE FROM sem_chunk_entities WHERE doc_id = %(doc)s"
+                " AND version = %(v)s",
+                {"doc": doc_id, "v": version},
+            )
+            rid_by_seq: dict[int, int] = {}
             for ch in chunks:
-                conn.execute(
+                cur = conn.execute(
                     f"INSERT INTO chunks({self._CHUNK_COLS}) VALUES"
                     " (%(id)s, %(doc_id)s, %(seq)s, %(version)s, %(content)s,"
                     " %(title_seg)s, %(content_seg)s, %(token_count)s, %(heading_path)s,"
                     " %(page_no)s, %(sheet_name)s, %(bbox_json)s, %(keywords)s,"
-                    " %(llm_keywords)s, %(tags)s)",
+                    " %(llm_keywords)s, %(tags)s) RETURNING rid",
                     {
                         "id": ch["id"],
                         "doc_id": doc_id,
@@ -271,6 +283,26 @@ class PgBackend:
                         "tags": ch.get("tags", ""),
                     },
                 )
+                rid_by_seq[ch["seq"]] = cur.fetchone()[0]
+            if sem_tags and sem_tags.get("rows"):
+                org_row = conn.execute(
+                    "SELECT org_id FROM documents WHERE id = %(doc)s", {"doc": doc_id}
+                ).fetchone()
+                org_id = org_row[0] if org_row else None
+                if org_id:
+                    for seq, entity_id, hits in sem_tags["rows"]:
+                        rid = rid_by_seq.get(seq)
+                        if rid is None:
+                            continue
+                        conn.execute(
+                            "INSERT INTO sem_chunk_entities(org_id, chunk_rid,"
+                            " doc_id, version, entity_id, hits, dict_rev)"
+                            " VALUES(%(org)s, %(rid)s, %(doc)s, %(v)s, %(eid)s,"
+                            " %(hits)s, %(rev)s)",
+                            {"org": org_id, "rid": rid, "doc": doc_id,
+                             "v": version, "eid": entity_id, "hits": hits,
+                             "rev": sem_tags["dict_rev"]},
+                        )
             conn.execute(
                 "UPDATE documents SET pending_status = 'searchable_lexical',"
                 " updated_at = CURRENT_TIMESTAMP"
@@ -433,6 +465,12 @@ class PgBackend:
                 " WHERE doc_id = %(doc)s AND version = %(old)s",
                 {"doc": doc_id, "old": old_version},
             )
+            # M2-S3/m2s-5 同事务 untag（T-S10①）：旧版本块语义标随切换清除
+            conn.execute(
+                "DELETE FROM sem_chunk_entities WHERE doc_id = %(doc)s"
+                " AND version = %(old)s",
+                {"doc": doc_id, "old": old_version},
+            )
             cur = conn.execute(
                 "UPDATE documents SET"
                 " active_version = pending_version, active_status = pending_status,"
@@ -550,6 +588,12 @@ class PgBackend:
                 "DELETE FROM chunks WHERE doc_id = %(doc)s AND version = %(v)s",
                 {"doc": doc_id, "v": version},
             )
+            # M2-S3/m2s-5 同事务 untag：失败版本物理删块的语义标随删（T8+T-S10）
+            conn.execute(
+                "DELETE FROM sem_chunk_entities WHERE doc_id = %(doc)s"
+                " AND version = %(v)s",
+                {"doc": doc_id, "v": version},
+            )
             conn.execute("COMMIT")
         except BaseException:
             try:
@@ -572,7 +616,12 @@ class PgBackend:
                 {"doc": doc_id},
             )
             conn.execute("DELETE FROM documents WHERE id = %(doc)s", {"doc": doc_id})
-            # M2-S3：sem_chunk_entities 随删清挂此事务位（untag——语义轨道段补齐）
+            # M2-S3/m2s-5：sem_chunk_entities 随删清挂此事务位（untag——全版本；
+            # T-S10②/design §4 设计说明②的纪律清理挂接点，m2-2 已留位）
+            conn.execute(
+                "DELETE FROM sem_chunk_entities WHERE doc_id = %(doc)s",
+                {"doc": doc_id},
+            )
             if audit is not None:
                 self._outbox_insert(conn, *audit)
             conn.execute("COMMIT")
@@ -1205,7 +1254,8 @@ class PgBackend:
             "    AND (status = 'pending'"
             "         OR (status IN ('leased','running')"
             "             AND lease_until IS NOT NULL AND lease_until <= %(now)s))"
-            "  ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED)"
+            "  ORDER BY CASE WHEN type = 'semantic_retag' THEN 1 ELSE 0 END,"
+            "    created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED)"
             " UPDATE tasks t SET status = 'leased', attempts = attempts + 1,"
             " lease_owner = %(w)s,"
             " lease_until = %(until)s, heartbeat_at = %(now)s, updated_at = %(now)s"
@@ -1276,12 +1326,28 @@ class PgBackend:
         return cur.rowcount  # trg_membership_delete_cleanup 等价触发器级联清授权
 
     def delete_aged_tombstones(self, *, before_ts: str) -> int:
-        cur = self._conn.execute(
-            "DELETE FROM chunks WHERE tombstone = 1 AND tombstoned_at IS NOT NULL"
-            " AND tombstoned_at <= %(before)s",
-            {"before": before_ts},
-        )
-        return cur.rowcount  # chunk_vectors FK CASCADE；FTS 列 GENERATED 随行消失
+        """90 天物理清理（含同事务 untag：tombstone 块语义标随删——m2s-5；
+        与 sqlite 同构）。"""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "DELETE FROM sem_chunk_entities WHERE chunk_rid IN ("
+                "  SELECT rid FROM chunks WHERE tombstone = 1"
+                "   AND tombstoned_at IS NOT NULL AND tombstoned_at <= %(before)s)",
+                {"before": before_ts},
+            )
+            cur = conn.execute(
+                "DELETE FROM chunks WHERE tombstone = 1 AND tombstoned_at IS NOT NULL"
+                " AND tombstoned_at <= %(before)s",
+                {"before": before_ts},
+            )
+            removed = cur.rowcount
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return removed  # chunk_vectors FK CASCADE；FTS 列 GENERATED 随行消失
 
     def trim_finished_tasks(
         self, *, keep_days: int, keep_count: int, task_type: str = "maintenance",
@@ -2164,10 +2230,12 @@ class PgBackend:
     def sem_reactivate_build(
         self, org_id: str, build_id: int, stats_json: str, *,
         audit: tuple[str, str] | None = None,
+        snapshot_json: str | None = None,
     ) -> bool:
         """G-18 rev 回退重激活：ready 行顶置 activated_at（取 max(现在, 本 org
         既有最大 + 1s)——严格递增防同秒并列；+ready 事件同事务）；仅
-        status='ready' 行生效——与 sqlite 同语义。"""
+        status='ready' 行生效——与 sqlite 同语义。snapshot_json（m2s-5/G-21
+        方案 A）：快照附表同事务 upsert（幂等；0008 前存量行此时补齐）。"""
         conn = self._conn
         conn.execute("BEGIN")
         try:
@@ -2186,6 +2254,14 @@ class PgBackend:
                     " VALUES(%(id)s, %(t)s, %(p)s)",
                     {"id": f"aud_{uuid.uuid4()}", "t": audit[0], "p": audit[1]},
                 )
+            if effective and snapshot_json is not None:
+                conn.execute(
+                    "INSERT INTO sem_build_snapshots(build_id, org_id,"
+                    " snapshot_json) VALUES(%(bid)s, %(org)s, %(snap)s)"
+                    " ON CONFLICT(build_id) DO UPDATE SET snapshot_json"
+                    " = EXCLUDED.snapshot_json",
+                    {"bid": build_id, "org": org_id, "snap": snapshot_json},
+                )
             conn.execute("COMMIT")
         except BaseException:
             self._rollback()
@@ -2195,11 +2271,13 @@ class PgBackend:
     def sem_switch_build_ready(
         self, org_id: str, build_id: int, stats_json: str, *,
         audit: tuple[str, str] | None = None,
+        snapshot_json: str | None = None,
     ) -> bool:
         """原子切换 + ready 事件同一事务（P3-5/R2——audit 仅真生效写；并发输者
         rowcount=0 返回 False 零事件，P2-2；P3-4/R2：activated_at 严格递增
         GREATEST(now, 本 org 最大+1s)——与重激活同款，防同秒窗口 current 滞留；
-        与 sqlite 同语义）。"""
+        与 sqlite 同语义）。snapshot_json（m2s-5/G-21 方案 A）：快照附表与切换
+        同一事务——ready 可见时快照必已在位。"""
         conn = self._conn
         conn.execute("BEGIN")
         try:
@@ -2217,6 +2295,14 @@ class PgBackend:
                     "INSERT INTO audit_outbox(id, event_type, payload_json)"
                     " VALUES(%(id)s, %(t)s, %(p)s)",
                     {"id": f"aud_{uuid.uuid4()}", "t": audit[0], "p": audit[1]},
+                )
+            if effective and snapshot_json is not None:
+                conn.execute(
+                    "INSERT INTO sem_build_snapshots(build_id, org_id,"
+                    " snapshot_json) VALUES(%(bid)s, %(org)s, %(snap)s)"
+                    " ON CONFLICT(build_id) DO UPDATE SET snapshot_json"
+                    " = EXCLUDED.snapshot_json",
+                    {"bid": build_id, "org": org_id, "snap": snapshot_json},
                 )
             conn.execute("COMMIT")
         except BaseException:
@@ -2258,6 +2344,191 @@ class PgBackend:
             {"org": org_id, "rev": dict_rev, "stats": stats_json},
         ).fetchone()[0]
         return new_id
+
+    # ---- m2s-5：G-21 方案 A 快照附表 + 打标/retag/对账（与 sqlite 同语义） ----
+
+    def sem_save_build_snapshot(
+        self, org_id: str, build_id: int, snapshot_json: str,
+    ) -> None:
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "INSERT INTO sem_build_snapshots(build_id, org_id, snapshot_json)"
+                " VALUES(%(bid)s, %(org)s, %(snap)s)"
+                " ON CONFLICT(build_id) DO UPDATE SET snapshot_json"
+                " = EXCLUDED.snapshot_json",
+                {"bid": build_id, "org": org_id, "snap": snapshot_json},
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+
+    def sem_load_build_snapshot(
+        self, org_id: str, build_id: int,
+    ) -> str | None:
+        row = self._conn.execute(
+            "SELECT snapshot_json FROM sem_build_snapshots"
+            " WHERE org_id = %(org)s AND build_id = %(bid)s",
+            {"org": org_id, "bid": build_id},
+        ).fetchone()
+        return row[0] if row else None
+
+    def sem_retag_candidates(
+        self, org_id: str, dict_rev: str, *, limit: int, after_rid: int = 0,
+    ) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT c.rid, c.content, c.doc_id, c.version FROM chunks c"
+            " JOIN documents d ON d.id = c.doc_id"
+            " WHERE d.org_id = %(org)s AND c.tombstone = 0"
+            "   AND c.version = d.active_version AND c.rid > %(after)s"
+            "   AND COALESCE((SELECT MAX(ce.dict_rev) FROM sem_chunk_entities ce"
+            "                 WHERE ce.chunk_rid = c.rid), '') <> %(rev)s"
+            " ORDER BY c.rid LIMIT %(lim)s",
+            {"org": org_id, "rev": dict_rev, "lim": limit, "after": after_rid},
+        ).fetchall()
+        return [{"rid": r[0], "content": r[1], "doc_id": r[2], "version": r[3]}
+                for r in rows]
+
+    def sem_replace_chunk_tags(
+        self, org_id: str, rows: Sequence[dict], *,
+        clear: Sequence[dict] | None = None,
+    ) -> int:
+        """块级标签整替（同事务；与 sqlite 同语义——P1/R2：clear 集先 DELETE
+        再插命中行、rows 空也进事务、(chunk_rid, doc_id, version) 三元组收窄）。"""
+        clear_rows = list(clear) if clear is not None else list(rows)
+        if not clear_rows and not rows:
+            return 0
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            for chunk in _sem_chunks(clear_rows, 200):
+                conds = " OR ".join(
+                    f"(chunk_rid = %(c{i})s AND doc_id = %(d{i})s"
+                    f" AND version = %(v{i})s)"
+                    for i in range(len(chunk)))
+                params: dict[str, object] = {"org": org_id}
+                for i, r in enumerate(chunk):
+                    params[f"c{i}"] = r["chunk_rid"]
+                    params[f"d{i}"] = r["doc_id"]
+                    params[f"v{i}"] = r["version"]
+                conn.execute(
+                    f"DELETE FROM sem_chunk_entities WHERE org_id = %(org)s"
+                    f" AND ({conds})", params)
+            for r in rows:
+                conn.execute(
+                    "INSERT INTO sem_chunk_entities(org_id, chunk_rid, doc_id,"
+                    " version, entity_id, hits, dict_rev)"
+                    " SELECT %(org)s, %(rid)s, %(doc)s, %(v)s, %(eid)s, %(hits)s,"
+                    " %(rev)s"
+                    " WHERE EXISTS (SELECT 1 FROM sem_entities e"
+                    "   WHERE e.id = %(eid)s AND e.org_id = %(org)s"
+                    "   AND e.status = 'active')",
+                    {"org": org_id, "rid": r["chunk_rid"], "doc": r["doc_id"],
+                     "v": r["version"], "eid": r["entity_id"], "hits": r["hits"],
+                     "rev": r["dict_rev"]},
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return len(rows)
+
+    def sem_reconcile_chunk_tags(self) -> list[dict]:
+        """打标对账（与 sqlite 同语义——P2-1/R2：存活谓词含 pending、三元组
+        收窄防误判）：悬挂/实体亡行清理 + dict_rev 落后计数。"""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            stale_by_org = dict(conn.execute(
+                "SELECT ce.org_id, COUNT(*) FROM sem_chunk_entities ce"
+                " WHERE NOT EXISTS ("
+                "   SELECT 1 FROM chunks c JOIN documents d ON d.id = c.doc_id"
+                "   WHERE c.rid = ce.chunk_rid AND c.doc_id = ce.doc_id"
+                "     AND c.version = ce.version AND c.tombstone = 0"
+                "     AND (c.version = d.active_version"
+                "          OR c.version = d.pending_version))"
+                " GROUP BY ce.org_id",
+            ).fetchall())
+            conn.execute(
+                "DELETE FROM sem_chunk_entities WHERE NOT EXISTS ("
+                "  SELECT 1 FROM chunks c JOIN documents d ON d.id = c.doc_id"
+                "  WHERE c.rid = sem_chunk_entities.chunk_rid"
+                "    AND c.doc_id = sem_chunk_entities.doc_id"
+                "    AND c.version = sem_chunk_entities.version"
+                "    AND c.tombstone = 0"
+                "    AND (c.version = d.active_version"
+                "         OR c.version = d.pending_version))",
+            )
+            retired_by_org = dict(conn.execute(
+                "SELECT ce.org_id, COUNT(*) FROM sem_chunk_entities ce"
+                " JOIN sem_entities e ON e.id = ce.entity_id"
+                " WHERE e.status != 'active' GROUP BY ce.org_id",
+            ).fetchall())
+            conn.execute(
+                "DELETE FROM sem_chunk_entities WHERE entity_id IN ("
+                "  SELECT id FROM sem_entities WHERE status != 'active')",
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        lagging: dict[str, int] = {}
+        untagged: dict[str, int] = {}
+        for org, rev in conn.execute(
+            "SELECT b.org_id, b.dict_rev FROM sem_builds b"
+            " WHERE b.status = 'ready' AND b.activated_at = ("
+            "   SELECT MAX(b2.activated_at) FROM sem_builds b2"
+            "   WHERE b2.org_id = b.org_id AND b2.status = 'ready')",
+        ).fetchall():
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT ce.chunk_rid) FROM sem_chunk_entities ce"
+                " WHERE ce.org_id = %(org)s AND ce.dict_rev <> %(rev)s"
+                "   AND EXISTS ("
+                "     SELECT 1 FROM chunks c JOIN documents d ON d.id = c.doc_id"
+                "     WHERE c.rid = ce.chunk_rid AND c.doc_id = ce.doc_id"
+                "       AND c.version = ce.version AND c.tombstone = 0"
+                "       AND (c.version = d.active_version"
+                "            OR c.version = d.pending_version))",
+                {"org": org, "rev": rev},
+            ).fetchone()
+            lagging[org] = row[0] if row else 0
+            row2 = conn.execute(
+                "SELECT COUNT(*) FROM chunks c"
+                " JOIN documents d ON d.id = c.doc_id"
+                " WHERE d.org_id = %(org)s AND c.tombstone = 0"
+                "   AND (c.version = d.active_version"
+                "        OR c.version = d.pending_version)"
+                "   AND NOT EXISTS (SELECT 1 FROM sem_chunk_entities ce"
+                "     WHERE ce.chunk_rid = c.rid AND ce.doc_id = c.doc_id"
+                "       AND ce.version = c.version)",
+                {"org": org},
+            ).fetchone()
+            untagged[org] = row2[0] if row2 else 0
+        orgs = {**{o: 0 for o in stale_by_org}, **{o: 0 for o in retired_by_org},
+                **{o: 0 for o in lagging}, **{o: 0 for o in untagged}}
+        return [
+            {"org_id": org,
+             "stale_chunks_removed": stale_by_org.get(org, 0),
+             "retired_entities_removed": retired_by_org.get(org, 0),
+             "lagging_chunks": lagging.get(org, 0),
+             "untagged_chunks": untagged.get(org, 0)}
+            for org in sorted(orgs)
+        ]
+
+    def sem_last_retag_done_at(self, org_id: str) -> str | None:
+        """该 org 最近一次 done 的 semantic_retag 任务时点（对账投递节流锚——
+        与 sqlite 同语义）。"""
+        row = self._conn.execute(
+            "SELECT to_char(updated_at, 'YYYY-MM-DD HH24:MI:SS') FROM tasks"
+            " WHERE type = 'semantic_retag' AND status = 'done'"
+            "   AND (payload LIKE %(p1)s OR payload LIKE %(p2)s)"
+            " ORDER BY updated_at DESC LIMIT 1",
+            {"p1": f'%"org":"{org_id}"%',
+             "p2": f'%"org": "{org_id}"%'},   # json.dumps 紧凑/默认两形态
+        ).fetchone()
+        return row[0] if row else None
 
     def load_build(self, org_id: str, dict_rev: str) -> dict | None:
         row = self._conn.execute(

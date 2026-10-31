@@ -129,6 +129,7 @@ class Settings:
     semantic_l0_token_budget: int = 1500  # L0 总 token 预算（§5.8 l0 行——CI 拦截阈值；TC-YAML-04）
     semantic_daily_sync_interval_s: float = 86400.0  # G-19 五源每日兜底：距上次成功 run 超过该间隔才投递（0=关闭；webhook/手动触发的成功 run 同口径去重）
     semantic_eval_golden_path: str = "eval/semantic_golden.jsonl"  # 识别评测黄金集路径（TC-SEV-01——相对进程 CWD；文件缺失 → 构建评测 skipped 不拦截）
+    semantic_retag_reconcile_interval_s: float = 86400.0  # 对账 retag 补投节流（m2s-5——距该 org 上次 done retag 不足此值不重复投；无行块重标不消候选，节流防风暴；0=每次投）
     # semantic_batch_rows 上界 1000 = design §5.8「每批 ≤1000 行提交」硬约束
     # （NFR-11 写锁治理）——校验收口（P3-5/R2），不可配置突破
 
@@ -229,6 +230,8 @@ def get_settings() -> Settings:
             "LATTICE_SEM_DAILY_SYNC_INTERVAL_S", 86400.0)),
         semantic_eval_golden_path=_f("LATTICE_SEM_EVAL_GOLDEN_PATH",
                                      "eval/semantic_golden.jsonl"),
+        semantic_retag_reconcile_interval_s=float(_num(
+            "LATTICE_SEM_RETAG_RECONCILE_INTERVAL_S", 86400.0)),
         log_level=env("LATTICE_LOG_LEVEL", "INFO"),
         log_format=env("LATTICE_LOG_FORMAT", "json"),
     )
@@ -252,6 +255,7 @@ def _validate(s: Settings) -> None:
         "semantic_describe_cache_s",
         "semantic_l0_token_budget",
         "semantic_daily_sync_interval_s",
+        "semantic_retag_reconcile_interval_s",
     ):
         value = getattr(s, name)
         if value < 0:

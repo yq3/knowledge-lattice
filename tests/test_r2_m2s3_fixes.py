@@ -414,7 +414,8 @@ def test_p3_5_reactivate_false_degrades_not_fake_ready(benv, monkeypatch) -> Non
 
     calls = {"n": 0}
 
-    def fake_reactivate(org_id, build_id, stats_json, *, audit=None):
+    def fake_reactivate(org_id, build_id, stats_json, *, audit=None,
+                        snapshot_json=None):   # m2s-5：快照附表参数随协议扩展
         calls["n"] += 1
         return False  # 竞态注入：行已非 ready
 

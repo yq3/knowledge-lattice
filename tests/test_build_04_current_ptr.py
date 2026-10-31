@@ -71,7 +71,7 @@ def test_migration_0007_schema_columns_and_levels(benv) -> None:
 
     for discover in (sq_discover, pg_discover):
         semantic = [m.version for m in discover() if m.domain == "semantic"]
-        assert semantic == [6, 7]
+        assert semantic == [6, 7, 8]  # m2s-5 起 0008 sem_build_snapshots（G-21 方案 A）
 
 
 def test_current_build_fallback_order_when_activated_at_null(benv) -> None:
