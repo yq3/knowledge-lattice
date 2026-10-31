@@ -133,8 +133,13 @@ def _build_stats(snapshot: dict, *, annotator=None) -> dict:
         if r["src_id"] not in active_ids or r["dst_id"] not in active_ids:
             broken.append({"src_id": r["src_id"], "rel_type": r["rel_type"],
                            "dst_id": r["dst_id"]})
+    # P1-1/R3：歧义别名清单按**识别可用面**——restricted 实体别名不入机
+    # （T-S9 表现为不存在），其歧义面不存在、列入报告即误导+泄露 alias 面
+    sensitivity = {e["id"]: e.get("sensitivity") for e in snapshot["entities"]}
     by_norm: dict[str, set[int]] = {}
     for a in snapshot["aliases"]:
+        if sensitivity.get(a["entity_id"]) == "restricted":
+            continue
         by_norm.setdefault(a["alias_norm"], set()).add(a["entity_id"])
     ambiguous = [
         {"alias_norm": norm, "entity_ids": sorted(ids)}

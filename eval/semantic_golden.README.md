@@ -44,7 +44,11 @@
 ## 指标口径（core/semantic/evalrun.py）
 
 - precision/recall：span+实体双匹配（预测∩标注 / 各自分母）；
-- ambiguity：只统计 pos_ambiguous 条目（正确实体选中率）；
+- ambiguity：只统计 pos_ambiguous 条目中的**歧义 span 标注**——标注
+  surface 的 alias_norm 为多实体共享（词典侧判定，识别可用面口径）才进
+  分子分母，条目内伴随的确定性标注不计（P2-2/R3：不稀释 ≥0.85 门槛——
+  本集 20 条歧义条目共 25 标注，其中 5 条伴随〔s106/s107/s108/s110/s111〕
+  → 分母 20）；
 - neg_fp：负样本条目级误报率（≥1 命中即计）；
 - 确定性：AC 自动机纯确定性匹配——同词典两次评测逐位一致（永久断言
   `test_tc_sev_02_eval_deterministic_double_build`）。

@@ -188,11 +188,15 @@ class Annotator:
                 self._mention(text, hit, origins, pick, resolved_by))
 
         mentions.sort(key=lambda m: m["span"][0])
-        # 歧义候选（TC-SEM-03④——交 agent 追问或自判）
+        # 歧义候选（TC-SEM-03④——交 agent 追问或自判）；随后统一剥内部键
+        #（P3-1/R3：非歧义 mention 也不携带 `_cand_ids`——API/MCP JSON 面
+        # 无下划线私有字段）
         for m in mentions:
             if m["ambiguous"]:
-                for c in m.pop("_cand_ids"):
+                for c in m["_cand_ids"]:
                     candidates.append(self._candidate(m, c))
+        for m in mentions:
+            m.pop("_cand_ids", None)
         return {"mentions": mentions, "candidates": candidates}
 
     # ---- 内部 ----
@@ -384,6 +388,12 @@ def build_automaton(snapshot: dict) -> tuple[ahocorasick.Automaton, dict]:
     meta = {
         "keys": len(auto),
         "nodes": stats.get("nodes_count", 0),
+        # P2-3/R3：任务 A1「内存占用与构建耗时纳入构建报告」——get_stats()
+        # 全量透传：total_size（sizeof_node×nodes，字节）/ links_count（trie
+        # 边数）/ words_count（入机词量）
+        "memory_bytes": stats.get("total_size", 0),
+        "edges": stats.get("links_count", 0),
+        "words": stats.get("words_count", 0),
         "build_ms": round((time.perf_counter() - t0) * 1000, 3),
         "skipped_fuzzy_only": skipped_fuzzy,
         "skipped_restricted": skipped_restricted,
@@ -404,11 +414,15 @@ def clear_annotator_cache() -> None:
 def get_annotator(backend, org_id: str, settings) -> tuple[Annotator | None,
                                                             str | None]:
     """按 (org, dict_rev) 懒加载：current ready 构建的 rev 为锚——
+    annotate 与 `/semantic/l0` 共用本路径（P2-1 方案 B/R3：同一实例同锚点，
+    内容/rev 两侧一致）。
 
-    - 缓存命中（同 rev）→ 同一实例（构建中沿用旧实例——T-S12）；
+    - 缓存命中（同 rev）→ 同一实例（构建中沿用旧实例——T-S12 热缓存路径）；
     - 无构建 → (None, None)（未构建不服务识别——先构建再识别的操作序）；
-    - rev 漂移（live 快照领先于 last ready——重启窗口等）→ 以 current rev
-      标注服务 live 快照实例 + 告警（best-effort；进程内无漂移由缓存保证）。"""
+    - rev 漂移（live 快照领先于 last ready——**冷缓存/重启窗口**）→ 以
+      current rev 标注服务 live 快照实例 + 告警（best-effort：known-gaps
+      **G-21** 登记项——评测拦下的词典重启后仍会被服务、门禁非持久；
+      方案 A〔sem_builds 快照附表按 rev 重建〕M2-S3/m2-5 承接）。"""
     current = backend.sem_current_build(org_id)
     rev = current["dict_rev"] if current else None
     cached = _CACHE.get(org_id)
@@ -455,6 +469,11 @@ def render_l0(snapshot: dict) -> dict:
 
     fragments = []
     for e in sorted(snapshot["entities"], key=lambda x: (x["type"], x["key"])):
+        # P1-1/R3：restricted 实体不进 L0 导出——L0 是 agent system prompt 的
+        # 输入面（semantic:read 全员可见），正文泄露比 alias 命中严重；
+        # fail-closed，M2-S3 权限面交付后按 semantic:restricted 放行
+        if e.get("sensitivity") == "restricted":
+            continue
         curated = _loads(e.get("curated_json"))
         if not curated.get("l0"):
             continue

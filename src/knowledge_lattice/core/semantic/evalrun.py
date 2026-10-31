@@ -14,8 +14,11 @@ entity_key 形如 "type:key"；负样本 labels 恒空。
 
 - precision = 预测 mention 与标注 span+实体双匹配数 / 预测 mention 总数；
 - recall = 双匹配数 / 标注总数；
-- ambiguity（歧义消解率，只统计 kind=pos_ambiguous 条目）= 歧义标注中选中
-  正确实体数 / 歧义标注总数；
+- ambiguity（歧义消解率，只统计 kind=pos_ambiguous 条目中的**歧义 span
+  标注**——P2-2/R3 口径：标注 surface 的 alias_norm 为多实体共享〔词典侧
+  判定，与识别可用面同口径——restricted/fuzzy_only 不计〕的 span 才进
+  分子分母；条目内伴随的确定性标注不计——不稀释 ≥0.85 门槛）= 选中正确
+  实体数 / 歧义 span 标注数；
 - neg_fp（负样本误报率）= 含 ≥1 预测 mention 的负样本条数 / 负样本条数。
 
 匹配口径：span 完全相等（start/end 逐位）且实体 key 相等。评测确定性
@@ -93,6 +96,20 @@ def run_recognition_eval(
             f" < {EVAL_MIN_APPLICABLE_RATIO:.0%} 或 <{EVAL_MIN_APPLICABLE} 条"
             "——参考词典部署外的 org 不做半套评测）")}
 
+    # P2-2/R3：歧义 span 判定走词典侧（多实体共享同一 alias_norm——与识别
+    # 可用面同口径：restricted 实体别名与 fuzzy_only 不入识别面，不构成歧义）
+    from knowledge_lattice.core.semantic.norm import normalize_alias
+
+    sensitivity = {e["id"]: e.get("sensitivity") for e in snapshot["entities"]}
+    by_norm: dict[str, set[int]] = {}
+    for a in snapshot["aliases"]:
+        if sensitivity.get(a["entity_id"]) == "restricted":
+            continue
+        if a["match_mode"] not in ("exact", "context"):
+            continue
+        by_norm.setdefault(a["alias_norm"], set()).add(a["entity_id"])
+    ambiguous_norms = {n for n, ids in by_norm.items() if len(ids) > 1}
+
     predicted_total = matched = labeled_total = 0
     ambiguous_labeled = ambiguous_correct = 0
     neg_total = neg_flagged = 0
@@ -112,6 +129,10 @@ def run_recognition_eval(
         matched += len(pred & gold)
         if item["kind"] == "pos_ambiguous":
             for k, s, e in labels:
+                # 只统计歧义 span 标注（surface 规范化后为共享别名）——
+                # 伴随确定性标注（规范名/独占别名）不进分母
+                if normalize_alias(item["text"][s:e]) not in ambiguous_norms:
+                    continue
                 ambiguous_labeled += 1
                 if (s, e, k) in pred:
                     ambiguous_correct += 1

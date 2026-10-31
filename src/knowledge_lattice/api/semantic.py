@@ -266,7 +266,12 @@ async def semantic_annotate(
     service = get_service(request)
     _require_semantic_read(service, org, auth)
 
-    body = await request.json()
+    try:
+        body = await request.json()
+    except ValueError as exc:  # P3-2/R3：裸 JSON 非法 → 400（不 500）
+        raise HTTPException(
+            status_code=400, detail=f"request body 须为合法 JSON：{exc}"
+        ) from exc
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="body 须为 JSON 对象")
     text = body.get("text")
@@ -301,12 +306,18 @@ async def semantic_l0_export(
     service = get_service(request)
     _require_semantic_read(service, org, auth)
 
-    from knowledge_lattice.core.semantic.annotator import render_l0
+    # P2-1 方案 B/R3：与 annotate **同锚点**（get_annotator 单例）——
+    # 冷缓存/构建中窗口两侧内容与 rev 一致（known-gaps G-21 登记项；
+    # 方案 A〔build 快照附表〕M2-S3/m2-5 承接）
+    from knowledge_lattice.core.semantic.annotator import (
+        get_annotator, render_l0,
+    )
 
     def _run():
-        current = service.backend.sem_current_build(org)
-        l0 = render_l0(service.backend.sem_active_snapshot(org))
-        return {"dict_rev": current["dict_rev"] if current else None, **l0}
+        ann, rev = get_annotator(service.backend, org, service.settings)
+        if ann is None:
+            return {"dict_rev": None, "fragments": [], "token_estimate": 0}
+        return {"dict_rev": rev, **render_l0(ann.snapshot)}
 
     return await asyncio.to_thread(_run)
 

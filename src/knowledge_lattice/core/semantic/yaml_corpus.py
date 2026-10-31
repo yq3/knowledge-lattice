@@ -362,8 +362,11 @@ def _minimal_schema_self_check_impl(schema: object, path: str) -> str | None:
         return f"{path}: properties 须为对象"
     if "items" in schema:
         items = schema["items"]
-        if not isinstance(items, (dict, list)) and items not in (True, False):
-            return f"{path}: items 须为对象或数组（tuple 形态）"
+        # P3-11/R3：`is` 显式判断——`1 == True` 曾把 items:1 误当布尔子
+        # schema 放行（自检漏拦非法形态）
+        if not isinstance(items, (dict, list)) and items is not True \
+                and items is not False:
+            return f"{path}: items 须为对象或数组（tuple 形态）或布尔"
     for key, sub in (schema.get("properties") or {}).items():
         problem = _minimal_schema_self_check(sub, f"{path}.{key}")
         if problem:
@@ -459,7 +462,12 @@ def _minimal_schema_errors_impl(instance, schema: dict, path: str) -> list[str]:
                     f"{path}.{key}: additional property not allowed")
     if isinstance(instance, list):
         items = schema.get("items")
-        if isinstance(items, dict):            # 单 schema：逐项
+        if items is True:                      # P3-11/R3：true 放行任意元素
+            pass
+        elif items is False:                   # false：非空数组不通过
+            if instance:
+                errors.append(f"{path}: items false（数组须为空）")
+        elif isinstance(items, dict):          # 单 schema：逐项
             for i, item in enumerate(instance):
                 errors.extend(
                     _minimal_schema_errors(item, items, f"{path}[{i}]"))

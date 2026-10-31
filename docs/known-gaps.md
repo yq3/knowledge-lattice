@@ -30,6 +30,7 @@
 | [G-18](#g-18-sem_builds当前构建按最新-ready-取值rev-回退场景-current锚点失真) | **已收口**（m2s-3 R1——0007 activated_at 指针+条件 upsert） | design §4 status 枚举无 superseded/is_current，「最新 ready by id」在 rev 回退时 current/锚点失真（查询面走实时表不受影响）；sqlite 同 rev 竞态双 ready 事件（O-1） | FR-S1 / design §4·§5.8 · M2-S1 | 2026-10-30 |
 | [G-19](#g-19-五源每天一次兜底调度未接线design-§58-适配器表半句) | **已收口**（m2s-4 R1——maintenance 挂载 semantic_daily_sync：五源/日·窗口跨零点·pending 幂等·sem_sync_runs 24h 与 webhook 去重） | design §5.8 适配器表「每天一次兜底」半句——五源仅 webhook/手动两路径，app 兜底循环只认领任务行不投递同步；长期无 webhook 的源停留旧快照 | FR-S1 / design §5.8 · M2-S1 | 2026-10-31 |
 | [G-20](#g-20-webhook-验签前读取完整请求体无大小上限公网入口内存放大) | 已接受（私有化内网面+部署侧反代限流兜底） | webhook 验签前 `await request.body()` 无上限——公网入口内存放大（design 未要求）；公网直曝部署时补应用层上限 | 安全 / design §6.2 · M2-S2 | 2026-10-31 |
+| [G-21](#g-21-annotatello-读-live-快照而非-build-产物冷缓存重启窗口-rev-锚点失真评测门禁非持久m2s-4-p2-1-方案-b-登记项) | 已接受（方案 B：同锚点+钉死用例；**方案 A〔build 快照附表〕M2-S3/m2-5 承接**；同批登记 P3 级六项） | annotate/L0 恒读 live：冷缓存/重启 rev 锚点失真、评测拦下词典重启后仍被服务、sync→build 窗口内容/rev 错配 | 语义 / design §5.8·§5.9 · M2-S2 | 2026-10-31 |
 
 ---
 
@@ -218,3 +219,12 @@
 - **问题**：`POST /semantic/yaml/webhook` 在 HMAC 验签**之前** `await request.body()` 读取完整请求体且无大小上限——公网入口可被超大 body 打出内存放大（design §6.2 未要求上限）。
 - **对冲**：部署侧反代/网关限流（body 大小限制）兜底；私有化部署默认内网面（FR 部署形态）暴露面有限。
 - **重开条件**：公网直曝部署或网关层无法限流时补应用层上限（如 Content-Length 预检 413）。
+
+## G-21 annotate/L0 读 live 快照而非 build 产物——冷缓存/重启窗口 rev 锚点失真+评测门禁非持久（m2s-4 P2-1 方案 B 登记项）
+
+- **状态**：已接受（2026-10-31 随 m2s-4 R2 Committer P2-1/P1 相关裁定登记——用户拍板「按建议执行」取方案 B）。
+- **问题**：annotate（get_annotator 缓存 miss）与 `/semantic/l0` 恒读 live 快照（`sem_active_snapshot`）：①进程重启/冷缓存在构建中或构建失败后，`live_rev != current ready rev` 时按 live 字典服务但响应旧 `dict_rev`（design §5.8「构建中请求始终用旧 dict_rev」字面偏差）；②**评测门槛拦下的词典已写入 live 表**——进程重启后 annotate 直接服务被拦词典（failed build 不切 ready 的治理语义仅进程生命周期内）；③sync→build 窗口内 `/semantic/l0` 内容新/dict_rev 旧错配（agent 侧按 rev 缓存会误判）。
+- **对冲**：R3 起 /semantic/l0 与 annotate 同锚点+永久用例显式钉死冷缓存行为；热缓存路径（进程内）符合 T-S12；评测门禁在构建路径内仍有效（拦切 ready）。
+- **收口方向**：**方案 A（M2-S3/m2-5 收口段承接）**——`sem_builds` 增快照附表（sem_build_snapshots(build_id, snapshot_json) 最小 JSON），get_annotator/render_l0 按 current build id 取快照、无快照才回退 live。
+- **同批登记（m2s-4 R2 P3 级）**：TC-BUILD-04「需人工确认」无确认/强制放行入口（误拦只能修词典/改黄金集重建）；歧义缺省读法=实现第一候选（按 weight+实体 ID 排序，换库/换同步序可能翻转——M2-S3 前改 YAML 显式缺省主读）；L0 兜底单 bigram 证据即定案（宽松档——建议 ≥2 重叠或按定义长度归一）；l0_extra（l0.yaml 额外文本）未被 render_l0 消费；拉丁去空白粘接（"abc def"→"abcdef" 后 "abc" 不命中——保守无 FP 方向）；`_TIER_CONFIDENCE` alias=0.95 与 §6.3 中间件只自动注入 confidence=1.0 命中的交互（M2-S3 中间件确认设计意图）。
+- **重开条件**：M2-S3 权限面/m2-5 收口段（方案 A 承接）。
