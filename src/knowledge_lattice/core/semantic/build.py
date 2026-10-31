@@ -1,24 +1,27 @@
 """semantic_build 构建编排（design §5.8 构建产物 / §8 M2-S1 第 3 项——m2s-2
-骨架段；core 纯编排、SQL 全下沉 store Semantic 域）。
+骨架段 → m2s-4 面上段：AC 自动机指标 + 构建报告 + 评测回归门槛；core 纯编排、
+SQL 全下沉 store Semantic 域）。
 
-流程（§5.8 四步的骨架实现——AC 自动机/模糊索引/L0 片段归 M2-S2 后段，
-本段交付 dict_rev 计算 + 原子切换 + 构建报告统计）：
+流程（§5.8 四步）：
 
-1. **快照读取**：active 实体 + 全部别名（manual/abbr 含——人工别名变更同样
-   触发新 rev）+ active 关系（store.sem_active_snapshot）；
+1. **快照读取**：active 实体（含 curated_json——G-17）+ 全部别名 + active 关系
+   （store.sem_active_snapshot；m2s-4 增携 source_system——缺源警告面）；
 2. **dict_rev 计算**：`hash(active 实体 + 别名 + yaml_rev + embed_model 标签)`
-   ——**embed_model 标签必须进输入**（#42 P1-2：换模型 → rev 变 → 「相同跳过」
-   失效、强制重建；§5.3 重嵌入④）。与当前 ready 版本相同 → 跳过（不产新行，
-   TC-BUILD-01）；快照排除 synced_at/updated_at 等易变列——纯内容变更语义；
-3. **原子切换**：building 行 upsert → 单语句 building→ready（旧行不动——
-   design §4 status 枚举无 superseded，「当前」= 最新 ready 行，旧 ready 保留
-   服务〔§5.8 懒加载语义〕）；失败路径 building→failed + error 载 stats，旧
-   ready 继续为当前（T-S12 骨架半句——失败不切指针）；
-4. **审计**：`semantic.build` 事件全终态入 outbox（ready/skipped/failed——
-   TC-BUILD-03，#38 P1-7）。
-
-评测回归门槛（>2pp 不切 ready）与重标投递（semantic_retag）归后续段
-（TC-BUILD-04/05——依赖评测指标与打标面）。
+   ——与当前 ready 版本相同 → 跳过（TC-BUILD-01）；**dict_rev 各分量摘要**
+   （entities/aliases/relations/yaml_rev/embed_model——A4 运维可观测：哪面
+   变了触发重建一眼可辨）；
+3. **产物与报告**（m2s-4）：AC 自动机规模（keys/nodes/skipped_fuzzy_only/
+   skipped_restricted）与构建耗时；L0 片段计数与 token 估算；歧义别名/孤立
+   节点/断链关系（active 关系指向非 active 端点——G-15 中间态）；缺源警告
+   （五源无 active 实体——A4）；**评测指标**（TC-SEV-02——每次构建自动跑
+   黄金集，指标进报告）；
+4. **评测门槛**（TC-BUILD-04/TC-SEV-02）：绝对门槛四指标 + 较上一版 ready
+   回归 >2pp → **不切 ready**（行置 failed、error 注明 eval 语义——需人工
+   修复词典或确认后重建；eval_runner 注入面供测试）；
+5. **原子切换**：building 行 upsert → 单语句 building→ready（旧行不动——
+   T-S12）；失败路径 building→failed + error 载 stats，旧 ready 继续为当前；
+6. **审计**：`semantic.build` 事件全终态入 outbox（ready/skipped/failed/
+   eval_blocked——TC-BUILD-03）。
 """
 
 from __future__ import annotations
@@ -33,19 +36,23 @@ from knowledge_lattice.domain.audit_events import EVENT_SEMANTIC_BUILD
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["run_build", "run_build_task", "compute_dict_rev"]
+__all__ = [
+    "run_build", "run_build_task", "compute_dict_rev", "dict_rev_components",
+    "build_report", "BuildInterrupted", "EVAL_REGRESSION_MAX_DROP",
+]
+
+# TC-BUILD-04：评测指标较上一版下降 >2 个百分点不切 ready（neg_fp 反向：
+# 上升 >2pp 拦截）
+EVAL_REGRESSION_MAX_DROP = 0.02
 
 
-def compute_dict_rev(
-    snapshot: dict, *, embed_model_label: str, yaml_rev: str | None = None
-) -> str:
-    """dict_rev = hash(active 实体〔含 curated_json——G-17/m2s-3〕+ 别名 +
-    yaml_rev + embed_model 标签) 前 12 hex。
+def _rev_payload(snapshot: dict, *, embed_model_label: str,
+                 yaml_rev: str | None) -> dict:
+    """dict_rev 哈希输入（规范化序列化——排序 + 紧凑分隔，双方言同 rev）。
 
-    规范化序列化（排序 + 紧凑分隔）保证同快照双方言同 rev；parent_id 以 -1
-    规避 None 与 int 的排序比较。curated_json 入实体元组 + yaml_rev 入顶层
-    输入——YAML 改 definition 必触发重建（§5.8 构建产物第 1 步，双保险）。"""
-    payload = {
+    parent_id 以 -1 规避 None 与 int 的排序比较；curated_json 入实体元组 +
+    yaml_rev 入顶层输入——YAML 改 definition 必触发重建（G-17 双保险）。"""
+    return {
         "embed_model": embed_model_label,
         "yaml_rev": yaml_rev or "",
         "entities": sorted(
@@ -65,9 +72,37 @@ def compute_dict_rev(
             for r in snapshot["relations"]
         ),
     }
-    blob = json.dumps(payload, ensure_ascii=False, sort_keys=True,
+
+
+def _sha(obj) -> str:
+    blob = json.dumps(obj, ensure_ascii=False, sort_keys=True,
                       separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+
+def compute_dict_rev(
+    snapshot: dict, *, embed_model_label: str, yaml_rev: str | None = None
+) -> str:
+    """dict_rev = hash(active 实体〔含 curated_json——G-17/m2s-3〕+ 别名 +
+    yaml_rev + embed_model 标签) 前 12 hex。"""
+    return _sha(_rev_payload(snapshot, embed_model_label=embed_model_label,
+                             yaml_rev=yaml_rev))
+
+
+def dict_rev_components(
+    snapshot: dict, *, embed_model_label: str, yaml_rev: str | None = None
+) -> dict:
+    """dict_rev 各分量摘要（A4 构建报告——entities/aliases/relations 分量
+    sha + yaml_rev + embed_model 原值：变更面定位）。"""
+    payload = _rev_payload(snapshot, embed_model_label=embed_model_label,
+                           yaml_rev=yaml_rev)
+    return {
+        "entities": _sha(payload["entities"]),
+        "aliases": _sha(payload["aliases"]),
+        "relations": _sha(payload["relations"]),
+        "yaml_rev": yaml_rev or "",
+        "embed_model": embed_model_label,
+    }
 
 
 def _yaml_rev_of(snapshot: dict) -> str | None:
@@ -77,25 +112,53 @@ def _yaml_rev_of(snapshot: dict) -> str | None:
     return max(revs) if revs else None
 
 
-def _build_stats(snapshot: dict) -> dict:
-    """构建报告骨架（§5.8 产物之「构建报告」——冲突面归 sync run、此处为图统计
-    与结构异常：歧义别名 / 孤立节点；评测指标归后续段）。"""
+def _build_stats(snapshot: dict, *, annotator=None) -> dict:
+    """构建报告统计（§5.8 产物之「构建报告」——冲突面随 sync run、此处为图
+    统计 + 结构异常 + m2s-4 产物指标）。annotator 复用调用方已建实例（评测
+    与自动机指标同一实例——不重复构建）。"""
+    from knowledge_lattice.core.semantic.annotator import render_l0
+    from knowledge_lattice.core.semantic.constants import SYNC_ADAPTERS
+
     entities_by_type: dict[str, int] = {}
     for e in snapshot["entities"]:
         entities_by_type[e["type"]] = entities_by_type.get(e["type"], 0) + 1
     relations_by_type: dict[str, int] = {}
     linked: set[int] = set()
+    active_ids = {e["id"] for e in snapshot["entities"]}
+    broken: list[dict] = []
     for r in snapshot["relations"]:
         relations_by_type[r["rel_type"]] = relations_by_type.get(r["rel_type"], 0) + 1
         linked.add(r["src_id"])
         linked.add(r["dst_id"])
+        if r["src_id"] not in active_ids or r["dst_id"] not in active_ids:
+            broken.append({"src_id": r["src_id"], "rel_type": r["rel_type"],
+                           "dst_id": r["dst_id"]})
+    # P1-1/R3：歧义别名清单按**识别可用面**——restricted 实体别名不入机
+    # （T-S9 表现为不存在），其歧义面不存在、列入报告即误导+泄露 alias 面
+    sensitivity = {e["id"]: e.get("sensitivity") for e in snapshot["entities"]}
     by_norm: dict[str, set[int]] = {}
     for a in snapshot["aliases"]:
+        if sensitivity.get(a["entity_id"]) == "restricted":
+            continue
         by_norm.setdefault(a["alias_norm"], set()).add(a["entity_id"])
     ambiguous = [
         {"alias_norm": norm, "entity_ids": sorted(ids)}
         for norm, ids in sorted(by_norm.items()) if len(ids) > 1
     ]
+    # 缺源警告（A4）：五源无 active 实体（未同步/全量消失——G-19 兜底调度
+    # 的可观测面；source_system 自 m2s-4 起随快照携带）
+    sources_present = {e.get("source_system") for e in snapshot["entities"]
+                       if e.get("source_system")}
+    missing_sources = [
+        {"source": name,
+         "reason": "no active entities from this source（未同步或全量消失）"}
+        for name in SYNC_ADAPTERS if name not in sources_present
+    ]
+    if annotator is None:
+        from knowledge_lattice.core.semantic.annotator import Annotator
+
+        annotator = Annotator(snapshot)
+    l0 = render_l0(snapshot)
     return {
         "entities": len(snapshot["entities"]),
         "entities_by_type": entities_by_type,
@@ -105,6 +168,11 @@ def _build_stats(snapshot: dict) -> dict:
         "ambiguous_aliases": ambiguous,
         "orphan_nodes": sum(1 for e in snapshot["entities"]
                             if e["id"] not in linked),
+        "broken_relations": {"count": len(broken), "sample": broken[:10]},
+        "missing_sources": missing_sources,
+        "ac_automaton": annotator.automaton_meta,
+        "l0": {"fragments": len(l0["fragments"]),
+               "token_estimate": l0["token_estimate"]},
     }
 
 
@@ -121,12 +189,71 @@ def _audit_build(backend, org_id: str, status: str, stats: dict) -> None:
     )
 
 
+# ---- 评测门槛（TC-BUILD-04 / TC-SEV-02） ----
+
+
+def _eval_directional_drop(metric: str, prev: float, new: float) -> bool:
+    """指标回归判定（>2pp）：precision/recall/ambiguity 降、neg_fp 升。"""
+    if metric == "neg_fp":
+        return new > prev + EVAL_REGRESSION_MAX_DROP
+    return new < prev - EVAL_REGRESSION_MAX_DROP
+
+
+def _eval_gate(metrics: dict, prev_metrics: dict | None) -> dict:
+    """门槛评估：绝对门槛 + 相对回归（None 指标跳过——如无歧义样本时
+    ambiguity=None 不参与门槛）。"""
+    from knowledge_lattice.core.semantic.evalrun import EVAL_THRESHOLDS
+
+    below: list[str] = []
+    for metric, threshold in EVAL_THRESHOLDS.items():
+        value = metrics.get(metric)
+        if value is None:
+            continue
+        if metric == "neg_fp":
+            if value > threshold:
+                below.append(metric)
+        elif value < threshold:
+            below.append(metric)
+    info: dict = {"metrics": metrics, "thresholds": dict(EVAL_THRESHOLDS)}
+    if below:
+        info["below_threshold"] = True
+        info["below"] = below
+        return info
+    if prev_metrics:
+        regressions = [
+            m for m in EVAL_THRESHOLDS
+            if prev_metrics.get(m) is not None and metrics.get(m) is not None
+            and _eval_directional_drop(m, prev_metrics[m], metrics[m])
+        ]
+        if regressions:
+            info["regression"] = True
+            info["regressed"] = regressions
+            info["previous"] = {
+                m: prev_metrics[m] for m in regressions
+                if prev_metrics.get(m) is not None}
+    return info
+
+
+def _prev_eval_metrics(current: dict | None) -> dict | None:
+    if not current:
+        return None
+    stats_json = current.get("stats_json") or "{}"
+    if isinstance(stats_json, str):
+        try:
+            stats_json = json.loads(stats_json)
+        except (TypeError, ValueError):
+            return None
+    ev = (stats_json or {}).get("eval") or {}
+    return ev.get("metrics")
+
+
 def run_build(
     backend,
     org_id: str,
     *,
     settings: Settings,
     should_continue: Callable[[], bool] | None = None,
+    eval_runner: Callable[[object, dict], dict] | None = None,
 ) -> dict:
     """一次构建 run（§5.8——返回 {build_id?, dict_rev, status, stats}）。
 
@@ -137,8 +264,12 @@ def run_build(
       时不重断 building（无 flap）；此时若 current 已同 rev → skipped 让位
       （并发赢家），否则 **重激活**（顶置 activated_at 成为 current——rev
       回退场景 current 不失真，sem_reactivate_build + ready 事件同事务）；
+    - **评测门槛（m2s-4）**：eval_runner（缺省 = 黄金集 runner——文件缺失
+      None → skipped）在新快照 Annotator 上跑指标；绝对门槛/较上一版回归
+      >2pp → **行置 failed（不切 ready）**、stats.eval 留因——返回
+      status="failed"（不上抛：非故障是治理拦截，人工修复词典后重建）；
     - ready/failed 事件与终态行**同一事务**（store switch/fail 的 audit=——
-      P3-5/R2，沿 create_task 先例；G-16 构建侧收口）；
+      P3-5/R2；G-16 构建侧收口）；
     - 切换无效且 current 已是同 rev ready（并发输者——P2-2/R2）→ 按 skipped
       返回：不抛错（不触发任务重试）、不写 failed 事件（赢家已记录 ready）；
     - 其余失败 → building 行置 failed（仅真生效写事件）+ 异常上抛。"""
@@ -164,10 +295,61 @@ def run_build(
 
         if should_continue is not None and not should_continue():
             raise BuildInterrupted("build interrupted before switch (lease lost)")
-        stats = _build_stats(snapshot)
+        from knowledge_lattice.core.semantic.annotator import Annotator
+
+        annotator = Annotator(snapshot)   # 评测与自动机指标同一实例
+        stats = _build_stats(snapshot, annotator=annotator)
+        stats["dict_rev_components"] = dict_rev_components(
+            snapshot, embed_model_label=settings.embed_model_label,
+            yaml_rev=yaml_rev)
         stats_json = json.dumps(stats, ensure_ascii=False, default=str)
         build_id, was_ready = backend.sem_insert_build(
             org_id, dict_rev, stats_json, yaml_rev=yaml_rev)
+
+        # ---- 评测门槛（m2s-4——TC-BUILD-04/TC-SEV-02）----
+        runner = eval_runner
+        if runner is None:
+            from knowledge_lattice.core.semantic.evalrun import (
+                golden_eval_runner,
+            )
+
+            runner = golden_eval_runner(settings)
+        if runner is None:
+            stats["eval"] = {"skipped": "golden set not configured/found"}
+        else:
+            metrics = runner(annotator, snapshot)
+            if not isinstance(metrics, dict) or "skipped" in metrics:
+                stats["eval"] = (metrics if isinstance(metrics, dict)
+                                 else {"skipped": "eval runner returned none"})
+            else:
+                stats["eval"] = _eval_gate(metrics, _prev_eval_metrics(current))
+        if stats["eval"].get("below_threshold") or stats["eval"].get("regression"):
+            reason = ("eval below threshold: " + ",".join(stats["eval"].get("below", []))
+                      if stats["eval"].get("below_threshold")
+                      else "eval regression >2pp: " + ",".join(
+                          stats["eval"].get("regressed", [])))
+            stats_json = json.dumps(stats, ensure_ascii=False, default=str)
+            backend.sem_fail_build(
+                org_id, build_id, stats_json,
+                audit=(
+                    EVENT_SEMANTIC_BUILD,
+                    json.dumps({"org_id": org_id, "build_id": build_id,
+                                "dict_rev": dict_rev, "status": "failed",
+                                "reason": "eval_blocked", "detail": reason,
+                                "stats": stats},
+                               ensure_ascii=False, default=str),
+                ),
+            )
+            logger.warning(
+                "semantic build blocked by eval gate: org=%s rev=%s（%s——"
+                "不切 ready，需人工确认后重建）", org_id, dict_rev, reason)
+            return {"build_id": build_id, "dict_rev": dict_rev,
+                    "status": "failed", "stats": stats}
+
+        # eval 面就位后重序列化（ready/reactivate 行携带完整报告——回归门禁
+        # 的 prev 指标取自上一 ready 行 stats.eval.metrics）
+        stats_json = json.dumps(stats, ensure_ascii=False, default=str)
+
         if was_ready:
             # O-1：同 rev 行已 ready——并发赢家让位或 rev 回退重激活（G-18）
             now_current = backend.sem_current_build(org_id)
@@ -266,6 +448,61 @@ def run_build(
 
 class BuildInterrupted(RuntimeError):
     """切换前存活检查失守（任务取消/租约丢失）——不落 failed 行（未建行）。"""
+
+
+# ---- 构建报告（A4——REST GET /semantic/builds/{id}/report 数据源） ----
+
+
+def build_report(backend, org_id: str, build_id: int) -> dict | None:
+    """构建报告聚合：build 行 stats + 近期 sync run 冲突面（运维可观测——
+    §5.8「构建报告（冲突、歧义别名、孤立节点、断链关系、评测指标）」）。"""
+    row = backend.sem_get_build(org_id, build_id)
+    if row is None:
+        return None
+    stats_json = row.get("stats_json") or "{}"
+    if isinstance(stats_json, str):
+        try:
+            stats_json = json.loads(stats_json)
+        except (TypeError, ValueError):
+            stats_json = {}
+    stats = stats_json if isinstance(stats_json, dict) else {}
+    conflicts: dict[str, list] = {}
+    for run in backend.sem_list_sync_runs(org_id, limit=50):
+        try:
+            run_stats = json.loads(run.get("stats_json") or "{}")
+        except (TypeError, ValueError):
+            continue
+        entries = list(run_stats.get("conflicts") or [])
+        curated = run_stats.get("curated") or {}
+        entries.extend(curated.get("conflicts") or [])
+        if entries:
+            conflicts.setdefault(run.get("adapter") or "?", []).extend(
+                entries[:20])
+    return {
+        "build_id": row["id"],
+        "org_id": row.get("org_id", org_id),
+        "dict_rev": row["dict_rev"],
+        "yaml_rev": row.get("yaml_rev"),
+        "status": row["status"],
+        "created_at": row.get("created_at"),
+        "activated_at": row.get("activated_at"),
+        "counts": {
+            "entities": stats.get("entities"),
+            "entities_by_type": stats.get("entities_by_type"),
+            "aliases": stats.get("aliases"),
+            "relations": stats.get("relations"),
+            "relations_by_type": stats.get("relations_by_type"),
+        },
+        "ac_automaton": stats.get("ac_automaton"),
+        "dict_rev_components": stats.get("dict_rev_components"),
+        "ambiguous_aliases": stats.get("ambiguous_aliases"),
+        "orphan_nodes": stats.get("orphan_nodes"),
+        "broken_relations": stats.get("broken_relations"),
+        "missing_sources": stats.get("missing_sources"),
+        "conflicts": conflicts,
+        "eval": stats.get("eval"),
+        "l0": stats.get("l0"),
+    }
 
 
 # ---- worker 任务入口（semantic_build 任务类型——payload {org}） ----

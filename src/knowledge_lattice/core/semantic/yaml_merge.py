@@ -126,14 +126,30 @@ def apply_yaml_overlays(backend, org_id: str, corpus: Corpus, now: str) -> dict:
             continue
 
         payload = t.curated_payload()
+        # B3⑤/m2s-4 收紧：非法 sensitivity **不再静默**归 normal——CI（第一道
+        # 防线）之外合并面记冲突留痕；落值仍 fail-safe 取 normal（权限面从严）
+        sensitivity = ("restricted" if t.sensitivity == "restricted"
+                       else "normal")
+        if t.sensitivity is not None and t.sensitivity not in ("normal",
+                                                               "restricted"):
+            conflicts.append({
+                "id": t.id,
+                "reason": f"illegal sensitivity {t.sensitivity!r} coerced to"
+                          " normal（合法值 normal|restricted）",
+            })
+            logger.warning(
+                "yaml merge: illegal sensitivity %r on %s — coerced to normal",
+                t.sensitivity, t.id,
+            )
         curated_rows.append({
             "type": t.type, "key": t.key,
             "curated_json": json.dumps(payload, ensure_ascii=False, sort_keys=True),
             "curated_rev": rev,
-            # P3-3/R2：sensitivity 按 YAML 当前值回写（含显式 normal；条目在场
-            # 而未声明 → normal——YAML 为覆盖面 sensitivity 真源）
-            "sensitivity": t.sensitivity if t.sensitivity in ("normal", "restricted")
-                            else "normal",
+            # P3-3/R2 + B3④/m2s-4 口径：sensitivity 按 YAML 当前值回写（含显式
+            # normal；条目在场而未声明 → normal）；**覆盖层删除不回退**最后
+            # 声明值（sem_clear_stale_curated 不清 sensitivity——撤回覆盖≠解除
+            # 限制，解除须重新声明 normal；fail-closed 方向，永久用例钉死）
+            "sensitivity": sensitivity,
         })
         # P3-1/R2：abbr 免短词/常用词拦截（缩写天然短——与 CI/文档口径统一）；
         # manual 别名保留 fail-closed 检查（CI 为第一道防线）

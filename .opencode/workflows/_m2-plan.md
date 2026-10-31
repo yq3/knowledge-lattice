@@ -6,6 +6,9 @@
 
 ## 一、M2 段序总表（用户确认的推荐段序）
 
+> **编号口径**：任务 ID ≠ 里程碑段号——m2s-1·m2s-2 属 M2-S1（基础/面上）、m2s-3·m2s-4 属 M2-S2（基础/面上）、m2s-5·m2s-6 属 M2-S3（基础/收口）；PR 标题写法 =「M2-SN 段位（m2s-N 任务 ID）：…」（PR #6/#7 曾混用 ".S2a" 已修正）。
+> **段序调整（2026-10-31 用户确认）**：语义轨道优先做完——实际段序 **m2s-4 → m2s-5 → m2s-6 → m2-4 → m2-6 → m2-5 收口**（m2-4 SSO 顺延，无依赖阻塞；下表行号仍为原推荐序）。
+
 主线 5 段（M2 生产化）+ 语义轨道 6 段（M2-S1~S3 各拆 2 段，D23 并行轨道——延期不阻塞主线）。
 
 | # | 检查点 | 任务范围（一句话） | 依赖 | 状态 |
@@ -15,11 +18,11 @@
 | 3 | task-knowledge-lattice-m2s-1 | **S1 基础**：`migrations/semantic/` 双方言 sem_* 全量 DDL + 触发器 + `sem_rel_types` 白名单种子 → SourceAdapter 协议 + template_center/metadata 适配器 → 同步流程（删除比例保护/missing 宽限期/分批 upsert/只写事实列/别名三 kind 重建/outbox 事件）。验收 **T-S2/T-S3** | m2-1（已满足） | ✅ **done**（PR #4，mergeCommit `428c67f`，2026-10-30 合入；门禁 →911+1；2 轮——B1/B2/B3 边界经用户拍板） |
 | 4 | task-knowledge-lattice-m2-3 | **M2.3** 管理面 API + 最小 UI：§6.2 全端点（维度停用 dry_run/退役、授权 expires_at、任务取消、重索引含重嵌入入口〔TC-EMB-06〕、嵌入覆盖率面板、审计分级查询〔TC-OPS-03〕）+ grants 写路径 + CSV 批量导入〔TC-OPS-06〕+ 维度退役治理〔TC-OPS-07/T20 半句〕+ grants 替换〔TC-OPS-08〕+ 凭证吊销语义 + m2-2 移交 B1~B6 收编 | m2-1 | ✅ **done**（PR #5，mergeCommit `ad5ab2a`，2026-10-30 合入；门禁 →1000+1；3 轮——两口径裁定落地+m2-6 补段拍板） |
 | 5 | task-knowledge-lattice-m2s-2 | **S1 面上**：semantic_build 骨架（dict_rev 计算+原子切换）+ 首批三工具（get_entity 关系展开/search_entities/describe_table）+ REST 端点（sync/builds/sync-runs 管理）。验收 **T-S5/T-S6/T-S11** | m2s-1 | ✅ **done**（PR #6，mergeCommit `f4d1b74`，2026-10-31 合入；门禁 →1076+1；2 轮——R1 边界 7 条用户裁定登记〔v1.9.5/G-16 全收口/G-17·18〕、R2 APPROVED；TC-BUILD-01/03 提前交付） |
-| 6 | task-knowledge-lattice-m2s-3 | **S2 基础**：scenario_config/report_center 适配器 + YAML 仓库 schema/_schema/CI 校验/yaml_merge.py 合并规则/webhook 端点。验收 **T-S1** | m2s-2 | ⬜ **下一段（待开工）**。**挂账**：REST `/semantic/entities*`·`/tables/{key}/describe` 读端点（v1.9.5 拍板⑤）；**G-15**（关系级消失）；**G-17 前置**（yaml_rev/curated 入 dict_rev——否则 definition 变更不触发重建）；**G-18+O-1**（rev 回退 current 指针+sqlite flap 条件 upsert——activated_at/独立指针与 G-17 同批）；FTS 模糊索引（v1.9.5 拍板②——search_entities LIKE 骨架升级）；**O-2 薄适配契约**（expand_relations 双向展开+nodes 不含 seed——M2-S3 消费方确认 seed 入集）；describe_table 主路径 restricted **列级**过滤（T-S11 现仅表级白名单——M2-S3 权限面）；sync 路径 adapter.close 接线（m2s-1 既有泄漏——维护面顺手）；TC-SYNC-02「YAML 显式列出」半句+TC-SYNC-06 值域映射表（v1.9.1 注记）；测试维护顺手（P3-2 去重断言强度/构建侧 audit= 永久注入/describe 3s 钳制断言） |
-| 7 | task-knowledge-lattice-m2-4 | **M2.2** SSO/JIT 对接（M0a 敲定协议）+ 委托 token/可信子系统（三约束+期限）+ RFC 8693 act 对象形态（m1-3 移交必须项） | 无硬前置（与 m2-3 有 token 交叉，顺序可调） | ⬜ |
+| 6 | task-knowledge-lattice-m2s-3 | **S2 基础**：scenario_config/report_center 适配器 + YAML 仓库 schema/_schema/CI 校验/yaml_merge.py 合并规则/webhook 端点。验收 **T-S1** | m2s-2 | ✅ **done**（PR #7，mergeCommit `e870fd1`，2026-10-31 合入；门禁 →1209+1；3 轮——边界 4 条裁定〔JSON Schema 升 P2/L0·owner 本段/G-19 登记〕+R2 P3 收尾〔N6〕；**G-15/17/18+O-1 全收口**；m2s-2 挂账九项+m2s-1 移交半句全清偿） |
+| 7 | task-knowledge-lattice-m2-4 | **M2.2** SSO/JIT 对接（M0a 敲定协议）+ 委托 token/可信子系统（三约束+期限）+ RFC 8693 act 对象形态（m1-3 移交必须项） | 无硬前置（与 m2-3 有 token 交叉，顺序可调） | ⬜（段序调整后顺延——m2s-6 之后） |
 | 7.5 | task-knowledge-lattice-m2-6 | **管理面补全与嵌入执行体**（2026-10-30 用户拍板新增——m2-3 R1 Committer 边界 1/2）：reindex/reembed **蓝绿执行体**（runner 认领、TC-EMB-06 越段项——原子切标签/旧标签清理/quality·semantic_build 重跑联动）+ members GET / values CRUD（含 D19 重新启用取值恢复路径）+ m2-3 登记项（read_org_audit 下沉、audit_chain 错误码、同秒 reembed 歧义单调键、replace_local_grants 直调解析器对齐、**B5 读回行 row_hash 不自洽注记**〔read_monthly_events 经重投影后勿以读回行复算链〕、UI fresh 残余 UX〔预填/逐行过期编辑〕、格式常量共享、API 级 pg diff 断言等按需） | m2-3（已满足） | ⬜ |
-| 8 | task-knowledge-lattice-m2s-4 | **S2 面上**：AC 自动机（pyahocorasick）+ L0 片段 + 构建报告 + annotate（四步消歧+context 短别名）+ 识别评测集 150~200 条与门槛。验收 **T-S4/T-S12** + precision≥0.95/recall≥0.80 | m2s-3 | ⬜ **挂账**：**G-19**（五源每日兜底调度接线——窗口/幂等/与 webhook 去重口径） |
-| 9 | task-knowledge-lattice-m2s-5 | **S3 基础**：concept/system 纯人工实体 + ingest 打标（同事务 tag/失败不阻断）+ semantic_retag（最低优先级）+ 版本切换/删块同事务 untag + 定时对账。验收 **T-S10** | m2s-4（词典质量稳定）+ m2-2（删除级联 untag 挂接点——已满足） | ⬜ |
+| 8 | task-knowledge-lattice-m2s-4 | **S2 面上**：AC 自动机（pyahocorasick）+ L0 片段 + 构建报告 + annotate（四步消歧+context 短别名）+ 识别评测集 150~200 条与门槛。验收 **T-S4/T-S12** + precision≥0.95/recall≥0.80 | m2s-3 | ✅ **done**（3 轮收敛：R1 2c798bf→R2 9100bfb〔空自动机 IMPL_BUG〕→R3 8d32750〔P1 L0 restricted+P2×3+P3×4〕；门禁 →**1323+1**；**M2-S2 行整行收口**；G-19 收口+G-21 登记〔方案 B〕；边界⑦~⑭ 用户裁定落 docs v1.9.8；交付 PR 待开） |
+| 9 | task-knowledge-lattice-m2s-5 | **S3 基础**：concept/system 纯人工实体 + ingest 打标（同事务 tag/失败不阻断）+ semantic_retag（最低优先级）+ 版本切换/删块同事务 untag + 定时对账。验收 **T-S10**。**挂账**：TC-PERF-05（annotate P99——v1.9.8 裁定⑬，m2-5 收口兜底）；**G-21 方案 A**（build 快照附表——权限面一并）；歧义缺省读法改 YAML 显式+**ambiguity 分子收紧**（G-21 R3 补登记）；**TC-BUILD-05**（v1.9.8 移入——semantic_retag 消费面）；错别字正样本入黄金集（M2-S3 模糊层）；R3 用例空转两项补强+G-21 其余 P3 登记项随手；TC-SEM-08/T-S7~S9 越权矩阵本段起 | m2s-4（词典质量稳定）+ m2-2（删除级联 untag 挂接点——已满足） | ⬜ **下一段（待开工）** |
 | 10 | task-knowledge-lattice-m2s-6 | **S3 收口**：search(entities/auto_entities) 实体召回路（复用 §5.1 ACL 产物）+ 三路 RRF + matched_entities + 越权矩阵 T-S7/S8/S9 + 检索增益评测（不回退才默认开启）+ 模糊兜底（拼音/编辑距离/sem_vec）+ agent 中间件切换 +（可选）语义层视图。验收 **T-S7~S10 全 + AC+模糊 recall@3≥0.92** | m2s-5 | ⬜ |
 | 11 | task-knowledge-lattice-m2-5 | **M2 验收收口段**（M1-5 形态）：跨组织隔离全绿（TC-OPS-09/T15/TC-AZ-04）、REST-PG 残项（P3-18 顺延）、**G-6 halfvec 索引化复测**（bench7 脚本已入库）、**G-8 真实模型 MRL+指纹阈值复验**、P3-7 quality 两遍流 hardening、真实语料人工复核（待决-1）、rerank 真实网关联调（环境依赖）、§六 M2 行总勾验 | 主线全部 + 语义轨道尽量 | ⬜ |
 
@@ -29,14 +32,14 @@
 - **m2-2**（审计/备份）：outbox 8 接入点同事务 + 崩溃注入同生共死；**搬运侧方言口径**（偏差①终态：写侧同事务双方言；搬运 sqlite 两步幂等/pg 单事务——TEST-CASES v1.8.3 已注）；哈希链**插入序**（sqlite rowid / pg seq 序列列）；封存 0444+sidecar / pg seals 表；12 月保留 + **outbox trim**（边界②用户拍板纳入）；T19 RESTRICT 收口（DatasetNotEmptyError→409）；备份双后端（`store/<dialect>/backup.py` + `data/backups/` 固定路径 + BackupToolUnavailable/Error 两态）+ 演练 `benchmarks/dr_ops05_drill.py`；RUNBOOK §4。
 - **m2s-1**（语义轨道基础段，PR #4）：sem_* 七表+双触发器+白名单种子（三处一致=代码常量↔种子↔触发器+第四面 DDL CHECK==常量断言）；SourceAdapter 协议（fetch 全量快照、不做增量）+template_center/metadata 适配器（metadata 只拉被引用面、per-org fail-closed）；同步流程（删除比例保护 per-source active 基数+**force 放行**〔B2 拍板——?force=true+semantic:admin+outbox forced〕、分批 ≤1000、只写事实列、missing 宽限 7 天→retired 关系联动〔顺序：宽限推进在关系 upsert 后——防悬挂〕、别名三 kind、conflicts 明细、semantic.sync 入 outbox）；semantic_sync 任务类型（worker 分发+inline 兜底认领〔R2 P2-2〕）+REST 三端点；迁移 0006（含 tasks.payload）；跨批 parent_id 三级解析（R2 P2-1——批内映射→批间缓存→库内回查）。
 - **m2-3**（管理面，PR #5）：管理面 API 七件（维度治理 dry_run+locked_docs/retire 二次确认〔T20 收口〕/grants 全量替换 expires_at/CSV 导入导出〔按用户全量替换口径〕/任务取消/reindex·reembed 投递〔执行体 → m2-6〕/覆盖率面板〔按任务 payload 目标标签〕/审计分级〔sysadmin 兼任全量优先〕）+ 最小 UI 三视图（i18n/playwright DOM 自测）+ **B1~B6 清偿**（B2 prev_hash 链遍历〔G-13 对冲——walk_chain fail-closed 六边界〕/B3 月库 tar 纳入快照+RUNBOOK §4/…）；两口径裁定 TEST-CASES v1.9.3（按用户全量替换+判别断言/sysadmin 兼任）；**新增 m2-6 补段**（用户拍板——reindex/reembed 蓝绿执行体+members/values CRUD，段序 m2-4→m2-6→m2-5）。
-- **门禁基线**：**1076+1 双后端双模式 0 skipped**（pg 臂 381=348+33；五段累计 663→1076 +413）。
-- **分支基线**：origin/develop = `f4d1b74`（2026-10-31）。
+- **门禁基线**：**1323+1 双后端双模式 0 skipped**（pg 臂 459=426+33；七段累计 663→1323 +660）。
+- **分支基线**：origin/develop = `e870fd1`（2026-10-31，PR #7 合入后）。
 
 ## 三、挂账清单（新会话必读）
 
 **工作区未入库（随下段 chore 归档批入库）**：
-- `docs/TEST-CASES.md` v1.9.6（§六 M2-S1 行 m2s-2 段完成态——supervised-coding 已落笔工作区）
-- `AGENTS.md` 状态行更新 + 本文件 `_m2-plan.md` 进度更新 + `task-knowledge-lattice-m2s-2.md` 终态回写（reviewedSha=f7b7201/合入记录——工作区 M）
+- `docs/TEST-CASES.md` v1.9.7（§六 M2-S2 行 m2s-3 段完成态——supervised-coding 已落笔工作区）
+- `AGENTS.md` 状态行更新 + 本文件 `_m2-plan.md` 进度更新（含编号口径注记）+ `task-knowledge-lattice-m2s-3.md` 终态回写（reviewedSha=2f2244a/合入记录——工作区 M）
 
 **用户侧待办（不阻塞开发）**：
 - TC-UI-01~04 手动走查（M1 里程碑达成宣告唯一待勾——清单 `benchmarks/report-m1-5-tc-ui-walkthrough.md`）
@@ -53,7 +56,9 @@
 
 **m2s-1 移交 m2s-2 收编——已全清偿**（m2s-2 R1 C 组：P3-r1~r5 全收；G-16 触发+构建两侧全收口）。
 
-**m2s-2 移交 m2s-3 收编**（其检查点遗留事项节为权威）：见段表 m2s-3 行「挂账」列（REST 读端点/G-15/G-17 前置/G-18+O-1/FTS/O-2 契约/describe 列级过滤/sync close 接线/TC-SYNC-02·06 半句/测试维护 3 项）。
+**m2s-2 移交 m2s-3 收编——已全清偿**（m2s-3 R1/R2/R3：REST 读端点/G-15/G-17/G-18+O-1/FTS/O-2 契约/describe 列级过滤/sync close/TC-SYNC-02·06 半句全落地；测试维护 3 项全收）。
+
+**m2s-3 移交 m2s-4 收编**（其检查点遗留事项节为权威）：G-19 每日兜底调度（窗口/幂等/与 webhook 去重口径）；自校验回退健壮性⑦（type 数组/布尔子 schema/tuple items 回退 false positive——except Exception 兜底，零依赖 only）；sensitivity 两口径（覆盖层删除不回退/非法静默 normal——权限面口径化）；测试卫生 3 项（旧弱断言/inserted 计数/两测试名实——顺手）。
 
 ## 四、AGENTS.md 状态行（已同步更新指针）
 

@@ -59,7 +59,9 @@ def _columns(benv, table: str) -> set[str]:
         return {r[0] for r in rows}
 
 
-def test_migration_0007_activated_at_column(benv) -> None:
+def test_migration_0007_schema_columns_and_levels(benv) -> None:
+    """迁移 0007 落库面（B4③/m2s-4 改名——名实相符：activated_at 与
+    source_system 两列 + semantic 域水位 [6,7]，不止 activated_at）。"""
     assert "activated_at" in _columns(benv, "sem_builds")
     # sem_relations.source_system（G-15 关系级 per-adapter 作用域）
     assert "source_system" in _columns(benv, "sem_relations")
@@ -72,8 +74,10 @@ def test_migration_0007_activated_at_column(benv) -> None:
         assert semantic == [6, 7]
 
 
-def test_migration_0007_backfills_activated_at(benv) -> None:
-    """既有 ready 行回填 activated_at=created_at——current 语义不漂移。"""
+def test_current_build_fallback_order_when_activated_at_null(benv) -> None:
+    """既有 ready 行回填 activated_at=created_at——current 语义不漂移
+    （B4③/m2s-4 改名——名实相符：本用例实断言 activated_at 置空时的兜底
+    排序，而非迁移回填本身）。"""
     _seed_entity(benv, "TPL_A", "A")
     assert _build(benv)["status"] == "ready"
     benv.db.execute(
@@ -145,8 +149,10 @@ def test_o1_insert_on_ready_row_returns_existing_without_flap(benv) -> None:
     assert events_after == events_before  # 无 ready flap（O-1 收口）
 
 
-def test_concurrent_same_rev_single_ready_event(benv) -> None:
-    """并发同 rev 双 build：每 rev 至多一条 ready 事件、current 稳定（O-1/G-18）。"""
+def test_double_build_same_rev_single_ready_event(benv) -> None:
+    """同 rev 顺序双 build（B4③/m2s-4 改名——名实相符：顺序调用非真并发；
+    真并发形态由 pg 臂条件 upsert 语义与 O-1 用例覆盖）：每 rev 至多一条
+    ready 事件、current 稳定（O-1/G-18）。"""
     from knowledge_lattice.domain.audit_events import EVENT_SEMANTIC_BUILD
 
     _seed_entity(benv, "TPL_A", "A")

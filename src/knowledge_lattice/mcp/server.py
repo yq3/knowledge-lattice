@@ -118,6 +118,13 @@ DESCRIBE_TABLE_TOOL_DESCRIPTION = (
     "回答「这张表有哪些列、某字段什么类型」时调用；columns 可按列名过滤。"
 )
 
+ANNOTATE_TOOL_DESCRIPTION = (
+    "识别文本中的业务术语与业务对象（概念/系统/场景/模板/模板字段/报表项/表/列），"
+    "返回实体 ID、位置 span 与消歧路径（AC 自动机四步消歧 + L0 片段兜底；歧义命中"
+    "返回全部候选标 ambiguous=true，必要时向用户确认）。每轮对话前调用；"
+    "text ≤4000 字、context_entities ≤20（最近几轮已确认实体，辅助消歧）。"
+)
+
 # 文档 active_status 合法值（DDL 口径——#33 P0-2.2 列注释：
 # searchable_lexical | searchable_full | degraded；`failed` 属 pending_status 域
 # ——P2-3：非法值 400 而非静默空列表误导 LLM）
@@ -331,7 +338,28 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
         ]
         return {"datasets": counts, "documents": documents}
 
-    # ---- semantic 组（D23 §6.3——m2s-2 首批三工具） ----
+    # ---- semantic 组（D23 §6.3——m2s-2 三工具 + m2s-4 annotate） ----
+
+    @mcp.tool(name="annotate", description=ANNOTATE_TOOL_DESCRIPTION)
+    def semantic_annotate(
+        text: str,
+        context_entities: list[int] | None = None,
+        prefer_types: list[str] | None = None,
+        ctx: Context = None,
+    ) -> dict:
+        """annotate（§6.3 / 任务书 m2s-4 A2）：AC 自动机识别 + 四步消歧
+        （精确全词→别名→上下文短别名→L0 片段兜底）+ 最长匹配优先；负样本
+        零标注；restricted 实体表现为不存在（T-S9）。"""
+        auth, org_id = _auth_and_org(ctx, param_org=None)
+        _sem_member(auth, org_id)
+        from knowledge_lattice.core.semantic.annotator import annotate_text
+
+        try:
+            return annotate_text(service.backend, settings, org_id, text,
+                                 context_entities=context_entities,
+                                 prefer_types=prefer_types)
+        except ValueError as exc:
+            raise ToolError(f"400: {exc}") from exc
 
     @mcp.tool(name="get_entity", description=GET_ENTITY_TOOL_DESCRIPTION)
     def semantic_get_entity(

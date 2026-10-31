@@ -460,6 +460,10 @@ class WorkerSupervisor:
             "LATTICE_SEM_DIM_ALERT_BASELINE": str(settings.semantic_dim_alert_baseline),
             "LATTICE_SEM_DIM_ALERT_DROP": str(settings.semantic_dim_alert_drop),
             "LATTICE_SEM_NIGHT_WINDOW": settings.semantic_night_window,
+            # P3-10/R3：m2s-4 新增两键补齐——全 LATTICE_SEM_* 往返闭合
+            "LATTICE_SEM_DAILY_SYNC_INTERVAL_S": str(
+                settings.semantic_daily_sync_interval_s),
+            "LATTICE_SEM_EVAL_GOLDEN_PATH": settings.semantic_eval_golden_path,
         }
 
 

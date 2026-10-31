@@ -13,6 +13,7 @@ dependencies = [
     "jieba>=0.42.1",
     "numpy>=1.26",
     "psycopg[binary,pool]>=3.2",
+    "pyahocorasick>=2.0",
     "pyjwt>=2.15.1",
     "python-ulid>=4.0.1",
     "sqlite-vec>=0.1.6",

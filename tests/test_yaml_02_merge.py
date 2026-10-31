@@ -158,20 +158,10 @@ def test_rule_unsynced_id_not_written_conflict_then_recovers(yenv) -> None:
     assert _curated(yenv, "template:TPL_GHOST")["definition"] == "未同步模板"
 
 
-def test_rule_pure_collides_with_synced_entity(yenv) -> None:
-    """纯人工实体与同步实体 (type,key) 相同 → 报错不写入（规则表第 3 行）。"""
-    yenv.db.execute(
-        "INSERT INTO sem_entities(org_id, type, key, name, source, source_system,"
-        " status, synced_at) VALUES(?, 'concept', 'dup.key', '同步概念',"
-        " 'sync', 'template_center', 'active', ?)", (ORG, NOW))
-    yenv.db.commit()
-    (yenv.repo / "concepts" / "dup.yaml").write_text(
-        "- id: concept:dup.key\n  name: 人工概念\n  owner: o\n", encoding="utf-8")
-    result = _yaml_sync(yenv)
-    conflicts = result["stats"]["curated"]["conflicts"]
-    assert any("collides with synced entity" in c["reason"] for c in conflicts)
-    row = _entity(yenv, "concept:dup.key")
-    assert row["source"] == "sync"  # 不覆盖同步实体
+# B4①/m2s-4：旧 test_rule_pure_collides_with_synced_entity（仅断言 source 列）
+# 已删——强用例 test_p2_2_colliding_pure_entry_leaves_sync_entity_untouched
+# （test_r2_m2s3_fixes.py：name/attrs/source_system/status/三类别名逐列不变）
+# 全覆盖弱断言面。
 
 
 def test_rule_short_or_common_alias_skipped_with_conflict(yenv) -> None:
