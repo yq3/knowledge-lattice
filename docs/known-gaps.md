@@ -185,7 +185,7 @@
 - **状态**：**已收口（2026-10-30 随 m2s-2 R1 交付——create_task 增 `audit=` 同事务参数，sync/build 两触发面接入；Tester 崩溃注入双方言实证：audit 写失败 → 任务行+审计零残留 rollback）**。
 - **问题**：`POST /semantic/sync/{adapter}` 触发路径为 create_task 提交与 append_outbox **独立两事务**——进程恰在两者之间崩溃时丢触发审计事件（任务行本身仍在、可查可追溯，不丢执行）。
 - **对冲**：（历史）run 行（sem_sync_runs）可追溯执行事实；m2s-1 R2 起 force 放行同样落 outbox。修复口径：create_task 增 `audit=` 同事务参数（沿 m2-2 outbox 接入面先例）。
-- **重开条件**：无（已收口；**构建终态事件非同事务面**〔build.py switch/fail 提交后独立写 outbox〕为 m2s-2 R1 Committer P3-5——R2 顺手收口或另行登记）。
+- **重开条件**：无（已收口——触发侧随 m2s-2 R1、**构建侧终态事件同事务〔switch/fail audit=〕随 R2 P3-5 亦收口**，Tester 双方言崩溃注入实证零残留）。
 
 ## G-17 semantic_build 的 dict_rev 输入未含 yaml_rev / curated 内容（M2-S3 接 YAML 前置）
 
@@ -198,5 +198,5 @@
 
 - **状态**：已接受（2026-10-30 随 m2s-2 R1 登记——Committer 边界 1，用户拍板登记）。
 - **问题**：design §4 status CHECK 枚举无 superseded/is_current，实现取「最新 ready by id + 旧 ready 保留」。正常单调 rev 序列成立；但 **rev 回退**（A ready id1 → B ready id2 → 源快照/YAML 回到 A）时 upsert 复用 id1 置 ready，而 current 仍取 id2(B)——`GET /semantic/builds` 的 current 与 get_entity 的 dict_rev 锚点失真（工具查询面走 store 实时表**不受影响**）。
-- **对冲**：rev 回退属异常运维场景（源快照/YAML 回退），查询正确性无损；M2-S3 接 YAML 时与 G-17 一并收口（加 `activated_at` 或独立指针）。
+- **对冲**：rev 回退属异常运维场景（源快照/YAML 回退），查询正确性无损；M2-S3 接 YAML 时与 G-17 一并收口（加 `activated_at` 或独立指针）。**关联 O-1**（m2s-2 R2 登记）：sqlite 同 rev 竞态输者 upsert 可把已 ready 行重断 building→ready——同 build_id 双 ready 事件+瞬态 current 缺失（at-least-once 审计可容纳、行终态正确）；M2-S3 一并以条件 upsert（`DO UPDATE … WHERE status != 'ready'` 或同 rev ready 直接返回 existing id）收口。
 - **重开条件**：M2-S3 开工（与 G-17 同批）。

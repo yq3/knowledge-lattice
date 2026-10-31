@@ -5,16 +5,16 @@ target: /Users/youqi/develop/knowledge-lattice
 coderTaskId: ses_e744c78c2ffem5uEVkA5f64JEx
 testerTaskId: ses_e741f80b6ffepfdQv1lUxaaap1
 committerTaskId: ses_e74006536ffeUiDlKWMPv8LYvJ
-status: implementing
+status: approved
 round: 2
 maxRounds: 3
 testVerdict: PASS
-reviewVerdict: NEEDS_CHANGES
-testedSha: 3d9591e
-reviewedSha: null
+reviewVerdict: APPROVED
+testedSha: 573abfd13bd9d286fe56c4e4c860741591f49cf3
+reviewedSha: 573abfd13bd9d286fe56c4e4c860741591f49cf3
 # 以上 SHA = coder 最近一轮本地 commit（[taskId] R<n>）后的 HEAD；修复轮 commit 后 reviewedSha 置空待重审
 filesChanged:
-  # R1（26 文件 +2795/−103，HEAD=3d9591e）
+  # R1（26 文件 +2795/−103，commit 3d9591e）
   - src/knowledge_lattice/core/semantic/build.py（✦新：快照→dict_rev〔embed_model 标签入输入〕→相同跳过→building→原子切换失败不切→semantic.build 全终态事件）
   - src/knowledge_lattice/core/semantic/expand.py（✦新：get_entity——key/id 二选一/方向后缀/depth≤2 fanout≤200/restricted fail-closed 404/dict_rev 锚点）
   - src/knowledge_lattice/core/semantic/lookup.py（✦新：search_entities 三层排序限额+describe_table 白名单 3s 超时 5min 缓存降级）
@@ -30,9 +30,16 @@ filesChanged:
   - tests/test_build_01_rev_switch.py（✦TC-BUILD-01/03 双臂）/ test_build_02_task_rest.py（✦任务+REST+兜底+同步后自动构建）/ test_mcp_semantic_tools.py（✦TC-SEM-05/10/T-S6/T-S11/T-S7·S9 工具面）/ test_p3_followups_m2s_1.py（✦r1/r2/r4/r5）
   - tests/test_r2_m2s1_fixes.py（r3 LEFT JOIN+父 missing/悬挂父固化双臂）/ tests/test_sync_05_api_worker.py（builds 占位升级）
   # E 组 chore 原样入库（5）: docs/TEST-CASES.md（v1.9.4）/ AGENTS.md / .opencode/workflows/_m2-plan.md / task-knowledge-lattice-m2-3.md / task-knowledge-lattice-m2s-2.md
+  # R2（21 文件 +1197/−102，commit 573abfd=HEAD）
+  - src/knowledge_lattice/core/semantic/adapters/__init__.py（可关传输对象）/ adapters/metadata.py（describe_table+close）/ adapters/template_center.py（close）
+  - src/knowledge_lattice/core/semantic/build.py（P2-2 输者路径+P3-5 audit= 同事务）/ expand.py（P3-6 非 active 404）/ lookup.py（P1-1 fetcher 入 try+传输关闭）
+  - src/knowledge_lattice/mcp/server.py（P1-1 兜底 ToolError）/ store/backend.py（协议 switch/fail bool+audit=+expand_relations 薄适配注记）
+  - src/knowledge_lattice/store/sqlite/backend.py + postgres/backend.py（audit= 同事务/seen_edges 去重+sensitivity 过滤/::float8/薄适配）
+  - tests/test_sem_describe_default.py（✦4 双臂真实路径）/ test_sem_expand_search_backend.py（✦10 双臂）/ test_build_01_rev_switch.py（+2+failed 事件断言）/ test_mcp_semantic_tools.py（+2）/ test_p3_followups_m2s_1.py（+G-16 崩溃注入）/ test_sync_05_api_worker.py（+过滤）/ test_pg_backend.py（占位断言更新）
+  # R2 docs 批原样（4）: docs/TEST-CASES.md（v1.9.5）/ docs/known-gaps.md（G-16 回写+G-17/G-18）/ .opencode/workflows/_m2-plan.md / task-knowledge-lattice-m2s-2.md
 endReason: null
 createdAt: 2026-10-30T15:23:04+0800
-updatedAt: 2026-10-30T17:04:05+0800
+updatedAt: 2026-10-31T09:29:11+0800
 ---
 
 # task-knowledge-lattice-m2s-2: M2-S1 面上段——semantic_build 骨架 + 首批语义工具 + REST 管理完善
@@ -87,7 +94,11 @@ updatedAt: 2026-10-30T17:04:05+0800
   - m1-5 TC-UI 手动走查：待用户（与本任务无关，维持）
 
 ## 遗留事项（跨任务移交）
-- [ ] 无（本段新增移交项随轮次记录登记）
+
+- [ ] **交付归档 docs nit（监督侧，随检查点终态 commit）**：known-gaps G-16「重开条件」括号补「构建侧已随 R2 P3-5 收口」；G-18/O-1 补一行（sqlite flap 双 ready 事件——条件 upsert，M2-S3 收口）；_m2-plan m2s-3 挂账补 O-2（薄适配双向展开+nodes 不含 seed——M2-S3 消费方契约确认）与 describe 主路径 restricted 列级过滤（M2-S3 权限面）
+- [ ] 移交 **m2s-3**（R2 Committer P3 登记+Tester O-1/O-2）：REST `/semantic/entities*`·`/tables/{key}/describe` 读端点（v1.9.5 拍板⑤）；FTS 模糊索引（LIKE 骨架升级）；G-15（关系级消失）；**G-17 前置**（yaml_rev/curated 入 dict_rev）；**G-18+O-1**（rev 回退 current 指针+sqlite flap 条件 upsert）；O-2 薄适配契约（双向展开+seed 入集确认）；describe 主路径 restricted 列级过滤；sync 路径 adapter.close 接线（维护面顺手）；TC-SYNC-02 半句+TC-SYNC-06 值域映射表（v1.9.1 注记）
+- [ ] 移交 **测试维护**（不阻断，随后续段顺手）：P3-2 去重断言强度（环 len==3/双向同层样本）；构建侧 audit= 永久崩溃注入用例；describe 3s 钳制永久断言
+- [ ] m2s-1 移交 P3-r1~r5 已全部清偿（R1 C 组）
 
 ## 轮次记录
 - R1: coder 完成（ses_e744c78c2ffem5uEVkA5f64JEx，2026-10-30 16:12）——commit `3d9591e`（26 文件 +2795/−103，含 E 组 docs chore 批原样入库）。A 构建骨架（build.py 编排+worker 任务+inline 兜底+REST 三端点；**无 0007 迁移**——0006 已含 sem_builds 全列；**旧行保持 ready**——design status 枚举无 superseded，当前=最新 ready §5.8 懒加载）；B 三工具（expand.py get_entity depth≤2 fanout≤200 restricted 404；lookup.py search 三层排序+describe 实时透传白名单降级缓存——**design §6.3/T-S11 口径，仓内无 sem_dim_lib 表**；MCP 挂载+semantic:read 门控；TC-SEM-10 端到端）；C 全收（P3-r1 forced 键+r2 guard 明细+r3 LEFT JOIN+双场景固化+r4 fail-fast 用例+docstring+r5 前缀）；**G-16 收口**（create_task audit= 同事务——sync/build 两触发面）。自测：门禁 GATE PASS 1039+1 双模式 0 skipped（pg 臂 364=331+33；1000+1→1039+1 零回归 +39）；TDD 红灯先行（15 failed 首败 ModuleNotFoundError build 模块）。design 出入 7 条注记（无 0007/superseded→ready/透传按 design/平铺契约/§5.8 为构建正文/REST entities 读端点+TC-BUILD-02·04·05 归后续段/G-16 已收）。
@@ -96,6 +107,14 @@ updatedAt: 2026-10-30T17:04:05+0800
 - R1: committer 完成（ses_e74006536ffeUiDlKWMPv8LYvJ，2026-10-30 16:59）——**reviewVerdict=NEEDS_CHANGES**（reviewedSha 不置位保持 null；HEAD=3d9591e 不通过）。**P1×1**：P1-1 describe_table 默认透传通道不可用（MetadataAdapter 无 describe_table 方法——未注册工厂路径必 AttributeError；降级构造在 try 外——未配置/畸形不走 T-S11③ 降级；3 用例全走 fake 工厂注入=mock 自证）。**P2×3**：P2-1=N-1 pg score Decimal 漂移（裁定：修 R2——::float8 三处+类型断言）；P2-2=N-2 pg 同 rev 竞态输者脏 failed 审计事件（裁定：修 R2——sem_fail_build 返回生效+switch ineffective 同 rev 视 skipped+确定性用例）；P2-3=N-3 pg expand/search 零永久覆盖（裁定：修 R2——TEST-CASES 拍板3 硬性，新增 backend 参数化双臂用例顺带锁 P2-1）。**P3×6**：P3-1 sync-runs 过滤/G-16 崩溃注入/failed 事件永久用例补强（=N-5）；P3-2 edges 重复/悬挂（seen_edges 去重+截断后不 append）；P3-3 expand_relations 设计命名占位撞车（薄适配 sem_expand_graph）；P3-4 sem_table_columns 未滤 restricted 列；P3-5 构建终态与 outbox 非同事务（G-16 构建侧未收）；P3-6 get_entity 不校验实体 status。**边界问题 7 条上报用户**（spec_confirm）：①rev 回退时 current 指针失真（activated_at/独立指针 vs 接受登记）②B.2 LIKE 未申报偏离（FTS 归 M2-S3 vs 补迁移）③B.3 sem_dim_lib 措辞矛盾（任务书回写）④递归 CTE vs BFS 等价确认⑤N-4 REST entities/describe 端点去向⑥TC-BUILD 组段归属登记（本段 01/03，02/04/05 归 M2-S2）⑦yaml_rev/curated_json 未入 dict_rev 快照（M2-S3 前置登记）。**关键面**：构建域/三工具主体/G-16/P3-r1~r5/分层/既有零弱化均通过；N-4 裁定登记不修本段、N-5 R2 顺手。报告全文见「最新验证意见原文」details 块（R1 Committer）。
 
 **spec_confirm 裁定**（2026-10-30 16:59 用户拍板「按建议执行」）：边界 1=(a) 登记 **G-18**（rev 回退 current 失真——M2-S3 与 G-17 同批）；边界 2=(a) LIKE 骨架确认、FTS 归 M2-S3；边界 3=任务书笔误注记（describe_table=元数据系统实时透传，以 design §6.3 为准）；边界 4=(a) BFS 等价确认登记；边界 5=N-4 REST 读端点 → m2s-3 挂账；边界 6=TC-BUILD 拆分（本段 01/03、02/04/05 维持 M2-S2）；边界 7=**G-17** 登记（M2-S3 前置）。监督侧已落笔：known-gaps **G-16 状态回写已收口**+G-17/G-18 新增；TEST-CASES **v1.9.5**（七项口径登记+M2-S2 行注记）；_m2-plan m2s-2 行 ◐ R2/m2s-3 行挂账补全。**R2 范围**：P1-1 必修+P2-1~3 必修+P3-1~6 顺手（P3-3 expand_relations 薄适配/P3-5 audit= 同事务沿 create_task 先例——若不修则登记）；N-1/N-2/N-3/N-5 已裁定修 R2。status=implementing（round=2 不清零）。
+
+- R2: coder 完成（ses_e744c78c2ffem5uEVkA5f64JEx 续接，2026-10-30 17:27）——commit `573abfd`（21 文件 +1197/−102，docs 批 v1.9.5/G-16 回写·G-17·18 原样入库）。**P1-1 全修**（MetadataAdapter.describe_table 补齐/_default_fetcher 入 try 未配置·畸形降级 degraded/test_sem_describe_default 4 用例双臂真实路径 fake 只替传输层/可关传输对象 close 不泄漏/MCP 兜底 ToolError 500）；**P2-1** pg score ::float8 三处+isinstance(float)+json.dumps 断言；**P2-2** sem_fail_build 返回生效 bool+switch 无效同 rev 按 skipped（零 failed 事件）+确定性竞态用例（fake_current 模拟）；**P2-3** test_sem_expand_search_backend.py 双臂 10 用例（环/截断/去重/无悬挂边/ESCAPE/score 类型）；**P3×6 全收**（sync-runs 过滤+G-16 崩溃注入永久用例双臂+failed 事件断言/seen_edges 去重+悬挂边/expand_relations 薄适配删占位/sensitivity 过滤/构建终态 audit= 同事务〔G-16 构建侧收口〕/非 active 根 404）。自测：门禁 GATE PASS 1076+1 双模式 0 skipped（pg 臂 381=348+33；1039+1→1076+1 零回归 +37）；TDD 红灯（P1-1 AttributeError×3/P2-2 RuntimeError switch ineffective）。verdict 双置空待 R2 重验（R1 历史：testVerdict=PASS/testedSha=3d9591e/reviewVerdict=NEEDS_CHANGES/reviewedSha 不置位——见上）。
+
+- R2: tester 完成（ses_e741f80b6ffepfdQv1lUxaaap1 续接，2026-10-30 17:44）——**testVerdict=PASS**（testedSha=573abfd=HEAD）。独立复跑门禁 1076+1 双模式 0 skipped（pg 臂 381=348+33；+37 实测收集数逐文件对账 pg17+sqlite20；零删除零弱化——test_pg_backend 13→13 占位更新核实为过期断言替换）。**修复项 13 项逐条全过**：P1-1 五子面（真实路径实测可达——不注册工厂真 httpx 四形态降级/传输 close is_closed/MCP 兜底不泄漏内部错误）；P2-1 float8+双臂断言+双方言复核等价；P2-2 真并发 ×3 轮双方言**零脏事件**（pg 输者 skipped 单 ready 事件——R1 N-2 消失）+确定性用例反向核真红；P2-3 双臂 10 用例进门禁常跑；P3×6 全收（G-16 构建侧崩溃注入双方言——行停 building 零终态零事件原子回滚；edges 无悬挂；薄适配双 seed 归并；sensitivity 滤；非 active 两态 404）。**R1 观察项 N-1~N-5 全闭环**（N-4 docs diff 实证合规）。独立脚本 r2v1~v3（48 项断言）。**新观察**：O-1 sqlite 同 rev 竞态 flap 双 ready 事件（at-least-once 可容纳——登记 M2-S3 审计面知悉）；O-2 expand_relations 双向展开注记（M2-S3 消费方注意 seed 父节点入向出现）。报告全文见「最新验证意见原文」details 块（R2 Tester）。
+
+- R2: committer 完成（ses_e74006536ffeUiDlKWMPv8LYvJ 续接，2026-10-31 09:25）——**reviewVerdict=APPROVED**（reviewedSha=573abfd=testedSha=HEAD 三一致；**不要求 R3**）。P1-1 五子面/P2-1~3/P3×6 全闭环复判；R1 断言未放宽；docs 批与裁定一致。**P3 残余登记级**（开源自查清单）：①P3-2 去重断言强度（环测试补 len==3/双向同层样本）②构建侧 audit= 永久崩溃注入（现 tester 临时证）③sync 路径 adapter.close 未接线（m2s-1 既有——M2-S3/维护面）④**O-1 并入 G-18/M2-S3**（sqlite flap 双 ready 事件——条件 upsert 收口）⑤薄适配 nodes 不含 seed 本身（design §5.9 walk 含 depth=0——M2-S3 消费方确认）⑥describe 主路径 restricted 列级过滤（M2-S3 权限面）⑦G-16 重开条件括号补「构建侧已收口」⑧3s 钳制永久断言。**O-1=登记并入 G-18；O-2=注记**。**交付归档前置（监督侧）**：检查点终态入库（573abfd 内仍是 R1 值）+G-16 补句/O-1 挂账 docs nit+supervised-coding.md 排除。报告全文见「最新验证意见原文」details 块（R2 Committer）。**双通过达成（round=2 收敛）**。
+
+**交付链**（2026-10-31 09:29 用户确认交付）：① 监督侧 docs nit 落笔（G-16 重开条件补「构建侧已收口」/G-18 补 O-1 关联/_m2-plan m2s-3 挂账补 O-2+describe 列级过滤+测试维护顺手）+ 检查点终态归档 docs-only commit（reviewedSha 按 m2-3 先例更新为归档 HEAD、testedSha 保持 573abfd）→ ② Coder push+PR → ③ Committer 留痕 → ④ manifest → ⑤ 待用户合入。
 
 ## 最新验证意见原文
 （tester/committer 报告逐字保留——恢复时给 coder 的修复依据）
@@ -291,5 +310,190 @@ GATE PASS: sqlite+pg 双后端、双模式（常规/python -O）全绿，0 skipp
 | **门禁** | 采信 Tester：1039+1 双模式、0 skipped、pg 364；计数与 coder 申报一致。因 P1 不在门禁覆盖内，绿门禁不能替代本次审查结论。 |
 | **docs chore / filesChanged / commit** | 通过：E 组 5 文件（TEST-CASES v1.9.4、AGENTS.md、_m2-plan、m2-3/m2s-2 检查点）原样入库，**不含 supervised-coding.md**；26 文件 +2795/−103 与 `git diff --stat` 一致；commit message 符合 `[taskId] R1:` 约定；未改 requirements/design 正文。 |
 | **交付就绪** | **未就绪**：P1 必须修；P2 修复或裁定登记；P3 至少登记。不置 reviewedSha、不进入交付留痕/PR review 阶段（用户尚未确认交付，且本轮为 R1 审查）。 |
+
+</details>
+
+<details>
+<summary>R2 Tester 报告全文（2026-10-30 17:44，testVerdict=PASS）</summary>
+
+# task-knowledge-lattice-m2s-2 R2 独立复验报告（Tester）
+
+**testVerdict: PASS**　**testedSha: `573abfd13bd9d286fe56c4e4c860741591f49cf3`**（develop_opencode HEAD，与任务书一致）
+**缺陷清单：FAIL 级 0 项；新观察项 O-1（sqlite 竞态 flap 双 ready 事件——at-least-once 语义，登记级）**
+
+## 1. 门禁（独立复跑，未采信 coder 自测）
+
+```
+docker start lattice-pg && export LATTICE_PG_DSN=… && scripts/test_gate.sh
+pg 臂用例收集数：381（[pg] 参数化 348 + PG 专用 33，> 0 ✓）
+==== [pytest]    1076 passed, 1 deselected, 2 warnings in 186.08s (0:03:06)   OK
+==== [pytest-O]  1076 passed, 1 deselected, 3 warnings in 160.51s (0:02:40)   OK
+GATE PASS: sqlite+pg 双后端、双模式（常规/python -O）全绿，0 skipped
+（pg 臂 381 条用例全实跑：[pg] 参数化 348 + PG 专用 33）
+```
+
+- **+37 对账（实测收集数，非推算）**：pg 臂增量 = describe_default +4、expand_search +10、build_01 7→9 (+2)、p3_followups 2→3 (+1) = **17**（348=331+17 ✓）；sqlite 臂 = 参数化镜像 17 + 单臂 3（mcp_semantic 8→10、sync_05 7→8）= 20；**合计 37 ✓** 与 coder 申报逐位一致
+- **skip 核对**：0 skipped；`1 deselected` = manual 走查用例（口径同 R1）
+- **零删除零弱化（逐文件 def 对账）**：5 个存量文件全部只增不减（7→9/8→10/6→7/7→8）；`test_pg_backend.py` 13→13——**占位更新核实非弱化**：删的是 `expand_relations`「M2-S1 未实现」过期断言（该行为已被双臂新套件的实作断言替代），`callable` 六方法面与 `recall_by_entities` M2-S3 NotImplementedError 断言均保留 ✓
+
+## 2. 修复项判定表（对照 R1 Committer 修复期望）
+
+| 项 | 判定 | 证据 |
+|---|---|---|
+| **P1-1①** MetadataAdapter.describe_table 在场 | ✅ | `GET /tables/{key}` 契约实现（metadata.py R2 diff）+ **真实路径实测可达**（tester r2v1 不注册任何工厂直调默认通道成功透传） |
+| **P1-1②** 未配置/畸形源降级不裸抛 | ✅ | `_default_fetcher` 构造移入 try（lookup.py R2 diff）+ 永久用例③ + **tester r2v1 真实路径四形态**：连接拒绝/不可路由超时（0.5s 钳制内降级）/未配置/畸形 JSON 全部 `degraded=true` 零裸抛；与 sync fail-fast 400 口径区分合理（查询面只读降级不阻断，永久用例 docstring 已注记） |
+| **P1-1③** 4 用例真实路径非 mock 自证 | ✅ | `test_sem_describe_default.py`（双臂）：fixture 只 patch `_default_transport` 传输层，**真实链路** `resolve_source_config → MetadataAdapter.describe_table → 3s 钳制 → 缓存` 全走；`ADAPTER_FACTORIES` 零触碰（读证） |
+| **P1-1④** 传输 close 成功/异常两路径 | ✅ | 永久用例①②（`close_calls==1` 双路径）+ **tester r2v1⑤ 真实 httpx.Client**：`adapter.close()` 后 `is_closed=True`；`_DefaultHttpTransport` 类持有 client 生命周期（读证） |
+| **P1-1⑤** MCP 兜底 ToolError 不裸栈 | ✅ | `except Exception → ToolError 500`（mcp/server.py R2 diff）+ 永久用例断言 `"500" in str(err)` 且内部错误消息**不泄漏**（`"unexpected core bug" not in str(err)`） |
+| **P2-1** pg score ::float8 三处 + 类型断言 | ✅ | pg SQL 三层 UNION 全部 `CAST(x AS double precision)`（diff 读证）+ 双臂断言 `isinstance(score, float)` + `json.dumps` 可序列化；**tester r2v3e 双方言复核**：两侧均 float、逐元素等价 |
+| **P2-2** sem_fail_build bool 契约 + switch 同 rev skipped + 确定性用例 | ✅ | 永久用例：ready 行 fail→False / building→True / 已 failed 幂等→False（双臂）；switch→False 且 current 同 rev → `skipped` 返回（不抛错不触发重试、**零 failed 事件**、winner 的 ready 事件唯一）。**真红反向核**：旧代码该路径必 `raise RuntimeError` → 断言必红——用例非恒真 ✓。**tester 真并发 ×3 轮双方言**：pg 输者 `skipped`（事件仅 1 条 ready——R1 N-2 脏事件消失）；行零重复 rev、current 稳定 |
+| **P2-3** 双臂 10 用例强度 | ✅ | `test_sem_expand_search_backend.py`（10 defs 全 `backend` fixture 双臂=20 收集）：环双向 depth2（3 边全集不重复）/方向过滤/链+restricted 零泄漏/fanout=3·node_limit=5 截断+**悬挂边断言**（端点 ⊆ {root}∪nodes）/edges 去重/薄适配/三层排序+types+top_k 上界/ESCAPE 字面（`%`/`_`/`t1.%` 零误配）/restricted 无命中+score 类型/sem_table_columns 滤 restricted——强度达标，pg 臂进入门禁常跑 |
+| **P3-1** sync-runs 过滤 + G-16 崩溃注入 + failed 事件永久用例 | ✅ | ①`test_p3_1_sync_runs_filters_permanent`（成/败两 run → adapter 命中+空集/status 双态/limit 截断/非法 400）；②`test_p3_1_g16_crash_injection_rollback`——**真触发器注入双臂**（sqlite `RAISE ABORT` 触发器 / pg plpgsql 函数+触发器，DROP 方言各自正确），任务行+审计零残留；③test_build_01 补 failed 事件断言（build_id 指向 failed 行、error 载荷在场） |
+| **P3-2** edges 去重 + 无悬挂 | ✅ | `seen_edges` 去重 + **节点截断先于边 append**（两方言 diff 同构）+ 双臂永久断言 + **tester r2v3b**：node_limit=1 → 恰 1 节点+边端点恒 ∈ {root}∪nodes（双方言）；R2 改动后环/链/缺省双向三场景双方言**逐元素等价回归** ✓ |
+| **P3-3** expand_relations 薄适配 | ✅ | 两方言 `NotImplementedError` 删除 → `_expand_relations_thin`（多 seed 归并 + 跨 seed 边去重）；**tester r2v3c**：双 seed 归并 3 边去重、结果双方言逐元素相等；语义注记：rels **双向**展开（seed 的入向可扫到父节点——docstring 已声明，M2-S3 消费方按此契约）；test_pg_backend 占位更新（见 §1） |
+| **P3-4** sem_table_columns 滤 restricted | ✅ | 两方言补 `c.sensitivity='normal'` + 双臂用例（t1.c3 不出现在轻量列节点——降级路径零泄漏） |
+| **P3-5** 构建终态 audit= 同事务 | ✅ | `sem_switch_build_ready`/`sem_fail_build` 增 `audit=` 且**仅 rowcount==1 真生效时写**（BEGIN…COMMIT 单事务，两方言读证）+ **tester r2v3a 崩溃注入（真触发器，双方言）**：audit 写失败 → switch/fail 抛错、**行停 building 零终态、build 事件零残留**（与触发侧 G-16 同半态语义）；修复注入后重试 → ready + 事件恰一条；`audit=None` 纯切换路径正常 |
+| **P3-6** 非 active 根 404 | ✅ | expand.py 根校验补 `status != 'active'` + MCP 永久用例（missing 态 404）；**tester r2v3d 补 retired 态**——missing/retired 两态双方言均 404 ✓ |
+
+## 3. 独立脚本清单与结果（3 份，临时目录，已清理）
+
+| 脚本 | 内容 | 结果 |
+|---|---|---|
+| r2v1 | P1-1 真实路径证伪：真实 httpx 传输（连接拒绝/不可路由超时/未配置/畸形 JSON → degraded 四形态）+ 真实 transport close（is_closed）+ 默认通道降级不进缓存（恢复即透传）+ close 双路径计数 | ✅ 9/9 |
+| r2v2 | P2-2 真并发同 rev 双 build：双方言 ×3 轮——**事件零 failed、输者 skipped（pg）/等价收场（sqlite）、每 rev 恰一 ready 行、current 稳定** | ✅ 6/6 |
+| r2v3 | P3-5 崩溃注入双方言（audit 失败→行停 building+零事件原子回滚；修复后 ready+恰一事件）+ P3-2 edges 契约/双方言等价回归 + P3-3 薄适配归并 + P3-6 两态 404 + P2-1 score float/等价 | ✅ 33/33 |
+
+## 4. R1 观察项对账（N-1~N-5 全闭环）
+
+| 编号 | R2 处置 | 复验结论 |
+|---|---|---|
+| N-1（pg score Decimal） | =P2-1 修 | ✅ 闭环（::float8 三处 + 双臂 float 断言 + tester 双方言复核） |
+| N-2（pg 竞态脏 failed 事件） | =P2-2 修 | ✅ 闭环（真并发 ×3 轮双方言零脏事件 + 确定性用例真红锁定） |
+| N-3（pg expand/search 零套件覆盖） | =P2-3 修 | ✅ 闭环（store 级 10 用例双臂进门禁常跑——pg 臂回归不再裸奔） |
+| N-4（REST entities/describe 端点去向） | 监督侧登记 | ✅ 闭环（TEST-CASES v1.9.5 ⑤：归 m2s-3；_m2-plan 挂账——docs 批 diff 实证） |
+| N-5（sync-runs 过滤无永久用例） | =P3-1 修 | ✅ 闭环（永久用例进 test_sync_05） |
+
+另：边界 7 项 spec_confirm 裁定全部落笔（v1.9.5 版本行 + known-gaps **G-16 已收口回写/G-17/G-18 新增**——docs 批 diff 实证，coder 原样入库合规）。
+
+## 5. 缺陷清单
+
+**FAIL 级：无。**
+
+| 编号 | 级别 | 内容 |
+|---|---|---|
+| O-1 | 登记级（非缺陷） | sqlite 同 rev 竞态 flap 路径：输者 upsert `DO UPDATE` 重断 `building` 后再切 ready → **同一 build_id 出现两条 ready 审计事件**（r2v2 sqlite race#1）。语义一致（均 ready、无矛盾）、行终态正确——at-least-once 审计口径可容纳；pg 无此形态（输者 skipped、单事件）。登记备 M2-S3 审计面知悉，不建议改 |
+| O-2 | 注记 | expand_relations 薄适配按设计**双向**展开（docstring 已声明）——M2-S3 实体召回路消费时注意 seed 父节点会经入向出现；双方言行为一致，无行动项 |
+
+## 6. 与 coder 自测对账
+
+| 项 | coder 申报 | tester 独立结果 | 一致 |
+|---|---|---|---|
+| 门禁 | GATE PASS 1076+1 双模式 0 skipped，pg 381=348+33 | 逐字一致（186s/160s） | ✅ |
+| 新增 | +37 | pg +17 + sqlite +20 = 37（实测收集数逐文件） | ✅ |
+| TDD 红灯 | P1-1 AttributeError×3 / P2-2 switch ineffective | 与被删/被改代码路径吻合（P2-2 用例反向核真红） | ✅ |
+| P1-1~P3-6 全修 | 13 项 | 逐项复验全过（含 5 项独立证伪） | ✅ |
+| docs 批原样 | v1.9.5/G-16 回写/G-17·18 | diff 实证与 spec_confirm 裁定一致 | ✅ |
+
+## 7. 结论
+
+- **testVerdict: PASS**——Committer NEEDS_CHANGES 放行条件全部满足：P1-1 必修项五子面全修且**真实路径可达**（tester 真 httpx 证伪）；P2-1/2/3 修复且钉进门禁（pg 臂 348 参数化含全部新面）；P3-1~6 全收（含构建侧 G-16 收口与方言正确的双臂崩溃注入）；N-1~N-5 全闭环；存量零删除零弱化。
+- O-1 登记级（sqlite flap 双 ready 事件，at-least-once 可容纳）；O-2 注记。
+- testedSha=HEAD=`573abfd13bd9d286fe56c4e4c860741591f49cf3`；验证期间零 git 写操作；pg 遗留 schema=0、临时脚本与目录全清、repo 无测试残留。
+
+</details>
+
+<details>
+<summary>R2 Committer 报告全文（2026-10-31 09:25，reviewVerdict=APPROVED）</summary>
+
+## 0. 审查基线与门禁
+
+- **审查对象**：`git diff 3d9591e..573abfd`（HEAD=`573abfd`，21 文件 +1197/−102；与检查点 filesChanged R2 段一致；工作区仅 `.opencode/` 检查点/agent 文档未提交，无源码未提交改动）。
+- **上一轮基线**：逐条对照 R1 Committer 报告 P1-1/P2-1~3/P3-1~6 与 N-1~N-5；已全量重读 R2 diff（未因 Tester 报告 PASS 跳过）。
+- **门禁采信**：Tester 独立复跑 1076+1（+1 manual deselected）双模式、0 skipped，pg 臂 381=348+33；+37 对账（pg +17 + sqlite +20）与新增文件逐项一致；diff 内 0 skip/xfail、无删除用例；`test_pg_backend` 13→13 为「过期 NotImplementedError 占位」替换（新双臂行为用例覆盖），不构成弱化。
+- **docs 批**：`docs/TEST-CASES.md` v1.9.5 七项口径、`docs/known-gaps.md` G-16 收口+G-17/G-18、`_m2-plan` m2s-3 挂账均与 spec_confirm 裁定一致；R2 commit 不含 `.opencode/agent/supervised-coding.md`。
+
+## 1. R1 修复项逐条闭环
+
+### P1-1（describe_table 默认透传）—— **PASS**
+| 子面 | 证据 | 结论 |
+|---|---|---|
+| ① MetadataAdapter.describe_table 契约 | `adapters/metadata.py` 新增 `GET /tables/{key}` 透传方法 | ✅ |
+| ② 降级构造入 try | `lookup.py:113-119`：`_default_fetcher` 构造移入 try；未配置/畸形 JSON 均走 degraded | ✅ |
+| ③ 真实路径非 mock 自证 | `tests/test_sem_describe_default.py` 4 用例双臂：只 patch `_default_transport` 传输层，`resolve_source_config → MetadataAdapter.describe_table → 缓存/降级` 全真实链路；`ADAPTER_FACTORIES` 零触碰 | ✅ |
+| ④ 传输 close 生命周期 | `_DefaultHttpTransport.close` + `_fetch_once` finally 关闭；成功/超时两路径永久断言 `close_calls==1`；tester r2v1 真实 httpx `is_closed=True` | ✅ |
+| ⑤ MCP 兜底 | `mcp/server.py` 兜底 `ToolError("500: …")`，不泄漏内部错误字符串；永久用例锁定 | ✅ |
+
+**残余 P3（不阻断）**：3s 钳制未进永久断言（tester r2v1 临时证）；sync 适配器新增的 `close()` 在 `build_adapter`/`run_sync` 调用方未接线（describe 路径已闭环；sync 侧为 m2s-1 既有泄漏点，非本段回归）。
+
+### P2-1（N-1 pg score Decimal）—— **PASS**
+- `store/postgres/backend.py:2225-2240` 三层 UNION 全部 `CAST(x AS double precision)`；`test_sem_expand_search_backend.py` 双臂断言 `isinstance(score, float)` + `json.dumps` 可序列化；tester r2v3e 双方言复核 float 等价。
+
+### P2-2（N-2 脏 failed 审计事件）—— **PASS**
+- `sem_fail_build` 返回 bool（仅 `rowcount==1` 生效）；switch 无效且 current 同 rev → `skipped` 返回（不抛错/不写 failed）；确定性永久用例 + tester r2v2 真并发 ×3 轮双方言零脏事件（pg 输者 skipped、单 ready 事件）。
+- 残余 **O-1**（sqlite flap）见下节。
+
+### P2-3（N-3 pg expand/search 零覆盖）—— **PASS**
+- 新增 `tests/test_sem_expand_search_backend.py` 10 defs × `backend` fixture 双臂＝20 收集：环/方向/链路/截断/无悬挂边/ESCAPE/types/restricted/score/薄适配/restricted 列；pg 臂进入门禁常跑，TEST-CASES 拍板3 兑现。
+
+### P3-1~P3-6 —— **全部处置**
+- **P3-1**：sync-runs 过滤永久用例（成/败双 run + adapter/status/limit/非法 400）；G-16 崩溃注入永久用例（sqlite 触发器/pg plpgsql 函数，双方言零残留）；`test_build_01` 补 failed 事件断言。✅
+- **P3-2**：`seen_edges` 去重 + 节点截断先于边 append（双方言同构）；悬挂边双臂断言；tester r2v3b node_limit=1 实证。✅（测试强度见 P3 残余）
+- **P3-3**：`expand_relations` 薄适配（多 seed 归并、跨 seed 边去重）；`NotImplementedError` 占位与 `test_pg_backend` 过期断言删除——旧断言被双臂行为用例替代，**非弱化**。✅
+- **P3-4**：`sem_table_columns` 双方言补 `c.sensitivity='normal'` + 双臂用例（t1.c3 不泄漏）。✅
+- **P3-5**：`sem_switch_build_ready`/`sem_fail_build` 增 `audit=` 同事务且仅真生效写事件；tester r2v3a 真触发器崩溃注入（audit 失败→行停 building、零事件）双方言实证。✅
+- **P3-6**：非 active 根 404（missing 永久用例 + tester r2v3d retired 两态双方言）。✅
+
+### N-1~N-5（R1 观察项）
+- N-1/N-2/N-3 均随 P2-1~3 修复闭环；N-4 已按监督侧登记归 m2s-3（docs diff 实证）；N-5 随 P3-1 永久用例闭环。**无 CASE_BUG 裁定请求**。
+
+## 2. 残余问题（仅 P3 / 登记级，开源记录）
+
+| 级别 | 位置 | 问题 / 建议 |
+|---|---|---|
+| P3 | `tests/test_sem_expand_search_backend.py:116-120`、`:169-176` | **P3-2 去重断言强度不足**：环测试用集合断言（重复边不可见）；`test_expand_edges_no_duplicate` 用 t1（无双向重复来源），实际不触发 `seen_edges`。建议环测试补 `len(out["edges"]) == 3`，或造「同一关系两端都在同层 frontier」的双向样本。代码本身已由 tester r2v3b 实证正确，**不建议为该项单独开 R3**。 |
+| P3 | `tests/test_build_01_rev_switch.py`（P3-5 段） | 构建侧 `audit=` 同事务目前只有 tester r2v3a 临时崩溃注入；永久套件未覆盖 switch/fail 的 audit 失败回滚（P3-1 的永久 G-16 用例只覆盖 `create_task`）。建议后续测试维护补一条，非本段阻塞。 |
+| P3 | `core/semantic/adapters/__init__.py`（`build_adapter`/`run_sync`） | `TemplateCenterAdapter.close`/`MetadataAdapter.close` 已加，但 sync 路径无调用方；describe 默认路径已用 `_fetch_once` 关闭。属 m2s-1 既有连接池泄漏点，建议 M2-S3/维护面接线。 |
+| P3 | `store/sqlite/backend.py:2558+` / `store/postgres/backend.py:1999+`（`sem_insert_build` upsert） | **O-1 登记**：sqlite 同 rev 竞态输者 upsert 可把已 ready 行重断 building→ready，产生同 `build_id` 双 ready 事件（pg 本次未复现）。行终态正确、事件均真实，at-least-once 审计可容纳；但存在瞬态 `current` 锚点缺失。建议 M2-S3/G-18 同批用 `DO UPDATE … WHERE status != 'ready'`（或同 rev ready 直接返回 existing id）收口。**登记，不修 R3**。 |
+| P3 | `store/sqlite/backend.py`/pg `_expand_relations_thin` | 薄适配按设计双向展开，seed 父节点经入向出现（O-2）；且返回 nodes 不含 seed 本身（design §5.9 SQL 的 walk 含 depth=0 起始行）。M2-S3 消费方需确认是否要求 seed 入集；建议随 G-17/G-18 一并登记。 |
+| P3 | `core/semantic/lookup.py` description 主路径 | P3-4 只修了 **降级轻量列** 的 restricted 过滤；元数据系统主透传路径仍会返回本地 restricted 列的详情。若 restricted 语义覆盖 column 实体，需在 M2-S3 权限面统一决定是否按列过滤（当前设计 T-S11 仅表级白名单）。 |
+| P3 | `docs/known-gaps.md` G-16「重开条件」 | 文案仍写「构建终态事件非同事务面…P3-5——R2 顺手收口或另行登记」；R2 已实际收口构建侧 audit= 同事务，建议交付归档 docs 批补一句「构建侧已收口」。 |
+| P3 | `tests/test_sem_describe_default.py` | 默认路径未永久断言 `min(cfg.timeout_s, 3)` 钳制（tester r2v1 临时证）；可补 fake transport 记录 cfg.timeout_s 的断言。 |
+
+## 3. O-1 / O-2 处置
+
+- **O-1（sqlite 同 rev 竞态 flap 双 ready 事件）**：**接受登记，不要求 R3**。理由：行终态正确、无脏 failed 事件、两条 ready 均对应真实 switch，at-least-once 审计口径可容纳；唯一残留是窄窗内 current 锚点缺失。建议并入 **M2-S3/G-18** 的 current 语义收口（条件 upsert），并在 known-gaps/_m2-plan 补登记一行。若后续因其他原因开 R3，可顺手改 `sem_insert_build` 条件更新 + 确定性竞态用例。
+- **O-2（expand_relations 双向展开把 seed 父节点经入向带回）**：**注记，无行动项**。双方言一致、docstring 已声明；M2-S3 实体召回路消费方按此契约使用；是否把 seed 本身纳入返回集，随 P3-3/M2-S3 一并确认。
+
+## 4. 需求边界与 docs 核对
+
+- R1 上报的 7 条边界已按 **spec_confirm** 全部落笔：①rev 回退→G-18；②LIKE 骨架/FTS 归 M2-S3；③describe_table 任务书笔误注记；④BFS 等价确认；⑤REST entities/describe→m2s-3 挂账；⑥TC-BUILD 01/03 本段、02/04/05 M2-S2；⑦yaml_rev/curated→G-17。`TEST-CASES` v1.9.5、`known-gaps` G-17/G-18、`_m2-plan` m2s-3 挂账与上述一致。**无新增边界问题**。
+- docs 批唯一 nit：`known-gaps` G-16「重开条件」括号仍按 R1 时点写「构建侧 P3-5 待收口/登记」，R2 已收口——属交付归档 docs 补句，不影响代码放行。
+
+## 5. 关键面显式结论
+
+| 面 | 结论 |
+|---|---|
+| **P1-1 五子面** | ✅ 全闭环；真实默认路径 4 用例双臂、传输 close、MCP 500 兜底均有永久证据。 |
+| **P2-1/2/3** | ✅ 全闭环；pg score float、竞态脏审计消除、pg expand/search 双臂覆盖进门禁。 |
+| **P3-1~6** | ✅ 全处置；P3-2 去重测试强度/P3-5 构建侧永久崩溃注入属 P3 残余，代码行为经 Tester 独立证伪正确。 |
+| **构建域** | ✅ dict_rev/embed 标签/同 rev 跳过/原子切换失败不切/inline 兜底/REST 三端点/sync 后自动构建；无 0007 正确；G-18 回退语义已登记。 |
+| **三工具** | ✅ get_entity（含非 active 404）、search_entities、describe_table（真实透传+降级+缓存+close）通过；semantic:read/组织隔离/restricted fail-closed 通过。 |
+| **G-16** | ✅ 触发侧 create_task audit= + **构建侧 switch/fail audit= 同事务**；永久 create_task 崩溃注入 + tester 构建侧注入均零残留。 |
+| **P3-r1~r5** | ✅ 全部收口（R1 已核，R2 未回归）。 |
+| **分层** | ✅ core/semantic 无 SQL；expand/search 走 backend 协议；auto_entities 未进 core。 |
+| **测试质量** | ✅ 1076+1、+37、零删除零弱化；R1 既有断言未放宽；新描述默认路径/expand-search/构建事件/过滤用例均非恒真。残余 P3 测试强度见上。 |
+| **docs/filesChanged/commit** | ✅ R2 21 文件 +1197/−102 与 stat 一致；docs 批 v1.9.5/G-16 回写/G-17·18/_m2-plan 与裁定一致；不含 supervised-coding.md；commit message 合规。 |
+
+## 6. 交付就绪判定
+
+**reviewVerdict: APPROVED**（代码审查通过；P1-1 与 P2-1~3 全修并复验，P3 仅登记/维护级，**不要求 R3**）。
+**reviewedSha: `573abfd13bd9d286fe56c4e4c860741591f49cf3`**（= testedSha = HEAD，按工作区检查点）。
+
+**交付归档前置（监督侧动作，非代码阻塞）**：
+- `573abfd` 内提交的 `.opencode/workflows/task-knowledge-lattice-m2s-2.md` front matter 仍是 R1 值（`testedSha: 3d9591e`、`reviewVerdict: NEEDS_CHANGES`），**R2 Tester 报告与 `reviewedSha=573abfd` 尚在工作区未入库**。PR/交付前须把检查点终态（`testVerdict: PASS`、`testedSha: 573abfd`、`reviewVerdict: APPROVED`、`reviewedSha: 573abfd` + R2 Tester 报告）提交入库，并排除 `.opencode/agent/supervised-coding.md`；否则 PR 上的 evidence manifest 会指向旧 SHA。
+- 同批 docs 补：G-16「重开条件」括号注明构建侧已随 R2 P3-5 收口；O-1/M2-S3 挂账补一行（可并入 G-18）。
+- 若归档采用 docs-only commit，按 m2-3 先例复核 reviewedSha/HEAD 关系（或 amend 代码 commit 之前先处理，避免出现 manifest 三 SHA 不一致）。
+
+**最终判定**：代码交付 **APPROVED**；**strict 交付放行暂待归档前置完成**（检查点终态入库 + supervised-coding.md 排除）；归档完成后即可进入 PR/留痕与用户合入确认。
 
 </details>
