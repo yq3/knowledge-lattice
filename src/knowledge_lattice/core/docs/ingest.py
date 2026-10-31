@@ -168,6 +168,7 @@ class IngestService:
         objects_dir: Path,
         *,
         quality: QualityService | None = None,
+        tagger: Callable[[dict, list[dict]], dict | None] | None = None,
     ) -> None:
         self._backend = backend
         self._embedder = embedder
@@ -176,6 +177,10 @@ class IngestService:
         self._objects_dir = objects_dir
         # 区分度环挂接（M1-4 §5.3 quality 阶段——检测 best-effort，None=未装配）
         self._quality = quality
+        # 语义打标签（M2-S3/m2s-5——依赖注入：core/docs 不得 import
+        # core/semantic（分层守卫 test_sem_00_layering），装配点在 app.py /
+        # worker runner 的 make_ingest_tagger；None=不打标（旧构造兼容））
+        self._tagger = tagger
 
     # ============ 上传入口（写权限校验在 upload 即做——P0-2.1） ============
 
@@ -875,7 +880,37 @@ class IngestService:
             }
             for d in drafts
         ]
-        self._backend.insert(doc["id"], self._effective_version(doc), chunks)
+        self._backend.insert(doc["id"], self._effective_version(doc), chunks,
+                             sem_tags=self._sem_tags(doc, chunks))
+
+    def _sem_tags(self, doc: dict, chunks: list[dict]) -> dict | None:
+        """M2-S3/m2s-5 同事务打标（TC-TAG-01）：tagger 计算命中行（core/
+        semantic 注入面——本模块不 import 语义包）；**打标失败不阻断 ingest**
+        ——捕获记 warning + `semantic.tag_failed` 审计（文档先可用，块以
+        「无行 = dict_rev 落后面」进 retag 候选集，交 semantic_retag 补做
+        ——design §5.3/附录 A-14 口径）。"""
+        if self._tagger is None:
+            return None
+        try:
+            return self._tagger(doc, chunks)
+        except Exception as exc:  # noqa: BLE001 —— 打标失败不阻断（TC-TAG-01②）
+            logger.warning(
+                "semantic tagging failed (not blocking ingest): doc=%s (%s: %s)"
+                "——块入 retag 候选集，交 semantic_retag 补做",
+                doc["id"], type(exc).__name__, exc,
+            )
+            try:
+                self._backend.append_outbox(
+                    "semantic.tag_failed",
+                    json.dumps(
+                        {"org_id": doc["org_id"], "doc_id": doc["id"],
+                         "version": self._effective_version(doc),
+                         "error": f"{type(exc).__name__}: {exc}"},
+                        ensure_ascii=False),
+                )
+            except Exception:  # noqa: BLE001 —— 审计失败不再打扰主流程
+                logger.exception("semantic.tag_failed audit write failed")
+            return None
 
     def _embed_stage(
         self, doc: dict, version: int, *,

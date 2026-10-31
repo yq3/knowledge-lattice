@@ -234,9 +234,14 @@ def create_app(
     credentials = CredentialService(backend, settings, settings.data_dir / "objects")
     # LLM 兜底 provider 经共享工厂（quality_llm=none 默认 noop——不发网关调用）
     quality = build_quality_service(backend, settings)
+    # 语义打标签（M2-S3/m2s-5 TC-TAG-01）：依赖注入——core/docs 不 import
+    # core/semantic（分层守卫），装配点在此与 worker build_default_services
+    from knowledge_lattice.core.semantic.tagging import make_ingest_tagger
+
     ingest = IngestService(
         backend, embedder, settings, gate, settings.data_dir / "objects",
         quality=quality,
+        tagger=make_ingest_tagger(backend, settings),
     )
 
     # ---- worker 框架（M2.1）与 maintenance 调度器（design §3 v0.8.3） ----

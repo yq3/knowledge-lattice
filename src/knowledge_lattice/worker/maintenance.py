@@ -213,6 +213,55 @@ def _semantic_daily_body(backend, credentials, settings, now):
                                                  if window else {})}
 
 
+@_register("semantic_reconcile")
+def _semantic_reconcile_body(backend, credentials, settings, now):
+    """M2-S3/m2s-5 打标对账（T-S10/TC-TAG-03 兜底——design §3 maintenance
+    任务族 sem_chunk_entities 对账行）。
+
+    - 悬挂行（块已删/非活跃版本）与实体已亡行：sem_reconcile_chunk_tags
+      物理清理（纪律清理面——sem_chunk_entities 刻意无外键到 chunks）；
+    - dict_rev 落后（lagging）+ 无行活跃块（untagged）：**只报告补投**
+      semantic_retag（不直接改标——幂等收敛靠 retag；任务在队不重复投递）；
+    - 投递节流（防风暴）：无行块重标不消候选（无行可记），距该 org 上次
+      **done** retag 不足 `semantic_retag_reconcile_interval_s`（默认 24h）
+      不重复投（0=每次投——测试/运维强制面；G-19 每日兜底同款节奏）；
+    - 报告进 maintenance stats（`semantic_reconcile` 键——独立面）。"""
+    from datetime import datetime
+
+    from knowledge_lattice.core.semantic.tagging import enqueue_retag
+
+    interval = getattr(settings, "semantic_retag_reconcile_interval_s", 86400.0)
+    now_ts = datetime.strptime(now, "%Y-%m-%d %H:%M:%S")
+    report = backend.sem_reconcile_chunk_tags()
+    enqueued: list[str] = []
+    throttled: list[str] = []
+    for org_r in report:
+        if org_r.get("lagging_chunks", 0) <= 0 \
+                and org_r.get("untagged_chunks", 0) <= 0:
+            continue
+        current = backend.sem_current_build(org_r["org_id"])
+        if current is None:
+            continue    # 无 ready build（落后面无从收敛——等构建）
+        if interval and interval > 0:
+            last = backend.sem_last_retag_done_at(org_r["org_id"])
+            if last:
+                try:
+                    age = (now_ts - datetime.strptime(
+                        last, "%Y-%m-%d %H:%M:%S")).total_seconds()
+                except ValueError:
+                    age = None
+                if age is not None and age < interval:
+                    # 负 age（last 在未来——测试造数/时钟回拨）保守视作窗口内
+                    throttled.append(org_r["org_id"])
+                    continue
+        if enqueue_retag(backend, org_r["org_id"], current["dict_rev"]):
+            enqueued.append(org_r["org_id"])
+    if enqueued:
+        logger.info("semantic reconcile enqueued retag: %s", enqueued)
+    return {"orgs": report, "retag_enqueued": enqueued,
+            "retag_throttled": throttled}
+
+
 def _as_ts(value):
     """run 时间列归一（sqlite str / psycopg datetime 双形态 → datetime|None）。"""
     if isinstance(value, datetime):

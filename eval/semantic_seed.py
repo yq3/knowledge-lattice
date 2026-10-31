@@ -227,6 +227,7 @@ YAML_FILES: dict[str, str] = {
   name: 期末留抵税额
   aliases: [留抵, 留抵税额]
   abbr: [LDSE]
+  default_reading: [留抵]
   definition: 当期销项税额不足抵扣进项税额时，尚未抵扣完、结转下期继续抵扣的进项税额。
   l0: true
   owner: tax-domain
@@ -260,6 +261,7 @@ YAML_FILES: dict[str, str] = {
 - id: concept:vat.tax_rate
   name: 增值税税率
   aliases: [税率]
+  default_reading: [税率]
   definition: 一般计税方法下按应税销售行为适用的比例，如销售货物13%、交通运输9%、现代服务6%。
   l0: true
   owner: tax-domain

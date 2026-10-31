@@ -58,7 +58,7 @@ _CJK = re.compile(r"[\u4e00-\u9fff]")
 _TIER_CONFIDENCE = {"exact": 1.0, "alias": 0.95, "context": 0.9}
 _RESOLVED_CEILING = {  # resolved_by → confidence 上限（证据强度递减）
     "single": 1.0, "cooccurrence": 1.0, "focus": 0.95, "prior": 0.95,
-    "l0": 0.9, "ambiguous": 0.8,
+    "l0": 0.9, "default": 0.9, "ambiguous": 0.8,
 }
 
 
@@ -116,6 +116,17 @@ class Annotator:
         for r in snapshot["relations"]:
             self.adj[r["src_id"]].add(r["dst_id"])
             self.adj[r["dst_id"]].add(r["src_id"])
+        # B2/m2s-5 显式缺省主读：curated default_reading 声明 → norm→entity_id
+        #（消解第⑤级——消解不再依赖第一候选 (weight,id) 序；多实体重复声明
+        # CI 前置拦截，运行时 first-wins by 实体 id 序防御）
+        self.default_reading: dict[str, int] = {}
+        for eid in sorted(self.entities):
+            declared = _loads(self.entities[eid].get("curated_json")).get(
+                "default_reading") or ()
+            for value in declared:
+                norm = normalize_alias(str(value))
+                if norm and norm not in self.default_reading:
+                    self.default_reading[norm] = eid
         # L0 片段词元（兜底消歧的佐证面——仅 l0:true 条目）
         self.l0_terms: dict[int, frozenset[str]] = {}
         for eid, ent in self.entities.items():
@@ -275,6 +286,12 @@ class Annotator:
                 winners = [c for c in pool if scores[c] == best]
                 if len(winners) == 1:
                     return winners, "l0"
+        # ⑤ 显式缺省主读（B2/m2s-5）：YAML default_reading 声明——人工显式
+        # 配置证据定案（confidence 上限 0.9——非确证不自动注入）；消解不再
+        # 依赖第一候选 (weight,id) 序（G-21 R3：换库/换同步序不翻转读法）
+        default_eid = self.default_reading.get(span_norm)
+        if default_eid is not None and default_eid in pool:
+            return [default_eid], "default"
         return pool, "ambiguous"
 
     def _mention(self, text, hit, origins, pick, resolved_by) -> dict:
@@ -412,17 +429,20 @@ def clear_annotator_cache() -> None:
 
 
 def get_annotator(backend, org_id: str, settings) -> tuple[Annotator | None,
-                                                            str | None]:
+                                                             str | None]:
     """按 (org, dict_rev) 懒加载：current ready 构建的 rev 为锚——
     annotate 与 `/semantic/l0` 共用本路径（P2-1 方案 B/R3：同一实例同锚点，
     内容/rev 两侧一致）。
 
     - 缓存命中（同 rev）→ 同一实例（构建中沿用旧实例——T-S12 热缓存路径）；
     - 无构建 → (None, None)（未构建不服务识别——先构建再识别的操作序）；
-    - rev 漂移（live 快照领先于 last ready——**冷缓存/重启窗口**）→ 以
-      current rev 标注服务 live 快照实例 + 告警（best-effort：known-gaps
-      **G-21** 登记项——评测拦下的词典重启后仍会被服务、门禁非持久；
-      方案 A〔sem_builds 快照附表按 rev 重建〕M2-S3/m2-5 承接）。"""
+    - **G-21 方案 A（m2s-5 收口）**：current build 的快照附表
+      （sem_build_snapshots——迁移 0008）优先——**冷缓存/重启后服务 build
+      产物而非 live**（rev 锚点失真窗口消除；评测拦下的词典重启后不再被
+      服务）；快照与 ready 切换同事务，ready 可见时必已在位；
+    - 无快照（0008 之前存量 ready 行）→ 回退 live 快照 + **告警**
+      （best-effort 兼容路径——G-21 回退告警保留；live 领先 last ready 的
+      drift 告警同款保留）。"""
     current = backend.sem_current_build(org_id)
     rev = current["dict_rev"] if current else None
     cached = _CACHE.get(org_id)
@@ -430,7 +450,18 @@ def get_annotator(backend, org_id: str, settings) -> tuple[Annotator | None,
         return cached[1], rev
     if current is None:
         return None, None
+    snap_json = backend.sem_load_build_snapshot(org_id, current["id"])
+    if snap_json is not None:
+        import json
+
+        _CACHE[org_id] = (rev, Annotator(json.loads(snap_json)))
+        return _CACHE[org_id][1], rev
     snapshot = backend.sem_active_snapshot(org_id)
+    logger.warning(
+        "build snapshot missing: org=%s build_id=%s——fallback to live snapshot"
+        "（0008 前存量 ready 行的兼容路径——G-21 方案 A 回退面）",
+        org_id, current["id"],
+    )
     ann = Annotator(snapshot)
     from knowledge_lattice.core.semantic.build import (
         _yaml_rev_of, compute_dict_rev,
@@ -441,7 +472,8 @@ def get_annotator(backend, org_id: str, settings) -> tuple[Annotator | None,
     if live_rev != rev:
         logger.warning(
             "annotator snapshot drift: org=%s current_rev=%s live_rev=%s"
-            "（live 领先 last ready——重启窗口兜底，以 current rev 标注）",
+            "（live 领先 last ready——回退路径的已知失真，G-21 方案 A 收口后"
+            "仅存量行可触达）",
             org_id, rev, live_rev)
     _CACHE[org_id] = (rev, ann)
     return ann, rev

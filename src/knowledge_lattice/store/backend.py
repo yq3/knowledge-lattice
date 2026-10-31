@@ -126,9 +126,17 @@ class SearchBackend(Protocol):
 
 @runtime_checkable
 class IngestBackend(Protocol):
-    def insert(self, doc_id: str, version: int, chunks: Sequence[dict]) -> None:
+    def insert(
+        self, doc_id: str, version: int, chunks: Sequence[dict], *,
+        sem_tags: dict | None = None,
+    ) -> None:
         """chunks + FTS 同一事务写入（幂等：同 (doc_id, version) 先删后插）+ 阶段状态推进
-        （pending_status→searchable_lexical + 首次上传 D20 切换）。"""
+        （pending_status→searchable_lexical + 首次上传 D20 切换）。
+
+        sem_tags（M2-S3/m2s-5 同事务打标——TC-TAG-01）：``{"dict_rev": str,
+        "rows": [(seq, entity_id, hits), ...]}``——语义命中行随块写入**同一事务**
+        落 sem_chunk_entities（rows 的 seq 定位本批 chunks 行；org_id 事务内查
+        documents）。None = 不打标（无构建/打标失败不阻断——retag 补做）。"""
         ...
 
     def write_embeddings(
@@ -849,13 +857,17 @@ class SemanticBackend(Protocol):
     def sem_switch_build_ready(
         self, org_id: str, build_id: int, stats_json: str, *,
         audit: tuple[str, str] | None = None,
+        snapshot_json: str | None = None,
     ) -> bool:
         """原子切换：building → ready 单语句单事务（design §5.8 第 3 步——旧 ready
         行不动、新行就位即当前；非 building 态零行生效返回 False——并发输者
         语义见 core/semantic/build.py，P2-2/R2）。
 
         audit（P3-5/R2，沿 create_task 先例）：ready 事件与切换**同一事务**且
-        **仅切换真生效时写**（rowcount==1）——构建终态审计不丢（G-16 构建侧）。"""
+        **仅切换真生效时写**（rowcount==1）——构建终态审计不丢（G-16 构建侧）。
+
+        snapshot_json（G-21 方案 A/m2s-5）：构建快照附表同事务写入——ready
+        可见时快照必已在位（冷缓存/重启服务 build 产物的数据基础）。"""
         ...
 
     def sem_fail_build(
@@ -871,9 +883,59 @@ class SemanticBackend(Protocol):
     def sem_reactivate_build(
         self, org_id: str, build_id: int, stats_json: str, *,
         audit: tuple[str, str] | None = None,
+        snapshot_json: str | None = None,
     ) -> bool:
         """G-18/m2s-3：rev 回退重激活——ready 行顶置 activated_at 成为 current
-        （+ ready 事件同事务）；仅 status='ready' 行生效（幂等防线）。"""
+        （+ ready 事件同事务）；仅 status='ready' 行生效（幂等防线）。
+        snapshot_json（m2s-5/G-21 方案 A）：快照附表同事务 upsert（同 rev 内容
+        一致——重写幂等；0008 前存量行此时补齐快照）。"""
+        ...
+
+    def sem_save_build_snapshot(
+        self, org_id: str, build_id: int, snapshot_json: str,
+    ) -> None:
+        """快照附表 upsert（独立事务形态——switch/reactivate 事务内写入之外的
+        显式入口；G-21 方案 A/m2s-5）。"""
+        ...
+
+    def sem_load_build_snapshot(
+        self, org_id: str, build_id: int,
+    ) -> str | None:
+        """按 build id 读快照 JSON（无行 → None——get_annotator 回退 live 判据；
+        G-21 方案 A/m2s-5）。"""
+        ...
+
+    def sem_retag_candidates(
+        self, org_id: str, dict_rev: str, *, limit: int, after_rid: int = 0,
+    ) -> list[dict]:
+        """retag 候选块清单（TC-TAG-02）：该 org 活跃版本块（tombstone=0 且
+        version=active_version）中 sem_chunk_entities 最大 dict_rev != 目标 rev
+        **或无行**（从未打标/打标失败——TC-TAG-01 预期②的补做面）的块，
+        [{rid, content}] 按 rid 稳定序、limit 截断（分批 ≤1000——NFR-11）；
+        after_rid 游标分页（无命中块无行可写、不消候选——靠游标推进防死循环）。"""
+        ...
+
+    def sem_last_retag_done_at(self, org_id: str) -> str | None:
+        """该 org 最近一次 done 的 semantic_retag 任务时点（对账投递节流锚
+        ——m2s-5：无行块重标不消候选，节流窗口防重复投递风暴）。"""
+        ...
+
+    def sem_replace_chunk_tags(self, org_id: str, rows: Sequence[dict]) -> int:
+        """块级标签整替（同事务）：rows 涉及的 chunk_rid 集 DELETE 旧行 +
+        INSERT 新行（retag 重算面——幂等收敛；块已删/版本已切时由 untag/
+        对账负责，本方法不做存活过滤——调用方只投活跃块）。返回插入行数。"""
+        ...
+
+    def sem_reconcile_chunk_tags(self) -> list[dict]:
+        """打标对账扫描（T-S10/TC-TAG-03 兜底——maintenance 挂载）：
+        ① 悬挂行清理（chunk 不在/非活跃版本块——物理 DELETE，计数报告）；
+        ② 实体已亡行清理（entity status != 'active'——同 DELETE 面）；
+        ③ dict_rev 落后计数（活跃块有行且 dict_rev != current，**只报告不
+        改动**——补投 retag 幂等收敛，调用方按报告投递）+ 无行活跃块单列
+        untagged_chunks（retag 补做面——无行不消候选，投递按节流防风暴）。
+        返回 per-org 报告 [{org_id, stale_chunks_removed, retired_entities_
+        removed, lagging_chunks, untagged_chunks}]（无 sem_chunk_entities 行
+        的 org 不出现）。"""
         ...
 
     def save_build(self, org_id: str, dict_rev: str, stats_json: str) -> int:

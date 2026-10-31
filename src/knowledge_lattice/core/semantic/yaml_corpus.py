@@ -110,6 +110,7 @@ class YamlEntry:
     examples: tuple[str, ...] = ()
     samples: tuple[str, ...] = ()
     disambiguation: tuple[dict, ...] = ()
+    default_reading: tuple[str, ...] = ()   # 显式缺省主读（B2/m2s-5——本实体为这些共享别名的缺省主读）
     refers_to: tuple[str, ...] = ()
     related_to: tuple[str, ...] = ()
     l0: bool = False
@@ -140,6 +141,8 @@ class YamlEntry:
                 out[k] = list(v)
         if self.disambiguation:
             out["disambiguation"] = list(self.disambiguation)
+        if self.default_reading:
+            out["default_reading"] = list(self.default_reading)
         if self.l0:
             out["l0"] = True
         if self.owner:
@@ -187,6 +190,7 @@ def _parse_entry(raw: dict, file: str, pure: bool) -> YamlEntry:
         examples=tuple(str(x) for x in raw.get("examples") or ()),
         samples=tuple(str(x) for x in raw.get("samples") or ()),
         disambiguation=tuple(dict(d) for d in raw.get("disambiguation") or ()),
+        default_reading=tuple(str(x) for x in raw.get("default_reading") or ()),
         refers_to=tuple(str(r) for r in raw.get("refers_to") or ()),
         related_to=tuple(str(r) for r in raw.get("related_to") or ()),
         l0=bool(raw.get("l0", False)),
@@ -517,6 +521,8 @@ def validate_corpus(corpus: Corpus, *, l0_budget: int = 1500) -> list[Issue]:
     l0_tokens = 0
     # 别名冲突检测的聚合面：alias_norm → [(entity_id, has_disambiguation, marked)]
     alias_owners: dict[str, list[tuple[str, bool, bool]]] = {}
+    # B2/m2s-5：显式缺省主读聚合面——norm → 声明实体（唯一性校验）
+    default_readings: dict[str, tuple[str, str]] = {}
     # P3-8①/R2：全局 id 唯一（design 样例「全局唯一，CI 校验」——条目+内嵌字段）
     id_locations: dict[str, list[str]] = {}
 
@@ -583,6 +589,24 @@ def validate_corpus(corpus: Corpus, *, l0_budget: int = 1500) -> list[Issue]:
         for a in entry.abbr:
             norm = normalize_alias(a)
             alias_owners.setdefault(norm, []).append((entry.id, has_disamb, False))
+        # B2/m2s-5：显式缺省主读——值须在本实体别名面（aliases/abbr）；全局
+        # 唯一（同一 norm 多实体声明 = 配置冲突，前置拦截）
+        own_norms = {normalize_alias(s.value) for s in entry.aliases} | \
+                    {normalize_alias(a) for a in entry.abbr}
+        for declared in entry.default_reading:
+            norm = normalize_alias(declared)
+            if norm not in own_norms:
+                issues.append(Issue(
+                    "error", entry.file,
+                    f"default_reading {declared!r} 不是本实体声明的别名/缩写"
+                    "（缺省主读须挂在共享别名面上）"))
+                continue
+            if norm in default_readings and default_readings[norm][0] != entry.id:
+                issues.append(Issue(
+                    "error", entry.file,
+                    f"default_reading {declared!r} 唯一性被破（{norm!r} 已由"
+                    f" {default_readings[norm][0]} 声明——缺省主读不得多实体）"))
+            default_readings[norm] = (entry.id, entry.file)
         for f in entry.fields:
             for spec in f.aliases:
                 _collect_alias(f.id, spec, entry.file, False)
