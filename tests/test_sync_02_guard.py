@@ -163,13 +163,20 @@ def test_t_s4_missing_then_recover_then_retire(sync_env) -> None:
     rel_status = sync_env.db.execute(
         "SELECT status FROM sem_relations WHERE src_id = ?", (tpl_id,)
     ).fetchone()[0]
-    assert rel_status == "active"  # 关系保持
+    # G-15/m2s-3：关系随消失实体潜伏 missing（原 active）；宽限期内恢复回
+    # active、超期随端点一并 retired 的 T-S4 终态口径不变
+    assert rel_status == "missing"
 
     # ② 次日快照恢复 X → 回 active
     r3 = run(sync_env, snap, now=add_seconds(NOW, 86400))
     assert r3["status"] == "succeeded"
     assert sync_env.db.execute(
         "SELECT status FROM sem_entities WHERE key = 'TPL_0'"
+    ).fetchone()[0] == "active"
+    # N2/R2：恢复步关系一并回 active（G-15 潜伏态的对称终态——宽限期内恢复
+    # 实体与其关系同时回 active，不留潜伏孤儿）
+    assert sync_env.db.execute(
+        "SELECT status FROM sem_relations WHERE src_id = ?", (tpl_id,)
     ).fetchone()[0] == "active"
 
     # ③ 造数 synced_at=8 天前且快照仍无 X → retired 且关系一并 retired

@@ -114,6 +114,21 @@ def describe_table(
     try:
         fetch = fetcher if fetcher is not None else _default_fetcher(settings, org_id)
         detail = fetch(entity["key"])
+        # C.5/m2s-3：主路径列级 sensitivity 过滤——restricted 列不随透传吐出
+        # （表级白名单 + 列级 restricted 集；降级路径轻量列面由
+        # sem_table_columns 的 sensitivity='normal' 谓词同口径覆盖）
+        restricted_cols = backend.sem_restricted_column_keys(org_id, entity["id"])
+        if restricted_cols:
+            prefix = entity["key"] + "."
+            dropped = {
+                k[len(prefix):] if k.startswith(prefix) else k
+                for k in restricted_cols
+            }
+            detail = {
+                **detail,
+                "columns": [c for c in detail.get("columns") or ()
+                            if c.get("name") not in dropped],
+            }
         if ttl > 0:
             _DESCRIBE_CACHE[cache_key] = (now, detail)
         return _shape_describe(entity["key"], detail, columns, degraded=False)
@@ -184,6 +199,8 @@ def _default_fetcher(settings: Settings, org_id: str):
         finally:
             adapter.close()
 
+    # 钳制结果外显（T-S11① 永久断言锚——3s 上限不随配置放大）
+    _fetch_once.clamped_timeout_s = config.timeout_s
     return _fetch_once
 
 

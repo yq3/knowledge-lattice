@@ -7,9 +7,10 @@
   （LATTICE_SEM_SOURCES_JSON，JSON：{org: {adapter: {endpoint, api_key, timeout_s}}}，
   部署时配置、重启生效）；未配置 org/适配器 → SemanticSourceNotConfigured
   fail-closed（不静默跳过——TC-SYNC-01）；
-- ADAPTER_FACTORIES 注册表：默认两适配器（template_center / metadata），
-  测试/部署侧经 register_adapter_factory 覆盖（沿 MAINTENANCE_BODIES 注册表
-  惯例——跨进程无法传对象时的 import 钩子同族扩展点）。
+- ADAPTER_FACTORIES 注册表：默认五适配器（template_center / metadata /
+  scenario_config / report_center / yaml——m2s-3 起源齐），测试/部署侧经
+  register_adapter_factory 覆盖（沿 MAINTENANCE_BODIES 注册表惯例——跨进程
+  无法传对象时的 import 钩子同族扩展点）。
 - MCP 为允许传输形态之一（FR-S1 v0.7——本段不实现，协议传输无关）。
 """
 
@@ -18,6 +19,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from knowledge_lattice.config import Settings
@@ -28,7 +30,8 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "SourceAdapter", "SourceConfig", "SemanticSourceNotConfigured",
     "UnknownAdapterError", "ADAPTER_FACTORIES", "register_adapter_factory",
-    "build_adapter", "resolve_source_config", "derive_refs",
+    "build_adapter", "resolve_source_config", "derive_refs", "close_adapter",
+    "yaml_reference_refs", "load_dim_value_map",
     "TemplateCenterAdapter", "MetadataAdapter",
 ]
 
@@ -51,7 +54,11 @@ class SourceConfig:
 
 
 class SourceAdapter(Protocol):
-    """同步适配器协议（design §5.8——只读拉取、幂等、输出当前快照）。"""
+    """同步适配器协议（design §5.8——只读拉取、幂等、输出当前快照）。
+
+    可选属性：``relation_source``（本源关系的 source 取值，缺省 'sync'——
+    yaml 源为 'curated'，§5.8 合并规则表第 1 行）；``close()``（持有传输
+    资源的适配器应实现——C.6 接线经 close_adapter）。"""
 
     name: str
 
@@ -110,7 +117,7 @@ def register_adapter_factory(name: str, factory: Callable[[str, Settings], Sourc
 
 
 def build_adapter(name: str, org: str, settings: Settings) -> SourceAdapter:
-    """按名构造适配器：注册表覆盖优先，其次默认 HTTP 形态实现。"""
+    """按名构造适配器：注册表覆盖优先，其次默认实现（HTTP / 本地目录形态）。"""
     from knowledge_lattice.core.semantic.constants import SYNC_ADAPTERS
 
     override = ADAPTER_FACTORIES.get(name)
@@ -120,27 +127,121 @@ def build_adapter(name: str, org: str, settings: Settings) -> SourceAdapter:
         from .template_center import TemplateCenterAdapter
 
         return TemplateCenterAdapter(resolve_source_config(settings, org, name))
+    if name == "scenario_config":
+        from .scenario_config import ScenarioConfigAdapter
+
+        return ScenarioConfigAdapter(resolve_source_config(settings, org, name))
+    if name == "report_center":
+        from .report_center import ReportCenterAdapter
+
+        return ReportCenterAdapter(resolve_source_config(settings, org, name))
+    if name == "yaml":
+        from .yaml_repo import YamlRepoAdapter
+
+        return YamlRepoAdapter(resolve_source_config(settings, org, name))
     if name == "metadata":
         from .metadata import MetadataAdapter
 
         config = resolve_source_config(settings, org, name)
-        # 引用面：本次同步的 template_center 快照 RelationRecord 推导（TC-SYNC-02
-        # 口径——两适配器接力；template_center 未配置时引用面为空并告警，YAML
-        # 显式列出归 m2s-3）
-        refs: set[tuple[str, str]] = set()
+        # 引用面（TC-SYNC-02——m2s-3 收口「YAML 显式列出」半句）：
+        # ① YAML 仓显式声明的 table/column 引用 ∪ ② template_center 快照
+        # RelationRecord 推导（兜底保留——v1.9.1 口径）；两者均 fail-open
+        # （未配置源：引用面相应为空并告警，首轮冷启动合法态）。
+        refs: set[tuple[str, str]] = yaml_reference_refs(settings, org)
+        tc = None
         try:
             tc = build_adapter("template_center", org, settings)
-            refs = derive_refs(tc.fetch(org))
+            refs |= derive_refs(tc.fetch(org))
         except SemanticSourceNotConfigured:
             logger.warning(
-                "metadata refs empty: template_center not configured for org=%s"
-                "（引用面推导不可用——YAML 显式列出归 m2s-3）", org,
+                "metadata refs: template_center not configured for org=%s"
+                "（推导兜底不可用——引用面仅 YAML 显式列出）", org,
             )
+        finally:
+            if tc is not None:
+                close_adapter(tc)  # refs 接力用的临时适配器即建即关（C.6）
         return MetadataAdapter(config, refs=refs)
     raise UnknownAdapterError(
         f"unknown semantic sync adapter: {name!r}（合法值："
         f" {' | '.join((*SYNC_ADAPTERS, *ADAPTER_FACTORIES))}）"
     )
+
+
+def close_adapter(adapter) -> None:
+    """适配器显式关闭（C.6——默认 HTTP 传输持有 httpx.Client，不关则每次
+    sync run 泄漏一个连接池；duck-typed：无 close 的替身静默跳过）。"""
+    closer = getattr(adapter, "close", None)
+    if callable(closer):
+        closer()
+
+
+def _yaml_repo_path(settings: Settings, org: str) -> str | None:
+    """yaml 源仓库路径（未配置返回 None——引用面/映射面 fail-open 的判据）。"""
+    org_conf = settings.semantic_sources.get(org)
+    if not org_conf or "yaml" not in org_conf:
+        return None
+    raw = org_conf.get("yaml") or {}
+    endpoint = raw.get("endpoint")
+    return str(endpoint) if endpoint else None
+
+
+def yaml_reference_refs(settings: Settings, org: str) -> set[tuple[str, str]]:
+    """YAML 显式列出的 table/column 引用面（TC-SYNC-02 半句收口——m2s-3）。
+
+    来源：corpus 条目 refers_to/related_to 与 extra_relations 中 type 为
+    table/column 的端点；未配置 yaml 源 → 空集（不告警——yaml 为可选源）；
+    已配置但仓库不可读/畸形 → WARNING + 空集（引用面推导 fail-open，metadata
+    仍可经 template_center 兜底工作）。
+    """
+    path = _yaml_repo_path(settings, org)
+    if not path:
+        return set()
+    try:
+        from knowledge_lattice.core.semantic.yaml_corpus import load_corpus
+
+        corpus = load_corpus(path)
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "yaml refs unavailable: org=%s path=%s (%s: %s)——引用面回退"
+            " template_center 推导", org, path, type(exc).__name__, exc,
+        )
+        return set()
+    refs: set[tuple[str, str]] = set()
+    for entry in corpus.entries:
+        for ref in (*entry.refers_to, *entry.related_to):
+            rtype, _, rkey = ref.partition(":")
+            if rtype in ("table", "column"):
+                refs.add((rtype, rkey))
+        for xr in entry.extra_relations:
+            for ref in (xr.src, xr.dst):
+                rtype, _, rkey = ref.partition(":")
+                if rtype in ("table", "column"):
+                    refs.add((rtype, rkey))
+    return refs
+
+
+def load_dim_value_map(
+    settings: Settings, org: str, *, repo_path: str | Path | None = None,
+) -> dict[str, dict[str, str]]:
+    """值域显式映射表（TC-SYNC-06 半句收口——design §4 无专表 DDL，任务书
+    授权最小实现：YAML 仓 `dim_value_map.yaml` 维护，dim → {源值: 本地值}）。
+
+    未配置 yaml 源 / 仓库无该文件 → 空映射（原值透传——报告注记口径）。"""
+    from pathlib import Path as _Path
+
+    path = repo_path if repo_path is not None else _yaml_repo_path(settings, org)
+    if not path:
+        return {}
+    try:
+        from knowledge_lattice.core.semantic.yaml_corpus import load_corpus
+
+        return load_corpus(_Path(str(path))).dim_value_map
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "dim value map unavailable: org=%s (%s: %s)——维度值原样落库",
+            org, type(exc).__name__, exc,
+        )
+        return {}
 
 
 class _DefaultHttpTransport:

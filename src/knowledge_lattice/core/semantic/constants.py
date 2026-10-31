@@ -52,5 +52,18 @@ def rel_type_allowed(rel_type: str, src_type: str, dst_type: str) -> bool:
 # 引用关系类型：metadata 适配器的引用面来源（backed_by→table / maps_to→column）
 REFERENCE_REL_TYPES = ("backed_by", "maps_to")
 
-# 本段适配器名集合（scenario_config / report_center / yaml 归后续段）
-SYNC_ADAPTERS = ("template_center", "metadata")
+# 本仓适配器名集合（m2s-3 起五源齐全：template_center / metadata〔m2s-1〕+
+# scenario_config / report_center / yaml〔m2s-3〕）
+SYNC_ADAPTERS = ("template_center", "metadata", "scenario_config",
+                 "report_center", "yaml")
+
+# YAML 纯人工实体仅允许 concept/system（design §5.8 YAML 规范/合并规则表第 3 行）
+PURE_YAML_ENTITY_TYPES = frozenset({"concept", "system"})
+
+# YAML 仓目录 → 允许的实体类型域（concepts/=纯人工；其余为覆盖层目录）
+YAML_DIR_TYPE_DOMAINS: dict[str, frozenset[str]] = {
+    "concepts": frozenset({"concept", "system"}),
+    "templates": frozenset({"template", "template_field"}),
+    "report_items": frozenset({"report", "report_item"}),
+    "scenarios": frozenset({"scenario"}),
+}

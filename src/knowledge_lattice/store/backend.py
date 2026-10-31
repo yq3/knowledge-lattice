@@ -725,8 +725,9 @@ class SemanticBackend(Protocol):
     def sem_active_source_keys(
         self, org_id: str, source_system: str
     ) -> set[tuple[str, str]]:
-        """库内该来源 active 实体键集（source='sync' AND source_system=本适配器
-        AND status='active'——删除比例保护基数口径 #38 P2/T-S2）。"""
+        """库内该来源 active 实体键集（source_system=本适配器 AND
+        status='active'——m2s-3 起 per-source_system 收口，yaml 纯人工实体
+        source='curated' 同入基数；删除比例保护基数口径 #38 P2/T-S2）。"""
         ...
 
     def sem_source_fill_stats(self, org_id: str, source_system: str) -> dict:
@@ -734,14 +735,48 @@ class SemanticBackend(Protocol):
         填充率骤降告警的库内基线（TC-SYNC-06②）。返回 {total, filled}。"""
         ...
 
+    def sem_entity_states(
+        self, org_id: str, entity_ids: Sequence[int]
+    ) -> dict[int, dict]:
+        """批量实体态 {id: {status, source}}——G-15 关系 upsert 前端点状态
+        过滤与 yaml 合并冲突判定（m2s-3）共用读取面。"""
+        ...
+
+    def sem_entities_by_ids(
+        self, org_id: str, entity_ids: Sequence[int]
+    ) -> list[dict]:
+        """批量实体行（O-2/m2s-3：expand_relations seed 节点信息面）。"""
+        ...
+
     def mark_entities_missing(self, org_id: str, entity_ids: Sequence[int]) -> int:
         """快照消失实体 → status='missing'（宽限期状态机入口——T-S4①）。返回行数。"""
         ...
 
     def upsert_relations_batch(self, org_id: str, rows: Sequence[dict]) -> dict:
-        """关系分批 upsert（ON CONFLICT(org,src,rel,dst) 只更新 attrs_json/
-        status/synced_at；端点不可变由 trg_sem_rel_noupdate 保证）。row =
-        {src_id, rel_type, dst_id, attrs_json, synced_at}。返回 inserted/updated。"""
+        """关系分批 upsert（端点不可变由 trg_sem_rel_noupdate 保证）。row =
+        {src_id, rel_type, dst_id, attrs_json, synced_at, source?,
+        source_system?}（source 缺省 'sync'——yaml 人工补关系 'curated'；
+        G-15：端点非 active 不置回 active——CASE 守卫）。返回 inserted/updated。"""
+        ...
+
+    def sem_active_source_relation_keys(
+        self, org_id: str, source_system: str
+    ) -> set[tuple[int, str, int]]:
+        """本源 active 关系键集（G-15 关系级消失检测——m2s-3）。"""
+        ...
+
+    def sem_mark_relations_missing(
+        self, org_id: str, keys: Sequence[tuple[int, str, int]]
+    ) -> int:
+        """快照消失的关系 → status='missing'（G-15——源端独立删边、两端实体
+        仍在；synced_at 保留为宽限起算锚）。返回行数。"""
+        ...
+
+    def sem_relations_lookup(
+        self, org_id: str, keys: Sequence[tuple[int, str, int]]
+    ) -> dict[tuple[int, str, int], dict]:
+        """关系行批查 {key: {source, status}}——yaml 合并「与同步关系重复」
+        判定面（§5.8 合并规则表第 6 行）。"""
         ...
 
     def rebuild_sync_aliases(self, org_id: str, rows: Sequence[dict]) -> int:
@@ -751,8 +786,9 @@ class SemanticBackend(Protocol):
         ...
 
     def advance_status(self, org_id: str, *, missing_before: str) -> dict:
-        """missing 宽限期推进（超期 missing → retired，关系一并 retired——T-S4）；
-        返回 {missing, retired, relations_retired} 计数。"""
+        """missing 宽限期推进（超期 missing → retired，关系一并 retired——T-S4；
+        G-15：关系级 missing 同口推进）。返回 {missing, retired, relations_retired,
+        relations_retired_standalone} 计数。"""
         ...
 
     def sem_start_run(self, org_id: str, adapter: str, *, now: str) -> int:
@@ -798,9 +834,12 @@ class SemanticBackend(Protocol):
     def sem_insert_build(
         self, org_id: str, dict_rev: str, stats_json: str, *,
         yaml_rev: str | None = None, sync_run_id: int | None = None,
-    ) -> int:
-        """sem_builds 落 building 行（UNIQUE(org,dict_rev) upsert——失败行同 rev
-        重试复用同一行）。返回 build id。"""
+    ) -> tuple[int, bool]:
+        """building 行 upsert（UNIQUE(org,dict_rev)——失败行同 rev 重试复用行）。
+        O-1/m2s-3 条件 upsert（DO UPDATE … WHERE status != 'ready'）：同 rev 行
+        已 ready 时不重断 building（无 flap/双 ready 事件）——返回
+        ``(existing_id, True)`` 交调用方走重激活/让位路径；正常路径
+        ``(build_id, False)``。"""
         ...
 
     def sem_switch_build_ready(
@@ -823,6 +862,14 @@ class SemanticBackend(Protocol):
         失败不切指针，旧 ready 继续为当前——T-S12 骨架）。**返回是否真生效**
         （rowcount==1——已终态行幂等零生效，P2-2/R2：调用方仅真生效时认失败，
         不因并发输者/迟到异常写脏审计）；audit 同事务同条件。"""
+        ...
+
+    def sem_reactivate_build(
+        self, org_id: str, build_id: int, stats_json: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> bool:
+        """G-18/m2s-3：rev 回退重激活——ready 行顶置 activated_at 成为 current
+        （+ ready 事件同事务）；仅 status='ready' 行生效（幂等防线）。"""
         ...
 
     def save_build(self, org_id: str, dict_rev: str, stats_json: str) -> int:
@@ -887,6 +934,35 @@ class SemanticBackend(Protocol):
     def sem_table_columns(self, org_id: str, table_id: int) -> list[dict]:
         """表实体的本地轻量列节点（describe_table 降级路径——T-S11③：
         元数据系统不可用时返回 [{key,name}]）。"""
+        ...
+
+    # ---- m2s-3：YAML curated 合并面 + FTS 索引面（SQL 下沉双方言——D24） ----
+
+    def sem_write_curated_batch(self, org_id: str, rows: Sequence[dict]) -> int:
+        """curated_json 批写（§5.8 合并规则表第 1 行）。row = {type, key,
+        curated_json, curated_rev, sensitivity?}——仅 active 实体生效。"""
+        ...
+
+    def sem_replace_manual_aliases(self, org_id: str, rows: Sequence[dict]) -> int:
+        """manual/abbr 别名整替（先删后插只动这两类——T-S1 分工）。row = {type,
+        key, aliases: [(alias, alias_norm, kind, match_mode)]}。"""
+        ...
+
+    def sem_clear_stale_curated(
+        self, org_id: str, keep_entity_ids: Sequence[int]
+    ) -> int:
+        """YAML 删除覆盖项（规则表第 8 行）：source='sync' 且 curated_rev 非空、
+        不在 keep 集 → 清 curated_json/curated_rev + 删 manual/abbr 别名（事实列
+        不动）。返回清理行数。"""
+        ...
+
+    def sem_refresh_search_texts(self, org_id: str, entity_ids: Sequence[int]) -> None:
+        """实体 FTS 文本行重建（C.3——名称+别名分词进 sem_search_texts；sqlite
+        外容表 FTS5 / pg tsvector GENERATED 双方言内部消化）。"""
+        ...
+
+    def sem_restricted_column_keys(self, org_id: str, table_id: int) -> set[str]:
+        """C.5：表下 restricted 列键集（describe_table 主路径列级过滤面）。"""
         ...
 
 

@@ -126,6 +126,7 @@ class Settings:
     semantic_dim_alert_drop: float = 0.5  # 快照携带率 < 基线 × 此值 → 告警（防缺值静默变宽——TC-SYNC-06②）
     semantic_night_window: str = ""  # 错峰窗口登记（如 "01:00-05:00"——本段不强制生效，分批即天然限速）
     semantic_describe_cache_s: float = 300.0  # describe_table 透传缓存 TTL（T-S11④：5min；0=关缓存——m2s-2）
+    semantic_l0_token_budget: int = 1500  # L0 总 token 预算（§5.8 l0 行——CI 拦截阈值；TC-YAML-04）
     # semantic_batch_rows 上界 1000 = design §5.8「每批 ≤1000 行提交」硬约束
     # （NFR-11 写锁治理）——校验收口（P3-5/R2），不可配置突破
 
@@ -221,6 +222,7 @@ def get_settings() -> Settings:
         semantic_dim_alert_drop=float(_num("LATTICE_SEM_DIM_ALERT_DROP", 0.5)),
         semantic_night_window=_f("LATTICE_SEM_NIGHT_WINDOW", ""),
         semantic_describe_cache_s=float(_num("LATTICE_SEM_DESCRIBE_CACHE_S", 300.0)),
+        semantic_l0_token_budget=int(_num("LATTICE_SEM_L0_TOKEN_BUDGET", 1500)),
         log_level=env("LATTICE_LOG_LEVEL", "INFO"),
         log_format=env("LATTICE_LOG_FORMAT", "json"),
     )
@@ -242,6 +244,7 @@ def _validate(s: Settings) -> None:
         "maintenance_keep_days", "maintenance_keep_count", "tombstone_keep_days",
         "audit_keep_months", "upload_credential_ttl_s", "maintenance_interval_s",
         "semantic_describe_cache_s",
+        "semantic_l0_token_budget",
     ):
         value = getattr(s, name)
         if value < 0:

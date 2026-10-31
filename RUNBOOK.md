@@ -98,6 +98,10 @@ deploy 场景注意：
   failed、文档侧不触碰**（可能残留 `pending_status='parsing'` 文档——需人工
   核对或重传新版本）；执行侧 `run_task` 对 NULL 行回退 `_effective_version`
   （文档当前有效版本——M1 口径）。新任务（0005 后创建）恒写目标版本，无此窗口。
+- **0007（语义 YAML/构建指针/FTS 表，m2s-3，2026-10-31）升级注意——sqlite·pg 双方言同适用**：
+  迁移**不回填** `sem_search_texts`——既有 active 实体在下一次对应源 sync 前
+  FTS 第三层（label 模糊）为空；升级后请触发一次各源 sync
+  （`POST /semantic/sync/{adapter}`）完成回填；前两层（alias 精确/前缀）不受影响。
 
 ## 4. 备份恢复 Runbook（M2-2 起，D24 双后端各一份）
 

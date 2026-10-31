@@ -1,4 +1,5 @@
-"""语义层管理端点（design §6.2 L1141/1143——M2-S1 起、m2s-2 补全构建面）：
+"""语义层端点（design §6.2 L1136-1143——M2-S1 管理面、m2s-2 构建面、
+m2s-3 读端点 + YAML webhook）：
 
 - POST /api/orgs/{org}/semantic/sync/{adapter}：手动触发同步——**semantic:admin**
   （org_admin 兼任，§6.3——普通成员 403）；入队 semantic_sync 任务（payload
@@ -7,20 +8,40 @@
   无工厂覆盖时 resolve_source_config fail-fast（P3-7——未配置/畸形 400）；
   **G-16 收口（m2s-2）**：任务行与触发事件经 create_task(audit=) **同一事务**；
 - GET /api/orgs/{org}/semantic/sync-runs：同步记录与冲突报告（stats_json 内含
-  conflicts 明细——TC-SYNC-04）；m2s-2 管理语义：limit 分页 + adapter/status
-  过滤（design §6.2）；
+  conflicts 明细——TC-SYNC-04；curated 合并面 stats.curated 同 run 可查——
+  m2s-3）；m2s-2 管理语义：limit 分页 + adapter/status 过滤（design §6.2）；
 - POST /api/orgs/{org}/semantic/builds：触发构建（m2s-2——semantic:admin；
   入队 semantic_build 任务 {org}，任务行与 semantic.build 触发事件同事务）；
 - GET /api/orgs/{org}/semantic/builds：构建列表 + 当前（current=最新 ready）
   ——limit/status 过滤；GET /semantic/builds/{id}：构建明细（manifest/stats）。
 
-权限口径（§6.2 L1143）：查询端点同 `semantic:admin`（org_admin 可见、普通
+读端点（m2s-3——v1.9.5 拍板⑤；semantic:read = 组织成员默认具备，§6.3 权限
+口径①②——无成员关系 403）：
+
+- GET /api/orgs/{org}/semantic/entities?q=&types=&top_k=：实体检索，同 MCP
+  `search_entities`（design §6.2 L1137）；
+- GET /api/orgs/{org}/semantic/entities/{id}?expand=&depth=：实体详情与关系
+  展开，同 `get_entity`（L1138）；
+- GET /api/orgs/{org}/semantic/tables/{key}/describe?columns=：表/列详情透传，
+  同 `describe_table`（L1139——仅已登记 table，未登记 403 防枚举）。
+
+YAML webhook（design §6.2 L1142——TC-YAML-03；m2s-3）：
+
+- POST /api/orgs/{org}/semantic/yaml/webhook：Git 合并回调——**签名 = 服务
+  身份**（X-Lattice-Signature: sha256=HMAC-SHA256(body)），无/错签名一律 401；
+  **不接受用户 Bearer 替代**（Git 回调入口仅服务身份——TC-YAML-03③）；
+  验签通过 → 入队 semantic_sync {adapter: yaml}（yaml 合并 + 构建联动 §5.8）
+  + semantic.yaml_merge 触发事件（create_task audit= 同事务——G-16 口径）；
+  **凭证明文不落日志**（secret/签名串只参与常量时间比对，日志零出现）。
+
+权限口径（§6.2 L1143）：管理面同 `semantic:admin`（org_admin 可见、普通
 成员 403——TC-SYNC-08③）。分层纪律：识别面（auto_entities）钉 api/mcp 层；
-端点只做协议转换 + 编排调用（core/semantic/{sync,build}）。
+端点只做协议转换 + 编排调用（core/semantic/{lookup,expand,sync,build}）。
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -207,3 +228,174 @@ async def get_semantic_build(
             status_code=404, detail=f"semantic build not found: {build_id}"
         )
     return build
+
+
+# ---- m2s-3 读端点（semantic:read——组织成员默认具备，§6.3 权限口径①②） ----
+
+
+def _require_semantic_read(service, org: str, auth) -> None:
+    """semantic:read 门控（组织成员默认具备——无成员关系 403；语义层不复用
+    维度 ACL 编译器——§6.3 权限口径②）。"""
+    if service.backend.read_membership(auth.user_id, org) is None:
+        raise HTTPException(
+            status_code=403,
+            detail="semantic:read 需组织成员（no active membership:"
+                   f" user={auth.user_id!r} org={org!r}）",
+        )
+
+
+@router.get("/api/orgs/{org}/semantic/entities")
+async def list_semantic_entities(
+    org: str, request: Request, auth=Depends(get_auth),
+    q: str = Query(..., min_length=1), types: list[str] = Query(None),
+    top_k: int = Query(10, ge=1, le=50),
+) -> dict:
+    """实体检索（semantic:read——同 MCP search_entities；design §6.2 L1137）。"""
+    org = org_scoped(request, org, auth)
+    service = get_service(request)
+    _require_semantic_read(service, org, auth)
+    from knowledge_lattice.core.semantic.lookup import search_entities
+
+    try:
+        return search_entities(service.backend, org, q, types=types, top_k=top_k)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/orgs/{org}/semantic/entities/{entity_id}")
+async def get_semantic_entity(
+    org: str, entity_id: int, request: Request, auth=Depends(get_auth),
+    expand: list[str] = Query(None), depth: int = Query(1),
+    fanout_limit: int = Query(50), include: list[str] = Query(None),
+) -> dict:
+    """实体详情与关系展开（semantic:read——同 MCP get_entity；L1138；
+    不存在/他组织/restricted/非 active 一律 404——存在性零泄露 T-S7/T-S9；
+    参数越界经 core 校验 → 400——与 MCP 口径一致）。"""
+    org = org_scoped(request, org, auth)
+    service = get_service(request)
+    _require_semantic_read(service, org, auth)
+    from knowledge_lattice.core.semantic.expand import EntityNotFound, get_entity
+
+    try:
+        return await asyncio.to_thread(
+            get_entity, service.backend, org, entity_id=entity_id,
+            expand=expand, depth=depth, fanout_limit=fanout_limit,
+            include=include,
+        )
+    except EntityNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/orgs/{org}/semantic/tables/{table_key}/describe")
+async def describe_semantic_table(
+    org: str, table_key: str, request: Request, auth=Depends(get_auth),
+    columns: list[str] = Query(None),
+) -> dict:
+    """表/列详情透传（semantic:read——同 MCP describe_table；L1139；仅已登记
+    table 实体——未登记 403 防借此枚举数仓，T-S11②）。"""
+    org = org_scoped(request, org, auth)
+    service = get_service(request)
+    _require_semantic_read(service, org, auth)
+    from knowledge_lattice.core.semantic.lookup import (
+        DescribeTableDenied, describe_table,
+    )
+
+    try:
+        return await asyncio.to_thread(
+            describe_table, service.backend, service.settings, org, table_key,
+            columns=columns,
+        )
+    except DescribeTableDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+# ---- m2s-3 YAML webhook（design §6.2 L1142——TC-YAML-03） ----
+
+
+@router.post("/api/orgs/{org}/semantic/yaml/webhook", status_code=202)
+async def semantic_yaml_webhook(
+    org: str, request: Request, background: BackgroundTasks,
+) -> dict:
+    """Git 合并回调（TC-YAML-03）：签名=服务身份（HMAC-SHA256 over raw body，
+    per-org secret 随 yaml 源配置）；验签通过 → 投递 yaml 合并（semantic_sync
+    {adapter: yaml}）+ semantic.yaml_merge 事件（同事务）；无/错签名 401——
+    用户 Bearer 不替代服务身份。凭证明文不落日志（常量时间比对、日志零出现）。"""
+    from knowledge_lattice.domain.audit_events import EVENT_SEMANTIC_YAML_MERGE
+    from knowledge_lattice.domain.auth import OrgContextError, check_path_org
+
+    try:
+        org = check_path_org(
+            path_org=org, org_header=request.headers.get("x-org-id"))
+    except OrgContextError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    service = get_service(request)
+    secret = _yaml_webhook_secret(service.settings, org)
+    body = await request.body()
+    signature = request.headers.get("x-lattice-signature", "")
+    if not _signature_ok(secret, body, signature):
+        # 不回显签名/secret（凭证明文不落日志）；请求体细节亦不落
+        logger.warning(
+            "semantic yaml webhook rejected: org=%s (invalid or missing signature)"
+            "——Git 回调入口仅服务身份（TC-YAML-03②③）", org,
+        )
+        raise HTTPException(
+            status_code=401,
+            detail="webhook signature invalid（X-Lattice-Signature: "
+                   "sha256=HMAC-SHA256(body)——服务身份校验失败）",
+        )
+
+    try:
+        payload = json.loads(body) if body else {}
+    except ValueError:
+        payload = {}
+    commit = payload.get("commit") or payload.get("after")
+
+    backend = service.backend
+    task_id = f"tsk_{uuid.uuid4()}"
+    backend.create_task(
+        None, task_type="semantic_sync", task_id=task_id,
+        payload=json.dumps({"org": org, "adapter": "yaml"}),
+        audit=(
+            EVENT_SEMANTIC_YAML_MERGE,
+            json.dumps(
+                {"org_id": org, "task_id": task_id, "phase": "triggered",
+                 "commit": commit},
+                ensure_ascii=False, default=str,
+            ),
+        ),
+    )
+
+    def _kick() -> None:
+        if service.worker is not None:
+            service.worker.kick()
+
+    background.add_task(_kick)
+    return {"task_id": task_id, "status": "queued", "org": org,
+            "adapter": "yaml"}
+
+
+def _yaml_webhook_secret(settings, org: str) -> str | None:
+    """per-org webhook secret（semantic_sources[org][yaml][webhook_secret]）。"""
+    org_conf = settings.semantic_sources.get(org) or {}
+    raw = org_conf.get("yaml") or {}
+    secret = raw.get("webhook_secret")
+    return str(secret) if secret else None
+
+
+def _signature_ok(secret: str | None, body: bytes, header_value: str) -> bool:
+    """sha256=hex HMAC 常量时间比对（secret 为 None 即未配置——一律拒绝：
+    fail-closed，不落凭据细节）。"""
+    import hashlib
+    import hmac as _hmac
+
+    if not secret:
+        return False
+    expected_prefix = "sha256="
+    if not header_value.startswith(expected_prefix):
+        return False
+    expected = _hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return _hmac.compare_digest(
+        header_value[len(expected_prefix):], expected)

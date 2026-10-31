@@ -40,6 +40,13 @@ def join_seg(text: str) -> str:
     return " ".join(segment(text))
 
 
+def word_tokens(text: str) -> list[str]:
+    """分词后滤除不含字母/数字/CJK 的符号 token（'_'、'-' 等）——语义层 FTS
+    索引与查询两侧共用（m2s-3 C.3：符号 token 不参与 MATCH，防 '_' 类全命中）。"""
+    return [t for t in segment(text)
+            if any(ch.isalnum() or "\u4e00" <= ch <= "\u9fff" for ch in t)]
+
+
 def token_count(text: str) -> int:
     """token 数（结构感知切分 256–512 的计量单位——TC-ING-02）。"""
     return len(segment(text))

@@ -2162,13 +2162,16 @@ class SqliteBackend:
         只写事实列（name/attrs_json/parent_id/status/synced_at——从不写
         curated_json，T-S1 列级分工）；rows 按父先子后有序；parent_id 解析三级——批内 id 映射 / 批间缓存 /
         库内回查（跨批已提交父行——P2-1 修复：快照超 batch_rows 不再丢父）。updated 计数只看事实列变更
-        与状态回归 active（synced_at 刷新不计入——T-S3）。
+        与状态回归 active（synced_at 刷新不计入——T-S3）。row 可带 ``source``
+        （缺省 'sync'——yaml 纯人工实体 'curated'，§5.8；source 不随后续
+        sync 源更新漂移）。名称变更后刷新 FTS 文本行（C.3）。
         """
         conn = self._conn
         existing = self._sem_read_existing(
             org_id, [(r["type"], r["key"]) for r in rows]
         )
         inserted = updated = 0
+        touched: list[int] = []
         conn.execute("BEGIN IMMEDIATE")
         try:
             id_map = {k: v[0] for k, v in existing.items()}
@@ -2178,6 +2181,7 @@ class SqliteBackend:
                 parent_id = self._sem_parent_id(
                     org_id, row.get("parent_key"), id_map, parent_cache
                 )
+                row_source = row.get("source") or "sync"
                 if key in existing:
                     _, old_name, old_attrs, old_parent, old_status = existing[key]
                     if (old_name != row["name"]
@@ -2195,23 +2199,28 @@ class SqliteBackend:
                          "ts": row["synced_at"], "org": org_id,
                          "type": row["type"], "key": row["key"]},
                     )
+                    if old_name != row["name"]:
+                        touched.append(id_map[key])
                 else:
                     cur = conn.execute(
                         "INSERT INTO sem_entities(org_id, type, key, name, parent_id,"
                         " attrs_json, source, source_system, status, synced_at)"
                         " VALUES(:org, :type, :key, :name, :parent, :attrs,"
-                        " 'sync', :srcsys, 'active', :ts)",
+                        " :source, :srcsys, 'active', :ts)",
                         {"org": org_id, "type": row["type"], "key": row["key"],
                          "name": row["name"], "parent": parent_id,
-                         "attrs": row["attrs_json"], "srcsys": row["source_system"],
-                         "ts": row["synced_at"]},
+                         "attrs": row["attrs_json"], "source": row_source,
+                         "srcsys": row["source_system"], "ts": row["synced_at"]},
                     )
                     id_map[key] = cur.lastrowid
+                    touched.append(cur.lastrowid)
                     inserted += 1
             conn.execute("COMMIT")
         except BaseException:
             self._rollback()
             raise
+        if touched:
+            self.sem_refresh_search_texts(org_id, touched)
         return {"inserted": inserted, "updated": updated}
 
     def _sem_parent_id(self, org_id, parent_key, id_map: dict, parent_cache: dict):
@@ -2272,9 +2281,11 @@ class SqliteBackend:
     def sem_active_source_keys(
         self, org_id: str, source_system: str
     ) -> set[tuple[str, str]]:
+        """删除比例保护基数（m2s-3 起 per-source_system 收口——yaml 纯人工
+        实体 source='curated' 同入基数面，T-S2 对 yaml 源同样成立）。"""
         rows = self._conn.execute(
             "SELECT type, key FROM sem_entities"
-            " WHERE org_id = ? AND source = 'sync' AND source_system = ?"
+            " WHERE org_id = ? AND source_system = ?"
             "   AND status = 'active'",
             (org_id, source_system),
         )
@@ -2286,11 +2297,40 @@ class SqliteBackend:
             "SELECT count(*), coalesce(sum("
             "  CASE WHEN json_extract(attrs_json, '$.dims') IS NOT NULL THEN 1 ELSE 0 END"
             "), 0) FROM sem_entities"
-            " WHERE org_id = ? AND source = 'sync' AND source_system = ?"
+            " WHERE org_id = ? AND source_system = ?"
             "   AND status = 'active'",
             (org_id, source_system),
         ).fetchone()
         return {"total": row[0], "filled": row[1]}
+
+    def sem_entity_states(self, org_id: str, entity_ids: Sequence[int]) -> dict[int, dict]:
+        """批量实体态（status/source——G-15 端点过滤与合并冲突判定共用）。"""
+        out: dict[int, dict] = {}
+        for chunk in _sem_chunks(list(entity_ids), self._SEM_IN_CHUNK):
+            marks = ",".join("?" for _ in chunk)
+            for r in self._conn.execute(
+                f"SELECT id, status, source FROM sem_entities"
+                f" WHERE org_id = ? AND id IN ({marks})",
+                (org_id, *chunk),
+            ):
+                out[r[0]] = {"status": r[1], "source": r[2]}
+        return out
+
+    def sem_entities_by_ids(self, org_id: str, entity_ids: Sequence[int]) -> list[dict]:
+        """批量实体行（O-2 expand_relations seed 节点信息面）。"""
+        out: list[dict] = []
+        for chunk in _sem_chunks(list(entity_ids), self._SEM_IN_CHUNK):
+            marks = ",".join("?" for _ in chunk)
+            out.extend(
+                self._sem_entity_row(r) for r in self._conn.execute(
+                    f"SELECT id, org_id, type, key, name, parent_id, attrs_json,"
+                    f" curated_json, source, source_system, status, sensitivity,"
+                    f" synced_at, curated_rev FROM sem_entities"
+                    f" WHERE org_id = ? AND id IN ({marks}) ORDER BY id",
+                    (org_id, *chunk),
+                )
+            )
+        return out
 
     def mark_entities_missing(self, org_id: str, entity_ids: Sequence[int]) -> int:
         if not entity_ids:
@@ -2315,7 +2355,14 @@ class SqliteBackend:
         return n
 
     def upsert_relations_batch(self, org_id: str, rows: Sequence[dict]) -> dict:
-        """关系分批 upsert（端点不可变——既有行只更新 attrs/status/synced_at）。"""
+        """关系分批 upsert（端点不可变——既有行只更新 attrs/status/synced_at）。
+
+        row 可带 ``source``（'sync' 缺省 / 'curated'——yaml 人工补关系）与
+        ``source_system``（G-15 关系级 per-adapter 作用域）。G-15 端点状态
+        过滤（defense in depth——core 预过滤为主）：UPDATE 仅在两端点 active
+        时置回 active；INSERT 端点非 active 时以 'missing' 落库（端点恢复后
+        下轮 upsert 置回）——指向 retired 端点的关系不回 active。
+        """
         conn = self._conn
         marks_counts: dict[tuple, str] = {}
         conn.execute("BEGIN IMMEDIATE")
@@ -2330,10 +2377,18 @@ class SqliteBackend:
                 if old is None:
                     conn.execute(
                         "INSERT INTO sem_relations(org_id, src_id, rel_type, dst_id,"
-                        " attrs_json, source, status, synced_at)"
-                        " VALUES(:org, :src, :rel, :dst, :attrs, 'sync', 'active', :ts)",
+                        " attrs_json, source, source_system, status, synced_at)"
+                        " VALUES(:org, :src, :rel, :dst, :attrs, :source, :srcsys,"
+                        "  CASE WHEN EXISTS(SELECT 1 FROM sem_entities s"
+                        "       WHERE s.id = :src AND s.org_id = :org AND s.status = 'active')"
+                        "        AND EXISTS(SELECT 1 FROM sem_entities d"
+                        "       WHERE d.id = :dst AND d.org_id = :org AND d.status = 'active')"
+                        "   THEN 'active' ELSE 'missing' END, :ts)",
                         {"org": org_id, "src": k[0], "rel": k[1], "dst": k[2],
-                         "attrs": row["attrs_json"], "ts": row["synced_at"]},
+                         "attrs": row["attrs_json"],
+                         "source": row.get("source") or "sync",
+                         "srcsys": row.get("source_system"),
+                         "ts": row["synced_at"]},
                     )
                     marks_counts[k] = "i"
                 else:
@@ -2343,7 +2398,13 @@ class SqliteBackend:
                         marks_counts[k] = "s"
                     conn.execute(
                         "UPDATE sem_relations SET attrs_json = :attrs,"
-                        " status = 'active', synced_at = :ts"
+                        " status = CASE WHEN"
+                        "   EXISTS(SELECT 1 FROM sem_entities s"
+                        "     WHERE s.id = :src AND s.org_id = :org AND s.status = 'active')"
+                        "   AND EXISTS(SELECT 1 FROM sem_entities d"
+                        "     WHERE d.id = :dst AND d.org_id = :org AND d.status = 'active')"
+                        " THEN 'active' ELSE status END,"
+                        " synced_at = :ts"
                         " WHERE org_id = :org AND src_id = :src AND rel_type = :rel"
                         "   AND dst_id = :dst",
                         {"attrs": row["attrs_json"], "ts": row["synced_at"],
@@ -2358,8 +2419,59 @@ class SqliteBackend:
             "updated": sum(1 for v in marks_counts.values() if v == "u"),
         }
 
+    def sem_active_source_relation_keys(
+        self, org_id: str, source_system: str
+    ) -> set[tuple[int, str, int]]:
+        """本源 active 关系键集（G-15 关系级消失检测的库内侧）。"""
+        return {
+            (r[0], r[1], r[2]) for r in self._conn.execute(
+                "SELECT src_id, rel_type, dst_id FROM sem_relations"
+                " WHERE org_id = ? AND source_system = ? AND status = 'active'",
+                (org_id, source_system),
+            )
+        }
+
+    def sem_mark_relations_missing(
+        self, org_id: str, keys: Sequence[tuple[int, str, int]]
+    ) -> int:
+        """快照消失的关系 → missing（G-15——synced_at 保留为宽限期起算锚）。"""
+        n = 0
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for chunk in _sem_chunks(list(keys), self._SEM_IN_CHUNK):
+                for src_id, rel, dst_id in chunk:
+                    cur = conn.execute(
+                        "UPDATE sem_relations SET status = 'missing'"
+                        " WHERE org_id = ? AND src_id = ? AND rel_type = ?"
+                        "   AND dst_id = ? AND status = 'active'",
+                        (org_id, src_id, rel, dst_id),
+                    )
+                    n += cur.rowcount
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return n
+
+    def sem_relations_lookup(
+        self, org_id: str, keys: Sequence[tuple[int, str, int]]
+    ) -> dict[tuple[int, str, int], dict]:
+        """关系行批查（合并规则表「与同步关系重复」判定面——yaml_merge）。"""
+        out: dict[tuple[int, str, int], dict] = {}
+        for src_id, rel, dst_id in keys:
+            row = self._conn.execute(
+                "SELECT source, status FROM sem_relations"
+                " WHERE org_id = ? AND src_id = ? AND rel_type = ? AND dst_id = ?",
+                (org_id, src_id, rel, dst_id),
+            ).fetchone()
+            if row is not None:
+                out[(src_id, rel, dst_id)] = {"source": row[0], "status": row[1]}
+        return out
+
     def rebuild_sync_aliases(self, org_id: str, rows: Sequence[dict]) -> int:
-        """别名三 kind 重建：单事务先删后插（manual/abbr 原样——TC-SYNC-05）。"""
+        """别名三 kind 重建：单事务先删后插（manual/abbr 原样——TC-SYNC-05）；
+        重建后刷新 FTS 文本行（C.3——别名面即索引面）。"""
         conn = self._conn
         ids = self.resolve_entity_ids(
             org_id, [(r["type"], r["key"]) for r in rows]
@@ -2387,11 +2499,15 @@ class SqliteBackend:
         except BaseException:
             self._rollback()
             raise
+        if ids:
+            self.sem_refresh_search_texts(org_id, sorted(ids.values()))
         return inserted
 
     def advance_status(self, org_id: str, *, missing_before: str) -> dict:
-        """missing 宽限期推进：超期（synced_at < missing_before）→ retired 且其
-        active 关系一并 retired（T-S4③）。
+        """宽限期推进：超期（synced_at < missing_before）missing 实体 → retired
+        且其 active 关系一并 retired（T-S4③）；**关系级 missing 同口推进**
+        （G-15——源端独立删边、两端实体仍在的关系超宽限 → retired，
+        ``relations_retired_standalone`` 单列计数）。
 
         推进口径（P3-8）：**org 全量推进、不按 source_system 收口**——多适配器
         共享同一时间窗（任一 run 的 advance 均推进全 org 的超期 missing）；
@@ -2416,12 +2532,20 @@ class SqliteBackend:
                     (org_id, *chunk),
                 )
                 cur = conn.execute(
+                    # 级联覆盖 active + missing（G-15：missing 潜伏关系随端点
+                    # retired 一并收口，不留孤儿潜伏行）
                     f"UPDATE sem_relations SET status = 'retired'"
-                    f" WHERE org_id = ? AND status = 'active'"
+                    f" WHERE org_id = ? AND status IN ('active', 'missing')"
                     f"   AND (src_id IN ({marks}) OR dst_id IN ({marks}))",
                     (org_id, *chunk, *chunk),
                 )
                 relations_retired += cur.rowcount
+            # G-15 关系级宽限推进：两端实体仍在、关系自身超宽限的 missing 行
+            relations_retired_standalone = conn.execute(
+                "UPDATE sem_relations SET status = 'retired'"
+                " WHERE org_id = ? AND status = 'missing' AND synced_at < ?",
+                (org_id, missing_before),
+            ).rowcount
             missing_now = conn.execute(
                 "SELECT count(*) FROM sem_entities"
                 " WHERE org_id = ? AND status = 'missing'",
@@ -2435,6 +2559,7 @@ class SqliteBackend:
             "missing": missing_now,
             "retired": len(retired_ids),
             "relations_retired": relations_retired,
+            "relations_retired_standalone": relations_retired_standalone,
         }
 
     def sem_start_run(self, org_id: str, adapter: str, *, now: str) -> int:
@@ -2507,28 +2632,33 @@ class SqliteBackend:
         return _sem_run_dict(cols, row)
 
     def sem_current_build(self, org_id: str) -> dict | None:
-        """当前构建 = 最新 ready 行（design §5.8：旧 ready 保留服务按 (org,
-        dict_rev) 懒加载——CHECK 枚举无 superseded，最新 ready 即指针）。"""
+        """当前构建 = 最新 ready 行（G-18/m2s-3：按 (activated_at, id) DESC——
+        rev 回退重激活的行 activated_at 被顶置、current 跟随不失真；design
+        §4 CHECK 枚举无 superseded，旧 ready 保留服务〔§5.8 懒加载语义〕）。"""
         row = self._conn.execute(
             "SELECT id, org_id, dict_rev, yaml_rev, sync_run_id, status, stats_json,"
-            " created_at FROM sem_builds WHERE org_id = ? AND status = 'ready'"
-            " ORDER BY id DESC LIMIT 1",
+            " created_at, activated_at FROM sem_builds WHERE org_id = ?"
+            " AND status = 'ready'"
+            " ORDER BY (activated_at IS NULL), activated_at DESC, id DESC LIMIT 1",
             (org_id,),
         ).fetchone()
         if row is None:
             return None
         cols = ("id", "org_id", "dict_rev", "yaml_rev", "sync_run_id",
-                "status", "stats_json", "created_at")
+                "status", "stats_json", "created_at", "activated_at")
         return _sem_run_dict(cols, row)
 
     def sem_active_snapshot(self, org_id: str) -> dict:
-        """构建输入快照（§5.8 第 1 步——active 实体 + 全部别名 + active 关系，
+        """构建输入快照（§5.8 第 1 步——active 实体（含 curated_json/curated_rev
+        ——G-17：YAML 改 definition 必触发重建）+ 全部别名 + active 关系，
         稳定序输出供 dict_rev 哈希）。"""
         entities = [
             {"id": r[0], "type": r[1], "key": r[2], "name": r[3],
-             "parent_id": r[4], "attrs_json": r[5], "sensitivity": r[6]}
+             "parent_id": r[4], "attrs_json": r[5], "sensitivity": r[6],
+             "curated_json": r[7] or "{}", "curated_rev": r[8]}
             for r in self._conn.execute(
-                "SELECT id, type, key, name, parent_id, attrs_json, sensitivity"
+                "SELECT id, type, key, name, parent_id, attrs_json, sensitivity,"
+                " curated_json, curated_rev"
                 " FROM sem_entities WHERE org_id = ? AND status = 'active'"
                 " ORDER BY id", (org_id,),
             )
@@ -2558,34 +2688,95 @@ class SqliteBackend:
     def sem_insert_build(
         self, org_id: str, dict_rev: str, stats_json: str, *,
         yaml_rev: str | None = None, sync_run_id: int | None = None,
-    ) -> int:
-        """building 行 upsert（UNIQUE(org,dict_rev)——失败行同 rev 重试复用行）。"""
+    ) -> tuple[int, bool]:
+        """building 行 upsert（UNIQUE(org,dict_rev)——失败行同 rev 重试复用行）。
+
+        O-1/m2s-3 条件 upsert：``DO UPDATE … WHERE status != 'ready'``——同 rev
+        行已 ready 时不重断 building（无 flap/双 ready 事件），返回
+        ``(existing_id, True)`` 交由调用方走重激活/让位路径；正常路径返回
+        ``(build_id, False)``。
+        """
         cur = self._conn.execute(
             "INSERT INTO sem_builds(org_id, dict_rev, yaml_rev, sync_run_id,"
             " status, stats_json) VALUES(?, ?, ?, ?, 'building', ?)"
             " ON CONFLICT(org_id, dict_rev) DO UPDATE SET"
             "   status = 'building', stats_json = excluded.stats_json,"
-            "   yaml_rev = excluded.yaml_rev, sync_run_id = excluded.sync_run_id"
+            "   yaml_rev = excluded.yaml_rev, sync_run_id = excluded.sync_run_id,"
+            "   activated_at = NULL"
+            " WHERE sem_builds.status != 'ready'"
             " RETURNING id",
             (org_id, dict_rev, yaml_rev, sync_run_id, stats_json),
         )
-        build_id = cur.fetchone()[0]
+        row = cur.fetchone()
         self._conn.commit()
-        return build_id
+        if row is not None:
+            return row[0], False
+        existing = self._conn.execute(
+            "SELECT id FROM sem_builds WHERE org_id = ? AND dict_rev = ?",
+            (org_id, dict_rev),
+        ).fetchone()
+        return existing[0], True
+
+    def sem_reactivate_build(
+        self, org_id: str, build_id: int, stats_json: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> bool:
+        """G-18 rev 回退重激活：ready 行顶置 activated_at 成为 current（+ready
+        事件同事务）；仅 status='ready' 行生效（幂等防线）。activated_at 取
+        max(现在, 本 org 既有最大 + 1s)——TIMESTAMP 秒级精度下同秒切换/重激活
+        的并列由严格递增保证 current 跟随重激活行（id 序在此场景与激活序相反）。"""
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = conn.execute(
+                "UPDATE sem_builds SET activated_at = ("
+                "  SELECT MAX(v) FROM ("
+                "    SELECT CURRENT_TIMESTAMP AS v"
+                "    UNION ALL"
+                "    SELECT datetime(MAX(b.activated_at), '+1 second') AS v"
+                "      FROM sem_builds b WHERE b.org_id = :org"
+                "  )"
+                "), stats_json = :stats"
+                " WHERE org_id = :org AND id = :bid AND status = 'ready'",
+                {"stats": stats_json, "org": org_id, "bid": build_id},
+            )
+            effective = cur.rowcount == 1
+            if effective and audit is not None:
+                conn.execute(
+                    "INSERT INTO audit_outbox(id, event_type, payload_json)"
+                    " VALUES(:id, :t, :p)",
+                    {"id": f"aud_{uuid.uuid4()}", "t": audit[0], "p": audit[1]},
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return effective
 
     def sem_switch_build_ready(
         self, org_id: str, build_id: int, stats_json: str, *,
         audit: tuple[str, str] | None = None,
     ) -> bool:
-        """原子切换：building → ready + ready 事件同一事务（P3-5/R2——audit 仅
-        rowcount==1 真生效时写；并发输者零行生效零事件，P2-2）。"""
+        """原子切换：building → ready（activated_at 顶置——G-18 current 锚；
+        P3-4/R2：与重激活同款**严格递增** max(now, 本 org 最大+1s)——TIMESTAMP
+        秒级精度下，重激活顶置的未来时间戳不得压住同秒窗口内后续 switch 的
+        current 跟随）+ ready 事件同一事务（P3-5/R2——audit 仅 rowcount==1 真生效
+        时写；并发输者零行生效零事件，P2-2）。"""
         conn = self._conn
         conn.execute("BEGIN IMMEDIATE")
         try:
             cur = conn.execute(
-                "UPDATE sem_builds SET status = 'ready', stats_json = ?"
-                " WHERE org_id = ? AND id = ? AND status = 'building'",
-                (stats_json, org_id, build_id),
+                "UPDATE sem_builds SET status = 'ready', stats_json = :stats,"
+                " activated_at = ("
+                "  SELECT MAX(v) FROM ("
+                "    SELECT CURRENT_TIMESTAMP AS v"
+                "    UNION ALL"
+                "    SELECT datetime(MAX(b.activated_at), '+1 second') AS v"
+                "      FROM sem_builds b WHERE b.org_id = :org"
+                "  )"
+                ")"
+                " WHERE org_id = :org AND id = :bid AND status = 'building'",
+                {"stats": stats_json, "org": org_id, "bid": build_id},
             )
             effective = cur.rowcount == 1
             if effective and audit is not None:
@@ -2651,6 +2842,220 @@ class SqliteBackend:
     def export_l0(self, org_id: str) -> str:
         """L0 术语片段导出——构建产物落地归 m2s-2（本段空串占位，语义轨道后段实装）。"""
         return ""
+
+    # ---- m2s-3：YAML curated 合并面（yaml_merge 编排、SQL 收口本域） ----
+
+    def sem_write_curated_batch(self, org_id: str, rows: Sequence[dict]) -> int:
+        """curated_json 批写（规则表第 1 行）：active 实体 upsert curated 内容 +
+        curated_rev；P3-3/R2：sensitivity **直写**（row.sensitivity 已由合并侧
+        按 YAML 当前值解析——含显式 normal；不再 COALESCE 只增不减）。"""
+        if not rows:
+            return 0
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for row in rows:
+                conn.execute(
+                    "UPDATE sem_entities SET curated_json = :curated,"
+                    " curated_rev = :rev, sensitivity = :sensitivity,"
+                    " updated_at = CURRENT_TIMESTAMP"
+                    " WHERE org_id = :org AND type = :type AND key = :key"
+                    "   AND status = 'active'",
+                    {"curated": row["curated_json"], "rev": row["curated_rev"],
+                     "sensitivity": row.get("sensitivity") or "normal",
+                     "org": org_id, "type": row["type"], "key": row["key"]},
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return len(rows)
+
+    def sem_replace_manual_aliases(self, org_id: str, rows: Sequence[dict]) -> int:
+        """manual/abbr 别名整替（corpus 全量语义——先删后插，kind ∈
+        {manual, abbr} 只动这两类；name/code/sync 原样——T-S1/TC-SYNC-05 分工）。"""
+        if not rows:
+            return 0
+        conn = self._conn
+        ids = self.resolve_entity_ids(
+            org_id, [(r["type"], r["key"]) for r in rows]
+        )
+        inserted = 0
+        touched: list[int] = []
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for row in rows:
+                eid = ids.get((row["type"], row["key"]))
+                if eid is None:
+                    continue
+                conn.execute(
+                    "DELETE FROM sem_aliases WHERE org_id = ? AND entity_id = ?"
+                    "   AND kind IN ('manual', 'abbr')",
+                    (org_id, eid),
+                )
+                for alias, alias_norm, kind, match_mode in row["aliases"]:
+                    # P3-2/R2：UNIQUE(org,entity,alias_norm) 残余竞态兜底——
+                    # 冲突行跳过不炸整 run（确定性冲突已由合并侧预检记录；
+                    # 带 conflict target 防 OR IGNORE 误吞 CHECK 类失败）
+                    conn.execute(
+                        "INSERT INTO sem_aliases(org_id, entity_id, alias,"
+                        " alias_norm, kind, match_mode)"
+                        " VALUES(?, ?, ?, ?, ?, ?)"
+                        " ON CONFLICT(org_id, entity_id, alias_norm) DO NOTHING",
+                        (org_id, eid, alias, alias_norm, kind, match_mode),
+                    )
+                    inserted += 1
+                touched.append(eid)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        if touched:
+            self.sem_refresh_search_texts(org_id, touched)
+        return inserted
+
+    def sem_clear_stale_curated(
+        self, org_id: str, keep_entity_ids: Sequence[int]
+    ) -> int:
+        """YAML 删除覆盖项（规则表第 8 行）：本源 sync 实体中 curated_rev 非空
+        且不在 keep 集 → 清 curated_json/curated_rev + 删 manual/abbr 别名；
+        事实列（name/attrs/别名三 kind）不动；纯人工实体（source='curated'）
+        的消失走实体级 missing/retired 流程，不在本面。"""
+        conn = self._conn
+        marks = ",".join("?" for _ in keep_entity_ids) if keep_entity_ids else None
+        where_extra = f" AND id NOT IN ({marks})" if marks else ""
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            stale = [
+                r[0] for r in conn.execute(
+                    f"SELECT id FROM sem_entities WHERE org_id = ?"
+                    f" AND source = 'sync' AND status != 'retired'"
+                    f" AND curated_rev IS NOT NULL{where_extra}",
+                    (org_id, *keep_entity_ids),
+                )
+            ]
+            for chunk in _sem_chunks(stale, self._SEM_IN_CHUNK):
+                marks2 = ",".join("?" for _ in chunk)
+                conn.execute(
+                    f"UPDATE sem_entities SET curated_json = '{{}}',"
+                    f" curated_rev = NULL, updated_at = CURRENT_TIMESTAMP"
+                    f" WHERE org_id = ? AND id IN ({marks2})",
+                    (org_id, *chunk),
+                )
+                conn.execute(
+                    f"DELETE FROM sem_aliases WHERE org_id = ?"
+                    f" AND entity_id IN ({marks2}) AND kind IN ('manual', 'abbr')",
+                    (org_id, *chunk),
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        if stale:
+            self.sem_refresh_search_texts(org_id, stale)
+        return len(stale)
+
+    # ---- C.3 FTS 模糊索引（search_entities 第三层——sqlite FTS5 外容表） ----
+
+    def sem_refresh_search_texts(self, org_id: str, entity_ids: Sequence[int]) -> None:
+        """实体 FTS 文本行重建：名称 + 全部别名（分词后空格拼接——docs FTS 同
+        tokenizer 惯例）。外容表 delete 命令显式清理旧行（content 表 DELETE
+        不自动维护索引）。"""
+        from knowledge_lattice.adapters.tokenizer import word_tokens
+
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for chunk in _sem_chunks(list(entity_ids), self._SEM_IN_CHUNK):
+                marks = ",".join("?" for _ in chunk)
+                old = conn.execute(
+                    f"SELECT id, seg_text FROM sem_search_texts"
+                    f" WHERE org_id = ? AND entity_id IN ({marks})",
+                    (org_id, *chunk),
+                ).fetchall()
+                for row_id, seg in old:
+                    conn.execute(
+                        "INSERT INTO sem_search_fts(sem_search_fts, rowid, seg_text)"
+                        " VALUES('delete', ?, ?)",
+                        (row_id, seg),
+                    )
+                conn.execute(
+                    f"DELETE FROM sem_search_texts WHERE org_id = ?"
+                    f" AND entity_id IN ({marks})",
+                    (org_id, *chunk),
+                )
+                for r in conn.execute(
+                    f"SELECT e.id, e.name, e.sensitivity FROM sem_entities e"
+                    f" WHERE e.org_id = ? AND e.id IN ({marks}) AND e.status = 'active'",
+                    (org_id, *chunk),
+                ):
+                    eid, name, _sensitivity = r
+                    aliases = conn.execute(
+                        "SELECT alias FROM sem_aliases WHERE org_id = ?"
+                        " AND entity_id = ?",
+                        (org_id, eid),
+                    ).fetchall()
+                    texts = [name] + [a[0] for a in aliases]
+                    seg = " ".join(
+                        tok for t in texts for tok in word_tokens(t)
+                    )
+                    if not seg:
+                        continue
+                    cur = conn.execute(
+                        "INSERT INTO sem_search_texts(org_id, entity_id, seg_text)"
+                        " VALUES(?, ?, ?)",
+                        (org_id, eid, seg),
+                    )
+                    conn.execute(
+                        "INSERT INTO sem_search_fts(rowid, seg_text)"
+                        " VALUES(?, ?)",
+                        (cur.lastrowid, seg),
+                    )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+
+    def _sem_fts_layer(self, org_id: str, q_norm: str, *, top_k: int,
+                       type_filter: str, params: list) -> list[dict] | None:
+        """FTS 第三层（C.3）：查询分词 → MATCH（**并列 AND**——贴近子串包含
+        语义，避免单 token OR 噪声）；无 token（纯符号）返回 None（跳层）。
+        评分差异按 G-6 登记。"""
+        from knowledge_lattice.adapters.tokenizer import word_tokens
+
+        tokens = word_tokens(q_norm)
+        if not tokens:
+            return None
+        match = " ".join(f'"{t.replace(chr(34), chr(34) * 2)}"' for t in tokens)
+        sql = (
+            "SELECT e.id, e.type, e.key, e.name, e.attrs_json, e.curated_json,"
+            " 0.5 AS score, 'fts' AS via, bm25(sem_search_fts) AS rank"
+            " FROM sem_search_fts f"
+            " JOIN sem_search_texts t ON t.id = f.rowid"
+            " JOIN sem_entities e ON e.id = t.entity_id"
+            " WHERE sem_search_fts MATCH ? AND t.org_id = ?"
+            " AND e.org_id = ? AND e.status = 'active'"
+            " AND e.sensitivity = 'normal'" + type_filter +
+            " ORDER BY rank LIMIT ?"
+        )
+        query_params = [match, org_id, org_id, *params[1:], top_k]
+        rows = self._conn.execute(sql, query_params).fetchall()
+        cols = ("id", "type", "key", "name", "attrs_json", "curated_json",
+                "score", "via", "rank")
+        return [dict(zip(cols, r)) for r in rows]
+
+    def sem_restricted_column_keys(self, org_id: str, table_id: int) -> set[str]:
+        """C.5：表下 restricted 列键集（describe_table 主路径列级过滤面）。"""
+        return {
+            r[0] for r in self._conn.execute(
+                "SELECT c.key FROM sem_relations r"
+                " JOIN sem_entities c ON c.id = r.dst_id"
+                " WHERE r.org_id = ? AND r.src_id = ? AND r.rel_type = 'has_column'"
+                "   AND r.status = 'active' AND c.status = 'active'"
+                "   AND c.sensitivity = 'restricted'",
+                (org_id, table_id),
+            )
+        }
 
     # ---- m2s-2 首批语义工具读取面（get_entity / search_entities / describe_table） ----
 
@@ -2767,11 +3172,12 @@ class SqliteBackend:
         self, org_id: str, q_norm: str, q_raw: str, *,
         types: Sequence[str] | None, top_k: int,
     ) -> list[dict]:
-        """三层 UNION：alias_norm 精确(1.0) > alias_norm 前缀(0.8) > name 模糊(0.5)
+        """三层 UNION：alias_norm 精确(1.0) > alias_norm 前缀(0.8) > FTS 模糊
+        （0.5——C.3/m2s-3：LIKE 骨架升级为 FTS5 MATCH over sem_search_texts，
+        名称+别名分词索引；评分差异与 pg tsvector 按 G-6 口径登记不追平）
         ——实体去重保最优在 core 侧收口（此处拉 top_k×3 候选）。
-        LIKE 匹配统一 LOWER + ESCAPE（双方言语义一致：%/_ 通配转义）。"""
+        LIKE 前缀匹配统一 LOWER + ESCAPE（双方言语义一致：%/_ 通配转义）。"""
         esc_norm = _like_escape(q_norm)
-        esc_raw = _like_escape(q_raw)
         type_filter = ""
         params: list[object] = [org_id]
         if types:
@@ -2791,24 +3197,23 @@ class SqliteBackend:
             "  SELECT e.id, e.type, e.key, e.name, e.attrs_json, e.curated_json,"
             "         0.8 AS score, 'alias-prefix' AS via" + base
             + "   AND a.alias_norm LIKE ? ESCAPE '\\'"
-            "  UNION ALL"
-            "  SELECT e.id, e.type, e.key, e.name, e.attrs_json, e.curated_json,"
-            "         0.5 AS score, 'name' AS via"
-            "  FROM sem_entities e WHERE e.org_id = ? AND e.status = 'active'"
-            "   AND e.sensitivity = 'normal'" + type_filter
-            + "   AND LOWER(e.name) LIKE LOWER(?) ESCAPE '\\'"
             ") ORDER BY score DESC, id ASC LIMIT ?"
         )
         query_params = (
             params + [q_norm]
             + params + [f"{esc_norm}%"]
-            + params + [f"%{esc_raw}%"]
-            + [max(top_k * 3, top_k)]
+            + [max(top_k * 2, top_k)]
         )
         rows = self._conn.execute(sql, query_params).fetchall()
         cols = ("id", "type", "key", "name", "attrs_json", "curated_json",
                 "score", "via")
-        return [dict(zip(cols, r)) for r in rows]
+        out = [dict(zip(cols, r)) for r in rows]
+        # 第三层 FTS：查询分词无 token（纯符号/空）时整层跳过（C.3 兼容面）
+        fts_rows = self._sem_fts_layer(
+            org_id, q_norm, top_k=top_k, type_filter=type_filter, params=params)
+        if fts_rows:
+            out.extend(fts_rows)
+        return out
 
     def sem_table_columns(self, org_id: str, table_id: int) -> list[dict]:
         rows = self._conn.execute(
@@ -2843,12 +3248,26 @@ def _like_escape(text: str) -> str:
 
 def _expand_relations_thin(backend, org_id, seed_ids, rels, *, depth: int) -> dict:
     """expand_relations 薄适配共用体（双方言同实现——P3-3/R2）：
-    逐 seed 调 sem_expand_graph（rels 双向）后归并去重；truncated 任一命中即真。"""
+    逐 seed 调 sem_expand_graph（rels 双向）后归并去重；truncated 任一命中即真。
+
+    O-2/m2s-3：**nodes 含 seed 本身**（design §5.9 walk CTE depth=0 行——
+    `SELECT je.value, 0, ...` 种子即第 0 层；消费方〔M2-S3 实体召回〕确认契约）。
+    **seed 过滤责任在消费方（P3-13）**：seed 行按 id 原样注入（未滤 status/
+    sensitivity）——design §5.9 walk 最终 SELECT 的 active/restricted 过滤归
+    消费面（get_entity 走 sem_expand_graph 自滤；召回路按调用者权限自筛）。
+    seed 实体行批量读取后以 depth=0 注入；restricted/非 active seed 由
+    sem_expand_graph 语义天然不展开（自身行信息仍注入——召回面自行过滤）。"""
     merged_nodes: dict[int, dict] = {}
     merged_edges: set[tuple[int, str, int]] = set()
     edge_rows: dict[tuple[int, str, int], dict] = {}
     truncated = False
     rel_list = list(rels)
+    seed_rows = backend.sem_entities_by_ids(org_id, list(seed_ids))
+    for row in seed_rows:
+        merged_nodes[row["id"]] = {
+            "id": row["id"], "type": row["type"], "key": row["key"],
+            "name": row["name"], "depth": 0,
+        }
     for seed in seed_ids:
         graph = backend.sem_expand_graph(
             org_id, seed, outgoing=rel_list, incoming=rel_list,

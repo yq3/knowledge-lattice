@@ -5,13 +5,13 @@ target: /Users/youqi/develop/knowledge-lattice
 coderTaskId: ses_e744c78c2ffem5uEVkA5f64JEx
 testerTaskId: ses_e741f80b6ffepfdQv1lUxaaap1
 committerTaskId: ses_e74006536ffeUiDlKWMPv8LYvJ
-status: approved
+status: done
 round: 2
 maxRounds: 3
 testVerdict: PASS
 reviewVerdict: APPROVED
 testedSha: 573abfd13bd9d286fe56c4e4c860741591f49cf3
-reviewedSha: 573abfd13bd9d286fe56c4e4c860741591f49cf3
+reviewedSha: f7b7201
 # 以上 SHA = coder 最近一轮本地 commit（[taskId] R<n>）后的 HEAD；修复轮 commit 后 reviewedSha 置空待重审
 filesChanged:
   # R1（26 文件 +2795/−103，commit 3d9591e）
@@ -39,7 +39,7 @@ filesChanged:
   # R2 docs 批原样（4）: docs/TEST-CASES.md（v1.9.5）/ docs/known-gaps.md（G-16 回写+G-17/G-18）/ .opencode/workflows/_m2-plan.md / task-knowledge-lattice-m2s-2.md
 endReason: null
 createdAt: 2026-10-30T15:23:04+0800
-updatedAt: 2026-10-31T09:29:11+0800
+updatedAt: 2026-10-31T09:41:55+0800
 ---
 
 # task-knowledge-lattice-m2s-2: M2-S1 面上段——semantic_build 骨架 + 首批语义工具 + REST 管理完善
@@ -115,6 +115,10 @@ updatedAt: 2026-10-31T09:29:11+0800
 - R2: committer 完成（ses_e74006536ffeUiDlKWMPv8LYvJ 续接，2026-10-31 09:25）——**reviewVerdict=APPROVED**（reviewedSha=573abfd=testedSha=HEAD 三一致；**不要求 R3**）。P1-1 五子面/P2-1~3/P3×6 全闭环复判；R1 断言未放宽；docs 批与裁定一致。**P3 残余登记级**（开源自查清单）：①P3-2 去重断言强度（环测试补 len==3/双向同层样本）②构建侧 audit= 永久崩溃注入（现 tester 临时证）③sync 路径 adapter.close 未接线（m2s-1 既有——M2-S3/维护面）④**O-1 并入 G-18/M2-S3**（sqlite flap 双 ready 事件——条件 upsert 收口）⑤薄适配 nodes 不含 seed 本身（design §5.9 walk 含 depth=0——M2-S3 消费方确认）⑥describe 主路径 restricted 列级过滤（M2-S3 权限面）⑦G-16 重开条件括号补「构建侧已收口」⑧3s 钳制永久断言。**O-1=登记并入 G-18；O-2=注记**。**交付归档前置（监督侧）**：检查点终态入库（573abfd 内仍是 R1 值）+G-16 补句/O-1 挂账 docs nit+supervised-coding.md 排除。报告全文见「最新验证意见原文」details 块（R2 Committer）。**双通过达成（round=2 收敛）**。
 
 **交付链**（2026-10-31 09:29 用户确认交付）：① 监督侧 docs nit 落笔（G-16 重开条件补「构建侧已收口」/G-18 补 O-1 关联/_m2-plan m2s-3 挂账补 O-2+describe 列级过滤+测试维护顺手）+ 检查点终态归档 docs-only commit（reviewedSha 按 m2-3 先例更新为归档 HEAD、testedSha 保持 573abfd）→ ② Coder push+PR → ③ Committer 留痕 → ④ manifest → ⑤ 待用户合入。
+
+**交付链执行**（2026-10-31 09:35 三步完毕）：① 监督侧 docs nit+归档 commit **`f7b7201`**（docs-only——reviewedSha 按先例更新、testedSha 保持 573abfd；push 6633914..f7b7201）；② **PR #6**（base=develop，3 commits，OPEN）；③ Committer 评审留痕 **PRR_kwDOVZ9dhM8AAAABVPYBbg**（2026-10-31T01:32:50Z，COMMENTED 载体正文首行 APPROVED）；④ evidence manifest 入 PR description（16 键——双 SHA/门禁三段基线/rounds=2/specRulings×7/handover，远端回读校验 10/10）。**待用户合入指令**（不自动合入）。
+
+**合入完成**（2026-10-31 09:41 用户指令「合入」）：`gh pr merge 6 --merge` → **MERGED**，mergeCommit **`f4d1b74ed6185247e3d374d4aaf62ebe28a79f57`**；origin/develop ad5ab2a→f4d1b74，本地 develop_opencode 已 ff 同步。收尾：检查点 status=done；TEST-CASES v1.9.6（§六 M2-S1 行 m2s-2 段完成态——工作区随下段 chore 批）；_m2-plan/AGENTS.md 进度更新（语义轨道 2/6、下一段 m2s-3）。任务闭环（2 轮，1000+1→1076+1）。
 
 ## 最新验证意见原文
 （tester/committer 报告逐字保留——恢复时给 coder 的修复依据）
