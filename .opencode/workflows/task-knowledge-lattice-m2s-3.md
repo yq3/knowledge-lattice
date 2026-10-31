@@ -5,13 +5,13 @@ target: /Users/youqi/develop/knowledge-lattice
 coderTaskId: ses_e705c4fa5ffeWafnHS77csoK2s
 testerTaskId: ses_e70153663ffeGS58RkjFDskaAN
 committerTaskId: ses_e6ffe99deffe8USoJKteWeyvrV
-status: implementing
+status: approved
 round: 3
 maxRounds: 3
 testVerdict: PASS
-reviewVerdict: NEEDS_CHANGES
-testedSha: 1d27e32a91441228dc2d794bf944c60602d6a2c6
-reviewedSha: null
+reviewVerdict: APPROVED
+testedSha: f6cd5b226bde0aae10e560a6d0b9f54d43b603cc
+reviewedSha: f6cd5b226bde0aae10e560a6d0b9f54d43b603cc
 # 以上 SHA = coder 最近一轮本地 commit（[taskId] R<n>）后的 HEAD；修复轮 commit 后 reviewedSha 置空待重审
 filesChanged:
   # R1（38 文件+检查点+chore 4=40 entries，commit e401d37=HEAD——coder 预写，监督侧核验存档）
@@ -53,10 +53,14 @@ filesChanged:
   - scripts/sem_yaml_ci.py（预算 settings 接线）/ .env.example（预算+五源样例）
   - tests/test_r2_m2s3_fixes.py（✦21 用例）/ test_sync_02_guard.py（N2）/ test_sync_06_sources.py（N3）
   # R2 docs 批原样（3）: docs/known-gaps.md（G-19）/ .opencode/workflows/_m2-plan.md / task-knowledge-lattice-m2s-3.md（裁定记录——coder 未编辑）
+  # R3（5 文件 +443/−22，commit f6cd5b2=HEAD）
+  - src/knowledge_lattice/core/semantic/yaml_corpus.py（N6：_schema_self_check/_minimal_schema_self_check/validator_for 实例化/加载一次性自校验）
+  - tests/test_r2_m2s3_fixes.py（N6×2+回退等价用例/P2-1 前序补强/误 retire 永久断言）
+  # R3 docs 批原样（3）: RUNBOOK.md（0007 升级注意）/ docs/known-gaps.md（G-20+总览表 G-16 收口态·G-17~20）/ task-knowledge-lattice-m2s-3.md（只读未编辑）
   # + 本检查点 task-knowledge-lattice-m2s-3.md（R1 终态入库）
 endReason: null
 createdAt: 2026-10-31T09:44:28+0800
-updatedAt: 2026-10-31T12:55:33+0800
+updatedAt: 2026-10-31T13:55:09+0800
 ---
 
 # task-knowledge-lattice-m2s-3: M2-S2 基础段——语义源 YAML 接入 + 挂账九项收编
@@ -110,7 +114,11 @@ updatedAt: 2026-10-31T12:55:33+0800
   - m1-5 TC-UI 手动走查：待用户（与本任务无关，维持）
 
 ## 遗留事项（跨任务移交）
-- [ ] 无（本段新增移交项随轮次记录登记）
+
+- [ ] **交付归档 docs 补齐（监督侧，随检查点终态 commit）**：known-gaps **G-15 改已收口**（正文+总览表——m2s-3 R1 已收，终审抓到监督侧漏）；G-17/G-18 正文状态/重开条件与总览表同步为已收口；RUNBOOK 0007 note 挪 §3 迁移注意事项+注明双方言
+- [ ] 移交 **m2s-4**（G-19 每日兜底调度——窗口/幂等/与 webhook 去重口径）；**回退/边界自校验健壮性**（⑦：type 数组/布尔子 schema/tuple items 回退 false positive+$schema 非字符串主路径未捕——except Exception 兜底+支持合法 schema 边角；零依赖 only）；**sensitivity 两口径**（④覆盖层删除不回退最后声明值口径化/⑤非法 sensitivity 静默归 normal 注记——m2s-4 权限面）
+- [ ] 移交 **测试卫生（随后续段顺手）**：①旧 test_rule_pure_collides 仅断言 source（已被强用例覆盖——可删/强化）；②sem_replace_manual_aliases inserted 计数未计 ON CONFLICT 跳过（stats 微瑕）；③test_migration_0007 名实+test_concurrent 顺序调用非并发（R1 遗留）
+- [ ] m2s-2 挂账九项已全部清偿（G-15/17/18+O-1/REST 读端点/FTS/O-2/列级过滤/close/测试维护——R1 交付）；m2s-1 移交 TC-SYNC-02/06 半句已收口（R1 A.4）
 
 ## 轮次记录
 - R1: coder 完成（ses_e705c4fa5ffeWafnHS77csoK2s，2026-10-31 11:02 监督侧核验存档；commit **e401d37**）——38 文件（13 新增 + 25 修改）。A 组：YAML 仓 schema/装载/CI 规则集（yaml_corpus + scripts/sem_yaml_ci.py——TC-YAML-04 全类拦截，owner/samples 逐条报）；yaml_merge 合并规则表逐行（TC-YAML-01/02 含恢复后自动生效、YAML 删除清 curated）；scenario_config/report_center/yaml 三适配器（既有 sync 流程复用——T-S2 guard+force/T-S4 宽限/白名单触发器零另起炉灶）；webhook（签名=服务身份，TC-YAML-03）；TC-SYNC-02 半句收口（metadata 引用面=YAML 显式∪tc 兜底）；TC-SYNC-06 值域映射表最小实现（dim_value_map.yaml——无专表 DDL 授权+注记）。B 组：G-17（curated_json 入快照+yaml_rev 入 dict_rev——definition 变更必新 rev）；迁移 0007 双方言（activated_at+source_system+FTS 表）；G-18（rev 回退重激活 current 跟随——activated_at 严格递增防同秒并列）；O-1（条件 upsert `WHERE status != 'ready'`——无 flap 双 ready 事件）。C 组全收：G-15（关系级 missing→宽限→retired+retired 端点 upsert 过滤〔missing 放行落潜伏态〕）；REST 读端点三件（semantic:read）；FTS 模糊索引升级（sqlite FTS5 外容表/pg tsvector——G-6 评分差异登记）；O-2（expand_relations nodes 含 seed depth=0）；describe 主路径 restricted 列级过滤；sync 路径 adapter.close 接线；测试维护三件（P3-2 强度/audit= 崩溃注入永久/3s 钳制永久）。自测：**门禁 GATE PASS 1169+1 双模式 0 skipped（pg 臂 413=380+33；1076+1→1169+1 零回归 +93）**；TDD 红灯先行（52 failed 首败 ModuleNotFoundError yaml_corpus）。design 出入注记 6 条见输出（webhook 服务身份 vs 任务书 semantic:admin 措辞/owner 全条目必填 vs 样例缺项/yaml rev=内容哈希本地形态/每日兜底未接调度/T-S4 关系中间态随 G-15 调整/映射表无专表 DDL）。
@@ -126,6 +134,14 @@ updatedAt: 2026-10-31T12:55:33+0800
 - R2: tester 完成（ses_e70153663ffeGS58RkjFDskaAN 续接，2026-10-31 12:46）——**testVerdict=PASS**（testedSha=1d27e32=HEAD）。独立复跑门禁 1206+1 双模式 0 skipped（pg 臂 428；+37 逐文件对账；零删除零弱化——走过场断言由 test_r2_m2s3_fixes 逐列强化）。**修复项逐条全过**：P2-1 四回归+极端形态证伪（仅 name+owner 8 断言）；P2-2 全链证伪（**误 retire 链实证断裂**——YAML 删冲突条目实体仍 active missing==0/原源 resync 不污染/FTS 零残留）；边界 1 双路径（jsonschema 4.26 在场+ImportError 强制回退——定位等价；**schema 坏 JSON fail-closed**）；边界 4（非 L0 条目键缺席非 False）；P3 八项全过（**P3-4 三重切换链严格递增零并列**/P3-2 残余竞态注入/P3-3 双方言+泄漏联动四断言/P3-8 双文件定位/预算三态/store 直调+生产全链）。R1 观察项 N1~N5 对账无遗漏（G-19 docs diff 实证）；接受 Committer 指正 R1「仅 curated_rev 变不新 rev」表述误差。独立 probe_r2×3（48 断言+定向 72 passed）。**新观察 N6**（P3 级）：entry.schema.json 语义非法（有效 JSON 但 type 非法）——jsonschema 路径 check_schema 崩溃 traceback vs 回退路径优雅通过（双路径不对称；fail-closed 方向成立不破）+stats 计数微瑕（无行为影响）——建议 R3 顺手或下段收编。报告全文见「最新验证意见原文」details 块（R2 Tester）。
 
 - R2: committer 完成（ses_e6ffe99deffe8USoJKteWeyvrV 续接，2026-10-31 12:55）——**reviewVerdict=NEEDS_CHANGES（P3 收尾级 R3；无 P1/P2 代码缺陷）**（reviewedSha 不置位）。P2-1 功能 ✅（**回归 1/4 空转**——删空别名用例未先做带别名 merge，R1 缺陷下同样通过）；P2-2 ✅（core 预读剔除方案合理/误 retire 链代码面独立核实断裂/旧弱用例残留登记）；边界 1 ✅ 主体（**N6**：schema 语义非法 jsonschema 路径 SchemaError 崩溃 vs 回退静默通过双路径不对称+validator_for/Draft202012 错配+回退无永久用例）；边界 4 ✅（l0_extra 文本未持久化——spec 只裁 payload 面，登记）；N2/N3/N4+P3 八项+P3-13 全 ✅；G-19 ✅。**监督侧落笔遗漏被抓**（P3-6/P3-12 docs 未落但检查点/Tester 称已落——**已补**：RUNBOOK 0007 升级注意+known-gaps G-20+总览表补 G-16 收口态/G-17~20）。**R3 最小范围**（Committer 建议·N6 裁定=值得 R3）：①N6 修复（entry.schema.json 加载一次性自校验 try check_schema→Issue+置 None；回退补最小合法性检查；validator_cls 使用）②P2-1 空转测试补前序 merge ③误 retire 链永久断言 ④回退路径永久用例。登记级六项观察（旧弱用例强化/inserted 计数/两测试名实/覆盖层删除 sensitivity 不回退口径化/非法 sensitivity 静默 normal 注记/总览表——⑥已清偿）。**备选**：不跑 R3 条件性 APPROVED（N6 等登记下段+docs chore 补齐）——按建议走 R3。报告全文见「最新验证意见原文」details 块（R2 Committer）。
+
+- R3: coder 完成（ses_e705c4fa5ffeWafnHS77csoK2s 续接，2026-10-31 13:06）——commit `f6cd5b2`（5 文件 +443/−22，docs 批 RUNBOOK 0007 注意/G-20/总览表原样入库——检查点只读未编辑）。**N6 修复**：entry.schema.json 加载一次性自校验（jsonschema 在场 `validator_for().check_schema` try 捕→可定位 Issue+置 None 回落手写面/回退路径 `_minimal_schema_self_check` 对称〔type 七值/required 数组/enum·properties·items 递归〕/`_schema_errors` 改 validator_for 实例化删 Draft202012 硬编码/非对象 schema error）；**三测试补强**：P2-1 删空别名补前序 merge（带前置在场断言——R1 缺陷下双失败）/误 retire 链永久断言（删冲突条目再 sync→missing==0+实体 active 进门禁）/回退路径永久用例（monkeypatch jsonschema=None 强制回退——双路径定位等价+字段级命中）。登记级六项不做（按裁定）。自测：门禁 GATE PASS 1209+1 双模式 0 skipped（pg 臂 428；1206+1→1209+1 零回归 +3=N6 三用例）；TDD 红灯（SchemaError 未捕获崩溃实证/非对象零 error/回退不对称）。verdict 双置空待 R3 终验（R2 历史：testVerdict=PASS/testedSha=1d27e32/reviewVerdict=NEEDS_CHANGES〔P3 收尾级〕——见上）。
+
+- R3: tester 完成（ses_e70153663ffeGS58RkjFDskaAN 续接，2026-10-31 13:18）——**testVerdict=PASS（收敛）**（testedSha=f6cd5b2=HEAD）。独立复跑门禁 1209+1 双模式 0 skipped（pg 臂 428；+3 恰三个 N6 用例；零删除零弱化）。**N6 四子面闭合**：原崩溃场景重跑（SchemaError 消除→可定位 Issue+entry_schema=None 回落手写面 owner 仍拦）/原不对称场景重跑（回退侧同报可定位 error）/validator_for 实例化（draft-07 合法 schema 不误抛+校验仍生效）/非对象 error；合法仓零误伤+CI exit 1 可定位无 traceback。**三测试补强变异真红核验**（probe_r3_mutation 9 断言）：P2-1 R1 缺陷模拟下清空断言真失败；误 retire 缺陷态〔5 filler 17% 越 guard〕下永久断言真红——**误 retire 防护纵深三层**（core 预读剔除+guard 比例+FTS/展开无泄漏）。回退永久用例双路径独立比对非 mock 自证。**docs 三件落笔核实**（RUNBOOK 0007/G-20/总览表）。probe_r3×2（22 断言）+pg 定向 39 passed。零 FAIL 零新增观察。报告全文见「最新验证意见原文」details 块（R3 Tester）。
+
+- R3: committer 终审完成（ses_e6ffe99deffe8USoJKteWeyvrV 续接，2026-10-31 13:44）——**reviewVerdict=APPROVED**（reviewedSha=f6cd5b2=testedSha=HEAD 三一致；P1/P2 无，P3×4 全登记级**不值得突破轮上限**）。N6 四子面方案成立（加载一次性自校验合理/entry_schema=None 回落非静默/回退对称/validator_for 修复）；三测试补强真红采信（变异核验+代码独立确认——误 retire 防护纵深三层成立）；docs 三件 ✓；门禁 +3 对账/零删除零弱化/检查点只读纪律合规。**P3 登记级**：①回退/边界自校验健壮性（type 数组/布尔子 schema 回退 false positive——零依赖 only 主路径不受影响→下段）；②known-gaps 状态回写未完整（**G-15 应改已收口**〔m2s-3 R1 已收——监督侧漏〕/G-17·18 正文状态与总览表不一致——归档补）；③RUNBOOK 0007 note 落点建议挪 §3+注双方言（nit）；④登记级 ①~⑤+⑦ 未落盘（终态归档写入）。**交付前置（监督侧）**：检查点终态+遗留事项①~⑤+⑦入库/known-gaps 补齐/_m2-plan m2s-3 done+语义 3/6/PR+manifest（rounds=3）/留痕+用户合入。**双通过达成（round=3 收敛）**。
+
+**交付链**（2026-10-31 13:55 用户确认交付）：① 监督侧 docs 补齐（G-15 改已收口〔正文+总览表〕/G-17·18 正文状态同步已收口/RUNBOOK 0007 note 挪 §3+注双方言）+ 检查点归档 docs-only commit（reviewedSha 按 m2s-2/m2-3 先例更新为归档 HEAD、testedSha 保持 f6cd5b2）→ ② Coder push+PR → ③ Committer 留痕 → ④ manifest → ⑤ 待用户合入。报告全文见「最新验证意见原文」details 块（R3 Committer）。
 
 ## 最新验证意见原文
 （tester/committer 报告逐字保留——恢复时给 coder 的修复依据）
@@ -527,5 +543,156 @@ GATE PASS: sqlite+pg 双后端、双模式（常规/python -O）全绿，0 skipp
 - **CASE_BUG 裁定请求：无**。
 
 **若监督侧选择「不跑 R3、直接 APPROVED」**：建议条件性放行——reviewedSha=1d27e32，N6/测试空转/回退覆盖登记 m2s-4 或维护段，P3-6/P3-12 docs 以 docs-only chore 补齐后更新 reviewedSha（m2s-2 先例）；但按本轮审查建议，用满剩余一轮做上述最小收尾更稳妥。
+
+</details>
+
+<details>
+<summary>R3 Tester 报告全文（2026-10-31 13:18，testVerdict=PASS 收敛）</summary>
+
+# task-knowledge-lattice-m2s-3 R3 独立终验报告（Tester）
+
+**testVerdict: PASS**
+**testedSha: f6cd5b226bde0aae10e560a6d0b9f54d43b603cc**（git rev-parse 实测，验证前后一致；工作区仅监督侧 supervised-coding.md + 检查点两文件既有改动，被测代码面零变动；检查点只读纪律遵守）
+
+## 1. 门禁真实输出（独立复跑）
+
+```
+pg 臂用例收集数：428（[pg] 参数化 395 + PG 专用 33，> 0 ✓）
+==== [pytest] uv run pytest -m 'not manual' -q ====
+[pytest] OK：1209 passed, 1 deselected, 2 warnings in 195.70s
+==== [pytest-O] uv run python -O -m pytest -m 'not manual' -q ====
+[pytest-O] OK：1209 passed, 1 deselected, 3 warnings in 189.29s
+GATE PASS: sqlite+pg 双后端、双模式（常规/python -O）全绿，0 skipped
+（pg 臂 428 条用例全实跑：[pg] 参数化 395 + PG 专用 33）
+```
+
+- **skip 核对**：双模式 **0 skipped**；`1 deselected` = TC-UI manual 走查（既定口径）——**任务范围内零 skip**。与 coder 申报（1209+1 / pg 臂 428 / +3 零回归）逐项一致。
+- **+3 对账**：`git diff` 核实新增 test 函数恰 3 个（test_n6_invalid_schema_locatable_error_not_crash / test_n6_non_object_schema_reports_error / test_n6_fallback_path_symmetric——全 tmp_path 单臂）→ **+3** ✓（1206+3=1209）。
+- **零删除零弱化**：`grep "^-.*def test_"` **空**；既有用例改动仅 test_p2_1 前序 merge 补强与 test_p2_2 追加永久断言（强度只增不减）。
+
+## 2. 修复项判定表（对照 R2 Committer §二 1~4）
+
+| 修复项 | 判定 | 关键证据 |
+|---|---|---|
+| **N6①** 加载一次性自校验 | ✅ PASS | **重跑 R2 probe_r2b 原崩溃场景**：`{"type":"not-a-type","required":"id"}` → 不崩溃（原 SchemaError traceback 消除）、`_schema/entry.schema.json` 可定位 error（RP-A1/A2）；entry_schema 置 None → 条目零 schema-violation 噪声（RP-A3）+ **回落态手写 owner 规则仍拦** no_owner.yaml（RP-A4——非静默零校验） |
+| **N6②** 回退路径对称 | ✅ PASS | **重跑 R2 probe_r2c 原不对称场景**：jsonschema 注入 None 强制回退 → 同一非法 schema 同报可定位 error（`$: 未知 type 'not-a-type'（合法：[...]）`）——R2 双路径不对称消除（RP-B1） |
+| **N6③** validator_for 实例化 | ✅ PASS | Draft202012 硬编码删除（diff 核实 `jsonschema.validators.validator_for(schema)(schema)`）；`$schema=draft-07` 合法 schema 不误抛（RP-C1）+ 校验仍生效（owner 类型违例 `owner: 42` 照拦，RP-C3）+ 合法仓零 error（RP-C2） |
+| **N6④** 非对象 schema | ✅ PASS | `[1, 2]` → 可定位 error（RP-D，不崩溃） |
+| **P2-1 空转修复真红** | ✅ PASS | 前序 merge 补强（写 manual+abbr+context 别名 → **前置非空断言在场**）；**变异真红核验（RP-G4）**：模拟 R1 缺陷（空别名行不到 store）→ 重新写别名→删空别名→清空断言**真失败**（残留 `{'mm','m别名'}`）——测试在 R1 缺陷代码下必红，恒真消除 |
+| **误 retire 链永久断言** | ✅ PASS | test_p2_2 追加（unlink 冲突条目 → merge → `missing==0` + 实体 active）进门禁常跑双臂。**敏感度注入（RP-H）**：构造 R1 缺陷态（source_system='yaml' 入基数 + 5 filler 使 vanish=1/6≈17% 越过 guard）→ `missing=1` + 实体 missing——断言在缺陷态**真红**（RP-H4）、正常态绿（RP-H2） |
+| **回退路径永久用例** | ✅ PASS | test_n6_fallback_path_symmetric：`monkeypatch.setitem(sys.modules,"jsonschema",None)` 强制回退——**与库路径实际输出独立比对**（违例文件集等价 `{'concepts/c.yaml','concepts/d.yaml'}` + name/l0 字段级命中）+ 回退侧对非法 schema 对称报 error——非 mock 自证 |
+| **N6 附带** 合法仓不误伤 | ✅ PASS | RP-E1 合法 schema 仓零 error；RP-E2 违例条目字段级定位照拦 |
+| **CI 脚本面** | ✅ PASS | RP-F：check_schema 失败 schema → **exit 1、stdout 含可定位 `[ERROR] _schema/entry.schema.json: schema 语义非法: ...`、stderr 无 Traceback** |
+
+**docs 落笔核实**（R2 Committer「监督侧遗漏被抓」项）：RUNBOOK 0007 升级注意（P3-6——迁移不回填 sem_search_texts、升级后触发各源 sync）✓；known-gaps **G-20**（P3-12 webhook body 无上限）+ 总览表补 G-16 已收口/G-17~18 已收口/G-19/G-20 ✓——均在本批 diff 落库。
+
+## 3. 独立脚本清单与结果
+
+| 脚本 | 内容 | 结果 |
+|---|---|---|
+| probe_r3.py | RP-A~F 共 13 断言：N6 四子面（原崩溃/不对称场景重跑）+ draft-07 不误抛 + 非对象 schema + 合法仓零误伤 + CI exit 1 可定位输出 | **13 PASS / 0 FAIL** |
+| probe_r3_mutation.py | 变异真红核验 9 断言：G（P2-1 R1 缺陷模拟→清空断言真红）+ H（误 retire 缺陷态构造→永久断言真红） | **9 PASS / 0 FAIL** |
+| pg 臂定向复跑 | test_r2_m2s3_fixes 双臂（含三个 N6 新用例 + 补强用例） | **39 passed** ✓ |
+
+**探针过程发现（正面）**：误 retire 链在「单实体 yaml 基数 100% vanish」形态下会被 **T-S2 删除比例保护第三层兜底**（aborted_guard 零写入）——真实触发需 vanish ≤20%（我的缺陷态构造据此用 5 filler 达成 17%）。误 retire 防护实际为三层：core 预读剔除（本修复）+ guard 比例保护 + FTS/展开侧无泄漏。防御纵深完整。
+
+## 4. 缺陷清单
+
+**FAIL（IMPL_BUG / TEST_BUG / CASE_BUG）：无。** N6 四子面、三测试补强真红、不误伤面、CI 可定位面全部闭合；R2 遗留观察项 N6 已清偿，登记级六项按裁定不做。
+
+## 5. 与 coder 自测对账
+
+门禁数字逐项一致（1209+1 双模式 0 skipped、pg 臂 428=395+33、+3 构成吻合）；R3 轮次记录申报的「N6 修复四子面 + 三测试补强」全部在码在测无虚报；TDD 红灯申报（SchemaError 崩溃实证/非对象零 error/回退不对称）与我在 R2 探针的原始发现一一对应，方向一致。
+
+---
+
+**结论：testVerdict = PASS**。R2 Committer §二 1~4 全部修复期望逐条复验闭合：N6 双路径对称且可定位（原崩溃/静默不对称双消除）、三测试补强经变异核验**真红非恒真**、误 retire 链永久断言进门禁且对缺陷态敏感、docs 三件落笔完整。+3 零回归零删除，任务范围内零 skip。R3 为最小收尾轮，无新增观察项。临时产物已清理（外部临时目录删除、无残留进程、仓库零残留、HEAD 未动）。
+
+</details>
+
+<details>
+<summary>R3 Committer 报告全文（2026-10-31 13:44，reviewVerdict=APPROVED）</summary>
+
+# m2s-3 R3 Committer 终审报告
+
+**基线核对**：HEAD = `f6cd5b2` = testedSha = 检查点 R3 终态；本轮 diff `1d27e32..f6cd5b2` = **5 文件 +443/−22**（`yaml_corpus.py` + `test_r2_m2s3_fixes.py` + docs 批 RUNBOOK/G-20/检查点）与检查点 R2/R3 filesChanged 一致。工作区仅监督侧 `supervised-coding.md` + 检查点两文件，**代码面零变动**；检查点提交版本（531 行）为监督侧 R2 记录/spec_confirm/R3 范围原样，R3 coder/tester 记录仅在工作区（coder 未编辑）✓。
+
+**门禁采信**：Tester 独立复跑 **1209+1 双模式 0 skipped**、pg 臂 428=395+33。我核对：+3 = 三个 N6 用例（全 tmp_path 单臂），1206+3=1209 ✓；pg 参数化面不变（R3 两处测试改动均为既有双臂用例内部补强）→ 428 ✓；R3 tests diff 无 `def test_` 删除、无 skip/xfail 新增、既有断言只增不减 ✓。
+
+## 一、R3 修复逐项核对
+
+### 1. N6 修复方案 — ✅ 方案成立（接受；边角见 P3-1）
+
+| 子面 | 核对结论 |
+|---|---|
+| 加载一次性自校验位置 | ✅ `validate_corpus` 在 `_schema/*.json` 循环内对 `entry.schema.json` **加载时校验一次**（`yaml_corpus.py:443-448`）——schema 合法性是全局属性，避免逐条目 N 重复 Issue，也避免在条目循环中途崩溃；非对象 schema 单独报 error。合理。 |
+| `entry_schema=None` 回落语义 | ✅ 非法 schema → 可定位 `Issue("error", "_schema/entry.schema.json", "schema 语义非法: …")` + 置 None；条目走手写补充面（owner/短词/引用等规则照跑）。**非静默**：schema error 使 CI exit 1；Tester RP-A4 实证回落态 owner 仍拦。语义正确。 |
+| 回退路径对称 | ✅ `_minimal_schema_self_check` 覆盖 type 七值/required 字符串数组/enum·properties·items 递归；`test_n6_fallback_path_symmetric` 强制 `sys.modules["jsonschema"]=None`，与库路径**实际输出独立比对**（文件集 + name/l0 字段级命中 + 非法 schema 对称报 error），非 mock 自证。R2 的「崩溃 vs 静默通过」不对称在目标场景消除。 |
+| `validator_for` 修复 | ✅ `_schema_errors` 改为 `validator_for(schema)(schema)`（`yaml_corpus.py:369`），删 Draft202012 硬编码；draft-07 合法 schema 不误抛且校验仍生效（Tester RP-C1/C3）。 |
+| 崩溃场景复检 | ✅ 原 R2 崩溃输入（`{"type":"not-a-type","required":"id"}`）→ SchemaError 被捕、可定位 Issue、CI exit 1 无 traceback（Tester 重跑 RP-A/A2 + CI 脚本面 RP-F）。 |
+
+### 2. 三测试补强 — ✅ 真红核验采信（Tester 变异）+ 代码逻辑独立确认
+
+- **P2-1 空转修复**（`test_r2_m2s3_fixes.py:114-130`）：先写带 manual/abbr/context 别名的 t.yaml → merge → **前置在场断言**；再删空别名 → merge → 断言清空。R1 缺陷代码下第二次 merge 无 alias_rows → 旧别名残留 → 断言真失败（Tester RP-G4 变异核验：残留 `{'mm','m别名'}`）——恒真消除。
+- **误 retire 链永久断言**（`:164-215`）：删 `dup.yaml` → `_merge` → `stats.missing==0` + 同步实体 active。R1 缺陷态（同步实体被 yaml 归属）下进 yaml 基数 → 删除触发 vanished → missing/guard 路径断言真红（Tester RP-H 用 5 filler 越过 guard、缺省形态由 guard 第三层兜底，双层敏感）；正常态绿。**防护纵深三层**（core 预读 + T-S2 guard + FTS/展开无泄漏）成立。
+- **回退路径永久用例**（`:687-…`）：见上表；双路径独立比对，且覆盖「回退侧对非法 schema 对称报 error」——与 N6 修复互证。
+- 三个 N6 用例（`:650/672/687`）在门禁常跑单臂，+3 对账吻合。
+
+### 3. docs 批核对 — ✅ 请求项落笔；⚠️ 追加两处一致性/编排项（监督侧归档）
+
+- **RUNBOOK 0007 升级注意**（`RUNBOOK.md:115`）：内容与 R2 §二.5 建议一致（迁移不回填 `sem_search_texts`→下次对应源 sync 前 FTS 第三层空→升级后触发各源 sync；前两层不受影响）✓。**编排 nit**：落点位于 §4.1 SQLite 备份代码块内，而同类 0004/0005 升级注意在 §3 迁移注意事项；且未明示 PG 同适用——建议终态归档挪/补一句（非阻塞）。
+- **known-gaps G-20**（`:215-220`）：webhook 验签前 `request.body()` 无上限；对冲=私有化内网+反代限流；重开=公网直曝/网关无法限流——与 R2 P3-12 建议一致 ✓；总览表 G-20 行 ✓。
+- **总览表**：G-16 已收口态 ✓、G-17/G-18 已收口 ✓、G-19/G-20 已接受 ✓——R2 §二.6 ⑥ 清偿。
+- **⚠️ 追加发现（task D「known-gaps 状态回写归监督侧」未完整）**：① **G-15** 总览表（`:27`）与正文（`:180-185`）仍「已接受 / M2-S3 承接」——G-15 已随 m2s-3 R1 收口（关系级 missing + 端点过滤），应改已收口；② **G-17/G-18 正文状态**（`:196`/`:203`）仍「已接受」、重开条件仍「M2-S3 开工」，与总览表「已收口」不一致（G-16 正文已同步 ✓）。建议终态归档补齐（非代码问题）。
+- **检查点 R3 记录**：coder 只读合规——提交版本未被 coder 编辑，R3 记录为监督侧工作区追加 ✓。
+
+### 4. 登记级六项去向 — ⑥已清偿；①~⑤（+本轮新增⑦）**尚未落盘**，建议终态归档写入
+
+检查点「遗留事项（跨任务移交）」仍 `- [ ] 无`；`_m2-plan` m2s-4 行仅 G-19。建议终态归档在检查点遗留节（必要时 _m2-plan 同步）落：
+
+- ① 旧 `test_rule_pure_collides_with_synced_entity` 仅断言 `source`（已被 R2 强用例逐列覆盖）——可强化/删除（测试卫生，m2s-4/维护段）。
+- ② `sem_replace_manual_aliases` 的 `inserted += 1` 未计 `ON CONFLICT DO NOTHING` 跳过——stats 微瑕、无行为影响，随下次维护顺手。
+- ③ `test_migration_0007_backfills_activated_at` 名实不符、`test_concurrent_same_rev_single_ready_event` 为顺序调用（R1 遗留测试卫生）。
+- ④ 覆盖层条目整体删除后 sensitivity 不回退最后声明值（测试已记录为有意；建议 known-gaps 或 m2s-4 权限面口径化）。
+- ⑤ merge 侧非法 sensitivity 静默归 normal（CI 拦截；fail-open 方向注记）。
+- ⑥ known-gaps 总览表 G-16 收口态·G-17~20 —— **R3 已清偿**。
+- ⑦（本轮新增）R3 自校验回退/边界健壮性：`type` 数组（合法 JSON Schema）在回退侧 `stype not in frozenset` 会 TypeError；布尔子 schema/tuple items 被误判非法（回退 false positive）；`$schema` 非字符串时 `validator_for` 可能 TypeError（主路径未捕）——建议下段/维护段将 self-check 整体 `except Exception` 兜底 + 支持 type 数组/布尔 schema（零依赖回退路径 only；项目环境 jsonschema 在场、主路径不受影响）。
+
+## 二、问题清单
+
+### P1 / P2
+无。
+
+### P3（均为登记级/监督侧，非阻塞）
+1. **回退/边界自校验健壮性**（见上 ⑦，`yaml_corpus.py:335` 等）：零依赖回退路径合法 schema 边角会崩/误报；主路径不受影响（项目 env 有 jsonschema）——登记下段。
+2. **known-gaps 状态回写未完整**（G-15 / G-17·18 正文）——交付归档补（监督侧，非代码）。
+3. **RUNBOOK 0007 note 落点**——建议挪至 §3 并注明双方言（文档 nit）。
+4. **登记级 ①~⑤/⑦ 未落盘**——终态归档写入（监督侧）。
+
+**maxRounds 判定**：上述全部为**登记级/文档级**，无代码阻塞项；round=3 已到顶，**不值得突破（不报 blocked）**——终审 **APPROVED**。
+
+## 三、关键面显式结论
+
+| 面 | 结论 |
+|---|---|
+| N6 四子面 | ✅ 一次性自校验可定位 error 不崩溃 / 回退对称 / validator_for 实例化 / 非对象 error；合法仓零误伤、CI exit 1 无 traceback（Tester + 代码复核） |
+| 三测试补强 | ✅ P2-1 前置 merge 真红（变异核验）；误 retire 链永久断言进门禁且敏感；回退永久用例独立比对非自证 |
+| docs 三件 | ✅ RUNBOOK 0007 / G-20 / 总览表 G-16 收口·G-17~20 落库；⚠️ G-15 与 G-17·18 正文状态待归档补齐 |
+| 回归/门禁 | ✅ 1209+1 双模式 0 skipped、pg 428、+3 对账吻合；零删除零弱化；R3 仅 5 文件 |
+| 检查点纪律 | ✅ coder 未编辑检查点；R3 记录为监督侧追加；`supervised-coding.md` 未入库 |
+| 安全/分层 | ✅ R3 仅 CI 校验逻辑+测试+docs；无运行时/鉴权面改动；core/semantic 仍零 SQL |
+
+## 四、交付就绪判定
+
+**reviewVerdict: APPROVED**；**reviewedSha = f6cd5b2（= testedSha = HEAD，三一致）**。
+
+**交付前置（监督侧，未完成前不进入交付门）**：
+1. 检查点终态入库：`status=done`、`endReason`、`updatedAt`、R3 记录终态、filesChanged 终态、**遗留事项 ①~⑤+⑦**；`_m2-plan` m2s-3 行 done + 语义轨道「3/6」进度更新（当前行仍「下一段（待开工）」）。
+2. known-gaps 状态回写补齐：**G-15**（index+body → 已收口）、**G-17/G-18 正文**状态/重开条件同步（index 已收口）；RUNBOOK 0007 note 建议挪至 §3 并注双方言。
+3. 排除 `.opencode/agent/supervised-coding.md`（当前工作区 M、未入库）——终态归档 commit 不得包含。
+4. PR（base=develop）+ evidence manifest：测试态双 SHA（testedSha=f6cd5b2、reviewedSha=f6cd5b2；若按 m2s-2 先例追加终态归档 docs-only commit，reviewedSha 更新为该 HEAD、testedSha 保持 f6cd5b2）；manifest 含 rounds=3、门禁三段数、specRulings、G-19/G-20 去向、handover ①~⑤+⑦；远端回读校验。
+5. `gh pr review` 留痕 + 用户确认合入（合入动作不经手）。
+
+**当前状态**：`status=testing`，无 PR、manifest 未生成——**代码面已就绪并批准；交付未就绪至上述归档/PR/manifest 完成**。CASE_BUG 裁定请求：无。
 
 </details>

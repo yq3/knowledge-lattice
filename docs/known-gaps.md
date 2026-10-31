@@ -24,7 +24,7 @@
 | [G-12](#g-12-nfr-6-shared-storage-场景的只读与扩展名限制未实现) | 已接受（当前无共享存储入口；登记防误读为已实现） | file_ref 的「白名单根 + realpath + 只读 + 大小/扩展名限制」中，只读与扩展名限制两防线未实现——M1-3 只落地不透明 upload_id 面（9 形态拒绝 + realpath 纵深），共享存储路径分支产品不存在 | NFR-6 / FR-1 / design §6.1 · M1-3 | 2026-10-25 |
 | [G-13](#g-13-sqlite-审计月库-rowid-跨-vacuum-不保证保留按读序的链验证在恢复产物上理论可断) | 已接受（现码无月库 VACUUM 路径；m2-3 审计读路径按 prev_hash 链遍历对冲） | sqlite 月库表无 INTEGER PRIMARY KEY，rowid 不保证跨 VACUUM 保留——若月库纳入备份/压缩（VACUUM/VACUUM INTO），恢复产物按读序（rowid）做链验证可断（row_hash/prev_hash 内容自洽不受影响） | FR-6 / design §4 注 · M2-2 | 2026-10-29 |
 | [G-14](#g-14-pg-audit_events-seq-列首次部署触发全表-rewrite-的运维窗口) | 已接受（POC 量级可忽略；RUNBOOK 注记升级序列） | pg 侧 `audit_events` 加 seq 列（volatile DEFAULT nextval）首次 ensure 时触发全表 rewrite（ACCESS EXCLUSIVE）；ensure_audit 每连接 DDL 并发面同族 | FR-6 / design §4 注 · M2-2 | 2026-10-29 |
-| [G-15](#g-15-关系级消失流程未定义sem_relations-独立删边场景) | 已接受（M2-S1 无现实触发面；**M2-S3 承接**——用户 2026-10-29 拍板 B1=登记） | design §4 sem_relations 有 missing/retired 列但 §5.8 只定义实体消失——源端独立删边（两端实体仍在）旧关系永久 active；跨源 upsert 可能把指向 retired 端点的关系重新写回 active。M2-S1 两适配器关系均由实体结构派生（字段随模板/列随表消失——实体级已覆盖），scenario_config（uses/derived_from 独立删边大户）M2-S3 接入时补：关系级 missing + upsert 前端点状态过滤 | FR-S1 / design §4·§5.8 · M2-S1 | 2026-10-29 |
+| [G-15](#g-15-关系级消失流程未定义sem_relations-独立删边场景) | **已收口**（m2s-3 R1——关系级 missing→宽限→retired+upsert 前端点过滤〔retired 拒/missing 潜伏〕+级联覆盖；防御纵深三层） | design §4 sem_relations 有 missing/retired 列但 §5.8 只定义实体消失——源端独立删边（两端实体仍在）旧关系永久 active；跨源 upsert 可能把指向 retired 端点的关系重新写回 active | FR-S1 / design §4·§5.8 · M2-S1 | 2026-10-29 |
 | [G-16](#g-16-语义同步触发侧-create_task--append_outbox-两事务崩溃丢触发审计) | **已收口**（m2s-2 R1 触发侧+R2 构建侧 audit= 同事务——崩溃注入双方言实证） | api 触发路径 create_task 提交与 append_outbox 独立两事务——进程恰在两者间崩溃时丢触发审计事件（任务行仍在、可查）。修复口径：create_task 增 audit= 同事务参数（m2-2 outbox 先例），m2s-2/m2s-3 给任务创建面统一收口时一并落 | FR-6 / design §5.8·§6.2 · M2-S1 | 2026-10-29 |
 | [G-17](#g-17-semantic_build-的-dict_rev-输入未含-yaml_rev--curated-内容m2-s3-接-yaml-前置) | **已收口**（m2s-3 R1——curated_json 入快照+yaml_rev 入 dict_rev） | design §5.8 明确 dict_rev 含 YAML commit；YAML 改 definition 若不触发重建则 L0/模糊索引陈旧。M2-S3 接 YAML 时必须同时接 yaml_rev（或 curated_json 纳入快照） | FR-S1 / design §5.8 · M2-S1 | 2026-10-30 |
 | [G-18](#g-18-sem_builds当前构建按最新-ready-取值rev-回退场景-current锚点失真) | **已收口**（m2s-3 R1——0007 activated_at 指针+条件 upsert） | design §4 status 枚举无 superseded/is_current，「最新 ready by id」在 rev 回退时 current/锚点失真（查询面走实时表不受影响）；sqlite 同 rev 竞态双 ready 事件（O-1） | FR-S1 / design §4·§5.8 · M2-S1 | 2026-10-30 |
@@ -179,10 +179,10 @@
 
 ## G-15 关系级消失流程未定义（sem_relations 独立删边场景）
 
-- **状态**：已接受（2026-10-29 随 m2s-1 R1 登记——用户拍板 B1=登记演进缝，M2-S3 承接）。
+- **状态**：**已收口（2026-10-31 随 m2s-3 R1 交付——关系级 missing→宽限→retired 状态机+upsert 前端点状态过滤+级联覆盖；Tester 防御纵深三层定性：core 预读剔除+guard 比例保护+FTS/展开无泄漏）**。
 - **问题**：design §4 `sem_relations` 有 missing/retired 状态列，但 §5.8 同步流程只定义**实体**消失（missing 宽限→retired、端点 retired 关系联动）；源端删除一条边而两端实体仍在时，旧关系永久 active。跨源场景（scenario_config 的 uses/derived_from）还可能把指向已 retired 端点的关系再次 upsert 回 active。
-- **对冲**：M2-S1 两适配器（template_center/metadata）的关系均由实体结构派生——字段随模板消失、列随表消失，实体级覆盖即等效覆盖，无现实触发面；M2-S3 scenario_config 接入时补关系级 missing + upsert 前端点状态过滤。
-- **重开条件**：M2-S3 开工（scenario_config/report_center 适配器与 YAML 关系链接入）。
+- **对冲**：（历史）M2-S1 两适配器关系均由实体结构派生。
+- **重开条件**：无（已收口）。
 
 ## G-16 语义同步触发侧 create_task → append_outbox 两事务（崩溃丢触发审计）
 
@@ -193,17 +193,17 @@
 
 ## G-17 semantic_build 的 dict_rev 输入未含 yaml_rev / curated 内容（M2-S3 接 YAML 前置）
 
-- **状态**：已接受（2026-10-30 随 m2s-2 R1 登记——Committer 边界 7，用户拍板登记）。
+- **状态**：**已收口（2026-10-31 随 m2s-3 R1 交付——curated_json 入快照实体元组+yaml_rev=max(curated_rev) 入 dict_rev 输入与 build 行，YAML 改 definition 必新 rev）**。
 - **问题**：design §5.8 明确 dict_rev 含 YAML commit；`compute_dict_rev` 已留 `yaml_rev` 参数但 `run_build` 未传、`sem_active_snapshot` 未取 `curated_json`。当前 YAML 源未接入（M2-S2 前过渡）属可理解；但 **M2-S3 接 YAML 时必须同时接 `yaml_rev`（或把 curated_json 纳入快照）**，否则 YAML 改 definition 不触发重建——L0 召回/模糊索引将陈旧。
-- **对冲**：登记为 M2-S3 开工前置项（YAML 适配器接入与 dict_rev 输入扩展同批交付）。
-- **重开条件**：M2-S3 开工（yaml 同步触发面）。
+- **对冲**：（历史）登记为 M2-S3 开工前置项。
+- **重开条件**：无（已收口）。
 
 ## G-18 sem_builds「当前构建」按最新 ready 取值——rev 回退场景 current/锚点失真
 
-- **状态**：已接受（2026-10-30 随 m2s-2 R1 登记——Committer 边界 1，用户拍板登记）。
+- **状态**：**已收口（2026-10-31 随 m2s-3 R1 交付——0007 迁移 activated_at 指针〔严格递增防同秒并列〕+rev 回退重激活顶置+O-1 条件 upsert 消 flap；R2 扩 switch 严格递增+reactivate 返回值消费）**。
 - **问题**：design §4 status CHECK 枚举无 superseded/is_current，实现取「最新 ready by id + 旧 ready 保留」。正常单调 rev 序列成立；但 **rev 回退**（A ready id1 → B ready id2 → 源快照/YAML 回到 A）时 upsert 复用 id1 置 ready，而 current 仍取 id2(B)——`GET /semantic/builds` 的 current 与 get_entity 的 dict_rev 锚点失真（工具查询面走 store 实时表**不受影响**）。
-- **对冲**：rev 回退属异常运维场景（源快照/YAML 回退），查询正确性无损；M2-S3 接 YAML 时与 G-17 一并收口（加 `activated_at` 或独立指针）。**关联 O-1**（m2s-2 R2 登记）：sqlite 同 rev 竞态输者 upsert 可把已 ready 行重断 building→ready——同 build_id 双 ready 事件+瞬态 current 缺失（at-least-once 审计可容纳、行终态正确）；M2-S3 一并以条件 upsert（`DO UPDATE … WHERE status != 'ready'` 或同 rev ready 直接返回 existing id）收口。
-- **重开条件**：M2-S3 开工（与 G-17 同批）。
+- **对冲**：（历史）rev 回退属异常运维场景。**关联 O-1**（m2s-2 R2 登记）：sqlite 同 rev 竞态 flap——同 build_id 双 ready 事件。
+- **重开条件**：无（已收口）。
 
 ## G-19 五源「每天一次兜底」调度未接线（design §5.8 适配器表半句）
 
