@@ -26,7 +26,7 @@ README = EVAL_DIR / "semantic_golden.README.md"
 NOW = "2026-10-31 09:00:00"
 
 KINDS = {"pos_exact", "pos_alias", "pos_abbr", "pos_ambiguous",
-         "pos_context", "neg"}
+         "pos_context", "pos_typo", "neg"}
 
 
 def _load_seed():
@@ -133,11 +133,13 @@ def test_tc_sev_02_metrics_meet_thresholds_and_in_report(refenv) -> None:
     assert report["eval"]["metrics"]["precision"] == m["precision"]
     assert report["eval"]["thresholds"]["precision"] == pytest.approx(0.95)
 
-
-def test_tc_sev_02_eval_deterministic_double_build(refenv) -> None:
-    """非 Flaky：同词典重建（rev 不变跳过）→ 指标可复算一致。"""
+def test_tc_sev_02_eval_deterministic_repeat(refenv) -> None:
+    """非 Flaky：同一 Annotator 上评测跑两遍逐位一致（G-21 P3-7/m2s-6 改名
+    ——原 test_..._double_build 名不副实：本用例无构建行为，实测「重复执行
+    确定性」；重建形态的确定性由 test_build_04 O-1 用例覆盖）。"""
     from knowledge_lattice.core.semantic.evalrun import (
-        load_golden, run_recognition_eval,
+        load_golden,
+        run_recognition_eval,
     )
     from knowledge_lattice.core.semantic.annotator import Annotator
 

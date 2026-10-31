@@ -47,11 +47,17 @@ def search_entities(
     *,
     types: list[str] | None = None,
     top_k: int = 10,
+    settings=None,
+    embedder=None,
 ) -> dict:
     """search_entities（§6.3 契约）：entities[{id,type,key,name,brief,score,via}]。
 
-    brief 取 curated_json.definition → attrs_json.definition → attrs_json.comment
-    （一句话定义——YAML 覆盖层归 m2s-3，本段多为 None）。"""
+    - 排序链（TC-SEM-05——S3/m2s-6 补齐拼音/向量）：别名精确 1.0 > 前缀
+      0.8 > 拼音完全匹配 0.7 > FTS 模糊 0.5 > 向量近邻（sim——embedder
+      注入且 settings 给出时启用；via='vec'）；
+    - brief 取 curated_json.definition → attrs_json.definition →
+      attrs_json.comment（一句话定义）；
+    - restricted 实体不出现（fail-closed——T-S9；store 各层谓词同口径）。"""
     if not q or len(q) > MAX_Q_LEN:
         raise ValueError(f"q 长度须在 1..{MAX_Q_LEN}")
     if not (1 <= top_k <= MAX_TOP_K):
@@ -61,17 +67,54 @@ def search_entities(
         if bad:
             raise ValueError(f"types 非法值 {sorted(bad)}（合法：{sorted(SEM_ENTITY_TYPES)}")
 
+    from knowledge_lattice.core.semantic.fuzzy import pinyin_norm
+
     q_norm = normalize_alias(q)
     rows = backend.sem_search_entities(
-        org_id, q_norm, q, types=types, top_k=top_k
+        org_id, q_norm, q, types=types, top_k=top_k,
+        q_pinyin=pinyin_norm(q) or None,
     )
+    # 向量层（m2s-6——TC-SEM-05 第 4 档）：query 嵌入 → sem_fuzzy_terms 近邻；
+    # embedder/settings 缺省（MCP/REST 未注入时）跳层——前三档语义不变
+    if embedder is not None and settings is not None:
+        try:
+            vec = (embedder.embed([q]) or [None])[0]
+        except Exception as exc:  # noqa: BLE001 —— 增益层失败跳过
+            logger.warning("search_entities vec layer degraded: %s", exc)
+            vec = None
+        if vec is not None:
+            min_sim = getattr(settings, "semantic_fuzzy_vec_threshold", 0.75)
+            hits = backend.sem_fuzzy_vec_search(
+                org_id, vec, embed_model=settings.embed_model_label,
+                top_k=top_k, min_sim=min_sim,
+            )
+            for hit in hits:
+                if hit["sim"] < min_sim:
+                    continue
+                rows.append({"id": hit["entity_id"], "type": None, "key": None,
+                             "name": None, "attrs_json": None,
+                             "curated_json": None, "score": hit["sim"],
+                             "via": "vec", "_vec": True})
     best: dict[int, dict] = {}
     for r in rows:  # 已按 score DESC 排序——首个即该实体最优档
         if r["id"] in best:
             continue
         best[r["id"]] = r
     entities = []
+    id_rows = backend.sem_entities_by_ids(
+        org_id, [r["id"] for r in best.values() if r.get("_vec")])
+    by_id = {r["id"]: r for r in id_rows}
     for r in list(best.values())[:top_k]:
+        if r.get("_vec"):
+            ent = by_id.get(r["id"])
+            if ent is None or ent["sensitivity"] == "restricted" \
+                    or ent["status"] != "active":
+                continue
+            if types and ent["type"] not in set(types):
+                continue
+            r = {**r, "type": ent["type"], "key": ent["key"],
+                 "name": ent["name"], "attrs_json": ent["attrs_json"],
+                 "curated_json": ent["curated_json"]}
         curated = _loads(r["curated_json"])
         attrs = _loads(r["attrs_json"])
         brief = (curated.get("definition")

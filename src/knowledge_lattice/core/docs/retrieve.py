@@ -74,19 +74,22 @@ def _rerank_sem(limit: int) -> threading.Semaphore:
 
 
 def rrf_fuse(
-    routes: Sequence[tuple[str, Sequence[int]]], *, k: int = 60
+    routes: Sequence[tuple[str, Sequence[int]]], *, k: int = 60,
+    weights: dict[str, float] | None = None,
 ) -> list[tuple[int, float]]:
-    """倒数排名融合：score(d) = Σ_route 1/(k + rank_route(d))——rank 1 起。
+    """倒数排名融合：score(d) = Σ_route w_route/(k + rank_route(d))——rank 1 起。
 
     各路 rid 序列须按名次升序（调用方经 _rids_by_rank 显式排序——名次协议
-    P3-2：rank 字段是唯一消费面，不依赖后端返回的物理顺序）。
+    P3-2：rank 字段是唯一消费面，不依赖后端返回的物理顺序）。weights 按路
+    名加权（缺省 1.0——**实体路权重可配默认 1.0**，§5.2/§5.10 m2s-6）。
     并列（融合分完全相等）按 rid 升序 tie-break（确定性——双后端名次集等价
     断言基础，A-17）；单路 chunk 按该路 RRF 分自然保留（退化兼容，TC-RET-01）。
     """
     scores: dict[int, float] = {}
     for _route, rids in routes:
+        w = (weights or {}).get(_route, 1.0)
         for rank, rid in enumerate(rids, start=1):
-            scores[rid] = scores.get(rid, 0.0) + 1.0 / (k + rank)
+            scores[rid] = scores.get(rid, 0.0) + w / (k + rank)
     return sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
 
 
@@ -218,13 +221,21 @@ def search(
     reranker=None,
     enhancer=None,
     breakers: dict | None = None,
+    entity_ids: Sequence[int] | None = None,
+    entity_seeds: Sequence[int] | None = None,
 ) -> dict:
     """完整配方检索（§5.2）——AclDeniedError 由调用方转 403 语义。
 
     返回 MCP/REST 同构契约：{results: [...], notice: {vector_pending, degraded}}。
     provider 注入：embedder / reranker / enhancer（None 或 none 档 = 对应路停用，
     none 档不标降级——配置态非故障）；breakers={"embed":…, "rerank":…} 熔断共享态。
-    """
+
+    实体召回路（M2-S3/m2s-6——§5.10 D23）：entity_ids（展开后实体集，≤50）
+    非空即启用第三路——**与 FTS 路同一 AclPlan（同一编译产物——T-S8 三路
+    同构）**；entity_seeds 为种子（得分 1.0/扩展 0.5——core/semantic/recall
+    的 resolve_query_entities 在 api/mcp 层调用后注入；本函数不识别、不展开
+    ——识别钉 api/mcp 层，§3 规则 2）；返回块附 matched_entities（实体路
+    命中实体——未启用或该块无实体命中时省略）。"""
     top_k = max(1, min(top_k, TOP_K_HARD_LIMIT))
     # P3-12（m1-1）：空 query 口径——search 侧早返回 []（MCP/REST 同构生效）。
     # 置于 compile_acl 之后：成员关系校验（403 语义）不被空查询绕过。
@@ -323,8 +334,19 @@ def search(
             dur_recall += time.monotonic() - t_enh
     t_fuse0 = time.monotonic()
 
-    # ---- RRF 融合（双路 → 增强词到位则并入第三路 BM25——不重做向量召回）----
+    # ---- RRF 融合（双路 → 增强词到位则并入第三路 BM25——不重做向量召回；
+    #      实体路启用（m2s-6）则同 k 融合、权重可配默认 1.0——§5.10 第 4 点）----
     # 名次协议防御（P3-2）：各路 rid 序显式按 rank 升序取——不依赖后端返回顺序
+    ent_rows: list[dict] = []
+    if entity_ids:
+        # 实体路（§5.10）：同一 plan（FTS 路同款编译产物——T-S8 不放宽 ACL）；
+        # k_entity 默认 30（settings）；行含 matched_entities（块级命中实体）
+        t_ent = time.monotonic()
+        ent_rows = backend.recall_by_entities(
+            list(entity_ids), plan, top_k=settings.k_entity,
+            seed_ids=list(entity_seeds) if entity_seeds is not None else None,
+        )
+        dur_recall += time.monotonic() - t_ent
     merged: dict[int, dict] = {r["rid"]: r for r in fts_rows}
     routes: list[tuple[str, list[int]]] = [("fts", _rids_by_rank(fts_rows))]
     if vec_rows:
@@ -334,7 +356,17 @@ def search(
         routes.append(("enhanced", _rids_by_rank(enhanced_rows)))
         for r in enhanced_rows:  # 溯源信息合并（第三路新块补位）
             merged.setdefault(r["rid"], r)
-    fused = rrf_fuse(routes, k=settings.rrf_k)
+    if ent_rows:
+        routes.append(("entities", _rids_by_rank(ent_rows)))
+        for r in ent_rows:
+            if r["rid"] in merged:
+                merged[r["rid"]]["matched_entities"] = r["matched_entities"]
+            else:
+                merged[r["rid"]] = r
+    fuse_weights = None
+    if settings.entity_route_weight != 1.0:
+        fuse_weights = {"entities": settings.entity_route_weight}
+    fused = rrf_fuse(routes, k=settings.rrf_k, weights=fuse_weights)
 
     candidates = [dict(merged[rid], rrf_score=score) for rid, score in fused]
     if not candidates:
@@ -420,7 +452,7 @@ def search(
 
     return _finalize(
         backend, settings, ctx, degraded, ordered, top_k,
-        vec_closed=vec_closed, has_results=bool(fts_rows or vec_rows),
+        vec_closed=vec_closed, has_results=bool(fts_rows or vec_rows or ent_rows),
         vec_label=vec_label,
         durations=(dur_embed, dur_recall, time.monotonic() - t_fuse0 - dur_rerank,
                     dur_rerank, dur_enh_wait),
@@ -462,24 +494,28 @@ def _finalize(
     results = []
     for rank, row in enumerate(ordered, start=1):
         content = row.get("content") or ""
-        results.append(
-            {
-                "chunk_id": row["chunk_id"],
-                "doc_id": row["doc_id"],
-                # `dataset`＝知识库名称（MCP 契约 §6.1 示例）；id 另出 dataset_id（P3-3）
-                "dataset": row.get("dataset_name"),
-                "dataset_id": row.get("dataset_id"),
-                "title": row.get("title"),
-                "page_no": row.get("page_no"),
-                "sheet_name": row.get("sheet_name"),
-                "score": row.get("final_score", 0.0),
-                "rank": rank,
-                # dims 契约：v1.1 起经 store 聚合回填（document_dimensions——D22 真相源）
-                "dims": row.get("dims") or {},
-                "source": row.get("source_uri"),
-                "snippet": content[:120],
-            }
-        )
+        result = {
+            "chunk_id": row["chunk_id"],
+            "doc_id": row["doc_id"],
+            # `dataset`＝知识库名称（MCP 契约 §6.1 示例）；id 另出 dataset_id（P3-3）
+            "dataset": row.get("dataset_name"),
+            "dataset_id": row.get("dataset_id"),
+            "title": row.get("title"),
+            "page_no": row.get("page_no"),
+            "sheet_name": row.get("sheet_name"),
+            "score": row.get("final_score", 0.0),
+            "rank": rank,
+            # dims 契约：v1.1 起经 store 聚合回填（document_dimensions——D22 真相源）
+            "dims": row.get("dims") or {},
+            "source": row.get("source_uri"),
+            "snippet": content[:120],
+        }
+        # matched_entities（§5.10 第 6 点/M2-S3）：实体召回路命中才附——
+        # 未启用实体路或该块无实体命中的块省略（§6.1 契约注）
+        matched = row.get("matched_entities")
+        if matched:
+            result["matched_entities"] = list(matched)
+        results.append(result)
     d_embed, d_recall, d_fuse, d_rerank, d_enh = durations
     logger.info(
         "search timing: embed=%.1fms recall=%.1fms fuse=%.1fms rerank=%.1fms"

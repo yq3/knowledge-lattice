@@ -259,13 +259,15 @@ class TaskRunner:
         )
 
     def _exec_semantic_build(self, task: dict, claim_id: str) -> None:
-        """semantic_build 任务体（m2s-2——§5.8 构建流程：dict_rev 计算 + 原子
-        切换；AC 自动机/模糊索引归后续段）。"""
+        """semantic_build 任务体（m2s-2 骨架 + m2s-6 模糊索引产物：dict_rev
+        计算 + 原子切换 + sem_fuzzy_terms/dels 整替〔embedder 注入——向量层；
+        WorkerServices._embedder 缺省 None=向量列空降级〕）。"""
         from knowledge_lattice.core.semantic.build import run_build_task
 
         run_build_task(
             self._backend, self._settings, task["id"],
             should_continue=self._should_continue(task["id"], claim_id),
+            embedder=getattr(self._services, "_embedder", None),
         )
 
     def _exec_semantic_retag(self, task: dict, claim_id: str) -> None:

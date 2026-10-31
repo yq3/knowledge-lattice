@@ -123,6 +123,9 @@ ANNOTATE_TOOL_DESCRIPTION = (
     "返回实体 ID、位置 span 与消歧路径（AC 自动机四步消歧 + L0 片段兜底；歧义命中"
     "返回全部候选标 ambiguous=true，必要时向用户确认）。每轮对话前调用；"
     "text ≤4000 字、context_entities ≤20（最近几轮已确认实体，辅助消歧）。"
+    "fuzzy=true 开启第 3 层模糊兜底（同音错字/编辑距离/语义近邻——低信任候选）；"
+    "**L1 无命中且判断句中有业务对象时，可自行改调 annotate(fuzzy=true) 再试**"
+    "（G-2 并存裁定②——工具描述引导 agent 自调）。"
 )
 
 # 文档 active_status 合法值（DDL 口径——#33 P0-2.2 列注释：
@@ -196,16 +199,91 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
                 f" user={auth.user_id!r} org={org_id!r}）"
             )
 
+    def _sem_restricted(auth: AuthContext, org_id: str) -> bool:
+        """semantic:restricted 持权判定（T-S9 持权路径——m2s-6）：membership
+        role = sem_restricted（极少数敏感实体可见权，§6.3 权限口径③——
+        org_admin 不默认兼任）。"""
+        membership = service.backend.read_membership(auth.user_id, org_id)
+        return bool(
+            membership
+            and membership.get("role") == "sem_restricted"
+        )
+
+    def _audit_restricted(auth: AuthContext, org_id: str, tool: str,
+                          entity_ids: list[int]) -> None:
+        """持权访问 restricted 实体的权限事件（A-16 口径持权面——outbox）。"""
+        if not entity_ids:
+            return
+        from knowledge_lattice.core.semantic.constants import (
+            EVENT_SEMANTIC_RESTRICTED_ACCESS,
+        )
+
+        try:
+            service.backend.append_outbox(
+                EVENT_SEMANTIC_RESTRICTED_ACCESS,
+                json.dumps(
+                    {"org_id": org_id, "user_id": auth.user_id, "tool": tool,
+                     "entity_ids": sorted(set(entity_ids))},
+                    ensure_ascii=False,
+                ),
+            )
+        except Exception:  # noqa: BLE001 —— 审计失败不阻断识别主路径
+            logger.exception("restricted access audit write failed")
+
+    def _restricted_hit_ids(org_id: str, result: dict) -> list[int]:
+        """annotate 结果中 restricted 实体命中（持权面审计数据源——同锚
+        get_annotator 缓存实例判定，零额外构建）。"""
+        from knowledge_lattice.core.semantic.annotator import get_annotator
+
+        ann, _rev = get_annotator(service.backend, org_id, settings)
+        if ann is None:
+            return []
+        out = []
+        for m in result.get("mentions") or ():
+            ent = ann.entities.get(m.get("entity_id"))
+            if ent is not None and ent.get("sensitivity") == "restricted":
+                out.append(m["entity_id"])
+        return out
+
+    def _entity_is_restricted(org_id: str, entity_id, key) -> bool:
+        """get_entity 目标行 restricted 判定（持权面审计数据源）。"""
+        if key is not None and ":" in key:
+            type_, _, k = key.partition(":")
+            row = service.backend.sem_entity_by_key(org_id, type_, k)
+        else:
+            row = service.backend.sem_entity_by_id(org_id, entity_id)
+        return bool(row and row["sensitivity"] == "restricted")
+
     @mcp.tool(name="search", description=SEARCH_TOOL_DESCRIPTION)
     def search(
         query: str,
         top_k: int = 8,
         datasets: list[str] | None = None,
         doc_filter: list[str] | None = None,
+        entities: list[int] | None = None,
+        auto_entities: bool = False,
         org: str | None = None,  # deprecated——忽略并记审计（D18：org 来自 token claim / 注入头）
         ctx: Context = None,
     ) -> dict:
+        """search（§6.1）：完整配方检索 + 实体召回路（M2-S3/m2s-6——§5.10）。
+
+        entities/auto_entities 解析钉本（api/mcp）层——resolve_query_entities
+        识别与展开（core/docs 不调 annotate，§3 规则 2）；返回块附
+        matched_entities（实体路命中——agent 解释召回原因）。"""
         auth, org_id = _auth_and_org(ctx, param_org=org)
+        entity_ctx = None
+        if entities is not None or auto_entities:
+            from knowledge_lattice.core.semantic.recall import (
+                resolve_query_entities,
+            )
+
+            try:
+                entity_ctx = resolve_query_entities(
+                    service.backend, settings, org_id, query=query,
+                    entities=entities, auto_entities=auto_entities,
+                )
+            except ValueError as exc:
+                raise ToolError(f"400: {exc}") from exc
         try:
             return run_search(
                 service.backend,
@@ -221,6 +299,8 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
                 reranker=getattr(service, "reranker", None),
                 enhancer=getattr(service, "enhancer", None),
                 breakers=getattr(service, "breakers", None),
+                entity_ids=(entity_ctx or {}).get("entity_ids"),
+                entity_seeds=(entity_ctx or {}).get("seeds"),
             )
         except AclDeniedError as exc:  # code 随异常透出（membership_denied 类——T12）
             raise ToolError(f"403: {exc}（code={exc.code}）") from exc
@@ -345,19 +425,32 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
         text: str,
         context_entities: list[int] | None = None,
         prefer_types: list[str] | None = None,
+        fuzzy: bool = False,
         ctx: Context = None,
     ) -> dict:
-        """annotate（§6.3 / 任务书 m2s-4 A2）：AC 自动机识别 + 四步消歧
-        （精确全词→别名→上下文短别名→L0 片段兜底）+ 最长匹配优先；负样本
-        零标注；restricted 实体表现为不存在（T-S9）。"""
+        """annotate（§6.3 / 任务书 m2s-4 A2 + m2s-6 模糊层）：AC 自动机识别 +
+        四步消歧（精确全词→别名→上下文短别名→L0 片段兜底）+ 最长匹配优先；
+        fuzzy=true 跑第 3 层模糊兜底（§5.9——同音错字/编辑距离/语义近邻，
+        低信任候选落 candidates、中间件不自动注入）；负样本零标注；
+        restricted 实体表现为不存在（T-S9——持 semantic:restricted 者可见）。"""
         auth, org_id = _auth_and_org(ctx, param_org=None)
         _sem_member(auth, org_id)
+        can_restricted = _sem_restricted(auth, org_id)
         from knowledge_lattice.core.semantic.annotator import annotate_text
 
         try:
-            return annotate_text(service.backend, settings, org_id, text,
-                                 context_entities=context_entities,
-                                 prefer_types=prefer_types)
+            result = annotate_text(
+                service.backend, settings, org_id, text,
+                context_entities=context_entities,
+                prefer_types=prefer_types,
+                fuzzy=fuzzy,
+                include_restricted=can_restricted,
+                embedder=getattr(service, "embedder", None),
+            )
+            if can_restricted:
+                _audit_restricted(
+                    auth, org_id, "annotate", _restricted_hit_ids(org_id, result))
+            return result
         except ValueError as exc:
             raise ToolError(f"400: {exc}") from exc
 
@@ -372,19 +465,26 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
         ctx: Context = None,
     ) -> dict:
         """get_entity（§6.3）：实体详情 + 类型化关系展开（rel_type 分组邻接、
-        多跳迭代调用）；restricted 实体 404（fail-closed——T-S9）。"""
+        多跳迭代调用）；restricted 实体 404（fail-closed——T-S9；持
+        semantic:restricted 者可见，m2s-6 持权路径）。"""
         auth, org_id = _auth_and_org(ctx, param_org=None)
         _sem_member(auth, org_id)
+        can_restricted = _sem_restricted(auth, org_id)
         try:
-            return get_entity(
+            result = get_entity(
                 service.backend, org_id,
                 entity_id=id, key=key, expand=expand, depth=depth,
                 fanout_limit=fanout_limit, include=include,
+                can_restricted=can_restricted,
             )
         except EntityNotFound as exc:
             raise ToolError(f"404: {exc}") from exc
         except ValueError as exc:
             raise ToolError(f"400: {exc}") from exc
+        if can_restricted and result["entity"].get("curated") is not None \
+                and _entity_is_restricted(org_id, id, key):
+            _audit_restricted(auth, org_id, "get_entity", [result["entity"]["id"]])
+        return result
 
     @mcp.tool(name="search_entities", description=SEARCH_ENTITIES_TOOL_DESCRIPTION)
     def semantic_search_entities(

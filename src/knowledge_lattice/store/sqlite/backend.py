@@ -164,6 +164,35 @@ class SqliteBackend:
             params.update({f"vr{i}": rid for i, rid in enumerate(rids)})
         return {r[0] for r in self._conn.execute(sql, params)}
 
+    def recall_by_entities(
+        self, entity_ids, plan: AclPlan, *, top_k: int = 30,
+        seed_ids=None,
+    ) -> list[dict]:
+        """实体召回路（M2-S3/m2s-6——design §5.10）：得分 Σhits×（种子 1.0 /
+        扩展 0.5）、ORDER BY score_raw DESC + rank（1 起名次协议）；行含
+        matched_entities（int 列表——GROUP_CONCAT 拆分）与 FTS/向量路对齐的
+        溯源列（RRF merged 消费面）。seed_ids 缺省 = 全部按种子 1.0。"""
+        from knowledge_lattice.store.sqlite.acl_render import (
+            render_entity_recall_select,
+        )
+
+        ids = list(dict.fromkeys(entity_ids))
+        if not ids:
+            return []
+        seeds = list(dict.fromkeys(seed_ids)) if seed_ids is not None else ids
+        sql, params = render_entity_recall_select(
+            plan, ids, seeds, top_k=top_k)
+        cursor = self._conn.execute(sql, params)
+        cols = [d[0] for d in cursor.description]
+        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+        self._attach_dims(rows)
+        for rank, row in enumerate(rows, start=1):
+            row["rank"] = rank
+            row["matched_entities"] = [
+                int(x) for x in str(row.get("matched_entities") or "").split(",")
+                if x != ""]
+        return rows
+
     def rids_without_vector(
         self, rids: list[int], embed_model: str
     ) -> set[int]:
@@ -3402,14 +3431,19 @@ class SqliteBackend:
         self, org_id: str, root_id: int, *,
         outgoing: Sequence[str], incoming: Sequence[str],
         depth: int, fanout_limit: int, node_limit: int,
+        include_restricted: bool = False,
     ) -> dict:
         """BFS 逐层批量展开（递归 CTE 的等价 SQL——双方言同策略；防环=visited）。
 
         fanout_limit 按展开节点计（每节点每方向出边上限）；node_limit 为新增
         节点总量上限——命中任一截断 → truncated=True（T-S6）。restricted 端点
-        与非 active 端点不出现（fail-closed——T-S9；active 关系才走）。
+        与非 active 端点不出现（fail-closed——T-S9；active 关系才走）；
+        **include_restricted=True（m2s-6 持权路径——semantic:restricted 调用
+        方）放行 restricted 端点**（非 active 仍不出现）。
         P3-2/R2：edges 以 (src,rel,dst) 去重（双向查询同关系行不重复）且
         端点恒 ∈ {root} ∪ nodes（节点截断后不产悬挂边）。"""
+        sens_pred = (" AND e.sensitivity = 'normal'" if not include_restricted
+                     else "")
         nodes: dict[int, dict] = {}
         edges: list[dict] = []
         seen_edges: set[tuple[int, str, int]] = set()
@@ -3431,7 +3465,8 @@ class SqliteBackend:
                         " FROM sem_relations r JOIN sem_entities e"
                         f"   ON e.id = {'r.dst_id' if forward else 'r.src_id'}"
                         " WHERE r.org_id = ? AND r.status = 'active'"
-                        "   AND e.status = 'active' AND e.sensitivity = 'normal'"
+                        "   AND e.status = 'active'"
+                        f"{sens_pred}"
                         f"   AND {'r.src_id' if forward else 'r.dst_id'} = ?"
                         f"   AND r.rel_type IN ({','.join('?' for _ in rels)})"
                         " ORDER BY r.rel_type,"
@@ -3466,11 +3501,15 @@ class SqliteBackend:
     def sem_search_entities(
         self, org_id: str, q_norm: str, q_raw: str, *,
         types: Sequence[str] | None, top_k: int,
+        q_pinyin: str | None = None,
     ) -> list[dict]:
-        """三层 UNION：alias_norm 精确(1.0) > alias_norm 前缀(0.8) > FTS 模糊
-        （0.5——C.3/m2s-3：LIKE 骨架升级为 FTS5 MATCH over sem_search_texts，
-        名称+别名分词索引；评分差异与 pg tsvector 按 G-6 口径登记不追平）
-        ——实体去重保最优在 core 侧收口（此处拉 top_k×3 候选）。
+        """三层 UNION（m2s-6 起四层）：alias_norm 精确(1.0) > alias_norm 前缀
+        (0.8) > **拼音完全匹配(0.7——TC-SEM-05 S3 补齐，q_pinyin 由 core 侧
+        fuzzy.pinyin_norm 计算；None=跳层)** > FTS 模糊（0.5——C.3/m2s-3：
+        LIKE 骨架升级为 FTS5 MATCH over sem_search_texts，名称+别名分词索引；
+        评分差异与 pg tsvector 按 G-6 口径登记不追平）——实体去重保最优在
+        core 侧收口（此处拉 top_k×3 候选）。向量层在 core 并（embedder 注入
+        ——SQL 经 sem_fuzzy_vec_search）。
         LIKE 前缀匹配统一 LOWER + ESCAPE（双方言语义一致：%/_ 通配转义）。"""
         esc_norm = _like_escape(q_norm)
         type_filter = ""
@@ -3492,13 +3531,27 @@ class SqliteBackend:
             "  SELECT e.id, e.type, e.key, e.name, e.attrs_json, e.curated_json,"
             "         0.8 AS score, 'alias-prefix' AS via" + base
             + "   AND a.alias_norm LIKE ? ESCAPE '\\'"
-            ") ORDER BY score DESC, id ASC LIMIT ?"
         )
         query_params = (
             params + [q_norm]
             + params + [f"{esc_norm}%"]
-            + [max(top_k * 2, top_k)]
         )
+        if q_pinyin:
+            # 拼音层（m2s-6）：name/alias 的 sem_fuzzy_terms.pinyin 完全匹配——
+            # 同音错字面（TC-SEM-05 排序链第 3 档）
+            sql += (
+                "  UNION ALL"
+                "  SELECT e.id, e.type, e.key, e.name, e.attrs_json,"
+                "         e.curated_json, 0.7 AS score, 'pinyin' AS via"
+                "   FROM sem_fuzzy_terms f JOIN sem_entities e"
+                "     ON e.id = f.entity_id"
+                "  WHERE f.org_id = ? AND f.pinyin = ? AND f.pinyin != ''"
+                "   AND e.status = 'active' AND e.sensitivity = 'normal'"
+                + type_filter
+            )
+            query_params = query_params + [org_id, q_pinyin, *list(types or ())]
+        sql += ") ORDER BY score DESC, id ASC LIMIT ?"
+        query_params += [max(top_k * 3, top_k)]
         rows = self._conn.execute(sql, query_params).fetchall()
         cols = ("id", "type", "key", "name", "attrs_json", "curated_json",
                 "score", "via")
@@ -3509,6 +3562,78 @@ class SqliteBackend:
         if fts_rows:
             out.extend(fts_rows)
         return out
+
+    def sem_fuzzy_replace(
+        self, org_id: str, term_rows: Sequence[dict], del_rows: Sequence[dict],
+    ) -> int:
+        """模糊索引整替（m2s-6——TC-SEM-09 构建产物；同 build 生命周期先删后插
+        单事务）。embedding 浮点序列列 store 侧收口 pack_f32（None 原样 NULL
+        ——构建降级态，拼音/编辑距离层仍可用）。del_rows 的 term_idx 指向
+        term_rows 下标——新插入 id 内部映射（调用方无需预知自增 id）。"""
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                "DELETE FROM sem_fuzzy_dels WHERE org_id = ?", (org_id,))
+            conn.execute(
+                "DELETE FROM sem_fuzzy_terms WHERE org_id = ?", (org_id,))
+            written = 0
+            for r in term_rows:
+                vec = r.get("embedding")
+                cur = conn.execute(
+                    "INSERT INTO sem_fuzzy_terms(org_id, entity_id, kind,"
+                    " text_norm, term_len, pinyin, embed_model, embedding)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (org_id, r["entity_id"], r["kind"], r["text_norm"],
+                     r["term_len"], r.get("pinyin") or "",
+                     r.get("embed_model"),
+                     pack_f32(vec) if vec is not None else None),
+                )
+                r["id"] = cur.lastrowid
+                written += 1
+            for d in del_rows:
+                conn.execute(
+                    "INSERT OR IGNORE INTO sem_fuzzy_dels(org_id, del_key, term_id)"
+                    " VALUES (?, ?, ?)",
+                    (org_id, d["del_key"], term_rows[d["term_idx"]]["id"]),
+                )
+            conn.commit()
+            return written
+        except Exception:
+            conn.rollback()
+            raise
+
+    def sem_fuzzy_terms_all(self, org_id: str) -> list[dict]:
+        """org 内全部模糊索引行（annotate fuzzy 内存面装载——拼音/编辑距离层；
+        embedding 不回传——向量层走 sem_fuzzy_vec_search）。"""
+        rows = self._conn.execute(
+            "SELECT id, entity_id, kind, text_norm, term_len, pinyin,"
+            " embed_model FROM sem_fuzzy_terms WHERE org_id = ? ORDER BY id",
+            (org_id,),
+        ).fetchall()
+        cols = ("id", "entity_id", "kind", "text_norm", "term_len", "pinyin",
+                "embed_model")
+        return [dict(zip(cols, r)) for r in rows]
+
+    def sem_fuzzy_vec_search(
+        self, org_id: str, query_vec, *, embed_model: str,
+        top_k: int = 3, min_sim: float = 0.75,
+    ) -> list[dict]:
+        """模糊向量近邻（§5.9 第 3 层 c——vec_distance_cosine 精确扫描；term 级
+        行含 sim = 1 - 距离，按 sim DESC；min_sim 过滤与实体去重在消费面）。"""
+        rows = self._conn.execute(
+            "SELECT entity_id, text_norm, kind,"
+            " 1 - vec_distance_cosine(embedding, :qv) AS sim"
+            " FROM sem_fuzzy_terms"
+            " WHERE org_id = :org AND embed_model = :model"
+            "   AND embedding IS NOT NULL"
+            " ORDER BY vec_distance_cosine(embedding, :qv)"
+            " LIMIT :lim",
+            {"qv": pack_f32(query_vec), "org": org_id, "model": embed_model,
+             "lim": max(top_k * 4, top_k)},
+        ).fetchall()
+        return [{"entity_id": r[0], "text_norm": r[1], "kind": r[2],
+                 "sim": r[3]} for r in rows]
 
     def sem_table_columns(self, org_id: str, table_id: int) -> list[dict]:
         rows = self._conn.execute(

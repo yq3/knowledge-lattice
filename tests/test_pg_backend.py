@@ -254,15 +254,15 @@ def test_append_outbox(pg_env) -> None:
 def test_search_seed_methods_present_and_explicitly_deferred(pg_env) -> None:
     """Search 方法面齐备：recall_fts/recall_vec 已随 M1-1 实装（此前显式
     NotImplementedError 的延迟边界兑现——design §8 M1.1 PG 追平全矩阵）；
-    实体路仍显式延迟（M2-S3——D23）；expand_relations 自 m2s-2 R2 起为
-    sem_expand_graph 薄适配（P3-3——NotImplementedError 占位已删，行为断言
-    见 tests/test_sem_expand_search_backend.py 双臂套件）。"""
+    recall_by_entities 已随 m2s-6 实装（M2-S3——D23 §5.10；行为断言见
+    tests/test_tag_04_entity_recall.py 双臂套件）；expand_relations 自 m2s-2
+    R2 起为 sem_expand_graph 薄适配（P3-3）。"""
     backend = pg_env.make_backend()
     for name in ("recall_fts", "recall_vec", "recall_by_entities", "expand_relations",
                  "visible_chunk_ids", "rids_without_vector"):
         assert callable(getattr(backend, name))
-    with pytest.raises(NotImplementedError, match="M2-S3"):
-        backend.recall_by_entities([1], None)
+    # 空实体集短路（不产 SQL——None plan 也不再触达渲染层）
+    assert backend.recall_by_entities([], None) == []
 
 
 def test_pg_backend_satisfies_storage_backend_protocol(pg_env) -> None:

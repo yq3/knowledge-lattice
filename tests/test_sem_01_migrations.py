@@ -75,7 +75,7 @@ def test_migration_0006_next_after_docs_watermark() -> None:
         assert versions == sorted(versions)
         assert 6 in versions and 5 in versions
         semantic = [m for m in ms if m.domain == "semantic"]
-        assert [m.version for m in semantic] == [6, 7, 8]  # m2s-3 起 0007 semantic_yaml；m2s-5 起 0008 sem_build_snapshots（G-21 方案 A）
+        assert [m.version for m in semantic] == [6, 7, 8, 9]  # m2s-3 起 0007 semantic_yaml；m2s-5 起 0008 sem_build_snapshots（G-21 方案 A）；m2s-6 起 0009 semantic_fuzzy（TC-SEM-09）
 
 
 def test_sem_tables_and_triggers_present(sem_db) -> None:

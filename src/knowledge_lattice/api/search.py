@@ -1,15 +1,22 @@
 """检索端点（design §6.2——POST /api/search：检索测试页）。
 
-参数同 MCP search（§6.1）；组织上下文经 resolve_org 统一规则：token org claim
-优先 / X-Org-Id 头兜底、不一致 400、缺失 400（v0.9.4 按实现登记——原「X-Org-Id
-例外」为 v0.4 表述已作废，D18）。
+参数同 MCP search（§6.1）：m2s-6/M2-S3 起新增 ``entities``（≤20 实体 id）
+与 ``auto_entities``（服务端〔**api/mcp 层——§3 规则 2**〕先对 query 跑
+一遍 AC 识别再实体召回）——实体参数解析/展开经 core/semantic/recall
+（识别钉 api/mcp 层，core/docs/retrieve 不调 annotate）；返回块附
+matched_entities（实体路命中——§5.10）。
+
+组织上下文经 resolve_org 统一规则：token org claim 优先 / X-Org-Id 头兜底、
+不一致 400、缺失 400（v0.9.4 按实现登记——原「X-Org-Id 例外」为 v0.4 表述
+已作废，D18）。
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from knowledge_lattice.core.docs.retrieve import search as run_search
@@ -21,6 +28,8 @@ from knowledge_lattice.domain.auth import (
 
 from .upload import get_service
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 
@@ -29,6 +38,8 @@ class SearchRequest(BaseModel):
     top_k: int = Field(default=8, ge=1, le=100)
     datasets: list[str] | None = None
     doc_filter: list[str] | None = None
+    entities: list[int] | None = None      # 实体召回路种子（≤20——design §5.10）
+    auto_entities: bool = False            # 服务端（api 层）AC 识别 query 后实体召回
 
 
 def _auth(request: Request) -> AuthContext:
@@ -48,6 +59,25 @@ async def search(body: SearchRequest, request: Request) -> dict:
     org = resolve_org(
         org_claim=auth.org_claim, org_header=request.headers.get("x-org-id")
     )
+    # 实体参数解析（m2s-6：识别/展开钉 api/mcp 层——resolve_query_entities；
+    # entities 与 auto_entities 并存时显式种子优先）
+    entity_ctx = None
+    if body.entities is not None or body.auto_entities:
+        from knowledge_lattice.core.semantic.recall import (
+            resolve_query_entities,
+        )
+
+        def _resolve():
+            return resolve_query_entities(
+                service.backend, service.settings, org,
+                query=body.query, entities=body.entities,
+                auto_entities=body.auto_entities,
+            )
+
+        try:
+            entity_ctx = await asyncio.to_thread(_resolve)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     # 完整配方同步管线经 to_thread 下放（模型 HTTP 调用绝不阻塞事件循环——
     # NFR-8/TC-RET-04；MCP sync 工具由 FastMCP 线程池同款承接）
     return await asyncio.to_thread(
@@ -65,4 +95,6 @@ async def search(body: SearchRequest, request: Request) -> dict:
         reranker=service.reranker,
         enhancer=service.enhancer,
         breakers=service.breakers,
+        entity_ids=(entity_ctx or {}).get("entity_ids"),
+        entity_seeds=(entity_ctx or {}).get("seeds"),
     )

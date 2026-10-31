@@ -372,7 +372,8 @@ def test_pg_fresh_migrate_schema_v1(pg_db) -> None:
                     (5, "task_target_version", "docs"),
                     (6, "semantic_v1", "semantic"),
                     (7, "semantic_yaml", "semantic"),
-                    (8, "sem_build_snapshots", "semantic")]
+                    (8, "sem_build_snapshots", "semantic"),
+                    (9, "semantic_fuzzy", "semantic")]
 
     names = pg_db.table_names()
     expected = {
@@ -429,7 +430,7 @@ def test_pg_fresh_migrate_schema_v1(pg_db) -> None:
     assert (BUILTIN_DIRS["docs"] / "0001_schema_v1.sql").is_file()
     assert (BUILTIN_DIRS["docs"] / "0002_schema_v1_1.sql").is_file()
     assert BUILTIN_DIRS["semantic"].is_dir()
-    assert [m.version for m in discover()] == [1, 2, 3, 4, 5, 6, 7, 8]  # +0008 sem_build_snapshots〔m2s-5〕
+    assert [m.version for m in discover()] == [1, 2, 3, 4, 5, 6, 7, 8, 9]  # +0008 sem_build_snapshots〔m2s-5〕+0009 semantic_fuzzy〔m2s-6〕
 
 
 def test_pg_migrate_idempotent_rerun(pg_db, tmp_path: Path) -> None:
@@ -444,7 +445,7 @@ def test_pg_migrate_idempotent_rerun(pg_db, tmp_path: Path) -> None:
     assert migrate_db(pg_db.raw) == []
     assert pg_db.execute(
         "SELECT version FROM schema_migrations ORDER BY version"
-    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)]
+    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,)]
     assert pg_db.execute("SELECT count(*) FROM datasets").fetchone()[0] == before
 
 
@@ -455,19 +456,19 @@ def _write_extra_v4(tmp_path: Path, violation: bool) -> Path:
     （PG 原生约束即时校验，无外键窗口）。"""
     mig_dir = tmp_path / "pg_extra_migrations"
     mig_dir.mkdir(parents=True, exist_ok=True)
-    sql = "-- 0009 测试迁移：dimensions 加 remark 列\nALTER TABLE dimensions ADD COLUMN remark TEXT;\n"
+    sql = "-- 0010 测试迁移：dimensions 加 remark 列\nALTER TABLE dimensions ADD COLUMN remark TEXT;\n"
     if violation:
         sql += (
             "-- 违例行（引用不存在 user）：PG 原生外键即时拒绝 → 整事务回滚\n"
             "INSERT INTO user_dimension_grants(user_id, dimension_id, value_id)"
             " SELECT 'ghost-user', id, id FROM dimensions LIMIT 1;\n"
         )
-    (mig_dir / "0009_test_add_remark.sql").write_text(sql, encoding="utf-8")
+    (mig_dir / "0010_test_add_remark.sql").write_text(sql, encoding="utf-8")
     return mig_dir
 
 
 def test_pg_migration_applies_and_tracks_schema_migrations(pg_db, tmp_path: Path) -> None:
-    """正常迁移：测试迁移应用后 schema_migrations 前进到 9、DDL 生效、数据保真。"""
+    """正常迁移：测试迁移应用后 schema_migrations 前进到 10、DDL 生效、数据保真。"""
     from knowledge_lattice.store.postgres import migrate_db
 
     from helpers import seed_dimension, seed_org
@@ -477,14 +478,15 @@ def test_pg_migration_applies_and_tracks_schema_migrations(pg_db, tmp_path: Path
     dirs = [_write_extra_v4(tmp_path, violation=False)]
 
     applied = migrate_db(pg_db.raw, dirs=dirs)
-    assert applied == [9]
+    assert applied == [10]
     assert pg_db.execute(
         "SELECT version, name FROM schema_migrations ORDER BY version"
     ).fetchall() == [
         (1, "schema_v1"), (2, "schema_v1_1"), (3, "uploads"),
         (4, "tombstoned_at"), (5, "task_target_version"),
         (6, "semantic_v1"), (7, "semantic_yaml"), (8, "sem_build_snapshots"),
-        (9, "test_add_remark"),
+        (9, "semantic_fuzzy"),
+        (10, "test_add_remark"),
     ]
     cols = {
         r[0]
@@ -509,26 +511,26 @@ def test_pg_migration_out_of_order_rejected(pg_db, tmp_path: Path) -> None:
 
     d5 = tmp_path / "only_v7"
     d5.mkdir()
-    (d5 / "0010_test_add_col5.sql").write_text(
-        "-- 0010 测试迁移：dimensions 加 col5 列\nALTER TABLE dimensions ADD COLUMN col5 TEXT;\n",
+    (d5 / "0012_test_add_col5.sql").write_text(
+        "-- 0012 测试迁移：dimensions 加 col5 列\nALTER TABLE dimensions ADD COLUMN col5 TEXT;\n",
         encoding="utf-8",
     )
     d45 = tmp_path / "v7_and_v8"
     d45.mkdir()
-    (d45 / "0009_test_backfill.sql").write_text(
-        "-- 0009 补入迁移（乱序场景：水位已到 10；0008 为内置 sem_build_snapshots 已应用）\nALTER TABLE dimensions ADD COLUMN col4 TEXT;\n",
+    (d45 / "0011_test_backfill.sql").write_text(
+        "-- 0011 补入迁移（乱序场景：水位已到 12；0010 为测试迁移已应用）\nALTER TABLE dimensions ADD COLUMN col4 TEXT;\n",
         encoding="utf-8",
     )
-    (d45 / "0010_test_add_col5.sql").write_text(
-        "-- 0010 测试迁移：dimensions 加 col5 列\nALTER TABLE dimensions ADD COLUMN col5 TEXT;\n",
+    (d45 / "0012_test_add_col5.sql").write_text(
+        "-- 0012 测试迁移：dimensions 加 col5 列\nALTER TABLE dimensions ADD COLUMN col5 TEXT;\n",
         encoding="utf-8",
     )
 
-    # 先应用 0010（跳过 0009 —— 目录里本来就没有；内置 0001~0008 已随 fixture 应用）
-    assert migrate_db(pg_db.raw, dirs=[BUILTIN_DIRS["docs"], d5]) == [10]
+    # 先应用 0012（跳过 0011 —— 目录里本来就没有；内置 0001~0009 已随 fixture 应用）
+    assert migrate_db(pg_db.raw, dirs=[BUILTIN_DIRS["docs"], d5]) == [12]
 
-    # 后补入 0009：未应用且 9 <= MAX(applied)=10 → fail-fast
-    with pytest.raises(MigrationError, match="0009|只前进|out-of-order"):
+    # 后补入 0011：未应用且 11 <= MAX(applied)=12 → fail-fast
+    with pytest.raises(MigrationError, match="0011|只前进|out-of-order"):
         migrate_db(pg_db.raw, dirs=[BUILTIN_DIRS["docs"], d45])
 
     # 库态：0008 的 DDL 绝未执行、版本水位不动
@@ -543,7 +545,7 @@ def test_pg_migration_out_of_order_rejected(pg_db, tmp_path: Path) -> None:
     assert "col5" in cols
     assert pg_db.execute(
         "SELECT version FROM schema_migrations ORDER BY version"
-    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (10,)]
+    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,), (12,)]
 
 
 def test_pg_migration_violation_rolls_back_atomically(pg_db, tmp_path: Path) -> None:
@@ -567,7 +569,7 @@ def test_pg_migration_violation_rolls_back_atomically(pg_db, tmp_path: Path) -> 
     # 回滚后库态与迁移前一致：版本未前进（停在 0006 semantic_v1）、DDL 未生效
     assert pg_db.execute(
         "SELECT version FROM schema_migrations ORDER BY version"
-    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)]
+    ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,)]
     cols = {
         r[0]
         for r in pg_db.execute(
@@ -582,7 +584,7 @@ def test_pg_migration_violation_rolls_back_atomically(pg_db, tmp_path: Path) -> 
 
     # 修复后同号迁移可正常应用（无残留半成品）
     good_dirs = [BUILTIN_DIRS["docs"], _write_extra_v4(tmp_path / "good", violation=False)]
-    assert migrate_db(pg_db.raw, dirs=good_dirs) == [9]
+    assert migrate_db(pg_db.raw, dirs=good_dirs) == [10]
 
 
 def test_pg_concurrent_migrate_advisory_lock_clean_skip(pg_db, tmp_path: Path) -> None:
@@ -619,7 +621,7 @@ def test_pg_concurrent_migrate_advisory_lock_clean_skip(pg_db, tmp_path: Path) -
     failures = [r for r in results if isinstance(r, BaseException)]
     assert failures == [], f"concurrent migrate crashed: {failures!r}"
     flattened = sorted(v for r in results for v in r)  # type: ignore[union-attr]
-    assert flattened == [9]  # 恰好应用一次，另一连接干净跳过（fixture 已应用内置 1..8）
+    assert flattened == [10]  # 恰好应用一次，另一连接干净跳过（fixture 已应用内置 1..9）
 
 
 # ============ P3-6（M0b-1 移交，M0b-3 清偿）：schema_migrations 锁外竞态 ============

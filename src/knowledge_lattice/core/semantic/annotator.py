@@ -61,6 +61,48 @@ _RESOLVED_CEILING = {  # resolved_by → confidence 上限（证据强度递减�
     "l0": 0.9, "default": 0.9, "ambiguous": 0.8,
 }
 
+# ---- 模糊兜底（§5.9 第 3 层——m2s-6/M2-S3） ----
+
+# jieba 词性筛选（§5.9 第 3 层「名词性片段」的工程口径）：实词族——n*（名词
+# 族）/v*（动词族）/a*（形容词族）/eng（英文）/x（未登录词）。**错别字面
+# 常被 jieba 判为动词或未登录词**（「留底」「低扣」非词典词），纯名词族会
+# 漏掉主要错字面；虚词/代词/量词/介词排除（误报面控制——三层低置信度候选
+# 只进 candidates，负样本误报由 neg_fp 门槛把守）。
+_SOLID_POS_PREFIXES = ("n", "v", "a", "eng", "x", "j")
+_EXCLUDED_POS = ("uj", "ul", "ug", "p", "c", "u", "r", "m", "q", "d", "t",
+                 "f", "b")
+
+
+def _solid_words(text: str) -> list[tuple[str, str]]:
+    """jieba 词性切分 → [(word, flag)]（惰性导入——AC-only 路径零开销）。"""
+    import jieba.posseg as pseg
+
+    return [(w.word, w.flag) for w in pseg.cut(text)]
+
+
+def _noun_fragments(text: str) -> list[tuple[str, int, int]]:
+    """模糊层候选片段 [(frag, start, end)]：实词片段（长度 ≥2——§5.9 第 3 层
+    「长度 ≥2」）+ **相邻实词对拼接**（bigram）——错别字常把两个词黏成一个
+    错字面（「纳税申抱」被切为 纳税+申抱），单一词面查不到整别名；窗口 ≤2
+    词覆盖该形态。span 落原文坐标（candidates 契约）。"""
+    words = _solid_words(text)
+    positions = []
+    offset = 0
+    for word, flag in words:
+        start = text.find(word, offset)
+        offset = start + len(word) if start >= 0 else offset
+        if (flag.startswith(_SOLID_POS_PREFIXES)
+                and flag not in _EXCLUDED_POS and len(word.strip()) >= 2):
+            positions.append((start, start + len(word), word.strip()))
+    frags: list[tuple[str, int, int]] = []
+    for i in range(len(positions)):
+        s, e, w = positions[i]
+        frags.append((w, s, e))
+        if i + 1 < len(positions) and positions[i + 1][0] == e:
+            frags.append((w + positions[i + 1][2], s, positions[i + 1][1]))
+    return [(f, s, e) for f, s, e in frags
+            if s >= 0 and len(normalize_alias(f)) >= 2]
+
 
 def _normalize_with_map(text: str) -> tuple[str, list[int]]:
     """规范化 + 下标回映：每个规范化字符登记原文下标（span 报原文坐标）。
@@ -138,12 +180,60 @@ class Annotator:
                      " ".join(str(d.get("hint") or "")
                               for d in curated.get("disambiguation") or ())])
                 self.l0_terms[eid] = _bigrams(normalize_alias(frag))
+        # ---- m2s-6：restricted 持权识别面（T-S9 持权路径）----
+        # restricted 别名不进主自动机（无权调用方零暴露）；norm → [(eid, alias 行)]
+        # 供 include_restricted=True 的调用方线性扫（极少数敏感实体，线性可承受）。
+        self.restricted_entries: dict[str, list[dict]] = defaultdict(list)
+        for a in snapshot["aliases"]:
+            ent = self.entities.get(a["entity_id"])
+            if (ent is not None and ent.get("sensitivity") == "restricted"
+                    and a["match_mode"] in ("exact", "context") and a["alias_norm"]):
+                self.restricted_entries[a["alias_norm"]].append({
+                    "entity_id": a["entity_id"], "kind": a["kind"],
+                    "match_mode": a["match_mode"], "weight": a["weight"],
+                    "alias_norm": a["alias_norm"],
+                })
+        # ---- m2s-6：模糊兜底内存面（§5.9 第 3 层 a/b——拼音/编辑距离确定性层；
+        #      与构建侧 sem_fuzzy_terms 表同源同口径〔fuzzy.build_fuzzy_terms
+        #      纯计算〕，向量层走注入 vec_lookup（SQL 在 store））----
+        from knowledge_lattice.core.semantic.fuzzy import (
+            build_fuzzy_terms, fuzzy_layers_for_fragment,
+        )
+
+        term_rows, _del_rows, self.fuzzy_stats = build_fuzzy_terms(
+            snapshot, None, embed_model_label="")
+        self.fuzzy_terms = term_rows
+        self._fuzzy_pinyin: dict[str, list[dict]] = defaultdict(list)
+        self._fuzzy_dels: dict[str, list[dict]] = defaultdict(list)
+        for idx, t in enumerate(term_rows):
+            if t["pinyin"]:
+                self._fuzzy_pinyin[t["pinyin"]].append(t)
+            if t["kind"] != "definition" and t["term_len"] >= 4:
+                from knowledge_lattice.core.semantic.fuzzy import del_keys
+
+                for key in del_keys(t["text_norm"]):
+                    self._fuzzy_dels[key].append({"idx": idx})
+        self._fuzzy_match = fuzzy_layers_for_fragment
 
     # ---- 主入口 ----
 
-    def annotate(self, text: str, *, context_entities: list[int] | None = None,
-                 prefer_types: list[str] | None = None) -> dict:
-        """文本 → 类型化实体标注（§6.3 契约：mentions + candidates）。"""
+    def annotate(
+        self, text: str, *, context_entities: list[int] | None = None,
+        prefer_types: list[str] | None = None,
+        fuzzy: bool = False,
+        include_restricted: bool = False,
+        vec_lookup=None,
+    ) -> dict:
+        """文本 → 类型化实体标注（§6.3 契约：mentions + candidates）。
+
+        - fuzzy=True（§5.9 第 3 层——m2s-6）：对未被 AC 层覆盖的名词性片段
+          （jieba 词性筛选）跑三层兜底（拼音 → 编辑距离 → 向量近邻），结果
+          via='fuzzy'、confidence 一律低于第 1 层、**落 candidates 不进
+          mentions**（G-2 并存裁定：中间件注入一行低信任提示）；向量层经
+          vec_lookup(frag_text) -> list[{entity_id, sim}] 注入（SQL 在 store）；
+        - include_restricted=True（T-S9 持权路径——semantic:restricted 调用
+          方）：restricted 实体别名参与识别（无权调用方零暴露——build 时
+          不入主自动机，本参数只对持权请求生效）。"""
         from knowledge_lattice.core.semantic.constants import SEM_ENTITY_TYPES
 
         if not text or len(text) > MAX_TEXT_LEN:
@@ -158,6 +248,8 @@ class Annotator:
 
         norm, origins = _normalize_with_map(text)
         hits = self._scan(norm)
+        if include_restricted and self.restricted_entries:
+            hits = self._merge_restricted(hits, self._scan_restricted(norm))
         sentence_ends = [m.end() for m in _SENTENCE_SPLIT.finditer(norm)]
         mentions: list[dict] = []
         candidates: list[dict] = []
@@ -171,6 +263,14 @@ class Annotator:
                 continue
             sent = self._sentence_of(hit["i"], sentence_ends)
             others = self._other_entities(hits, hit, sent, sentence_ends)
+            # mixed-mode 候选级门槛（G-21 P3-5）：**维持 span 级行为再挂**——
+            # 参考词典存在刻意的 mixed 歧义面（「留抵」＝exact〔retained_
+            # credit〕+ context〔retained_refund，带 disambiguation 声明〕），
+            # ctx-only 候选按候选级剔除会使歧义消歧面（TC-SEM-03④/L0 兜底）
+            # 失去一半候选 → 识别评测 ambiguity 门槛（≥0.85）失守（m2s-6
+            # 实测 0.75）。context 模式别名在 mixed span 参与消歧是词典设计
+            # 意图（CI 规则：歧义别名至少一方 disambiguation 或标 context）
+            # ——候选级门槛需连同词典口径重设计，登记 known-gaps G-21 再挂。
             pick, resolved_by = self._disambiguate(
                 hit["cands"], others, ctx_ids, prefer_types,
                 self._sentence_text(norm, sent, sentence_ends),
@@ -208,6 +308,11 @@ class Annotator:
                     candidates.append(self._candidate(m, c))
         for m in mentions:
             m.pop("_cand_ids", None)
+
+        # ---- 第 3 层模糊兜底（fuzzy=True——§5.9；落 candidates 不进 mentions）----
+        if fuzzy:
+            candidates.extend(
+                self._fuzzy_candidates(text, mentions, vec_lookup=vec_lookup))
         return {"mentions": mentions, "candidates": candidates}
 
     # ---- 内部 ----
@@ -219,7 +324,10 @@ class Annotator:
         零实体——T-S9「表现为不存在」与 TC-BUILD-02 的合法极端形态）下
         pyahocorasick 空 trie `make_automaton()` 不生效、`iter()` 抛
         AttributeError——len()==0 短路返回零命中（fail-closed 不变 crash，
-        该 org 任何文本零标注）。"""
+        该 org 任何文本零标注）。
+
+        hit["ctx_only"]：该 span 内全部命中行均为 context 模式的实体集合
+        （mixed-mode 候选级门槛面——G-21 P3-5/m2s-6）。"""
         if not len(self.automaton):
             return []
         raw = []
@@ -228,6 +336,10 @@ class Annotator:
             i = j - len(recs[0]["alias_norm"])
             if not _latin_ok(norm, i, j):
                 continue
+            ctx_only = {r["entity_id"] for r in recs
+                        if r["entity_id"] in self.entities
+                        and all(x["match_mode"] == "context"
+                                for x in recs if x["entity_id"] == r["entity_id"])}
             cands = sorted(
                 {r["entity_id"] for r in recs if r["entity_id"] in self.entities},
                 key=lambda eid: (-max(
@@ -238,7 +350,8 @@ class Annotator:
                         "weight": max(r["weight"] for r in recs),
                         "is_context": all(r["match_mode"] == "context"
                                           for r in recs),
-                        "kind": _tier_kind(recs)})
+                        "kind": _tier_kind(recs),
+                        "ctx_only": ctx_only})
         # overlap 择优：长 > weight > 位置
         raw.sort(key=lambda h: (-(h["j"] - h["i"]), -h["weight"], h["i"]))
         chosen: list[dict] = []
@@ -248,6 +361,110 @@ class Annotator:
             chosen.append(h)
         chosen.sort(key=lambda h: h["i"])
         return chosen
+
+    def _scan_restricted(self, norm: str) -> list[dict]:
+        """restricted 别名线性扫（持权路径——极少数面，线性可承受；与 AC 面
+        同构产出 hit：latin 边界 + overlap 择优交并侧统一处理）。"""
+        raw = []
+        for rnorm, recs in self.restricted_entries.items():
+            start = 0
+            while True:
+                i = norm.find(rnorm, start)
+                if i < 0:
+                    break
+                j = i + len(rnorm)
+                start = j
+                if not _latin_ok(norm, i, j):
+                    continue
+                cands = sorted(
+                    {r["entity_id"] for r in recs
+                     if r["entity_id"] in self.entities},
+                    key=lambda eid: (-max(
+                        r["weight"] for r in recs if r["entity_id"] == eid), eid))
+                if cands:
+                    raw.append({"i": i, "j": j, "cands": cands,
+                                "weight": max(r["weight"] for r in recs),
+                                "is_context": all(
+                                    r["match_mode"] == "context" for r in recs),
+                                "kind": _tier_kind(recs),
+                                "ctx_only": set()})
+        return raw
+
+    @staticmethod
+    def _merge_restricted(hits: list[dict], restricted_hits: list[dict],
+                          ) -> list[dict]:
+        """AC hits + restricted hits 统一 overlap 择优（长 > weight > 位置）。"""
+        merged = list(hits) + list(restricted_hits)
+        merged.sort(key=lambda h: (-(h["j"] - h["i"]), -h["weight"], h["i"]))
+        chosen: list[dict] = []
+        for h in merged:
+            if any(not (h["j"] <= c["i"] or h["i"] >= c["j"]) for c in chosen):
+                continue
+            chosen.append(h)
+        chosen.sort(key=lambda h: h["i"])
+        return chosen
+
+    def _fuzzy_candidates(self, text: str, mentions: list[dict],
+                          *, vec_lookup) -> list[dict]:
+        """§5.9 第 3 层：未被 AC 层覆盖的名词性片段 × 三层兜底 → candidates。
+
+        - 名词筛选（jieba 词性）+ 长度 ≥2；片段与任一 mention span 重叠即跳过；
+        - 拼音完全匹配 → 编辑距离 ≤1（长度 ≥4）→ 向量近邻（阈值 0.75 top-3
+          ——vec_lookup 注入），依次短路（同片段只取首个命中层）；
+        - via='fuzzy'、confidence 分层且一律低于第 1 层（0.75/0.65/0.55 < 0.9）。"""
+        from knowledge_lattice.core.semantic.fuzzy import FUZZY_CONFIDENCE
+
+        covered = [(m["span"][0], m["span"][1]) for m in mentions]
+        out: list[dict] = []
+        for word, start, end in _noun_fragments(text):
+            if any(start < ce and end > cs for cs, ce in covered):
+                continue
+            frag_norm = normalize_alias(word)
+            if not frag_norm or len(frag_norm) < 2:
+                continue
+            layer = term = None
+            for lay, t in self._fuzzy_match(
+                frag_norm, pinyin_index=dict(self._fuzzy_pinyin),
+                del_index=dict(self._fuzzy_dels), terms=self.fuzzy_terms,
+            ):
+                layer, term = lay, t
+                break
+            if layer is None and vec_lookup is not None:
+                try:
+                    vec_hits = vec_lookup(word) or []
+                except Exception as exc:  # noqa: BLE001 —— 向量层失败降级为跳过
+                    logger.warning("fuzzy vec_lookup failed: %s", exc)
+                    vec_hits = []
+                seen: set[int] = set()
+                for v in vec_hits:
+                    eid = v.get("entity_id")
+                    if eid in seen or eid not in self.entities:
+                        continue
+                    seen.add(eid)
+                    out.append(self._fuzzy_candidate(
+                        start, end, word, eid, "vec", v.get("text_norm"),
+                        confidence=FUZZY_CONFIDENCE["vec"], sim=v.get("sim")))
+                    if len(seen) >= 3:
+                        break
+            elif layer is not None:
+                out.append(self._fuzzy_candidate(
+                    start, end, word, term["entity_id"], layer,
+                    term["text_norm"],
+                    confidence=FUZZY_CONFIDENCE[layer]))
+        return out
+
+    def _fuzzy_candidate(self, start: int, end: int, surface: str, eid: int,
+                         layer: str, term: str, *, confidence: float,
+                         sim=None) -> dict:
+        ent = self.entities[eid]
+        row = {"span": [start, end], "surface": surface, "entity_id": eid,
+               "entity_key": f'{ent["type"]}:{ent["key"]}',
+               "type": ent["type"], "name": ent["name"], "via": "fuzzy",
+               "fuzzy_layer": layer, "confidence": round(confidence, 2),
+               "term": term}
+        if sim is not None:
+            row["sim"] = round(float(sim), 4)
+        return row
 
     def _disambiguate(self, cands, others, ctx_ids, prefer_types,
                       sentence_ctx, span_norm) -> tuple[list[int], str]:
@@ -481,14 +698,65 @@ def get_annotator(backend, org_id: str, settings) -> tuple[Annotator | None,
 
 def annotate_text(backend, settings, org_id: str, text: str, *,
                   context_entities: list[int] | None = None,
-                  prefer_types: list[str] | None = None) -> dict:
-    """REST/MCP 共用编排：dict_rev 锚点 + mentions（Annotator 内含原文切片）。"""
+                  prefer_types: list[str] | None = None,
+                  fuzzy: bool = False,
+                  include_restricted: bool = False,
+                  embedder=None,
+                  embed_batch=None) -> dict:
+    """REST/MCP 共用编排：dict_rev 锚点 + mentions（Annotator 内含原文切片）。
+
+    - fuzzy=True（§5.9 第 3 层——m2s-6）：向量层经注入 embedder（缺省
+      settings 侧不构造——无 embedder 则该层跳过，拼音/编辑距离层照常）+
+      backend.sem_fuzzy_vec_search（阈值 0.75 top-3，SQL 在 store）；
+      embed_batch(texts) 可覆盖批量嵌入（评测/测试确定性注入面）；
+    - include_restricted=True（T-S9 持权路径）：restricted 实体参与识别——
+      由 api/mcp 层按调用方 membership role 判定后传入（core 不查权限）。"""
     ann, rev = get_annotator(backend, org_id, settings)
     if ann is None:
         return {"dict_rev": None, "mentions": [], "candidates": []}
-    result = ann.annotate(text, context_entities=context_entities,
-                          prefer_types=prefer_types)
+    vec_lookup = None
+    if fuzzy:
+        def vec_lookup(fragment: str) -> list[dict]:
+            embed = embed_batch or _default_embed_batch(backend, settings,
+                                                        org_id, embedder)
+            vectors = embed([fragment])
+            vec = vectors[0] if vectors else None
+            if vec is None:
+                return []
+            hits = backend.sem_fuzzy_vec_search(
+                org_id, vec, embed_model=settings.embed_model_label,
+                top_k=settings.semantic_fuzzy_vec_top,
+                min_sim=settings.semantic_fuzzy_vec_threshold,
+            )
+            # 实体去重保最优 + min_sim 过滤（store 返回 term 级行）
+            best: dict[int, dict] = {}
+            for h in hits:
+                if h["sim"] < settings.semantic_fuzzy_vec_threshold:
+                    continue
+                if h["entity_id"] not in best or h["sim"] > best[h["entity_id"]]["sim"]:
+                    best[h["entity_id"]] = h
+            return sorted(best.values(), key=lambda h: -h["sim"])
+    result = ann.annotate(
+        text, context_entities=context_entities, prefer_types=prefer_types,
+        fuzzy=fuzzy, include_restricted=include_restricted,
+        vec_lookup=vec_lookup,
+    )
     return {"dict_rev": rev, **result}
+
+
+def _default_embed_batch(backend, settings, org_id, embedder):
+    """向量层缺省嵌入通道：embedder 注入（None → 该层恒空——不阻断前两层）。"""
+    if embedder is None:
+        return lambda texts: [None] * len(texts)
+
+    def _embed(texts: list[str]) -> list:
+        try:
+            return embedder.embed(texts)
+        except Exception:  # noqa: BLE001 —— 嵌入失败向量层降级（G-1 语义）
+            logger.warning("fuzzy vec embed degraded: org=%s", org_id)
+            return [None] * len(texts)
+
+    return _embed
 
 
 def render_l0(snapshot: dict) -> dict:
