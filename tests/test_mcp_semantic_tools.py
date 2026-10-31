@@ -320,9 +320,10 @@ def test_search_entities_ranking_and_limits(sem_app) -> None:
     assert ents[0]["key"] == "TPL_VAT_INPUT" and ents[0]["via"] == "alias-exact"
     assert ents[0]["score"] == 1.0
     vias = [e["via"] for e in ents]
-    # 排序链：所有 alias 前缀命中先于 name 模糊命中
-    assert "alias-prefix" in vias and "name" in vias
-    assert vias.index("alias-prefix") < vias.index("name")
+    # 排序链：所有 alias 前缀命中先于 FTS 模糊命中（C.3/m2s-3：name LIKE 层
+    # 升级为 FTS——via 'name' → 'fts'，三层序不变）
+    assert "alias-prefix" in vias and "fts" in vias
+    assert vias.index("alias-prefix") < vias.index("fts")
     assert {e["type"] for e in ents} <= {"template", "concept", "table"}
     # brief/score/via 结构键齐
     assert all({"id", "type", "key", "name", "score", "via"} <= set(e) for e in ents)

@@ -118,6 +118,25 @@ def test_expand_cycle_terminates_both_directions(sem_store) -> None:
         (ids["rB"], "related_to", ids["rC"]),
         (ids["rC"], "related_to", ids["rA"]),
     }
+    # P3-2 断言强度（m2s-3 C.7①）：len==3 环——edges 恰三条（去重后）且
+    # 无任何自环重复；节点集恰为环上其余两端（visited 防环不吞合法节点）
+    assert len(out["edges"]) == 3, "len==3 环的双向展开去重后应恰 3 边"
+    assert len({e["src"] for e in out["edges"]} |
+               {e["dst"] for e in out["edges"]}) == 3
+
+
+def test_expand_bidirectional_same_layer_no_duplicate(sem_store) -> None:
+    """P3-2 断言强度（m2s-3 C.7①）：双向同层样本——同一关系行经出向+入向
+    两条查询路径各见一次，edges 只计一次（seen_edges 去重）；t1 的三条
+    has_column 出边在出向遍历即全收，入向分支不重复追加。"""
+    b, ids = sem_store.backend, sem_store.ids
+    out = b.sem_expand_graph(ORG, ids["t1"], outgoing=["has_column"],
+                             incoming=["has_column"], depth=1,
+                             fanout_limit=50, node_limit=200)
+    col_keys = {n["key"] for n in out["nodes"]}
+    assert col_keys == {"t1.c1", "t1.c2"}  # c3 restricted 不出现
+    assert len(out["edges"]) == 2, "双向同层同关系行不得重复计数"
+    assert all(e["rel"] == "has_column" for e in out["edges"])
 
 
 def test_expand_direction_filters(sem_store) -> None:
@@ -178,11 +197,22 @@ def test_expand_edges_no_duplicate_and_restricted_root_semantics(sem_store) -> N
 
 def test_expand_relations_thin_adapter(sem_store) -> None:
     """P3-3：expand_relations（design §3/NFR-4 命名）= sem_expand_graph 薄适配
-    ——多 seed 归并去重、rels 双向。"""
+    ——多 seed 归并去重、rels 双向。
+
+    O-2/m2s-3：**nodes 含 seed 本身**（design §5.9 walk CTE depth=0 行——种子
+    即第 0 层；M2-S3 实体召回消费方契约确认后落定）。"""
     b, ids = sem_store.backend, sem_store.ids
     out = b.expand_relations(ORG, [ids["T"], ids["big"]], ["backed_by", "has_column"])
-    keys = {n["key"] for n in out["nodes"]}
+    by_key = {n["key"]: n for n in out["nodes"]}
+    # seed 入集且 depth=0
+    assert "T" in by_key and by_key["T"]["depth"] == 0
+    assert "big" in by_key and by_key["big"]["depth"] == 0
+    assert by_key["T"]["type"] == "template" and by_key["T"]["name"] == "模板"
+    keys = set(by_key)
     assert {"t1"} <= keys and any(k.startswith("big.col_") for k in keys)
+    # 展开节点 depth ≥ 1（与 seed 层区分）
+    assert all(n["depth"] >= 1 for n in out["nodes"] if n["key"] != "T"
+               and n["key"] != "big")
     edge_keys = [(e["src"], e["rel"], e["dst"]) for e in out["edges"]]
     assert len(edge_keys) == len(set(edge_keys))
 
@@ -208,13 +238,18 @@ def test_search_three_tier_ranking_and_types(sem_store) -> None:
 
 
 def test_search_like_escape_semantics(sem_store) -> None:
-    """%/_/\ 通配符按字面匹配（ESCAPE——注入形态零误配）。"""
+    """%/_/\ 通配符按字面处理（注入形态零误配）。C.3/m2s-3：name LIKE 层升级
+    为 FTS——纯符号查询（%/_/\\）整层跳过零命中；混合形态 't1.%' 分词为字面
+    token 't1'（**不解释通配**——命中仅来自 token 本身，不产生 % 展开跨族误配）。"""
     b = sem_store.backend
-    # 字面 % 查询不命中任何内容（库里无含 % 的别名/名）
+    # 字面 %/_/\ 查询零命中（无 token——FTS 层跳过、别名层无字面命中）
     assert b.sem_search_entities(ORG, "%", "%", types=None, top_k=10) == []
     assert b.sem_search_entities(ORG, "_", "_", types=None, top_k=10) == []
-    # 前缀注入形态：'t1.%' 不被解释为通配——零命中（无该字面别名）
-    assert b.sem_search_entities(ORG, "t1.%", "t1.%", types=None, top_k=10) == []
+    assert b.sem_search_entities(ORG, "\\", "\\", types=None, top_k=10) == []
+    # 前缀注入形态：'t1.%' 不被解释为通配——命中全部来自字面 token 't1'
+    #（表 t1 族的 code/名称 token），无 % 展开的跨族误配
+    rows = b.sem_search_entities(ORG, "t1.%", "t1.%", types=None, top_k=10)
+    assert rows and all(r["key"].startswith("t1") for r in rows)
 
 
 def test_search_restricted_excluded_and_score_type(sem_store) -> None:

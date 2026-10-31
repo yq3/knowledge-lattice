@@ -39,17 +39,20 @@ __all__ = ["run_build", "run_build_task", "compute_dict_rev"]
 def compute_dict_rev(
     snapshot: dict, *, embed_model_label: str, yaml_rev: str | None = None
 ) -> str:
-    """dict_rev = hash(active 实体 + 别名 + yaml_rev + embed_model 标签) 前 12 hex。
+    """dict_rev = hash(active 实体〔含 curated_json——G-17/m2s-3〕+ 别名 +
+    yaml_rev + embed_model 标签) 前 12 hex。
 
     规范化序列化（排序 + 紧凑分隔）保证同快照双方言同 rev；parent_id 以 -1
-    规避 None 与 int 的排序比较。"""
+    规避 None 与 int 的排序比较。curated_json 入实体元组 + yaml_rev 入顶层
+    输入——YAML 改 definition 必触发重建（§5.8 构建产物第 1 步，双保险）。"""
     payload = {
         "embed_model": embed_model_label,
         "yaml_rev": yaml_rev or "",
         "entities": sorted(
             [str(e["id"]), e["type"], e["key"], e["name"],
              str(e["parent_id"] if e["parent_id"] is not None else -1),
-             e["attrs_json"], e["sensitivity"]]
+             e["attrs_json"], e["sensitivity"],
+             e.get("curated_json") or "{}"]
             for e in snapshot["entities"]
         ),
         "aliases": sorted(
@@ -65,6 +68,13 @@ def compute_dict_rev(
     blob = json.dumps(payload, ensure_ascii=False, sort_keys=True,
                       separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+
+def _yaml_rev_of(snapshot: dict) -> str | None:
+    """yaml_rev = active 实体 curated_rev 的字典序最大值（最近一次合并的
+    corpus rev——全量合并语义下即当前 YAML 仓 rev；无 curated 实体为 None）。"""
+    revs = [e.get("curated_rev") for e in snapshot["entities"] if e.get("curated_rev")]
+    return max(revs) if revs else None
 
 
 def _build_stats(snapshot: dict) -> dict:
@@ -121,6 +131,12 @@ def run_build(
     """一次构建 run（§5.8——返回 {build_id?, dict_rev, status, stats}）。
 
     - dict_rev 与当前 ready 相同 → skipped（不产新行——TC-BUILD-01）；
+    - **G-17/m2s-3**：curated_json 入快照、yaml_rev（=max curated_rev）入
+      dict_rev 输入与 build 行——YAML 改 definition 必触发重建；
+    - **G-18/O-1/m2s-3**：sem_insert_build 条件 upsert——同 rev 行已 ready
+      时不重断 building（无 flap）；此时若 current 已同 rev → skipped 让位
+      （并发赢家），否则 **重激活**（顶置 activated_at 成为 current——rev
+      回退场景 current 不失真，sem_reactivate_build + ready 事件同事务）；
     - ready/failed 事件与终态行**同一事务**（store switch/fail 的 audit=——
       P3-5/R2，沿 create_task 先例；G-16 构建侧收口）；
     - 切换无效且 current 已是同 rev ready（并发输者——P2-2/R2）→ 按 skipped
@@ -130,8 +146,10 @@ def run_build(
     dict_rev: str | None = None
     try:
         snapshot = backend.sem_active_snapshot(org_id)
+        yaml_rev = _yaml_rev_of(snapshot)
         dict_rev = compute_dict_rev(
-            snapshot, embed_model_label=settings.embed_model_label
+            snapshot, embed_model_label=settings.embed_model_label,
+            yaml_rev=yaml_rev,
         )
         current = backend.sem_current_build(org_id)
         if current is not None and current["dict_rev"] == dict_rev:
@@ -148,7 +166,33 @@ def run_build(
             raise BuildInterrupted("build interrupted before switch (lease lost)")
         stats = _build_stats(snapshot)
         stats_json = json.dumps(stats, ensure_ascii=False, default=str)
-        build_id = backend.sem_insert_build(org_id, dict_rev, stats_json)
+        build_id, was_ready = backend.sem_insert_build(
+            org_id, dict_rev, stats_json, yaml_rev=yaml_rev)
+        if was_ready:
+            # O-1：同 rev 行已 ready——并发赢家让位或 rev 回退重激活（G-18）
+            now_current = backend.sem_current_build(org_id)
+            if now_current is not None and now_current["dict_rev"] == dict_rev:
+                stats_skip = {"skipped": True, "current_build_id": now_current["id"],
+                              "reason": "concurrent-ready"}
+                logger.info(
+                    "semantic build ceded to concurrent winner: org=%s rev=%s"
+                    " current_build=%s", org_id, dict_rev, now_current["id"])
+                return {"build_id": now_current["id"], "dict_rev": dict_rev,
+                        "status": "skipped", "stats": stats_skip}
+            backend.sem_reactivate_build(
+                org_id, build_id, stats_json,
+                audit=(
+                    EVENT_SEMANTIC_BUILD,
+                    json.dumps({"org_id": org_id, "build_id": build_id,
+                                "dict_rev": dict_rev, "status": "ready",
+                                "stats": stats, "reactivated": True},
+                               ensure_ascii=False, default=str),
+                ),
+            )
+            logger.info("semantic build reactivated (rev rollback): org=%s"
+                        " build=%s rev=%s", org_id, build_id, dict_rev)
+            return {"build_id": build_id, "dict_rev": dict_rev, "status": "ready",
+                    "stats": stats}
         ready_audit = (
             EVENT_SEMANTIC_BUILD,
             json.dumps({"org_id": org_id, "build_id": build_id, "dict_rev": dict_rev,

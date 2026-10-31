@@ -1608,12 +1608,14 @@ class PgBackend:
     def upsert_entities_batch(self, org_id: str, rows: Sequence[dict]) -> dict:
         """同步实体分批 upsert——单批单事务（与 SqliteBackend 逐条同源：只写事实列、
         parent_id 三级解析〔批内 id 映射 / 批间缓存 / 库内回查——跨批父行 P2-1〕、
-        updated 只计事实列变更——T-S1/T-S3）。"""
+        updated 只计事实列变更——T-S1/T-S3；row.source 缺省 'sync'——yaml 纯人工
+        实体 'curated'〔m2s-3〕；名称变更后刷新 FTS 文本行——C.3）。"""
         conn = self._conn
         existing = self._sem_read_existing(
             org_id, [(r["type"], r["key"]) for r in rows]
         )
         inserted = updated = 0
+        touched: list[int] = []
         conn.execute("BEGIN")
         try:
             id_map = {k: v[0] for k, v in existing.items()}
@@ -1623,6 +1625,7 @@ class PgBackend:
                 parent_id = self._sem_parent_id(
                     org_id, row.get("parent_key"), id_map, parent_cache
                 )
+                row_source = row.get("source") or "sync"
                 if key in existing:
                     _, old_name, old_attrs, old_parent, old_status = existing[key]
                     if (old_name != row["name"]
@@ -1641,24 +1644,29 @@ class PgBackend:
                          "ts": row["synced_at"], "org": org_id,
                          "type": row["type"], "key": row["key"]},
                     )
+                    if old_name != row["name"]:
+                        touched.append(id_map[key])
                 else:
                     new_id = conn.execute(
                         "INSERT INTO sem_entities(org_id, type, key, name, parent_id,"
                         " attrs_json, source, source_system, status, synced_at)"
                         " VALUES(%(org)s, %(type)s, %(key)s, %(name)s, %(parent)s,"
-                        " %(attrs)s, 'sync', %(srcsys)s, 'active', %(ts)s)"
+                        " %(attrs)s, %(source)s, %(srcsys)s, 'active', %(ts)s)"
                         " RETURNING id",
                         {"org": org_id, "type": row["type"], "key": row["key"],
                          "name": row["name"], "parent": parent_id,
-                         "attrs": row["attrs_json"], "srcsys": row["source_system"],
-                         "ts": row["synced_at"]},
+                         "attrs": row["attrs_json"], "source": row_source,
+                         "srcsys": row["source_system"], "ts": row["synced_at"]},
                     ).fetchone()[0]
                     id_map[key] = new_id
+                    touched.append(new_id)
                     inserted += 1
             conn.execute("COMMIT")
         except BaseException:
             self._rollback()
             raise
+        if touched:
+            self.sem_refresh_search_texts(org_id, touched)
         return {"inserted": inserted, "updated": updated}
 
     def _sem_parent_id(self, org_id, parent_key, id_map: dict, parent_cache: dict):
@@ -1718,10 +1726,12 @@ class PgBackend:
     def sem_active_source_keys(
         self, org_id: str, source_system: str
     ) -> set[tuple[str, str]]:
+        """删除比例保护基数（m2s-3 起 per-source_system 收口——与 sqlite 同口径，
+        yaml 纯人工实体 source='curated' 同入基数面）。"""
         rows = self._conn.execute(
             "SELECT type, key FROM sem_entities"
-            " WHERE org_id = %(org)s AND source = 'sync'"
-            "   AND source_system = %(srcsys)s AND status = 'active'",
+            " WHERE org_id = %(org)s AND source_system = %(srcsys)s"
+            "   AND status = 'active'",
             {"org": org_id, "srcsys": source_system},
         ).fetchall()
         return {(r[0], r[1]) for r in rows}
@@ -1731,11 +1741,39 @@ class PgBackend:
             "SELECT count(*), coalesce(sum("
             "  CASE WHEN (attrs_json::jsonb -> 'dims') IS NOT NULL THEN 1 ELSE 0 END"
             "), 0) FROM sem_entities"
-            " WHERE org_id = %(org)s AND source = 'sync'"
+            " WHERE org_id = %(org)s"
             "   AND source_system = %(srcsys)s AND status = 'active'",
             {"org": org_id, "srcsys": source_system},
         ).fetchone()
         return {"total": row[0], "filled": row[1]}
+
+    def sem_entity_states(self, org_id: str, entity_ids: Sequence[int]) -> dict[int, dict]:
+        """批量实体态（status/source——G-15 端点过滤与合并冲突判定共用）。"""
+        out: dict[int, dict] = {}
+        for chunk in _sem_chunks(list(entity_ids), self._SEM_IN_CHUNK):
+            rows = self._conn.execute(
+                "SELECT id, status, source FROM sem_entities"
+                " WHERE org_id = %(org)s AND id = ANY(%(ids)s)",
+                {"org": org_id, "ids": chunk},
+            ).fetchall()
+            for r in rows:
+                out[r[0]] = {"status": r[1], "source": r[2]}
+        return out
+
+    def sem_entities_by_ids(self, org_id: str, entity_ids: Sequence[int]) -> list[dict]:
+        """批量实体行（O-2 expand_relations seed 节点信息面）。"""
+        out: list[dict] = []
+        for chunk in _sem_chunks(list(entity_ids), self._SEM_IN_CHUNK):
+            out.extend(
+                self._sem_entity_row(r) for r in self._conn.execute(
+                    "SELECT id, org_id, type, key, name, parent_id, attrs_json,"
+                    " curated_json, source, source_system, status, sensitivity,"
+                    " synced_at, curated_rev FROM sem_entities"
+                    " WHERE org_id = %(org)s AND id = ANY(%(ids)s) ORDER BY id",
+                    {"org": org_id, "ids": chunk},
+                )
+            )
+        return out
 
     def mark_entities_missing(self, org_id: str, entity_ids: Sequence[int]) -> int:
         if not entity_ids:
@@ -1760,7 +1798,9 @@ class PgBackend:
         return n
 
     def upsert_relations_batch(self, org_id: str, rows: Sequence[dict]) -> dict:
-        """关系分批 upsert（单事务；端点不可变由 trg_sem_rel_noupdate 保证）。"""
+        """关系分批 upsert（单事务；端点不可变由 trg_sem_rel_noupdate 保证）。
+        row.source/source_system（m2s-3）+ G-15 端点状态过滤（CASE 守卫——
+        与 sqlite 同语义：指向非 active 端点的关系不置回 active）。"""
         conn = self._conn
         marks: dict[tuple, str] = {}
         conn.execute("BEGIN")
@@ -1776,11 +1816,20 @@ class PgBackend:
                 if old is None:
                     conn.execute(
                         "INSERT INTO sem_relations(org_id, src_id, rel_type, dst_id,"
-                        " attrs_json, source, status, synced_at)"
+                        " attrs_json, source, source_system, status, synced_at)"
                         " VALUES(%(org)s, %(src)s, %(rel)s, %(dst)s, %(attrs)s,"
-                        " 'sync', 'active', %(ts)s)",
+                        " %(source)s, %(srcsys)s,"
+                        " CASE WHEN EXISTS(SELECT 1 FROM sem_entities s"
+                        "   WHERE s.id = %(src)s AND s.org_id = %(org)s"
+                        "     AND s.status = 'active')"
+                        "  AND EXISTS(SELECT 1 FROM sem_entities d"
+                        "   WHERE d.id = %(dst)s AND d.org_id = %(org)s"
+                        "     AND d.status = 'active')"
+                        " THEN 'active' ELSE 'missing' END, %(ts)s)",
                         {"org": org_id, "src": k[0], "rel": k[1], "dst": k[2],
-                         "attrs": row["attrs_json"], "ts": row["synced_at"]},
+                         "attrs": row["attrs_json"],
+                         "source": row.get("source") or "sync",
+                         "srcsys": row.get("source_system"), "ts": row["synced_at"]},
                     )
                     marks[k] = "i"
                 else:
@@ -1790,7 +1839,15 @@ class PgBackend:
                         marks[k] = "s"
                     conn.execute(
                         "UPDATE sem_relations SET attrs_json = %(attrs)s,"
-                        " status = 'active', synced_at = %(ts)s"
+                        " status = CASE WHEN"
+                        "   EXISTS(SELECT 1 FROM sem_entities s"
+                        "     WHERE s.id = %(src)s AND s.org_id = %(org)s"
+                        "     AND s.status = 'active')"
+                        "   AND EXISTS(SELECT 1 FROM sem_entities d"
+                        "     WHERE d.id = %(dst)s AND d.org_id = %(org)s"
+                        "     AND d.status = 'active')"
+                        " THEN 'active' ELSE status END,"
+                        " synced_at = %(ts)s"
                         " WHERE org_id = %(org)s AND src_id = %(src)s"
                         "   AND rel_type = %(rel)s AND dst_id = %(dst)s",
                         {"attrs": row["attrs_json"], "ts": row["synced_at"],
@@ -1805,8 +1862,61 @@ class PgBackend:
             "updated": sum(1 for v in marks.values() if v == "u"),
         }
 
+    def sem_active_source_relation_keys(
+        self, org_id: str, source_system: str
+    ) -> set[tuple[int, str, int]]:
+        """本源 active 关系键集（G-15 关系级消失检测——与 sqlite 同口径）。"""
+        return {
+            (r[0], r[1], r[2]) for r in self._conn.execute(
+                "SELECT src_id, rel_type, dst_id FROM sem_relations"
+                " WHERE org_id = %(org)s AND source_system = %(srcsys)s"
+                "   AND status = 'active'",
+                {"org": org_id, "srcsys": source_system},
+            )
+        }
+
+    def sem_mark_relations_missing(
+        self, org_id: str, keys: Sequence[tuple[int, str, int]]
+    ) -> int:
+        """快照消失的关系 → missing（G-15——synced_at 保留为宽限起算锚）。"""
+        n = 0
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            for src_id, rel, dst_id in keys:
+                cur = conn.execute(
+                    "UPDATE sem_relations SET status = 'missing'"
+                    " WHERE org_id = %(org)s AND src_id = %(src)s"
+                    "   AND rel_type = %(rel)s AND dst_id = %(dst)s"
+                    "   AND status = 'active'",
+                    {"org": org_id, "src": src_id, "rel": rel, "dst": dst_id},
+                )
+                n += cur.rowcount
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return n
+
+    def sem_relations_lookup(
+        self, org_id: str, keys: Sequence[tuple[int, str, int]]
+    ) -> dict[tuple[int, str, int], dict]:
+        """关系行批查（合并规则表「与同步关系重复」判定面——yaml_merge）。"""
+        out: dict[tuple[int, str, int], dict] = {}
+        for src_id, rel, dst_id in keys:
+            row = self._conn.execute(
+                "SELECT source, status FROM sem_relations"
+                " WHERE org_id = %(org)s AND src_id = %(src)s"
+                "   AND rel_type = %(rel)s AND dst_id = %(dst)s",
+                {"org": org_id, "src": src_id, "rel": rel, "dst": dst_id},
+            ).fetchone()
+            if row is not None:
+                out[(src_id, rel, dst_id)] = {"source": row[0], "status": row[1]}
+        return out
+
     def rebuild_sync_aliases(self, org_id: str, rows: Sequence[dict]) -> int:
-        """别名三 kind 重建（单事务先删后插——manual/abbr 原样，TC-SYNC-05）。"""
+        """别名三 kind 重建（单事务先删后插——manual/abbr 原样，TC-SYNC-05）；
+        重建后刷新 FTS 文本行（C.3）。"""
         conn = self._conn
         ids = self.resolve_entity_ids(
             org_id, [(r["type"], r["key"]) for r in rows]
@@ -1835,11 +1945,14 @@ class PgBackend:
         except BaseException:
             self._rollback()
             raise
+        if ids:
+            self.sem_refresh_search_texts(org_id, sorted(ids.values()))
         return inserted
 
     def advance_status(self, org_id: str, *, missing_before: str) -> dict:
         """missing 宽限期推进（超期 → retired + 关系一并 retired——T-S4；与
-        sqlite 同语义同计数口径）。推进口径（P3-8）：org 全量推进、不按
+        sqlite 同语义同计数口径；G-15 关系级 missing 同口推进——
+        relations_retired_standalone）。推进口径（P3-8）：org 全量推进、不按
         source_system 收口（多适配器共享同一时间窗——本段接受口径）。"""
         conn = self._conn
         conn.execute("BEGIN")
@@ -1861,12 +1974,19 @@ class PgBackend:
                     {"org": org_id, "ids": chunk},
                 )
                 cur = conn.execute(
+                    # 级联覆盖 active + missing（G-15——与 sqlite 同口径）
                     "UPDATE sem_relations SET status = 'retired'"
-                    " WHERE org_id = %(org)s AND status = 'active'"
+                    " WHERE org_id = %(org)s AND status IN ('active', 'missing')"
                     "   AND (src_id = ANY(%(ids)s) OR dst_id = ANY(%(ids)s))",
                     {"org": org_id, "ids": chunk},
                 )
                 relations_retired += cur.rowcount
+            relations_retired_standalone = conn.execute(
+                "UPDATE sem_relations SET status = 'retired'"
+                " WHERE org_id = %(org)s AND status = 'missing'"
+                "   AND synced_at < %(before)s",
+                {"org": org_id, "before": missing_before},
+            ).rowcount
             missing_now = conn.execute(
                 "SELECT count(*) FROM sem_entities"
                 " WHERE org_id = %(org)s AND status = 'missing'",
@@ -1880,6 +2000,7 @@ class PgBackend:
             "missing": missing_now,
             "retired": len(retired_ids),
             "relations_retired": relations_retired,
+            "relations_retired_standalone": relations_retired_standalone,
         }
 
     def sem_start_run(self, org_id: str, adapter: str, *, now: str) -> int:
@@ -1951,26 +2072,31 @@ class PgBackend:
         return _sem_run_dict(cols, row)
 
     def sem_current_build(self, org_id: str) -> dict | None:
-        """当前构建 = 最新 ready 行（design §5.8——与 sqlite 同口径）。"""
+        """当前构建 = 最新 ready 行（G-18/m2s-3：按 (activated_at, id) DESC——
+        与 sqlite 同口径；rev 回退重激活的行顶置 activated_at 成 current）。"""
         row = self._conn.execute(
             "SELECT id, org_id, dict_rev, yaml_rev, sync_run_id, status, stats_json,"
-            " created_at FROM sem_builds WHERE org_id = %(org)s"
-            " AND status = 'ready' ORDER BY id DESC LIMIT 1",
+            " created_at, activated_at FROM sem_builds WHERE org_id = %(org)s"
+            " AND status = 'ready'"
+            " ORDER BY activated_at DESC NULLS LAST, id DESC LIMIT 1",
             {"org": org_id},
         ).fetchone()
         if row is None:
             return None
         cols = ("id", "org_id", "dict_rev", "yaml_rev", "sync_run_id",
-                "status", "stats_json", "created_at")
+                "status", "stats_json", "created_at", "activated_at")
         return _sem_run_dict(cols, row)
 
     def sem_active_snapshot(self, org_id: str) -> dict:
-        """构建输入快照（§5.8 第 1 步——与 sqlite 同结构同稳定序）。"""
+        """构建输入快照（§5.8 第 1 步——与 sqlite 同结构同稳定序；实体含
+        curated_json/curated_rev——G-17/m2s-3：YAML 改 definition 必触发重建）。"""
         entities = [
             {"id": r[0], "type": r[1], "key": r[2], "name": r[3],
-             "parent_id": r[4], "attrs_json": r[5], "sensitivity": r[6]}
+             "parent_id": r[4], "attrs_json": r[5], "sensitivity": r[6],
+             "curated_json": r[7] or "{}", "curated_rev": r[8]}
             for r in self._conn.execute(
-                "SELECT id, type, key, name, parent_id, attrs_json, sensitivity"
+                "SELECT id, type, key, name, parent_id, attrs_json, sensitivity,"
+                " curated_json, curated_rev"
                 " FROM sem_entities WHERE org_id = %(org)s AND status = 'active'"
                 " ORDER BY id", {"org": org_id},
             )
@@ -2000,31 +2126,75 @@ class PgBackend:
     def sem_insert_build(
         self, org_id: str, dict_rev: str, stats_json: str, *,
         yaml_rev: str | None = None, sync_run_id: int | None = None,
-    ) -> int:
-        new_id = self._conn.execute(
+    ) -> tuple[int, bool]:
+        """building 行 upsert（O-1/m2s-3 条件 upsert——``DO UPDATE … WHERE
+        status != 'ready'``：同 rev 行已 ready 不重断 building，返回
+        ``(existing_id, True)``；正常路径 ``(id, False)``——与 sqlite 同语义）。"""
+        row = self._conn.execute(
             "INSERT INTO sem_builds(org_id, dict_rev, yaml_rev, sync_run_id,"
             " status, stats_json) VALUES(%(org)s, %(rev)s, %(yaml)s, %(run)s,"
             " 'building', %(stats)s)"
             " ON CONFLICT(org_id, dict_rev) DO UPDATE SET"
             "   status = 'building', stats_json = EXCLUDED.stats_json,"
-            "   yaml_rev = EXCLUDED.yaml_rev, sync_run_id = EXCLUDED.sync_run_id"
+            "   yaml_rev = EXCLUDED.yaml_rev, sync_run_id = EXCLUDED.sync_run_id,"
+            "   activated_at = NULL"
+            " WHERE sem_builds.status != 'ready'"
             " RETURNING id",
             {"org": org_id, "rev": dict_rev, "yaml": yaml_rev,
              "run": sync_run_id, "stats": stats_json},
-        ).fetchone()[0]
-        return new_id
+        ).fetchone()
+        if row is not None:
+            return row[0], False
+        existing = self._conn.execute(
+            "SELECT id FROM sem_builds WHERE org_id = %(org)s AND dict_rev = %(rev)s",
+            {"org": org_id, "rev": dict_rev},
+        ).fetchone()
+        return existing[0], True
+
+    def sem_reactivate_build(
+        self, org_id: str, build_id: int, stats_json: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> bool:
+        """G-18 rev 回退重激活：ready 行顶置 activated_at（取 max(现在, 本 org
+        既有最大 + 1s)——严格递增防同秒并列；+ready 事件同事务）；仅
+        status='ready' 行生效——与 sqlite 同语义。"""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE sem_builds SET activated_at = GREATEST(CURRENT_TIMESTAMP,"
+                "  (SELECT MAX(b.activated_at) + interval '1 second'"
+                "     FROM sem_builds b WHERE b.org_id = %(org)s)),"
+                " stats_json = %(stats)s"
+                " WHERE org_id = %(org)s AND id = %(bid)s AND status = 'ready'",
+                {"stats": stats_json, "org": org_id, "bid": build_id},
+            )
+            effective = cur.rowcount == 1
+            if effective and audit is not None:
+                conn.execute(
+                    "INSERT INTO audit_outbox(id, event_type, payload_json)"
+                    " VALUES(%(id)s, %(t)s, %(p)s)",
+                    {"id": f"aud_{uuid.uuid4()}", "t": audit[0], "p": audit[1]},
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return effective
 
     def sem_switch_build_ready(
         self, org_id: str, build_id: int, stats_json: str, *,
         audit: tuple[str, str] | None = None,
     ) -> bool:
         """原子切换 + ready 事件同一事务（P3-5/R2——audit 仅真生效写；并发输者
-        rowcount=0 返回 False 零事件，P2-2——与 sqlite 同语义）。"""
+        rowcount=0 返回 False 零事件，P2-2；activated_at 顶置——G-18——与
+        sqlite 同语义）。"""
         conn = self._conn
         conn.execute("BEGIN")
         try:
             cur = conn.execute(
-                "UPDATE sem_builds SET status = 'ready', stats_json = %(stats)s"
+                "UPDATE sem_builds SET status = 'ready', stats_json = %(stats)s,"
+                " activated_at = CURRENT_TIMESTAMP"
                 " WHERE org_id = %(org)s AND id = %(bid)s AND status = 'building'",
                 {"stats": stats_json, "org": org_id, "bid": build_id},
             )
@@ -2091,6 +2261,164 @@ class PgBackend:
     def export_l0(self, org_id: str) -> str:
         """L0 术语片段导出——构建产物落地归 m2s-2（本段空串占位）。"""
         return ""
+
+    # ---- m2s-3：YAML curated 合并面 + FTS 索引面（与 sqlite 同语义） ----
+
+    def sem_write_curated_batch(self, org_id: str, rows: Sequence[dict]) -> int:
+        """curated_json 批写（规则表第 1 行）+ 可选 sensitivity 覆盖。"""
+        if not rows:
+            return 0
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            for row in rows:
+                conn.execute(
+                    "UPDATE sem_entities SET curated_json = %(curated)s,"
+                    " curated_rev = %(rev)s, updated_at = CURRENT_TIMESTAMP,"
+                    " sensitivity = COALESCE(%(sensitivity)s, sensitivity)"
+                    " WHERE org_id = %(org)s AND type = %(type)s AND key = %(key)s"
+                    "   AND status = 'active'",
+                    {"curated": row["curated_json"], "rev": row["curated_rev"],
+                     "sensitivity": row.get("sensitivity"),
+                     "org": org_id, "type": row["type"], "key": row["key"]},
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return len(rows)
+
+    def sem_replace_manual_aliases(self, org_id: str, rows: Sequence[dict]) -> int:
+        """manual/abbr 别名整替（先删后插，只动这两类——T-S1/TC-SYNC-05）。"""
+        if not rows:
+            return 0
+        conn = self._conn
+        ids = self.resolve_entity_ids(
+            org_id, [(r["type"], r["key"]) for r in rows]
+        )
+        inserted = 0
+        touched: list[int] = []
+        conn.execute("BEGIN")
+        try:
+            for row in rows:
+                eid = ids.get((row["type"], row["key"]))
+                if eid is None:
+                    continue
+                conn.execute(
+                    "DELETE FROM sem_aliases WHERE org_id = %(org)s"
+                    " AND entity_id = %(eid)s AND kind IN ('manual', 'abbr')",
+                    {"org": org_id, "eid": eid},
+                )
+                for alias, alias_norm, kind, match_mode in row["aliases"]:
+                    conn.execute(
+                        "INSERT INTO sem_aliases(org_id, entity_id, alias,"
+                        " alias_norm, kind, match_mode)"
+                        " VALUES(%(org)s, %(eid)s, %(alias)s, %(norm)s,"
+                        " %(kind)s, %(mode)s)",
+                        {"org": org_id, "eid": eid, "alias": alias,
+                         "norm": alias_norm, "kind": kind, "mode": match_mode},
+                    )
+                    inserted += 1
+                touched.append(eid)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        if touched:
+            self.sem_refresh_search_texts(org_id, touched)
+        return inserted
+
+    def sem_clear_stale_curated(
+        self, org_id: str, keep_entity_ids: Sequence[int]
+    ) -> int:
+        """YAML 删除覆盖项（规则表第 8 行）——与 sqlite 同语义（source='sync'
+        且 curated_rev 非空、不在 keep 集 → 清 curated + 删 manual/abbr）。"""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            stale = [
+                r[0] for r in conn.execute(
+                    "SELECT id FROM sem_entities WHERE org_id = %(org)s"
+                    " AND source = 'sync' AND status != 'retired'"
+                    " AND curated_rev IS NOT NULL"
+                    + (" AND id != ALL(%(keep)s)" if keep_entity_ids else ""),
+                    {"org": org_id, "keep": list(keep_entity_ids)},
+                ).fetchall()
+            ]
+            for chunk in _sem_chunks(stale, self._SEM_IN_CHUNK):
+                conn.execute(
+                    "UPDATE sem_entities SET curated_json = '{}',"
+                    " curated_rev = NULL, updated_at = CURRENT_TIMESTAMP"
+                    " WHERE org_id = %(org)s AND id = ANY(%(ids)s)",
+                    {"org": org_id, "ids": chunk},
+                )
+                conn.execute(
+                    "DELETE FROM sem_aliases WHERE org_id = %(org)s"
+                    " AND entity_id = ANY(%(ids)s) AND kind IN ('manual', 'abbr')",
+                    {"org": org_id, "ids": chunk},
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        if stale:
+            self.sem_refresh_search_texts(org_id, stale)
+        return len(stale)
+
+    def sem_refresh_search_texts(self, org_id: str, entity_ids: Sequence[int]) -> None:
+        """实体 FTS 文本行重建（名称 + 别名分词拼接——tsvector GENERATED 自动
+        随行更新，无需 sqlite 的外容 delete 命令）。"""
+        from knowledge_lattice.adapters.tokenizer import word_tokens
+
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            for chunk in _sem_chunks(list(entity_ids), self._SEM_IN_CHUNK):
+                if not chunk:
+                    continue
+                conn.execute(
+                    "DELETE FROM sem_search_texts WHERE org_id = %(org)s"
+                    " AND entity_id = ANY(%(ids)s)",
+                    {"org": org_id, "ids": chunk},
+                )
+                rows = conn.execute(
+                    "SELECT e.id, e.name FROM sem_entities e"
+                    " WHERE e.org_id = %(org)s AND e.id = ANY(%(ids)s)"
+                    "   AND e.status = 'active'",
+                    {"org": org_id, "ids": chunk},
+                ).fetchall()
+                for eid, name in rows:
+                    aliases = conn.execute(
+                        "SELECT alias FROM sem_aliases WHERE org_id = %(org)s"
+                        " AND entity_id = %(eid)s",
+                        {"org": org_id, "eid": eid},
+                    ).fetchall()
+                    texts = [name] + [a[0] for a in aliases]
+                    seg = " ".join(tok for t in texts for tok in word_tokens(t))
+                    if not seg:
+                        continue
+                    conn.execute(
+                        "INSERT INTO sem_search_texts(org_id, entity_id, seg_text)"
+                        " VALUES(%(org)s, %(eid)s, %(seg)s)",
+                        {"org": org_id, "eid": eid, "seg": seg},
+                    )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+
+    def sem_restricted_column_keys(self, org_id: str, table_id: int) -> set[str]:
+        """C.5：表下 restricted 列键集（describe_table 主路径列级过滤面）。"""
+        return {
+            r[0] for r in self._conn.execute(
+                "SELECT c.key FROM sem_relations r"
+                " JOIN sem_entities c ON c.id = r.dst_id"
+                " WHERE r.org_id = %(org)s AND r.src_id = %(tid)s"
+                "   AND r.rel_type = 'has_column' AND r.status = 'active'"
+                "   AND c.status = 'active' AND c.sensitivity = 'restricted'",
+                {"org": org_id, "tid": table_id},
+            )
+        }
 
     # ---- m2s-2 首批语义工具读取面（与 sqlite 同语义——参数风格 %(name)s） ----
 
@@ -2206,12 +2534,13 @@ class PgBackend:
         self, org_id: str, q_norm: str, q_raw: str, *,
         types: Sequence[str] | None, top_k: int,
     ) -> list[dict]:
-        """三层 UNION（与 sqlite 同语义）：alias 精确 1.0 > 前缀 0.8 > name 模糊
-        0.5；LIKE 统一 LOWER + ESCAPE（pg LIKE 默认大小写敏感——显式 LOWER 拉平）。
+        """三层（与 sqlite 同语义）：alias 精确 1.0 > 前缀 0.8 > FTS 模糊 0.5
+        （C.3/m2s-3：LIKE 骨架升级为 tsvector @@ to_tsquery over
+        sem_search_texts——评分差异与 sqlite bm25 按 G-6 口径登记不追平）；
+        LIKE 前缀统一 LOWER + ESCAPE（pg LIKE 默认大小写敏感——显式 LOWER 拉平）。
         P2-1/R2：score 常量显式 ::float8——PG 裸字面量为 NUMERIC（psycopg 归
         Decimal），与 sqlite float 类型漂移会致 FastMCP 出参字符串化。"""
         esc_norm = _like_escape(q_norm)
-        esc_raw = _like_escape(q_raw)
         type_filter = ""
         params: dict[str, object] = {"org": org_id}
         if types:
@@ -2233,24 +2562,59 @@ class PgBackend:
             "         CAST(0.8 AS double precision) AS score,"
             "         'alias-prefix' AS via" + base
             + "   AND a.alias_norm LIKE %(q_prefix)s ESCAPE '\\'"
-            "  UNION ALL"
-            "  SELECT e.id, e.type, e.key, e.name, e.attrs_json, e.curated_json,"
-            "         CAST(0.5 AS double precision) AS score,"
-            "         'name' AS via"
-            "  FROM sem_entities e WHERE e.org_id = %(org)s"
-            "   AND e.status = 'active' AND e.sensitivity = 'normal'" + type_filter
-            + "   AND LOWER(e.name) LIKE LOWER(%(q_name)s) ESCAPE '\\'"
             ") ORDER BY score DESC, id ASC LIMIT %(lim)s"
         )
         query_params = dict(params)
         query_params.update({
             "q_exact": q_norm, "q_prefix": f"{esc_norm}%",
-            "q_name": f"%{esc_raw}%", "lim": max(top_k * 3, top_k),
+            "lim": max(top_k * 2, top_k),
         })
         rows = self._conn.execute(sql, query_params).fetchall()
         cols = ("id", "type", "key", "name", "attrs_json", "curated_json",
                 "score", "via")
-        return [dict(zip(cols, r)) for r in rows]
+        out = [dict(zip(cols, r)) for r in rows]
+        fts_rows = self._sem_fts_layer(
+            org_id, q_norm, top_k=top_k, type_filter=type_filter, params=params)
+        if fts_rows:
+            out.extend(fts_rows)
+        return out
+
+    def _sem_fts_layer(self, org_id: str, q_norm: str, *, top_k: int,
+                       type_filter: str, params: dict) -> list[dict] | None:
+        """FTS 第三层（C.3）：查询分词 → ' & ' AND to_tsquery('simple')——贴近
+        子串包含语义；无 token（纯符号）返回 None 跳层；ts_rank 排序（G-6 登记）。"""
+        from knowledge_lattice.adapters.tokenizer import word_tokens
+
+        tokens = word_tokens(q_norm)
+        if not tokens:
+            return None
+        tsquery = " & ".join(
+            t.replace("\\", "\\\\").replace("'", "''").replace(":", "\\:")
+            for t in tokens)
+        sql = (
+            "SELECT e.id, e.type, e.key, e.name, e.attrs_json, e.curated_json,"
+            " CAST(0.5 AS double precision) AS score, 'fts' AS via,"
+            " ts_rank(t.tsv, q.query) AS rank"
+            " FROM sem_search_texts t"
+            " JOIN sem_entities e ON e.id = t.entity_id,"
+            " to_tsquery('simple', %(tsq)s) AS q(query)"
+            " WHERE t.org_id = %(org)s AND t.tsv @@ q.query"
+            " AND e.org_id = %(org)s AND e.status = 'active'"
+            " AND e.sensitivity = 'normal'" + type_filter +
+            " ORDER BY rank DESC, e.id ASC LIMIT %(lim)s"
+        )
+        query_params = dict(params)
+        query_params.update({"tsq": tsquery, "lim": top_k})
+        rows = self._conn.execute(sql, query_params).fetchall()
+        cols = ("id", "type", "key", "name", "attrs_json", "curated_json",
+                "score", "via", "rank")
+        out = [dict(zip(cols, r)) for r in rows]
+        for r in out:
+            if not isinstance(r["score"], float):
+                r["score"] = float(r["score"])
+            if not isinstance(r["rank"], float):
+                r["rank"] = float(r["rank"])
+        return out
 
     def sem_table_columns(self, org_id: str, table_id: int) -> list[dict]:
         rows = self._conn.execute(
@@ -2795,13 +3159,22 @@ def _like_escape(text: str) -> str:
 
 
 def _expand_relations_thin(backend, org_id, seed_ids, rels, *, depth: int) -> dict:
-    """expand_relations 薄适配共用体（P3-3/R2，与 sqlite 同实现——方言无关
-    纯归并）：逐 seed 调 sem_expand_graph（rels 双向）后归并去重。"""
+    """expand_relations 薄适配共用体（与 sqlite 同实现）：
+    逐 seed 调 sem_expand_graph（rels 双向）后归并去重；truncated 任一命中即真。
+
+    O-2/m2s-3：**nodes 含 seed 本身**（design §5.9 walk CTE depth=0 行——
+    种子即第 0 层；M2-S3 实体召回消费方契约）。"""
     merged_nodes: dict[int, dict] = {}
     merged_edges: set[tuple[int, str, int]] = set()
     edge_rows: dict[tuple[int, str, int], dict] = {}
     truncated = False
     rel_list = list(rels)
+    seed_rows = backend.sem_entities_by_ids(org_id, list(seed_ids))
+    for row in seed_rows:
+        merged_nodes[row["id"]] = {
+            "id": row["id"], "type": row["type"], "key": row["key"],
+            "name": row["name"], "depth": 0,
+        }
     for seed in seed_ids:
         graph = backend.sem_expand_graph(
             org_id, seed, outgoing=rel_list, incoming=rel_list,

@@ -269,8 +269,52 @@ def test_p2_2_sem_fail_build_returns_effectiveness(build_env) -> None:
         "INSERT INTO sem_aliases(org_id, entity_id, alias, alias_norm, kind)"
         " VALUES(?, ?, 'failbool', 'failbool', 'manual')", (ORG, eid))
     build_env.db.commit()
-    build_id = build_env.backend.sem_insert_build(ORG, "rev-failbool-test", "{}")
+    build_id, _was_ready = build_env.backend.sem_insert_build(
+        ORG, "rev-failbool-test", "{}")
+    assert _was_ready is False
     assert build_env.backend.sem_fail_build(
         ORG, build_id, '{"error": "x"}') is True   # building → failed 生效
     assert build_env.backend.sem_fail_build(
         ORG, build_id, '{"error": "x"}') is False  # 已 failed 幂等零行
+
+
+# ---- C.7②（m2s-3 测试维护）：构建侧 audit= 同事务崩溃注入永久用例 ----
+
+
+def test_audit_write_failure_rolls_back_switch_and_event(build_env, monkeypatch) -> None:
+    """G-16 构建侧永久回归：switch 事务内 outbox 写入失败 → 行与事件**双双回滚**
+    （无 ready 行、无 ready 事件）——audit= 同事务的原子性由门禁常跑保护
+    （此前仅 tester 临时脚本实证）。注入面：backend._conn 换代理，audit_outbox
+    INSERT 抛错、其余语句透传（双方言同——pg 臂 BEGIN/UPDATE 亦走代理）。"""
+    from knowledge_lattice.core.semantic.build import run_build
+    from knowledge_lattice.domain.audit_events import EVENT_SEMANTIC_BUILD
+
+    class _BrokenOutboxConn:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def execute(self, sql, params=None):
+            if "audit_outbox" in sql:
+                raise RuntimeError("injected outbox failure")
+            if params is None:
+                return self._inner.execute(sql)
+            return self._inner.execute(sql, params)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    real_conn = build_env.backend._conn
+    monkeypatch.setattr(
+        build_env.backend, "_conn",
+        _BrokenOutboxConn(real_conn))
+    with pytest.raises(RuntimeError, match="injected outbox failure"):
+        run_build(build_env.backend, ORG, settings=build_env.settings)
+
+    rows = _rows(build_env)
+    assert rows and rows[-1][2] in ("building", "failed"), \
+        "崩溃注入后不得存在 ready 行（回滚原子性）"
+    ready_events = build_env.db.execute(
+        "SELECT count(*) FROM audit_outbox WHERE event_type = ?",
+        (EVENT_SEMANTIC_BUILD,),
+    ).fetchone()[0]
+    assert ready_events == 0, "行回滚则事件必零残留（G-16 构建侧）"

@@ -24,11 +24,20 @@ store Semantic 域）。
 - **步骤⑤宽限推进在关系 upsert 之后**（design 列序 ③ 先于 ④）：快照内指向
   missing 实体的关系先落 active、随后被 advance 随端点一并 retired——避免
   「先 retire 端点、后写 active 关系」的悬挂态；T-S4 断言语义不变。
-- **关系消失标记**（源端删除某条边但两端实体仍在）design 流程未列——本段
-  不做关系级 missing（status 列已留位，演进缝；实体退役联动已覆盖主路径）。
+- **关系级消失**（G-15——m2s-3 收口）：源端删除某条边但两端实体仍在 →
+  本源 active 关系键集（per source_system）减快照键集 → `missing`（synced_at
+  保留为宽限起算锚）；advance_status 同口推进超宽限关系 → `retired`
+  （stats 单列 `relations_missing` / advance 返回 `relations_retired_standalone`）。
+- **upsert 前端点状态过滤**（G-15 后半）：快照关系端点解析到非 active 实体
+  → 记冲突不写入（'src/dst endpoint not active'——指向 retired 端点的关系
+  不回 active；store upsert 的 CASE 守卫为第二道防线）。
 - **维度属性载体 = attrs_json 结构化键 `dims`**（design §4 无 sem_entity_dims
   专表 DDL——最小实现；实体维度 ACL 为 NFR-5 演进缝、触发前不启用过滤，
-  可见性不受影响；值域显式映射表归 m2s-3 YAML 链——records.py 同注）。
+  可见性不受影响；值域显式映射表 m2s-3 起随 YAML 仓 dim_value_map.yaml 维护
+  ——run_sync 的 dim_value_map 参数承载，未映射值原样落库——records.py 同注）。
+- **post_run 挂钩**（m2s-3）：_sync_records ⑤ 后、stats 组装前调用
+  post_run(org_id, now) → 附加 stats（yaml 源的 curated 合并面——同 run
+  留痕；缺省 None 零影响）。
 - **填充率骤降告警阈值（本段定，可配）**：库内基线携带率 ≥
   `semantic_dim_alert_baseline`（默认 0.8）且快照携带率 < 基线 ×
   `semantic_dim_alert_drop`（默认 0.5）→ WARNING + stats.dims_fill.alert
@@ -71,6 +80,8 @@ def run_sync(
     finish_now: str | None = None,
     should_continue: Callable[[], bool] | None = None,
     force: bool = False,
+    post_run: Callable[[str, str], dict] | None = None,
+    dim_value_map: dict[str, dict[str, str]] | None = None,
 ) -> dict:
     """一个适配器一次同步 run（§5.8）。返回 {run_id, status, stats}。
 
@@ -79,13 +90,16 @@ def run_sync(
     不再恒等于 started_at）。force：跳过删除比例保护执行同步（B2 运维放行
     ——guard 告警仍发、stats.forced=True、审计事件记 forced）。失败路径：run
     落 failed + 审计事件后原异常上抛（调用方任务态处置）。
+    post_run（m2s-3）：⑤ 后附加 stats 挂钩（yaml curated 合并面）；
+    dim_value_map：维度值域显式映射（TC-SYNC-06——YAML 仓 dim_value_map.yaml）。
     """
     now = now or utc_now_ts()
     run_id = backend.sem_start_run(org_id, adapter.name, now=now)
     try:
         records = list(snapshot) if snapshot is not None else list(adapter.fetch(org_id))
         status, stats = _sync_records(
-            backend, org_id, adapter, records, settings, now, should_continue, force
+            backend, org_id, adapter, records, settings, now, should_continue,
+            force, post_run=post_run, dim_value_map=dim_value_map,
         )
     except BaseException as exc:
         logger.exception(
@@ -124,7 +138,7 @@ def _check_alive(should_continue) -> None:
 
 
 def _sync_records(backend, org_id, adapter, records, settings, now, should_continue,
-                  force=False):
+                  force=False, *, post_run=None, dim_value_map=None):
     dedup: dict[tuple[str, str], EntityRecord] = {}
     for rec in records:
         if isinstance(rec, EntityRecord):
@@ -132,6 +146,7 @@ def _sync_records(backend, org_id, adapter, records, settings, now, should_conti
     entities = list(dedup.values())
     relations = [r for r in records if isinstance(r, RelationRecord)]
     snap_keys = set(dedup)
+    relation_source = getattr(adapter, "relation_source", "sync")
 
     # ③ 删除比例保护（先于一切写入——T-S2 零写入语义；force=B2 运维放行）
     active_keys = backend.sem_active_source_keys(org_id, adapter.name)
@@ -168,7 +183,8 @@ def _sync_records(backend, org_id, adapter, records, settings, now, should_conti
     for chunk in _chunks(_order_entities(entities), settings.semantic_batch_rows):
         _check_alive(should_continue)
         counts = backend.upsert_entities_batch(
-            org_id, [_entity_row(e, adapter.name, now) for e in chunk]
+            org_id, [_entity_row(e, adapter.name, now, relation_source,
+                                 dim_value_map) for e in chunk]
         )
         inserted += counts["inserted"]
         updated += counts["updated"]
@@ -182,13 +198,19 @@ def _sync_records(backend, org_id, adapter, records, settings, now, should_conti
         ids = backend.resolve_entity_ids(org_id, sorted(vanished))
         missing = backend.mark_entities_missing(org_id, list(ids.values()))
 
-    # ④③ 关系 upsert + 端点冲突（明细结构为 #40 P2 测试约定）
+    # ④③ 关系 upsert + 端点冲突（明细结构为 #40 P2 测试约定；G-15 端点状态
+    # 过滤——retired 端点记冲突不写入〔指向 retired 端点的关系不回 active〕，
+    # missing 端点放行由 store CASE 守卫落潜伏态）
     conflicts: list[dict] = []
     rel_rows: list[dict] = []
     endpoint_keys = sorted(
         {tuple(r.src) for r in relations} | {tuple(r.dst) for r in relations}
     )
     id_map = backend.resolve_entity_ids(org_id, endpoint_keys)
+    endpoint_states = (
+        backend.sem_entity_states(org_id, sorted(id_map.values()))
+        if id_map else {}
+    )
     for rel in relations:
         src_id = id_map.get(tuple(rel.src))
         dst_id = id_map.get(tuple(rel.dst))
@@ -198,15 +220,22 @@ def _sync_records(backend, org_id, adapter, records, settings, now, should_conti
             conflicts.append({**conflict, "reason": "src endpoint not found"})
         elif dst_id is None:
             conflicts.append({**conflict, "reason": "dst endpoint not found"})
+        elif endpoint_states.get(src_id, {}).get("status") == "retired":
+            conflicts.append({**conflict, "reason": "src endpoint retired"})
+        elif endpoint_states.get(dst_id, {}).get("status") == "retired":
+            conflicts.append({**conflict, "reason": "dst endpoint retired"})
         elif not rel_type_allowed(rel.rel_type, rel.src[0], rel.dst[0]):
             # 防御（适配器不该产出；库内 trg_sem_rel_check 为最后防线——T-S5）
             conflicts.append({**conflict, "reason": "endpoint types not in whitelist"})
         else:
+            # missing 端点放行（宽限期内可恢复——store INSERT/UPDATE 的 CASE
+            # 守卫将其落为 missing 潜伏态，端点恢复后下轮 upsert 置回 active）
             rel_rows.append({
                 "src_id": src_id, "rel_type": rel.rel_type, "dst_id": dst_id,
                 "attrs_json": json.dumps(rel.attrs or {}, ensure_ascii=False,
                                          sort_keys=True),
                 "synced_at": now,
+                "source": relation_source, "source_system": adapter.name,
             })
     rel_inserted = rel_updated = 0
     for chunk in _chunks(rel_rows, settings.semantic_batch_rows):
@@ -215,9 +244,30 @@ def _sync_records(backend, org_id, adapter, records, settings, now, should_conti
         rel_inserted += counts["inserted"]
         rel_updated += counts["updated"]
 
+    # ④③b post_run 挂钩（m2s-3——yaml curated 合并面：curated_json/manual 别名/
+    # extra_relations；须先于关系级消失标记——hook 写入的关系即「在场」键集）
+    stats_extra: dict = {}
+    if post_run is not None:
+        stats_extra = post_run(org_id, now) or {}
+
+    # ④③c 关系级消失（G-15）：本源 active 关系 − 在场键集 → missing
+    # （源端独立删边、两端实体仍在；synced_at 保留为宽限起算锚；在场集 =
+    # 快照关系 ∪ hook 写入关系〔stats_extra.relation_keys〕）
+    relations_missing = 0
+    present_rel_keys = {(r["src_id"], r["rel_type"], r["dst_id"]) for r in rel_rows}
+    present_rel_keys |= {
+        tuple(k) for k in stats_extra.get("relation_keys", ())
+    }
+    lib_rel_keys = backend.sem_active_source_relation_keys(org_id, adapter.name)
+    vanished_rels = lib_rel_keys - present_rel_keys
+    if vanished_rels:
+        relations_missing = backend.sem_mark_relations_missing(
+            org_id, sorted(vanished_rels))
+
     # ⑤ 宽限期推进（超期 missing → retired + 关系联动——顺序注记见模块 docstring；
     #    推进口径为 org 全量、不按 source_system 收口——多适配器共享同一时间窗，
-    #    本段接受口径〔P3-8〕，按源收口归后续段需要时再议）
+    #    本段接受口径〔P3-8〕，按源收口归后续段需要时再议；G-15：关系级 missing
+    #    同口推进——relations_retired_standalone）
     advanced = backend.advance_status(
         org_id, missing_before=add_seconds(now, -settings.semantic_grace_days * 86400)
     )
@@ -236,9 +286,13 @@ def _sync_records(backend, org_id, adapter, records, settings, now, should_conti
         "inserted": inserted, "updated": updated, "missing": missing,
         "retired": advanced["retired"], "conflicts": conflicts,
         "relations_inserted": rel_inserted, "relations_updated": rel_updated,
+        "relations_missing": relations_missing,
         "relations_retired": advanced["relations_retired"],
+        "relations_retired_standalone": advanced.get("relations_retired_standalone", 0),
         "batches": batches, "dims_fill": dims_fill, "forced": bool(force),
     }
+    if stats_extra:
+        stats["curated"] = stats_extra
     if guard_info is not None:
         # P3-r2（m2s-1 移交）：force 覆盖 guard 的 stats 补 guard 明细——
         # 引用面收缩幅度（active/vanished/ratio/threshold）随 run 留痕
@@ -253,8 +307,12 @@ def run_sync_task(backend, settings: Settings, task_id: str, *,
                   should_continue: Callable[[], bool] | None = None) -> dict:
     """semantic_sync 任务体（worker executor 调用——自管任务行状态）。
 
-    payload：{org, adapter, force?}——force=true 经 B2 运维放行跳过删除比例保护。"""
-    from knowledge_lattice.core.semantic.adapters import build_adapter
+    payload：{org, adapter, force?}——force=true 经 B2 运维放行跳过删除比例保护。
+    m2s-3：yaml 适配器挂 curated 合并钩子（post_run）+ 值域映射装载；适配器
+    传输资源 finally 显式关闭（C.6——默认 HTTP 传输持有 httpx.Client）。"""
+    from knowledge_lattice.core.semantic.adapters import (
+        build_adapter, close_adapter, load_dim_value_map,
+    )
 
     task = backend.get_task(task_id)
     if task is None:
@@ -273,10 +331,21 @@ def run_sync_task(backend, settings: Settings, task_id: str, *,
         ) from exc
     backend.update_task(task_id, status="running")
     adapter = build_adapter(adapter_name, org_id, settings)
-    result = run_sync(
-        backend, org_id, adapter, settings=settings,
-        should_continue=should_continue, force=bool(payload.get("force")),
-    )
+
+    post_run = None
+    if adapter_name == "yaml":
+        from knowledge_lattice.core.semantic.yaml_merge import make_merge_hook
+
+        post_run = make_merge_hook(backend, adapter.corpus())
+    dim_map = load_dim_value_map(settings, org_id)
+    try:
+        result = run_sync(
+            backend, org_id, adapter, settings=settings,
+            should_continue=should_continue, force=bool(payload.get("force")),
+            post_run=post_run, dim_value_map=dim_map,
+        )
+    finally:
+        close_adapter(adapter)  # C.6：sync 路径传输资源不泄漏
     backend.update_task(task_id, status="done")
     if result["status"] == "succeeded":
         # design §5.8「同步或 YAML 合并后触发构建」——成功 run 后投递
@@ -306,15 +375,22 @@ def _audit_sync(backend, org_id, adapter_name, run_id, status, stats) -> None:
     )
 
 
-def _entity_row(e: EntityRecord, source_system: str, now: str) -> dict:
-    """EntityRecord → upsert 行（维度随 attrs_json.dims 结构化承载——见模块注记）。"""
+def _entity_row(e: EntityRecord, source_system: str, now: str,
+                source: str = "sync",
+                dim_value_map: dict[str, dict[str, str]] | None = None) -> dict:
+    """EntityRecord → upsert 行（维度随 attrs_json.dims 结构化承载——见模块注记；
+    值域显式映射先于落库：dim → {源值: 本地值}，未映射值原样——TC-SYNC-06）。"""
     attrs = dict(e.attrs)
     if e.dims:
-        attrs["dims"] = dict(e.dims)
+        mapped = dict(e.dims)
+        for dim, value in list(mapped.items()):
+            mapped[dim] = (dim_value_map or {}).get(dim, {}).get(value, value)
+        attrs["dims"] = mapped
     return {
         "type": e.type, "key": e.key, "name": e.name,
         "attrs_json": json.dumps(attrs, ensure_ascii=False, sort_keys=True),
-        "parent_key": e.parent_key, "source_system": source_system, "synced_at": now,
+        "parent_key": e.parent_key, "source_system": source_system,
+        "synced_at": now, "source": source,
     }
 
 
