@@ -179,7 +179,10 @@ def run_build(
                     " current_build=%s", org_id, dict_rev, now_current["id"])
                 return {"build_id": now_current["id"], "dict_rev": dict_rev,
                         "status": "skipped", "stats": stats_skip}
-            backend.sem_reactivate_build(
+            # P3-5/R2：消费 sem_reactivate_build 返回值——False（竞态下行已非
+            # ready）不得虚报 ready：current 同 rev（他者已接手）→ skipped；
+            # 否则真异常（不重试不写脏事件）
+            if not backend.sem_reactivate_build(
                 org_id, build_id, stats_json,
                 audit=(
                     EVENT_SEMANTIC_BUILD,
@@ -188,7 +191,21 @@ def run_build(
                                 "stats": stats, "reactivated": True},
                                ensure_ascii=False, default=str),
                 ),
-            )
+            ):
+                now_current = backend.sem_current_build(org_id)
+                if now_current is not None and now_current["dict_rev"] == dict_rev:
+                    stats_skip = {"skipped": True,
+                                  "current_build_id": now_current["id"],
+                                  "reason": "reactivate-race-lost"}
+                    logger.info(
+                        "semantic build reactivate ceded: org=%s rev=%s"
+                        " current_build=%s", org_id, dict_rev, now_current["id"])
+                    return {"build_id": now_current["id"], "dict_rev": dict_rev,
+                            "status": "skipped", "stats": stats_skip}
+                raise RuntimeError(
+                    f"build reactivate ineffective (not ready?): org={org_id!r}"
+                    f" build={build_id}"
+                )
             logger.info("semantic build reactivated (rev rollback): org=%s"
                         " build=%s rev=%s", org_id, build_id, dict_rev)
             return {"build_id": build_id, "dict_rev": dict_rev, "status": "ready",

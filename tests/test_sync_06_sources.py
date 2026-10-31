@@ -119,6 +119,26 @@ def test_report_center_adapter_expansion(tmp_path) -> None:
     assert ("VAT_MAIN.L12", "derived_from", "TPL_VAT_INPUT.F1") in rels
 
 
+def test_report_center_paging(tmp_path) -> None:
+    """N3/R2：report_center 分页对称用例（与 scenario_config 同构——next_cursor
+    翻页拼全量）。"""
+    from knowledge_lattice.core.semantic.adapters import SourceConfig
+    from knowledge_lattice.core.semantic.adapters.report_center import ReportCenterAdapter
+
+    class PagingTransport:
+        def __call__(self, endpoint, path, params=None):
+            if params and params.get("cursor") == "p2":
+                return {"items": [{"code": "R2", "name": "二报", "items": []}],
+                        "next_cursor": None}
+            return {"items": [{"code": "R1", "name": "一报", "items": []}],
+                    "next_cursor": "p2"}
+
+    adapter = ReportCenterAdapter(
+        SourceConfig(endpoint="http://rc/api"), transport=PagingTransport())
+    keys = {r.key for r in adapter.fetch(ORG) if hasattr(r, "type")}
+    assert keys == {"R1", "R2"}
+
+
 # ---- yaml 源走既有 sync 流程：T-S2 / T-S4 ----
 
 

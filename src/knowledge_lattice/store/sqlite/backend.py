@@ -2757,17 +2757,26 @@ class SqliteBackend:
         self, org_id: str, build_id: int, stats_json: str, *,
         audit: tuple[str, str] | None = None,
     ) -> bool:
-        """原子切换：building → ready（activated_at 顶置——G-18 current 锚）+
-        ready 事件同一事务（P3-5/R2——audit 仅 rowcount==1 真生效时写；
-        并发输者零行生效零事件，P2-2）。"""
+        """原子切换：building → ready（activated_at 顶置——G-18 current 锚；
+        P3-4/R2：与重激活同款**严格递增** max(now, 本 org 最大+1s)——TIMESTAMP
+        秒级精度下，重激活顶置的未来时间戳不得压住同秒窗口内后续 switch 的
+        current 跟随）+ ready 事件同一事务（P3-5/R2——audit 仅 rowcount==1 真生效
+        时写；并发输者零行生效零事件，P2-2）。"""
         conn = self._conn
         conn.execute("BEGIN IMMEDIATE")
         try:
             cur = conn.execute(
-                "UPDATE sem_builds SET status = 'ready', stats_json = ?,"
-                " activated_at = CURRENT_TIMESTAMP"
-                " WHERE org_id = ? AND id = ? AND status = 'building'",
-                (stats_json, org_id, build_id),
+                "UPDATE sem_builds SET status = 'ready', stats_json = :stats,"
+                " activated_at = ("
+                "  SELECT MAX(v) FROM ("
+                "    SELECT CURRENT_TIMESTAMP AS v"
+                "    UNION ALL"
+                "    SELECT datetime(MAX(b.activated_at), '+1 second') AS v"
+                "      FROM sem_builds b WHERE b.org_id = :org"
+                "  )"
+                ")"
+                " WHERE org_id = :org AND id = :bid AND status = 'building'",
+                {"stats": stats_json, "org": org_id, "bid": build_id},
             )
             effective = cur.rowcount == 1
             if effective and audit is not None:
@@ -2838,7 +2847,8 @@ class SqliteBackend:
 
     def sem_write_curated_batch(self, org_id: str, rows: Sequence[dict]) -> int:
         """curated_json 批写（规则表第 1 行）：active 实体 upsert curated 内容 +
-        curated_rev（+ 可选 sensitivity——YAML 声明覆盖）；返回写入行数。"""
+        curated_rev；P3-3/R2：sensitivity **直写**（row.sensitivity 已由合并侧
+        按 YAML 当前值解析——含显式 normal；不再 COALESCE 只增不减）。"""
         if not rows:
             return 0
         conn = self._conn
@@ -2847,12 +2857,12 @@ class SqliteBackend:
             for row in rows:
                 conn.execute(
                     "UPDATE sem_entities SET curated_json = :curated,"
-                    " curated_rev = :rev, updated_at = CURRENT_TIMESTAMP,"
-                    " sensitivity = COALESCE(:sensitivity, sensitivity)"
+                    " curated_rev = :rev, sensitivity = :sensitivity,"
+                    " updated_at = CURRENT_TIMESTAMP"
                     " WHERE org_id = :org AND type = :type AND key = :key"
                     "   AND status = 'active'",
                     {"curated": row["curated_json"], "rev": row["curated_rev"],
-                     "sensitivity": row.get("sensitivity"),
+                     "sensitivity": row.get("sensitivity") or "normal",
                      "org": org_id, "type": row["type"], "key": row["key"]},
                 )
             conn.execute("COMMIT")
@@ -2884,9 +2894,14 @@ class SqliteBackend:
                     (org_id, eid),
                 )
                 for alias, alias_norm, kind, match_mode in row["aliases"]:
+                    # P3-2/R2：UNIQUE(org,entity,alias_norm) 残余竞态兜底——
+                    # 冲突行跳过不炸整 run（确定性冲突已由合并侧预检记录；
+                    # 带 conflict target 防 OR IGNORE 误吞 CHECK 类失败）
                     conn.execute(
                         "INSERT INTO sem_aliases(org_id, entity_id, alias,"
-                        " alias_norm, kind, match_mode) VALUES(?, ?, ?, ?, ?, ?)",
+                        " alias_norm, kind, match_mode)"
+                        " VALUES(?, ?, ?, ?, ?, ?)"
+                        " ON CONFLICT(org_id, entity_id, alias_norm) DO NOTHING",
                         (org_id, eid, alias, alias_norm, kind, match_mode),
                     )
                     inserted += 1
@@ -3237,6 +3252,9 @@ def _expand_relations_thin(backend, org_id, seed_ids, rels, *, depth: int) -> di
 
     O-2/m2s-3：**nodes 含 seed 本身**（design §5.9 walk CTE depth=0 行——
     `SELECT je.value, 0, ...` 种子即第 0 层；消费方〔M2-S3 实体召回〕确认契约）。
+    **seed 过滤责任在消费方（P3-13）**：seed 行按 id 原样注入（未滤 status/
+    sensitivity）——design §5.9 walk 最终 SELECT 的 active/restricted 过滤归
+    消费面（get_entity 走 sem_expand_graph 自滤；召回路按调用者权限自筛）。
     seed 实体行批量读取后以 depth=0 注入；restricted/非 active seed 由
     sem_expand_graph 语义天然不展开（自身行信息仍注入——召回面自行过滤）。"""
     merged_nodes: dict[int, dict] = {}

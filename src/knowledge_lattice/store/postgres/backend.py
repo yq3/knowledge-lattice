@@ -2187,14 +2187,17 @@ class PgBackend:
         audit: tuple[str, str] | None = None,
     ) -> bool:
         """原子切换 + ready 事件同一事务（P3-5/R2——audit 仅真生效写；并发输者
-        rowcount=0 返回 False 零事件，P2-2；activated_at 顶置——G-18——与
-        sqlite 同语义）。"""
+        rowcount=0 返回 False 零事件，P2-2；P3-4/R2：activated_at 严格递增
+        GREATEST(now, 本 org 最大+1s)——与重激活同款，防同秒窗口 current 滞留；
+        与 sqlite 同语义）。"""
         conn = self._conn
         conn.execute("BEGIN")
         try:
             cur = conn.execute(
                 "UPDATE sem_builds SET status = 'ready', stats_json = %(stats)s,"
-                " activated_at = CURRENT_TIMESTAMP"
+                " activated_at = GREATEST(CURRENT_TIMESTAMP,"
+                "  (SELECT MAX(b.activated_at) + interval '1 second'"
+                "     FROM sem_builds b WHERE b.org_id = %(org)s))"
                 " WHERE org_id = %(org)s AND id = %(bid)s AND status = 'building'",
                 {"stats": stats_json, "org": org_id, "bid": build_id},
             )
@@ -2265,7 +2268,8 @@ class PgBackend:
     # ---- m2s-3：YAML curated 合并面 + FTS 索引面（与 sqlite 同语义） ----
 
     def sem_write_curated_batch(self, org_id: str, rows: Sequence[dict]) -> int:
-        """curated_json 批写（规则表第 1 行）+ 可选 sensitivity 覆盖。"""
+        """curated_json 批写（规则表第 1 行）；P3-3/R2：sensitivity 直写（合并侧
+        已按 YAML 当前值解析——含显式 normal；与 sqlite 同口径）。"""
         if not rows:
             return 0
         conn = self._conn
@@ -2274,8 +2278,9 @@ class PgBackend:
             for row in rows:
                 conn.execute(
                     "UPDATE sem_entities SET curated_json = %(curated)s,"
-                    " curated_rev = %(rev)s, updated_at = CURRENT_TIMESTAMP,"
-                    " sensitivity = COALESCE(%(sensitivity)s, sensitivity)"
+                    " curated_rev = %(rev)s,"
+                    " sensitivity = COALESCE(%(sensitivity)s, 'normal'),"
+                    " updated_at = CURRENT_TIMESTAMP"
                     " WHERE org_id = %(org)s AND type = %(type)s AND key = %(key)s"
                     "   AND status = 'active'",
                     {"curated": row["curated_json"], "rev": row["curated_rev"],
@@ -2310,11 +2315,12 @@ class PgBackend:
                     {"org": org_id, "eid": eid},
                 )
                 for alias, alias_norm, kind, match_mode in row["aliases"]:
+                    # P3-2/R2：UNIQUE 冲突残余竞态兜底（ON CONFLICT DO NOTHING）
                     conn.execute(
                         "INSERT INTO sem_aliases(org_id, entity_id, alias,"
                         " alias_norm, kind, match_mode)"
                         " VALUES(%(org)s, %(eid)s, %(alias)s, %(norm)s,"
-                        " %(kind)s, %(mode)s)",
+                        " %(kind)s, %(mode)s) ON CONFLICT DO NOTHING",
                         {"org": org_id, "eid": eid, "alias": alias,
                          "norm": alias_norm, "kind": kind, "mode": match_mode},
                     )
@@ -3163,7 +3169,9 @@ def _expand_relations_thin(backend, org_id, seed_ids, rels, *, depth: int) -> di
     逐 seed 调 sem_expand_graph（rels 双向）后归并去重；truncated 任一命中即真。
 
     O-2/m2s-3：**nodes 含 seed 本身**（design §5.9 walk CTE depth=0 行——
-    种子即第 0 层；M2-S3 实体召回消费方契约）。"""
+    种子即第 0 层；M2-S3 实体召回消费方契约）。**seed 过滤责任在消费方
+    （P3-13）**：seed 行按 id 原样注入（未滤 status/sensitivity）——design
+    §5.9 walk 最终 SELECT 的 active/restricted 过滤归消费面。"""
     merged_nodes: dict[int, dict] = {}
     merged_edges: set[tuple[int, str, int]] = set()
     edge_rows: dict[tuple[int, str, int], dict] = {}

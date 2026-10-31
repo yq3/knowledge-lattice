@@ -148,6 +148,40 @@ def _sync_records(backend, org_id, adapter, records, settings, now, should_conti
     snap_keys = set(dedup)
     relation_source = getattr(adapter, "relation_source", "sync")
 
+    # P2-2/R2（规则表第 3 行）：curated 源（yaml）的纯人工条目与同步实体
+    # (type,key) 相同 → **写入前**剔除该键的实体 upsert 与别名重建（同步实体
+    # name/attrs/parent/source_system/三类别名原样不动、不移出原源基数——否则
+    # YAML 侧后续删除会把同步实体误标 missing）；其关系一并剔除；冲突随
+    # stats.entity_conflicts 留痕（curated.conflicts 由合并钩子同记）。
+    entity_conflicts: list[dict] = []
+    if relation_source == "curated" and entities:
+        pre_ids = backend.resolve_entity_ids(
+            org_id, sorted({(e.type, e.key) for e in entities}))
+        pre_states = (
+            backend.sem_entity_states(org_id, sorted(pre_ids.values()))
+            if pre_ids else {}
+        )
+        collided = {
+            key for key, eid in pre_ids.items()
+            if pre_states.get(eid, {}).get("source") == "sync"
+        }
+        if collided:
+            entities = [e for e in entities if (e.type, e.key) not in collided]
+            relations = [r for r in relations
+                         if tuple(r.src) not in collided
+                         and tuple(r.dst) not in collided]
+            entity_conflicts = [
+                {"id": f"{t}:{k}",
+                 "reason": "pure entry collides with synced entity (type,key)"
+                           " —— synced entity untouched"}
+                for t, k in sorted(collided)
+            ]
+            logger.warning(
+                "yaml pure entries collide with synced entities: org=%s keys=%s"
+                "（写入前剔除——规则表第 3 行）",
+                org_id, sorted(f"{t}:{k}" for t, k in collided),
+            )
+
     # ③ 删除比例保护（先于一切写入——T-S2 零写入语义；force=B2 运维放行）
     active_keys = backend.sem_active_source_keys(org_id, adapter.name)
     vanished = active_keys - snap_keys
@@ -200,7 +234,10 @@ def _sync_records(backend, org_id, adapter, records, settings, now, should_conti
 
     # ④③ 关系 upsert + 端点冲突（明细结构为 #40 P2 测试约定；G-15 端点状态
     # 过滤——retired 端点记冲突不写入〔指向 retired 端点的关系不回 active〕，
-    # missing 端点放行由 store CASE 守卫落潜伏态）
+    # missing 端点放行由 store CASE 守卫落潜伏态。N4/R2 注：**已 active** 的
+    # 关系行在端点 missing 窗口内保持 active（UPDATE CASE 不降级）——展开侧
+    # sem_expand_graph 只走两端 active，missing 端点的边不可见；超期由端点
+    # retired 的级联收口——不留可见悬挂边）
     conflicts: list[dict] = []
     rel_rows: list[dict] = []
     endpoint_keys = sorted(
@@ -285,6 +322,7 @@ def _sync_records(backend, org_id, adapter, records, settings, now, should_conti
     stats = {
         "inserted": inserted, "updated": updated, "missing": missing,
         "retired": advanced["retired"], "conflicts": conflicts,
+        "entity_conflicts": entity_conflicts,
         "relations_inserted": rel_inserted, "relations_updated": rel_updated,
         "relations_missing": relations_missing,
         "relations_retired": advanced["relations_retired"],

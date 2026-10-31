@@ -117,13 +117,18 @@ class YamlEntry:
     owner: str | None = None
     fields: tuple[FieldOverlay, ...] = ()
     extra_relations: tuple[ExtraRelation, ...] = ()
+    raw: dict = field(default_factory=dict)   # 原始映射（JSON Schema 条目级校验面——R2/边界1）
 
     def abbr_specs(self) -> tuple[AliasSpec, ...]:
         """缩写列表 → AliasSpec（缩写天然短，不参与短词拦截——见 validate）。"""
         return tuple(AliasSpec(value=a) for a in self.abbr)
 
     def curated_payload(self) -> dict:
-        """curated_json 载荷（非空字段——YAML 合并写入 sem_entities.curated_json）。"""
+        """curated_json 载荷（非空字段——YAML 合并写入 sem_entities.curated_json）。
+
+        R2/边界 4：`l0` 与 `owner` 入载荷——design §5.8 三种内容分工表把「L0
+        标记」列入人工内容面；owner 为构建报告（§10「无人维护与孤立条目」）
+        与 m2s-4 L0 导出的数据源。l0 仅在 True 时落键（缺省=非 L0）。"""
         out: dict = {}
         for k in ("definition", "why", "caliber"):
             v = getattr(self, k)
@@ -135,6 +140,10 @@ class YamlEntry:
                 out[k] = list(v)
         if self.disambiguation:
             out["disambiguation"] = list(self.disambiguation)
+        if self.l0:
+            out["l0"] = True
+        if self.owner:
+            out["owner"] = self.owner
         return out
 
 
@@ -168,7 +177,7 @@ def _parse_entry(raw: dict, file: str, pure: bool) -> YamlEntry:
     eid = str(raw.get("id", ""))
     etype, _, key = eid.partition(":")
     return YamlEntry(
-        id=eid, type=etype, key=key, file=file, pure=pure,
+        id=eid, type=etype, key=key, file=file, pure=pure, raw=raw,
         name=(str(raw["name"]) if raw.get("name") else None),
         aliases=_alias_specs(raw.get("aliases")),
         abbr=tuple(str(a) for a in raw.get("abbr") or ()),
@@ -204,10 +213,14 @@ def _parse_entry(raw: dict, file: str, pure: bool) -> YamlEntry:
 
 
 def _content_rev(root: Path) -> str:
-    """全仓内容哈希（排序遍历，sha256 前 12 hex——与 dict_rev 同展示形态）。"""
+    """全仓内容哈希（排序遍历，sha256 前 12 hex——与 dict_rev 同展示形态）。
+    跳过点目录（`.git`/`.github` 等——P3-7/R2：checkout 元数据变动不得扰动 rev）。"""
     digest = hashlib.sha256()
     for path in sorted(p for p in root.rglob("*") if p.is_file()):
-        digest.update(str(path.relative_to(root)).encode("utf-8"))
+        rel = path.relative_to(root)
+        if any(part.startswith(".") for part in rel.parts):
+            continue  # 点目录（VCS/编辑器元数据）非语料内容
+        digest.update(str(rel).encode("utf-8"))
         digest.update(b"\0")
         digest.update(path.read_bytes())
         digest.update(b"\0")
@@ -287,26 +300,96 @@ def _ref_type(ref: str) -> str:
     return ref.partition(":")[0]
 
 
+_VALID_MATCH_MODES = ("exact", "fuzzy_only", "context")
+_ENTRY_SCHEMA_NAME = "entry.schema.json"
+
+
+def _schema_errors(instance: dict, schema: dict) -> list[str]:
+    """JSON Schema 校验（最小实现——R2/边界 1）：优先 `jsonschema` 库（可用
+    时全量方言）；不可用时回退手写子集（type/required/properties/enum/items/
+    additionalProperties——CI 环境无第三方依赖也能跑）。"""
+    try:
+        import jsonschema
+
+        validator_cls = jsonschema.validators.validator_for(schema)
+        validator_cls.check_schema(schema)
+        errors = sorted(
+            jsonschema.Draft202012Validator(schema).iter_errors(instance),
+            key=lambda e: list(e.absolute_path),
+        )
+        return [
+            f"{'/'.join(map(str, e.absolute_path)) or '$'}: {e.message}"
+            for e in errors
+        ]
+    except ImportError:
+        return _minimal_schema_errors(instance, schema)
+
+
+def _minimal_schema_errors(instance: dict, schema: dict, path: str = "$") -> list[str]:
+    """手写最小子集（jsonschema 缺席时的回退——未知关键字忽略）。"""
+    errors: list[str] = []
+    expected = schema.get("type")
+    if expected == "object" and not isinstance(instance, dict):
+        return [f"{path}: expected object"]
+    if expected == "array" and not isinstance(instance, list):
+        return [f"{path}: expected array"]
+    if expected == "string" and not isinstance(instance, str):
+        return [f"{path}: expected string"]
+    if expected == "boolean" and not isinstance(instance, bool):
+        return [f"{path}: expected boolean"]
+    if expected == "integer" and not isinstance(instance, int):
+        return [f"{path}: expected integer"]
+    if "enum" in schema and instance not in schema["enum"]:
+        errors.append(f"{path}: {instance!r} not in enum {schema['enum']!r}")
+    if isinstance(instance, dict):
+        for req in schema.get("required", ()):
+            if req not in instance:
+                errors.append(f"{path}: {req!r} is a required property")
+        props = schema.get("properties", {})
+        for key, value in instance.items():
+            if key in props:
+                errors.extend(
+                    _minimal_schema_errors(value, props[key], f"{path}.{key}"))
+            elif schema.get("additionalProperties") is False:
+                errors.append(
+                    f"{path}.{key}: additional property not allowed")
+    if isinstance(instance, list) and isinstance(schema.get("items"), dict):
+        for i, item in enumerate(instance):
+            errors.extend(
+                _minimal_schema_errors(item, schema["items"], f"{path}[{i}]"))
+    return errors
+
+
 def validate_corpus(corpus: Corpus, *, l0_budget: int = 1500) -> list[Issue]:
-    """CI 校验全集（TC-YAML-04）——错误可定位到文件；warning 供构建报告。"""
+    """CI 校验全集（TC-YAML-04）——错误可定位到文件；warning 供构建报告。
+
+    R2/边界 1：`_schema/entry.schema.json` 在场时按条目做 **JSON Schema 校验**
+    （`_schema_errors`——jsonschema 库优先、手写子集回退）；手写结构规则保留为
+    补充面（schema 未覆盖的语义约束仍由本函数承担）。"""
     issues: list[Issue] = []
     by_id = {e.id: e for e in corpus.entries}
 
     # _schema 自描述存在性（缺失为 warning——schema 文件集非功能前置）
+    entry_schema: dict | None = None
     if not (corpus.root / "_schema").is_dir():
         issues.append(Issue("warning", "_schema/", "schema 自描述目录缺失（建议随仓维护）"))
     else:
         for f in sorted((corpus.root / "_schema").glob("*.json")):
             try:
-                json.loads(f.read_text(encoding="utf-8"))
+                parsed = json.loads(f.read_text(encoding="utf-8"))
             except ValueError as exc:
                 issues.append(Issue(
                     "error", f.relative_to(corpus.root).as_posix(),
                     f"schema JSON 解析失败: {exc}"))
+                continue
+            if f.name == _ENTRY_SCHEMA_NAME and isinstance(parsed, dict):
+                entry_schema = parsed
 
     l0_tokens = 0
     # 别名冲突检测的聚合面：alias_norm → [(entity_id, has_disambiguation, marked)]
     alias_owners: dict[str, list[tuple[str, bool, bool]]] = {}
+    # P3-8①/R2：全局 id 唯一（design 样例「全局唯一，CI 校验」——条目+内嵌字段）
+    id_locations: dict[str, list[str]] = {}
 
     def _collect_alias(entity_id: str, spec: AliasSpec, file: str,
                        has_disamb: bool) -> None:
@@ -318,6 +401,23 @@ def validate_corpus(corpus: Corpus, *, l0_budget: int = 1500) -> list[Issue]:
             (entity_id, has_disamb, spec.match_mode == "context"))
 
     for entry in corpus.entries:
+        # 边界 1/R2：JSON Schema 条目级校验（entry.schema.json 在场时）
+        if entry_schema is not None and entry.raw:
+            for err in _schema_errors(entry.raw, entry_schema):
+                issues.append(Issue(
+                    "error", entry.file, f"schema violation: {err}"))
+        # P3-8②/R2：match_mode 枚举（非法值入库会撞 DB CHECK → run failed）
+        for spec in (*entry.aliases,
+                     *(s for f in entry.fields for s in f.aliases)):
+            if spec.match_mode not in _VALID_MATCH_MODES:
+                issues.append(Issue(
+                    "error", entry.file,
+                    f"match_mode 非法 {spec.match_mode!r}"
+                    f"（合法：{list(_VALID_MATCH_MODES)}）——alias {spec.value!r}"))
+        # P3-8①/R2：id 唯一性登记（条目 + 内嵌字段）
+        id_locations.setdefault(entry.id, []).append(entry.file)
+        for f in entry.fields:
+            id_locations.setdefault(f.id, []).append(entry.file)
         # 结构面
         if not entry.type or not entry.key or entry.type not in SEM_ENTITY_TYPES:
             issues.append(Issue(
@@ -376,6 +476,13 @@ def validate_corpus(corpus: Corpus, *, l0_budget: int = 1500) -> list[Issue]:
                     "warning", entry.file,
                     f"reference {ref!r} not in repo（可解析自同步实体——未同步仅警告）"))
         if entry.related_to:
+            if entry.type != "concept":
+                # P3-8③/R2：白名单 related_to 仅 concept→concept——src 非概念
+                # 运行时必被拒，CI 前置拦截
+                issues.append(Issue(
+                    "error", entry.file,
+                    f"related_to 声明方只允许 concept（got {entry.type}"
+                    f" {entry.id!r}——白名单 concept→concept）"))
             for ref in entry.related_to:
                 if _ref_type(ref) != "concept":
                     issues.append(Issue(
@@ -409,6 +516,26 @@ def validate_corpus(corpus: Corpus, *, l0_budget: int = 1500) -> list[Issue]:
                                          if e.id in ids)),
                 f"ambiguous alias {norm!r} → {sorted(ids)}：需至少一方 disambiguation"
                 " 或别名标 match_mode: context"))
+
+    # P3-2/R2 CI 查重：同一实体内重复 alias_norm（aliases/abbr 跨清单撞）→
+    # error（合并侧仅保首条，重复面应在提交前消除）
+    for entry in corpus.entries:
+        seen: set[str] = set()
+        for spec in (*entry.aliases, *entry.abbr_specs()):
+            norm = normalize_alias(spec.value)
+            if norm in seen:
+                issues.append(Issue(
+                    "error", entry.file,
+                    f"duplicate alias {spec.value!r}（同条目内 alias_norm 重复——"
+                    "UNIQUE(org,entity,alias_norm) 约束面）"))
+            seen.add(norm)
+
+    # P3-8①/R2：全局 id 唯一（design 样例「全局唯一，CI 校验」）
+    for eid, files in sorted(id_locations.items()):
+        if len(files) > 1:
+            issues.append(Issue(
+                "error", "/".join(sorted(set(files))),
+                f"duplicate id {eid!r}（全局唯一——出现于 {len(files)} 处）"))
 
     # L0 预算
     l0_tokens += sum(estimate_tokens(str(e.get("text", ""))) for e in corpus.l0_extra)

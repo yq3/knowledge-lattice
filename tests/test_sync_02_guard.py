@@ -173,6 +173,11 @@ def test_t_s4_missing_then_recover_then_retire(sync_env) -> None:
     assert sync_env.db.execute(
         "SELECT status FROM sem_entities WHERE key = 'TPL_0'"
     ).fetchone()[0] == "active"
+    # N2/R2：恢复步关系一并回 active（G-15 潜伏态的对称终态——宽限期内恢复
+    # 实体与其关系同时回 active，不留潜伏孤儿）
+    assert sync_env.db.execute(
+        "SELECT status FROM sem_relations WHERE src_id = ?", (tpl_id,)
+    ).fetchone()[0] == "active"
 
     # ③ 造数 synced_at=8 天前且快照仍无 X → retired 且关系一并 retired
     run(sync_env, _without(snap, "TPL_0"), now=add_seconds(NOW, 2 * 86400))

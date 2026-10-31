@@ -101,15 +101,21 @@ def apply_yaml_overlays(backend, org_id: str, corpus: Corpus, now: str) -> dict:
                 "id": t.id, "reason": "pure entry collides with synced entity (type,key)",
             })
 
-    # ---- curated 写入 + manual/abbr 别名（规则表第 1/2/5 行） ----
+    # ---- curated 写入 + manual/abbr 别名（规则表第 1 行——R2/P2-1：corpus 内
+    # 每个 active 目标**都产出一行**：payload 空写 {}（curated_rev 仍记录——
+    # 该条目在场）、别名空产出行执行先删后插清空；stale 清理只管条目整体消失） ----
+    existing_alias_norms: dict[int, set[str]] = {}
+    if id_map:
+        for a in backend.sem_entity_aliases(org_id, sorted(id_map.values())):
+            if a["kind"] in ("name", "code", "sync"):
+                existing_alias_norms.setdefault(a["entity_id"], set()).add(
+                    a["alias_norm"])
+
     curated_rows: list[dict] = []
     alias_rows: list[dict] = []
     for t in targets:
         if t.pure and _is_synced(t):
             continue
-        payload = t.curated_payload()
-        if not payload:
-            continue  # 无 curated 内容的条目（纯引用面声明）不占合并面
         eid = id_map.get((t.type, t.key))
         if eid is None:
             conflicts.append({"id": t.id, "reason": "entity not synced (id unresolved)"})
@@ -119,22 +125,44 @@ def apply_yaml_overlays(backend, org_id: str, corpus: Corpus, now: str) -> dict:
             conflicts.append({"id": t.id, "reason": f"entity not synced (status={status!r})"})
             continue
 
+        payload = t.curated_payload()
         curated_rows.append({
             "type": t.type, "key": t.key,
             "curated_json": json.dumps(payload, ensure_ascii=False, sort_keys=True),
             "curated_rev": rev,
-            "sensitivity": t.sensitivity,
+            # P3-3/R2：sensitivity 按 YAML 当前值回写（含显式 normal；条目在场
+            # 而未声明 → normal——YAML 为覆盖面 sensitivity 真源）
+            "sensitivity": t.sensitivity if t.sensitivity in ("normal", "restricted")
+                            else "normal",
         })
+        # P3-1/R2：abbr 免短词/常用词拦截（缩写天然短——与 CI/文档口径统一）；
+        # manual 别名保留 fail-closed 检查（CI 为第一道防线）
+        # P3-2/R2：UNIQUE(org,entity,alias_norm) 冲突消解——同 norm 重复
+        #（条目内）与既有 name/code/sync 别名撞 → 逐条 skip + 冲突记录
+        taken = existing_alias_norms.get(eid, set())
+        seen_norms: set[str] = set()
         pairs = []
         for spec, kind in [(a, "manual") for a in t.aliases] + \
                           [(a, "abbr") for a in t.abbr_specs()]:
-            blocked = _alias_blocked(spec)
-            if blocked:  # 合并侧 fail-closed（CI 为第一道防线）
-                conflicts.append({"id": t.id, "reason": f"alias skipped: {blocked}"})
+            norm = normalize_alias(spec.value)
+            if kind == "manual":
+                blocked = _alias_blocked(spec)
+                if blocked:  # 合并侧 fail-closed（CI 为第一道防线）
+                    conflicts.append({"id": t.id, "reason": f"alias skipped: {blocked}"})
+                    continue
+            if not norm:
+                conflicts.append({"id": t.id, "reason": "alias skipped: empty norm"})
                 continue
-            pairs.append((spec.value, normalize_alias(spec.value), kind, spec.match_mode))
-        if pairs:
-            alias_rows.append({"type": t.type, "key": t.key, "aliases": pairs})
+            if norm in taken or norm in seen_norms:
+                conflicts.append({
+                    "id": t.id,
+                    "reason": f"alias norm conflict skipped: {spec.value!r}"
+                    f"（norm {norm!r} 已被 name/code/sync 或本条目占用）",
+                })
+                continue
+            seen_norms.add(norm)
+            pairs.append((spec.value, norm, kind, spec.match_mode))
+        alias_rows.append({"type": t.type, "key": t.key, "aliases": pairs})
 
     written = backend.sem_write_curated_batch(org_id, curated_rows)
     backend.sem_replace_manual_aliases(org_id, alias_rows)

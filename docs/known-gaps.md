@@ -200,3 +200,10 @@
 - **问题**：design §4 status CHECK 枚举无 superseded/is_current，实现取「最新 ready by id + 旧 ready 保留」。正常单调 rev 序列成立；但 **rev 回退**（A ready id1 → B ready id2 → 源快照/YAML 回到 A）时 upsert 复用 id1 置 ready，而 current 仍取 id2(B)——`GET /semantic/builds` 的 current 与 get_entity 的 dict_rev 锚点失真（工具查询面走 store 实时表**不受影响**）。
 - **对冲**：rev 回退属异常运维场景（源快照/YAML 回退），查询正确性无损；M2-S3 接 YAML 时与 G-17 一并收口（加 `activated_at` 或独立指针）。**关联 O-1**（m2s-2 R2 登记）：sqlite 同 rev 竞态输者 upsert 可把已 ready 行重断 building→ready——同 build_id 双 ready 事件+瞬态 current 缺失（at-least-once 审计可容纳、行终态正确）；M2-S3 一并以条件 upsert（`DO UPDATE … WHERE status != 'ready'` 或同 rev ready 直接返回 existing id）收口。
 - **重开条件**：M2-S3 开工（与 G-17 同批）。
+
+## G-19 五源「每天一次兜底」调度未接线（design §5.8 适配器表半句）
+
+- **状态**：已接受（2026-10-31 随 m2s-3 R1 登记——Committer N5 裁定、用户拍板，M2-S4 承接）。
+- **问题**：design §5.8 适配器表「每天一次兜底」半句——五源（template_center/metadata/yaml/scenario_config/report_center）当前仅有 webhook 触发与手动 POST 两条触发路径，**app 兜底循环只认领任务行不投递语义源同步**；同步全靠外部触发时，长期无 webhook 的源将停留在旧快照（missing/retired 宽限推进也随之停滞）。
+- **对冲**：运维可经 cron 调 `POST /semantic/sync/{adapter}`（m2s-3 交付的运维路径）；sync 幂等+同 rev 构建跳过使重复触发无害。
+- **重开条件**：M2-S4 开工（L0/构建报告段一并接调度——需明确调度窗口/幂等/与 webhook 触发去重口径）。
