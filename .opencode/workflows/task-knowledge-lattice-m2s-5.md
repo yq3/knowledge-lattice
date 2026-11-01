@@ -5,18 +5,18 @@ target: /Users/youqi/develop/knowledge-lattice
 coderTaskId: ses_e6e326344ffeWEscrwiXmW1eUC
 testerTaskId: ses_e6df2e93fffeR4RoKiwF3Gdng6
 committerTaskId: ses_e6dd5bf39ffediNh4NufovraSn
-status: approved
+status: done
 round: 2
 maxRounds: 3
 testVerdict: PASS
 reviewVerdict: APPROVED
 testedSha: 241ee242196066546b98729cf5639a0eb22565fa
-reviewedSha: 241ee242196066546b98729cf5639a0eb22565fa
+reviewedSha: c519abb
 # 以上 SHA = coder 最近一轮本地 commit（[taskId] R<n>）后的 HEAD；修复轮 commit 后 reviewedSha 置空待重审
 filesChanged: ["store/sqlite/migrations/semantic/0008_sem_build_snapshots.sql(+pg 同)", "store/sqlite/backend.py", "store/postgres/backend.py", "store/backend.py", "core/semantic/tagging.py(新)", "core/semantic/annotator.py", "core/semantic/build.py", "core/semantic/yaml_corpus.py", "core/semantic/evalrun.py", "core/docs/ingest.py", "worker/runner.py", "worker/maintenance.py", "app.py", "config.py", "eval/semantic_seed.py", "eval/semantic_golden.README.md", "tests/test_tag_01_ingest.py(新)", "tests/test_tag_02_retag.py(新)", "tests/test_tag_03_untag_reconcile.py(新)", "tests/test_g21_build_snapshots.py(新)", "tests/test_m2s5_followups.py(新)", "tests/test_r3_m2s4_fixes.py(改)", "tests/×7(迁移水位/桩适配)", "AGENTS.md(批)", ".opencode/workflows/_m2-plan.md(批)", ".opencode/workflows/task-knowledge-lattice-m2s-4.md(终态批)"]
 endReason: null
 createdAt: 2026-10-31T19:50:44+0800          # 创建时间（30 天清理审计用，见 README §4.5）
-updatedAt: 2026-10-31T22:41:13+0800          # 每次写检查点必更新为当前时间（ISO 8601 含时区），不得沿用旧值
+updatedAt: 2026-10-31T22:51:13+0800          # 每次写检查点必更新为当前时间（ISO 8601 含时区），不得沿用旧值
 ---
 
 # task-knowledge-lattice-m2s-5: M2-S3 基础段——ingest 打标 + semantic_retag + untag + 对账 + G-21 方案 A
@@ -72,6 +72,10 @@ R2: tester **PASS+可收敛**（2026-10-31 22:30，testedSha=241ee24）：独立
 R2: committer **APPROVED**（2026-10-31 22:38 终审，reviewedSha=241ee24 二一致）：**P1 闭环**（clear 参数实现与建议一致——先 DELETE 后 INSERT 同事务/三元组收窄/rows 空早退废除/全仓唯一调用方+ingest 零影响；W1~W4 独立实证+仓库回归双后端；**TC-BUILD-05 删侧闭环**+restricted 化对账补投闭环）；P2-1~4 全闭环（4 处谓词×双方言+NULL 安全/常驻回归/名实相符+两形态显式分离/模板行）；裁定①闭环（skip fail-closed+W6a~d 零冲突）；P3-2/3 闭环；docs 批与 R1 建议清单一致——G-21 收口+残留 8 项+m2s-4 P3 核销段（**3 项 R3 终审补登记遗漏——归档批补**：r8 TC-SEM-06 无 build 注句/P3-16 annotate 仅捕 ValueError 等）。新引入面审查无新 P1/P2（clear 签名/测试栈/compute skip 影响面）。**无需 R3 代码轮**；建议交付归档批（docs-only，reviewedSha=归档 HEAD 沿先例）。**双通过达成（round=2 收敛）**。〔终审报告尾部被平台截断——结论与核验主体完整存档于下〕
 
 **交付链**（2026-10-31 22:41 用户确认交付）：① 归档 docs-only commit（检查点终态+3 项 m2s-4 P3 补登记+TEST-CASES v1.9.9+AGENTS/_m2-plan 终态——reviewedSha 按先例更新为归档 HEAD、testedSha 保持 241ee24）→ ② Coder push+PR → ③ Committer 留痕 → ④ manifest → ⑤ 待用户合入。
+
+**交付链执行**（2026-10-31 22:49 三步完毕）：① 归档 commit **`c519abb`**（push 0ae9c8a..c519abb；入库纪律 grep=0）；② **PR #9**（base=develop，3 commits：0c127db/241ee24/c519abb，OPEN）；③ Committer 评审留痕 **PRR_kwDOVZ9dhM8AAAABVSOaSA**（2026-10-31T14:47:37Z，COMMENTED 载体正文首行 APPROVED）；④ evidence manifest 入 PR description（16 键——双 SHA/门禁三段基线/rounds=2/specRulings 裁定全量/gapClosures×4/handover，线上回读 json.loads 通过）。**待用户合入指令**（不自动合入）。
+
+**合入完成**（2026-10-31 22:51 用户指令「合入」）：`gh pr merge 9 --merge` → **MERGED**，mergeCommit **`60370d0c5d5d30489a772eab1289dc5a2b69bfd6`**；origin/develop 2cb2277→60370d0，本地 develop_opencode 已 ff 同步。收尾：检查点 status=done；_m2-plan row 9 补 PR #9/mergeCommit+基线更新、AGENTS.md「待 PR」→PR #9（工作区随下段 chore 批）。任务闭环（2 轮，1323+1→1386+1）。
 
 ## 最新验证意见原文
 （tester/committer 报告逐字保留——恢复时给 coder 的修复依据）
