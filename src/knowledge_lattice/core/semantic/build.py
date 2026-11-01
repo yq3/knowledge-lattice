@@ -338,11 +338,13 @@ def run_build(
         current = backend.sem_current_build(org_id)
         if current is not None and current["dict_rev"] == dict_rev:
             stats = {"skipped": True, "current_build_id": current["id"]}
-            # P2-1/R2（裁定 5「最终一致+修复路径」）：同 dict_rev skip 前做
-            # 模糊索引对账——写失败/向量降级的遗留缺口的真实收敛路径
-            #（每次 skipped 构建都会对账；只补缺不降级——见函数 docstring）
+            # P2-1/R2 + P2-2/R3（裁定 5「最终一致+修复路径」）：同 dict_rev
+            # skip 前做模糊索引对账——内容集合（收缩/等行数改名盲区）+ 向量
+            # 覆盖 + 落库失败标记，任一触发即整替修复；每次 skipped 构建都会
+            # 对账（真实收敛路径——详见 _repair_fuzzy_index_if_needed）
             repaired = _repair_fuzzy_index_if_needed(
-                backend, org_id, snapshot, settings, embedder)
+                backend, org_id, snapshot, settings, embedder,
+                current=current)
             if repaired is not None:
                 stats["fuzzy_repaired"] = repaired
             _audit_build(backend, org_id, "skipped",
@@ -575,36 +577,57 @@ def _write_fuzzy_index(backend, org_id: str, term_rows: list[dict],
 
 
 def _repair_fuzzy_index_if_needed(backend, org_id: str, snapshot: dict,
-                                  settings: Settings, embedder) -> dict | None:
-    """skipped 构建的模糊索引对账修复（P2-1/R2——用户裁定 5「最终一致+
-    修复路径」正式口径）：
+                                  settings: Settings, embedder,
+                                  *, current: dict | None = None) -> dict | None:
+    """skipped 构建的模糊索引对账修复（P2-1/R2 + P2-2/R3——用户裁定 5
+    「最终一致+修复路径」正式口径）：
 
-    - **对账**：现状（sem_fuzzy_index_stats）vs 当前快照期望——行缺失
-      （terms < 期望）或**向量覆盖不全且当前有 embedder**（vec_embedded <
-      terms）即触发整替补写（用当前 embedder 全量重算——行与向量一起最新）；
-    - 只补缺不降级：embedder 缺席时不因「期望向量数低」覆盖既有好向量
-      （对账条件为 vec_embedded < terms 的**补齐方向**，绝不把非空向量
-      覆盖为空）；行完整且向量满覆盖（或无 embedder 且本就无向量）→ 零动作；
-    - 修复成功返回 {"terms": n, "vec_embedded": k}（调用方进 skipped 返回
-      stats.fuzzy_repaired 供观测）；失败记 warning——下次 skipped 构建再对账
-      （每次同 rev 构建都会走到本函数——真实收敛路径）。
+    - **内容集合对账（P2-2/R3 主判定）**：期望集合 `{(entity_id, kind,
+      text_norm)}`（当前快照经 build_fuzzy_terms 纯计算）vs 现存
+      `sem_fuzzy_terms_all` 行集合——**任何不相等即触发整替**（词典收缩、
+      等行数改名等纯计数/覆盖对账的盲区由此覆盖）；
+    - **向量覆盖对账**：内容一致但 `vec_embedded < vec_expected` 且当前
+      有 embedder → 触发整替补齐（降级自愈）；embedder 缺席时不因向量
+      不足触发（无能力补——留待有 embedder 的 skipped 构建）；
+    - **持久化标记附加触发（P2-2/R3）**：current build 行 stats.fuzzy 的
+      `index_write_failed` / `vec_skipped` 落库标记（崩溃场景无内存标记，
+      落库线索是唯一触发面）——即使内容/覆盖恰好一致也触发一次对账性
+      整替（修面即清陈旧标记态）；
+    - **「只补缺不降级」的边缘（Tester P3-1/R3 注记）**：embedder 缺失/
+      故障但**内容缺失**触发整替时，会短暂以 NULL 向量覆盖旧非空向量
+      （整替无行级合并）——收敛依赖后续有可用 embedder 的 skipped 构建
+      补齐（每次同 rev 构建都会走到本对账——最终一致成立）；embedder
+      缺席时内容一致 + 向量不足不触发，不主动制造该边缘；
+    - 修复成功返回 sem_fuzzy_index_stats（调用方进 skipped 返回
+      stats.fuzzy_repaired 供观测）；失败记 warning——下次 skipped 构建再
+      对账（真实收敛路径）。
     """
     try:
         from knowledge_lattice.core.semantic.fuzzy import build_fuzzy_terms
 
-        _rows, _dels, expected = build_fuzzy_terms(
+        term_rows, _dels, expected = build_fuzzy_terms(
             snapshot, None, embed_model_label=settings.embed_model_label)
         expect_terms = expected["terms"]
-        # 可嵌行数（code/sync 键不嵌——NULL 属预期；对账以此为满覆盖基准）
         expect_vec = expected["vec_expected"]
-        have = backend.sem_fuzzy_index_stats(org_id)
-        need = False
-        if have["terms"] < expect_terms:
-            need = True          # 行缺失（写失败恢复 / 词典未落）
+        expect_set = {(r["entity_id"], r["kind"], r["text_norm"])
+                      for r in term_rows}
+        have_rows = backend.sem_fuzzy_terms_all(org_id)
+        have_set = {(r["entity_id"], r["kind"], r["text_norm"])
+                    for r in have_rows}
+        stats = backend.sem_fuzzy_index_stats(org_id)
+        reasons: list[str] = []
+        if have_set != expect_set:
+            reasons.append(
+                f"content drift（have={len(have_set)} expect={len(expect_set)}）")
         elif (embedder is not None
-              and have["vec_embedded"] < expect_vec):
-            need = True          # 向量覆盖不全且当前有能力补（降级自愈）
-        if not need:
+              and stats["vec_embedded"] < expect_vec):
+            reasons.append(f"vec coverage（{stats['vec_embedded']} <"
+                           f" {expect_vec}）")
+        # 持久化标记附加触发（崩溃场景的落库线索——见 docstring）
+        marker = _fuzzy_failure_marker(current)
+        if marker:
+            reasons.append(f"persisted marker（{marker}）")
+        if not reasons:
             return None
         term_rows, del_rows, _stats = _build_fuzzy_products(
             snapshot, settings, embedder)
@@ -612,16 +635,36 @@ def _repair_fuzzy_index_if_needed(backend, org_id: str, snapshot: dict,
         after = backend.sem_fuzzy_index_stats(org_id)
         logger.warning(
             "semantic fuzzy index repaired on skipped build: org=%s"
-            " terms=%s vec_embedded=%s（对账触发：have=%s"
-            " expect_terms=%s expect_vec=%s）",
-            org_id, written, after["vec_embedded"], have, expect_terms,
-            expect_vec)
+            " terms=%s vec_embedded=%s（对账触发：[%s]）",
+            org_id, written, after["vec_embedded"], "; ".join(reasons))
         return after
     except Exception:  # noqa: BLE001 —— 修复失败下次 skipped 构建再试
         logger.exception(
             "semantic fuzzy index repair failed on skipped build: org=%s"
             "（下次同 rev 构建再对账）", org_id)
         return None
+
+
+def _fuzzy_failure_marker(current: dict | None) -> str | None:
+    """current build 行持久化的模糊索引失败/降级标记（P2-2/R3 附加触发面）：
+    'index_write_failed' / 'vec_skipped' 任一为真即返回标记名。"""
+    if not current:
+        return None
+    stats_json = current.get("stats_json") or "{}"
+    if isinstance(stats_json, str):
+        try:
+            stats_json = json.loads(stats_json)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(stats_json, dict):
+        return None
+    fuzzy = stats_json.get("fuzzy") or {}
+    if not isinstance(fuzzy, dict):
+        return None
+    for key in ("index_write_failed", "vec_skipped"):
+        if fuzzy.get(key):
+            return key
+    return None
 
 
 # ---- 构建报告（A4——REST GET /semantic/builds/{id}/report 数据源） ----

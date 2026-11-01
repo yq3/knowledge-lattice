@@ -13,8 +13,13 @@
 - **顺手 P3-3**：test_yaml_05_local_ac.py 恒真断言改直接断言（该文件内改，
   本文件不重复覆盖）。
 
-P2-1/P2-2 用例为 sqlite 单后端（Committer 口径「至少单后端」——store
-双方言面由既有 tag_04/sem_09 双臂套件覆盖）。
+后端覆盖（R3/P3-2 修正——原「sqlite 单后端」为少报）：**8/11 双后端参数化**
+（pg 臂覆盖 sem_fuzzy_index_stats / sem_update_build_stats / 修复链与内容
+对账）+ **3 条 sqlite 专有**（inline 装配 / REST 端点 / 工具描述常量——
+TestClient 栈为 sqlite 形态）。
+
+**R3 增补（P2-2）**：词典收缩 + 等行数改名（计数/覆盖对账盲区）与持久化
+失败标记两类内容集合对账触发用例。
 """
 
 from __future__ import annotations
@@ -139,7 +144,7 @@ def repair_env(backend, tmp_path):
 
     return SimpleNamespace(db=backend, backend=b, settings=settings,
                            embedder=embedder, build=build,
-                           add_entity=add_entity)
+                           add_entity=add_entity, records=records)
 
 
 def test_p2_1_write_failure_persisted_and_skipped_repairs(
@@ -218,6 +223,121 @@ def test_p2_1_no_repair_when_consistent(repair_env) -> None:
     again = env.build(embedder=env.embedder)
     assert again["status"] == "skipped"
     assert not again["stats"].get("fuzzy_repaired"), "一致态不触发补写"
+
+
+def test_r3_p2_2_shrink_and_rename_triggers_repair(repair_env,
+                                                   monkeypatch) -> None:
+    """R3 P2-2：内容集合对账——**词典收缩**与**等行数改名**两类陈旧（纯
+    计数/覆盖对账的盲区）都须触发 skipped 修复（裁定 5「最终一致」）。
+
+    场景 A（收缩）：两实体 ready → 收缩为一实体（行数减少）+ 写失败 →
+    现存行数 > 期望（旧索引行更多）——计数对账不触发、内容对账必须触发。
+    场景 B（等行数改名）：同数量实体换名（text_norm 集合不同）——行数与
+    向量覆盖全等、内容集合不同，必须触发。"""
+    from knowledge_lattice.core.semantic.fuzzy import build_fuzzy_terms
+
+    env = repair_env
+    env.add_entity("c.a", "甲概念")
+    env.add_entity("c.b", "乙概念")
+    env.build(embedder=env.embedder)
+    assert env.backend.sem_fuzzy_index_stats(ORG)["vec_embedded"] > 0
+
+    def _expected_norms() -> set[tuple]:
+        rows, _d, _s = build_fuzzy_terms(
+            env.backend.sem_active_snapshot(ORG), None,
+            embed_model_label=env.settings.embed_model_label)
+        return {(r["entity_id"], r["kind"], r["text_norm"]) for r in rows}
+
+    # ---- 场景 A：收缩（移除 c.b——快照语义全量替换）+ 写失败 ----
+    env.records[:] = [r for r in env.records if r.key != "c.b"]
+    from knowledge_lattice.core.semantic.sync import run_sync
+
+    # 缩容 run + 宽限推进 run（now+9d：c.b missing 超 7 天宽限 → retired
+    # 出快照——terms 期望收缩；retired 实体不进 build_fuzzy_terms 输入）。
+    # force=true：缩容 50% 触发删除比例保护——B2 运维放行口径（合法收缩）
+    run_sync(env.backend, ORG, FakeSourceAdapter("tc", list(env.records)),
+             settings=env.settings, snapshot=list(env.records), now=NOW,
+             force=True)
+    run_sync(env.backend, ORG, FakeSourceAdapter("tc", list(env.records)),
+             settings=env.settings, snapshot=list(env.records),
+             now="2026-11-10 09:00:00", force=True)
+
+    def boom(*a, **kw):
+        raise RuntimeError("injected write failure")
+
+    real_replace = env.backend.sem_fuzzy_replace
+    monkeypatch.setattr(env.backend, "sem_fuzzy_replace", boom)
+    from knowledge_lattice.core.semantic.annotator import clear_annotator_cache
+
+    clear_annotator_cache()
+    from knowledge_lattice.core.semantic.build import run_build
+
+    shrunk = run_build(env.backend, ORG, settings=env.settings,
+                       embedder=env.embedder)
+    assert shrunk["status"] == "ready"
+    monkeypatch.setattr(env.backend, "sem_fuzzy_replace", real_replace)
+    stats_after = env.backend.sem_fuzzy_index_stats(ORG)
+    assert stats_after["terms"] > 0, "写失败后旧索引仍在"
+
+    repaired = run_build(env.backend, ORG, settings=env.settings,
+                         embedder=env.embedder)   # 同 rev → skipped
+    assert repaired["status"] == "skipped"
+    assert repaired["stats"].get("fuzzy_repaired"), (
+        "词典收缩后的陈旧索引（行数不少反多）必须经内容集合对账触发修复")
+    have = {(r["entity_id"], r["kind"], r["text_norm"])
+            for r in env.backend.sem_fuzzy_terms_all(ORG)}
+    assert have == _expected_norms(), "修复后索引内容 = 当前快照期望集合"
+
+    # ---- 场景 B：等行数改名（text_norm 集合变化、行数/向量覆盖不变）----
+    for r in env.records:
+        if r.key == "c.a":
+            r.name = "甲概念改名"
+    run_sync(env.backend, ORG, FakeSourceAdapter("tc", list(env.records)),
+             settings=env.settings, snapshot=list(env.records), now=NOW,
+             force=True)
+    clear_annotator_cache()
+    # 改名构建同样注入写失败——索引停留在改名前内容（行数/覆盖全等的陈旧）
+    monkeypatch.setattr(env.backend, "sem_fuzzy_replace", boom)
+    renamed = run_build(env.backend, ORG, settings=env.settings,
+                        embedder=env.embedder)
+    assert renamed["status"] == "ready"
+    monkeypatch.setattr(env.backend, "sem_fuzzy_replace", real_replace)
+    # 等行数改名后 skipped：内容集合对账触发
+    again = run_build(env.backend, ORG, settings=env.settings,
+                      embedder=env.embedder)
+    assert again["status"] == "skipped"
+    assert again["stats"].get("fuzzy_repaired"), (
+        "等行数改名的陈旧（计数/覆盖全等、内容不同）必须触发修复")
+    have_b = {(r["entity_id"], r["kind"], r["text_norm"])
+              for r in env.backend.sem_fuzzy_terms_all(ORG)}
+    assert have_b == _expected_norms()
+
+
+def test_r3_p2_2_persisted_marker_triggers_repair(repair_env) -> None:
+    """R3 P2-2 附加触发面：current build 行持久化的 fuzzy.index_write_failed
+    / vec_skipped 标记作为触发条件（崩溃场景无内存标记——落库标记是唯一
+    线索；即使内容集合恰好一致也应触发一次对账性整替以清面）。"""
+    from knowledge_lattice.core.semantic.build import run_build
+
+    env = repair_env
+    env.add_entity("c.m", "戊概念")
+    env.build(embedder=env.embedder)
+
+    # 人工把 current 行 stats 的 fuzzy.index_write_failed 置 True（模拟崩溃
+    # 前已持久化标记、索引内容却恰好完整的场景）
+    current = env.backend.sem_current_build(ORG)
+    import json as _json
+
+    raw = current["stats_json"]
+    stats = _json.loads(raw) if isinstance(raw, str) else dict(raw)
+    stats.setdefault("fuzzy", {})["index_write_failed"] = True
+    env.backend.sem_update_build_stats(
+        ORG, current["id"], _json.dumps(stats, ensure_ascii=False))
+
+    again = env.build(embedder=env.embedder)
+    assert again["status"] == "skipped"
+    assert again["stats"].get("fuzzy_repaired"), (
+        "持久化 index_write_failed 标记必须触发修复（崩溃场景的落库线索）")
 
 
 def test_p2_1_embedder_none_marks_vec_skipped(backend, tmp_path) -> None:

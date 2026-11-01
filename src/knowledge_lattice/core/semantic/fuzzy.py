@@ -18,7 +18,10 @@ term 面（design §5.8「名称/别名/一句话定义」）：
 
 - name：实体规范名（kind='name'——拼音 + 编辑距离 + 向量三层全用）；
 - alias：全部别名（含 fuzzy_only——本就是模糊层的输入面；拼音 + 编辑距离
-  + 向量）；
+  + 向量）——**唯一例外 `kind='code'`（业务键）不嵌向量**（拉丁键低语义
+  价值、防噪声占位；term 行保留〔拼音/编辑距离面可用〕、向量列预期 NULL，
+  stats.vec_expected 不含它——R3/P3-1 口径：`kind='sync'`〔源系统别名〕
+  **恢复嵌向量**，§5.8「别名向量」面不收窄）；
 - definition：一句话定义首句（kind='definition'——**仅向量层**：拼音/编辑
   距离对长句无意义，不产 pinyin/del 键）。
 """
@@ -127,9 +130,10 @@ def build_fuzzy_terms(
     for eid, ent in entities.items():
         if ent.get("sensitivity") == "restricted":
             continue
-        # (kind, text, embed)：code/sync 类源系统键**不嵌向量**（P2-2/R2——
-        # 拉丁键与业务词无语义关系，真实 embedder 下徒占 top-3 槽位、确定性
-        # embedder 下与 default 向量碰撞制造伪命中；拼音/编辑距离面保留）
+        # (kind, text, embed)：**仅 `kind='code'`（业务键）不嵌向量**（R3/
+        # P3-1——拉丁键低语义价值、防噪声占位；term 行保留拼音/编辑距离面，
+        # 向量列预期 NULL 属设计内、非降级。kind='sync'〔源系统别名〕恢复
+        # 嵌入——§5.8「名称/别名/一句话定义向量」的别名面不收窄）
         candidates: list[tuple[str, str, bool]] = [("name", ent["name"], True)]
         import json
 
@@ -137,7 +141,7 @@ def build_fuzzy_terms(
             if a["entity_id"] != eid:
                 continue
             candidates.append(("alias", a["alias"],
-                               a.get("kind") not in ("code", "sync")))
+                               a.get("kind") != "code"))
         curated = {}
         try:
             curated = json.loads(ent.get("curated_json") or "{}")

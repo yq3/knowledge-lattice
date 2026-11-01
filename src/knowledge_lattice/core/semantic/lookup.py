@@ -75,7 +75,8 @@ def search_entities(
         q_pinyin=pinyin_norm(q) or None,
     )
     # 向量层（m2s-6——TC-SEM-05 第 4 档）：query 嵌入 → sem_fuzzy_terms 近邻；
-    # embedder/settings 缺省（MCP/REST 未注入时）跳层——前三档语义不变
+    # REST/MCP 端点自 m2s-6 R2 起注入 settings/embedder（真实端点生效）；
+    # 调用方缺省（core 直调/测试）时跳层——前三档语义不变
     if embedder is not None and settings is not None:
         try:
             vec = (embedder.embed([q]) or [None])[0]

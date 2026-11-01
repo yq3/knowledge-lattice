@@ -417,10 +417,15 @@ async def list_semantic_entities(
     from knowledge_lattice.core.semantic.lookup import search_entities
 
     try:
-        # P2-2/m2s-6 R2：注入 settings/embedder——via='vec' 向量档在真实端点
-        # 生效（lookup.search_entities 排序链第 4 档；无 embedder 时自然跳层）
-        return search_entities(
-            service.backend, org, q, types=types, top_k=top_k,
+        # P2-2/m2s-6 R2 注入 settings/embedder（via='vec' 向量档）+
+        # **P2-1/R3：to_thread 下放**——vec 档内部 embedder.embed([q]) 为同步
+        # httpx Client（embed_timeout_s=30s），async handler 内直接调用会阻塞
+        # 事件循环（§5.2/NFR-8「模型 HTTP 调用绝不阻塞事件循环」——与端点
+        # 其余语义读 annotate/get_entity 的 to_thread 形态一致）
+        return await asyncio.to_thread(
+            search_entities,
+            service.backend, org, q,
+            types=types, top_k=top_k,
             settings=service.settings,
             embedder=getattr(service, "embedder", None),
         )

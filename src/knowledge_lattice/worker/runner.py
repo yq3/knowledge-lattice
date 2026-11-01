@@ -69,7 +69,9 @@ CLAIMABLE_TASK_TYPES = (
 class WorkerServices:
     """worker 执行所需服务集（backend 必备；其余按任务类型按需）。
 
-    _gate/_embedder 供子进程写入侧探针（inline 形态可不带——探针随 main()）。
+    _gate 供子进程写入侧探针（inline 形态可不带——探针随 main()）；
+    _embedder 供 semantic_build 模糊索引向量生成（P2-1/m2s-6 R2 起 inline
+    形态同样携带——app.py 装配注入）。
     """
 
     backend: object
