@@ -294,6 +294,19 @@ def test_api_embedding_coverage_readonly(_mgmt_env_quiet) -> None:
     assert body["reembed"]["task_id"] == "tsk-cov-reembed2"  # 唯一 reembed 任务
     assert body["reembed"]["done"] == 0, "目标标签零向量 → done=0（非当前标签覆盖率）"
 
+    # 非权限前置：造他组织 dataset（P1-1/R3——org-scoped 端点不得列出）
+    from helpers import seed_dataset, seed_org
+
+    seed_org(conn, "org:gl")
+    seed_dataset(conn, "org:gl", "ds:gl_lib")
+    conn.commit()
+    r = client.get(f"/api/orgs/{ORG}/embedding-coverage", headers=_mgmt_env_quiet["admin"])
+    assert r.status_code == 200
+    body = r.json()
+    scoped_ids = {c["dataset_id"] for c in body["coverage"]}
+    assert "ds:gl_lib" not in scoped_ids, "P1-1：他组织 dataset 不得泄露"
+    assert "ds:vat_lib" in scoped_ids
+
     # 非 org_admin → 403
     r = client.get(
         f"/api/orgs/{ORG}/embedding-coverage", headers=_mgmt_env_quiet["member"],
@@ -358,29 +371,131 @@ def test_api_cancel_reindex_task(_mgmt_env_quiet) -> None:
     assert r.json()["status"] == "failed"
 
 
-def test_api_reindex_rejected_while_pending(_mgmt_env) -> None:
-    """P3-5② 投递面防线：目标文档存在进行中 pending 版本 → reindex 409
-    （切换事务与重置互相破坏；执行体同语义 fail-closed——见 test_wk_rebuild）。"""
-    client, conn = _mgmt_env["client"], _mgmt_env["conn"]
+def test_api_reindex_rejected_while_pending(_mgmt_env_quiet) -> None:
+    """P3-5②/N-2 裁定选 a（R3）：目标文档存在 pending 版本（**含 failed**）
+    → reindex 一律 409——失败 pending 行未清除时 ingest._guard_alive 仍以
+    pending 为当前目标（core 语义不动），放行会使文档被 reset 后判 cancelled
+    （不可搜）。终态断言：文档保持 searchable_full、在用块保留。"""
+    client, conn = _mgmt_env_quiet["client"], _mgmt_env_quiet["conn"]
+
+    def _doc_state():
+        doc = conn.execute(
+            "SELECT active_status, pending_version, pending_status FROM documents"
+            " WHERE id = ?", (_mgmt_env_quiet["doc_id"],),
+        ).fetchone()
+        chunks = conn.execute(
+            "SELECT count(*) FROM chunks WHERE doc_id = ? AND tombstone = 0",
+            (_mgmt_env_quiet["doc_id"],),
+        ).fetchone()[0]
+        return doc, chunks
+
+    # ① pending 解析中 → 409
     conn.execute(
         "UPDATE documents SET pending_version = 2, pending_status = 'parsing'"
-        " WHERE id = ?", (_mgmt_env["doc_id"],),
+        " WHERE id = ?", (_mgmt_env_quiet["doc_id"],),
     )
     conn.commit()
     r = client.post(
-        f"/api/orgs/{ORG}/documents/{_mgmt_env['doc_id']}/reindex",
-        headers=_mgmt_env["admin"],
+        f"/api/orgs/{ORG}/documents/{_mgmt_env_quiet['doc_id']}/reindex",
+        headers=_mgmt_env_quiet["admin"],
     )
     assert r.status_code == 409
     assert "pending" in r.json()["detail"]
-    # pending 终态（failed）后放行
+
+    # ② N-2 (a)：pending failed 同样 409（保守——先处置失败上传/清理 pending
+    # 后重投；放行会 reset+cancelled 把文档推向不可搜）
     conn.execute(
-        "UPDATE documents SET pending_status = 'failed'"
-        " WHERE id = ?", (_mgmt_env["doc_id"],),
+        "UPDATE documents SET pending_status = 'failed',"
+        " pending_error = 'x' WHERE id = ?", (_mgmt_env_quiet["doc_id"],),
     )
     conn.commit()
     r = client.post(
-        f"/api/orgs/{ORG}/documents/{_mgmt_env['doc_id']}/reindex",
-        headers=_mgmt_env["admin"],
+        f"/api/orgs/{ORG}/documents/{_mgmt_env_quiet['doc_id']}/reindex",
+        headers=_mgmt_env_quiet["admin"],
     )
-    assert r.status_code == 202
+    assert r.status_code == 409, "pending failed 一律拒绝（N-2 选 a）"
+    assert "pending" in r.json()["detail"]
+
+    # 终态断言（false green 根除）：文档不可搜窗口不存在
+    doc, chunks = _doc_state()
+    assert doc[0] == "searchable_full", "文档保持可搜（拒绝路径零触碰）"
+    assert chunks >= 1, "在用块保留"
+    # 任务零投递（409 不产生任务行）
+    n = conn.execute(
+        "SELECT count(*) FROM tasks WHERE type = 'reindex'"
+        " AND doc_id = ?", (_mgmt_env_quiet["doc_id"],),
+    ).fetchone()[0]
+    assert n == 0
+
+
+def test_embedding_coverage_org_scoped_no_cross_org_leak(matrix) -> None:
+    """P1-1/R3：org-scoped coverage 只列**本组织** datasets——R2 全库化把外层
+    WHERE ds.org_id 误删后，其他组织的 dataset_id/name 以 total=0 行泄露
+    （跨组织元数据泄露）。全库口径（org_id=None）不受影响（gate 内层过滤
+    独立）。双后端。"""
+    backend = matrix.make_backend()
+    # org:gl 造 dataset+doc/chunk（隔离对照——无向量）
+    from helpers import seed_dataset, seed_document
+    from helpers import insert_chunk
+
+    seed_dataset(matrix, "org:gl", "ds:gl_lib")
+    seed_document(
+        matrix, "d_gl_cov", org_id="org:gl", dataset_id="ds:gl_lib",
+        owner_user_id="u_gl",
+    )
+    insert_chunk(
+        matrix, doc_id="d_gl_cov", seq=1, version=1, content_seg="gl",
+        title_seg="gl",
+    )
+    matrix.execute(
+        "UPDATE documents SET active_version = 1 WHERE id = 'd_gl_cov'"
+    )
+
+    label = "fake-embed:8"
+    scoped = backend.embedding_coverage(ORG, label)
+    ids = {c["dataset_id"] for c in scoped}
+    assert "ds:gl_lib" not in ids, "org-scoped 不得列出他组织 dataset（P1-1）"
+    assert "ds:vat_lib" in ids
+
+    full = backend.embedding_coverage(None, label)
+    full_ids = {c["dataset_id"] for c in full}
+    assert "ds:gl_lib" in full_ids, "全库口径包含全部组织（gate 数据源不动）"
+    gl_row = next(c for c in full if c["dataset_id"] == "ds:gl_lib")
+    assert gl_row["total"] == 1 and gl_row["done"] == 0
+
+
+def test_api_reembed_sysadmin_without_membership(_mgmt_env_quiet) -> None:
+    """R3（R2 Committer §4 测试缺口）：sysadmin 无本组织成员关系仍可触发
+    reembed——系统级动作不经 org_scoped 成员校验（check_path_org 只校路径/
+    头一致）；N-1 裁定 sysadmin 专属的越权面收口形态实证。"""
+    client, conn = _mgmt_env_quiet["client"], _mgmt_env_quiet["conn"]
+    # 前置：sysadmin 无 org:tax 成员关系（app_env 默认有——删行构造）
+    conn.execute(
+        "DELETE FROM user_org_memberships WHERE user_id = 'sysadmin'"
+        " AND org_id = ?", (ORG,),
+    )
+    assert conn.execute("SELECT count(*) FROM users WHERE id='sysadmin'"
+                        " AND is_system_admin = 1").fetchone()[0] == 1
+    conn.commit()
+
+    r = client.post(
+        f"/api/orgs/{ORG}/documents/{_mgmt_env_quiet['doc_id']}/reindex",
+        headers={"Authorization": f"Bearer {_mgmt_env_quiet['static']['sysadmin']}"},
+        params={"embed_model": "new-model:1536"},
+    )
+    assert r.status_code == 202, r.text
+    task_id = r.json()["task_id"]
+
+    import time as _time
+
+    deadline = _time.monotonic() + 15.0
+    row = conn.execute(
+        "SELECT status FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    while row[0] not in ("done", "failed") and _time.monotonic() < deadline:
+        _time.sleep(0.05)
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+    assert row[0] == "done", "无 membership 的 sysadmin 触发全库迁移执行成功"
+    assert _mgmt_env_quiet["embedder"].model_label == "new-model:1536"

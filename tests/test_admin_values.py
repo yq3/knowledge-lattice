@@ -5,7 +5,8 @@
 - **重新启用**（PATCH status=active——D19 恢复路径）：文档含已停用取值时
   PATCH/覆盖上传同锁（v1.6.3「维度写锁」口径），重新启用后**解锁**——
   locked_docs 判定面自动联动（disable 升 / enable 回落）；retired 维度
-  enable 409（与 create 对称——R2 P3-4）；幂等 applied=False（按 rowcount）；
+  enable 409（store R2 P3-4 + **REST 面映射 R3 P3-2**——与 create 对称）；
+  幂等 applied=False（按 rowcount）；
 - dry_run 仅 disabled 支持；维度退役二次确认（T20）兼容。
 
 store 级双后端参数化（[sqlite]/[pg]）；REST 端点 sqlite（app_env 惯例）。
@@ -272,3 +273,32 @@ def test_enable_idempotent_applied_false(matrix) -> None:
         "SELECT count(*) FROM audit_outbox WHERE event_type ="
         " 'dimension.value_enable'",
     ).fetchone()[0] == 1, "幂等路径零新审计"
+
+
+def test_api_enable_on_retired_dimension_409(_value_env) -> None:
+    """P3-2/R3：retired 维度上 enable 的 REST 面 409（与 create 对称——修复前
+    store ValueError 未映射致 500）。链路：retire → disable 200 → enable 409。"""
+    client = _value_env["client"]
+    dim = _value_env["dim"]
+
+    # 前置：维度退役（二次确认语义的直达形态——SQL 造数，retire 端点已由
+    # m2-3 用例覆盖）
+    _value_env["conn"].execute(
+        "UPDATE dimensions SET status = 'retired' WHERE id = ?", (dim,),
+    )
+    _value_env["conn"].commit()
+
+    # disable 在 retired 维度上：store 幂等零行（已 disabled 前提先造）
+    r = client.patch(
+        f"/api/orgs/{ORG}/dimensions/{dim}/values/{_value_env['vid_cn']}",
+        headers=_value_env["admin"], json={"status": "disabled"},
+    )
+    assert r.status_code in (200, 404), r.text
+
+    # enable → 409（retired 维度取值不启用）
+    r = client.patch(
+        f"/api/orgs/{ORG}/dimensions/{dim}/values/{_value_env['vid_cn']}",
+        headers=_value_env["admin"], json={"status": "active"},
+    )
+    assert r.status_code == 409, r.text
+    assert "retired" in r.json()["detail"]

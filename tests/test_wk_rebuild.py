@@ -443,10 +443,11 @@ def test_reembed_full_library_multi_org(matrix, tmp_path) -> None:
     assert {"org:tax", "org:gl"} <= builds, "semantic_build 逐组织全库投递"
 
 
-def test_reembed_switch_blocked_until_full_library_covered(matrix, tmp_path) -> None:
-    """覆盖率门=全库：org:tax 满、org:gl 仍有缺块（并发写入造数）→ 任务
-    未达成（再扫收敛）——切换不得发生。收敛轮上限内通过再扫补齐（全库
-    扫描天然补 org:gl 缺块——本用例验证门按全库判定：单 org 100% 不放行）。"""
+def test_reembed_full_scan_fills_other_org_gaps(matrix, tmp_path) -> None:
+    """正路径（P3-4/R3 改名——原名 switch_blocked 无负向判别易误读）：org:gl
+    缺块（无旧标签向量的在用块）被**全库扫描**补齐——单 org 级实现下 org:gl
+    缺块会残留；全库实现天然补齐后切换。负向判别（覆盖率门未达成不切换）
+    见 test_reembed_no_switch_until_full_library_converged。"""
     env = _RebuildEnv(matrix, tmp_path)
     from helpers import insert_chunk, seed_dataset, seed_document
 
@@ -472,6 +473,44 @@ def test_reembed_switch_blocked_until_full_library_covered(matrix, tmp_path) -> 
         "SELECT rid FROM chunks WHERE doc_id = 'd_gl_1'"
     ).fetchone()[0]
     assert env.cv_labels(gl_rid) == {NEW_LABEL}, "org:gl 缺块被全库扫描补齐"
+
+
+def test_reembed_no_switch_until_full_library_converged(
+    matrix, tmp_path, monkeypatch
+) -> None:
+    """P3-4/R3 **负向判别**：全库覆盖率门未达成 → 任务 failed 不切换——
+    monkeypatch embedding_coverage 恒报 done<total（模拟「并发摄取持续超越/
+    永久缺块」形态），执行体 3 轮收敛上限内不达标 → 失败收口；切换/清理/
+    联动全部不发生（settings 保持旧标签、旧标签向量保留）。"""
+    env = _RebuildEnv(matrix, tmp_path)
+    task_id = env.enqueue_reembed()
+
+    real_coverage = env.backend.embedding_coverage
+
+    def stuck_coverage(org_id, label):
+        rows = real_coverage(org_id, label)
+        # 恒缺一块（done-1——收敛判定永 false）
+        return [dict(r, done=max(r["done"] - 1, 0)) for r in rows if r["total"]]
+
+    monkeypatch.setattr(env.backend, "embedding_coverage", stuck_coverage)
+
+    from knowledge_lattice.worker.rebuild import run_reembed_task
+
+    run_reembed_task(env.services, task_id)
+    task = env.backend.get_task(task_id)
+    assert task["status"] == "failed", "覆盖率门未达成——任务失败留重试"
+    assert "未收敛" in (task["error"] or "")
+
+    # 切换/清理/联动全部未发生（写入阶段①合法完成——蓝绿并行写入是门的前置，
+    # 门拦的是「切换」：新标签行存在、**旧标签行保留**（未清理））
+    assert env.services.settings.embed_model_label == env.old_label, "不得切换"
+    assert env.embedder.model_label == env.old_label
+    for rid in env.rids:
+        assert env.old_label in env.cv_labels(rid), "清理未发生（旧向量保留）"
+    builds = env.db.execute(
+        "SELECT count(*) FROM tasks WHERE type = 'semantic_build'"
+    ).fetchone()[0]
+    assert builds == 0, "失败路径不投递 semantic_build"
 
 
 # ============ R2 P2-1：semantic_build 强制重跑实际执行 ============
@@ -591,15 +630,17 @@ def test_reindex_cancelled_before_reset(reindex_env) -> None:
     assert rows >= 1, "在用块保留"
 
 
-def test_reindex_rejected_while_pending_version(reindex_env) -> None:
-    """P3-5②：文档存在 pending 覆盖上传在途时 reindex（target=active）→
-    执行体 fail-closed 拒绝（任务 failed 带原因、文档不动）。API 面 409 见
-    test_admin_manage（投递面同语义）。"""
+@pytest.mark.parametrize("pending_status", ["parsing", "failed"])
+def test_reindex_rejected_while_pending_version(reindex_env, pending_status) -> None:
+    """P3-5②/N-2 裁定选 a（R3）：文档存在 pending 版本（**含 failed**——
+    ingest._guard_alive 仍以 pending 为当前目标，放行会 reset 后判 cancelled）
+    时 reindex（target=active）→ 执行体 fail-closed 拒绝（任务 failed 带原因、
+    文档不动）。API 面 409 同语义（test_admin_manage——双防线）。"""
     env = reindex_env
     # 开 pending v2（覆盖上传在途形态——active v1 在用）
     env.db.execute(
-        "UPDATE documents SET pending_version = 2, pending_status = 'parsing'"
-        " WHERE id = ?", (env.doc_id,),
+        "UPDATE documents SET pending_version = 2, pending_status = ?"
+        " WHERE id = ?", (pending_status, env.doc_id),
     )
     env.db.commit()
     task_id = env.backend.create_task(
@@ -611,6 +652,13 @@ def test_reindex_rejected_while_pending_version(reindex_env) -> None:
     run_reindex_task(env.services, task_id)
     task = env.backend.get_task(task_id)
     assert task["status"] == "failed"
-    assert "pending" in (task["error"] or "")
+    assert "pending" in (task["error"] or ""), (
+        f"拒绝原因指明 pending（{pending_status} 形态）: {task['error']}"
+    )
     doc = env.backend.get_document(env.doc_id)
     assert doc["active_status"] == "searchable_full", "文档不动（active 块保留）"
+    rows = env.db.execute(
+        "SELECT count(*) FROM chunks WHERE doc_id = ? AND tombstone = 0",
+        (env.doc_id,),
+    ).fetchone()[0]
+    assert rows >= 1, "在用块保留（不可搜窗口根除）"

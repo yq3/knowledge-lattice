@@ -55,7 +55,7 @@ from knowledge_lattice.store.backend import (
     MembershipExpiredError,
     MembershipLastAdminError,
 )
-from knowledge_lattice.store.taskclock import TS_FMT, utc_now_ts
+from knowledge_lattice.store.taskclock import utc_now_ts
 
 from .upload import get_auth, get_service, org_scoped
 
@@ -191,9 +191,14 @@ async def patch_dimension_value(
         audit = (EVENT_DIMENSION_VALUE_ENABLE, json.dumps(
             {"org_id": org, "dimension_id": dim_id, "value_id": value_id,
              "actor": auth.user_id}, ensure_ascii=False))
-        result = service.backend.enable_dimension_value(
-            org, dim_id, value_id, audit=audit,
-        )
+        try:
+            result = service.backend.enable_dimension_value(
+                org, dim_id, value_id, audit=audit,
+            )
+        except ValueError as exc:
+            # retired 维度 409（与 create 分支对称——R3 P3-2：REST 面映射
+            # 缺失曾致 500）
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     else:
         raise HTTPException(
             status_code=400,
@@ -536,12 +541,17 @@ async def reindex_document(
         payload = json.dumps({"org": resolved})
         target_version = doc["active_version"]
         pending_v = doc.get("pending_version")
-        if pending_v is not None and doc.get("pending_status") != "failed":
+        if pending_v is not None:
+            # N-2 裁定选 a（2026-11-01，R3）：pending 版本存在（**含 failed**）
+            # 一律拒绝——失败 pending 行未清除时 ingest._guard_alive 仍以
+            # pending 为当前目标（core 语义不动），放行会使文档被 reset 后判
+            # cancelled（不可搜）。先处置失败上传/清理 pending 后重投。
             raise HTTPException(
                 status_code=409,
-                detail=f"document {doc_id!r} 已有进行中的 pending 版本"
+                detail=f"document {doc_id!r} 存在 pending 版本"
                 f"（v{pending_v}，{doc.get('pending_status')}）——pending 期间"
-                "禁止 reindex（待覆盖上传终态后重投，P3-5）",
+                "禁止 reindex（含失败版本——先处置失败上传/清理 pending 后重投，"
+                "N-2 裁定 a）",
             )
     task_id = service.backend.create_task(
         doc_id, task_type=task_type, target_version=target_version, payload=payload,

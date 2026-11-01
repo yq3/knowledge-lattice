@@ -3603,6 +3603,14 @@ class PgBackend:
         conn = self._conn
         conn.execute("BEGIN")
         try:
+            # R3 P3-1：事务级咨询锁串行化同组织的守卫判定（只锁目标行时
+            # T1 锁 A/T2 锁 B 互不冲突，READ COMMITTED 下双方 count=2 均放行
+            # → 0 admin；曾试「全 admin 行 FOR UPDATE」——并发 UPDATE 提交后
+            # 等待方 EPQ 重评抛 tuple concurrently updated，咨询锁无此竞态。
+            # hashtext 键冲突=跨组织偶发串行化，无害）
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%(org)s))", {"org": org_id}
+            )
             row = conn.execute(
                 "SELECT role,"
                 " (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) AS valid,"
@@ -3666,6 +3674,10 @@ class PgBackend:
         conn = self._conn
         conn.execute("BEGIN")
         try:
+            # R3 P3-1：事务级咨询锁（与 update 同款——同组织守卫判定串行化）
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%(org)s))", {"org": org_id}
+            )
             row = conn.execute(
                 "SELECT role, (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)"
                 " FROM user_org_memberships WHERE user_id = %(uid)s"
@@ -3801,8 +3813,10 @@ class PgBackend:
 
     def embedding_coverage(self, org_id: str | None, embed_model: str) -> list[dict]:
         """各知识库嵌入覆盖率（TC-EMB-06 只读面板——RUNBOOK §1 闭合口径；
-        org_id=None=全库——R2 P2-2 全库覆盖率门数据源）。"""
+        org_id=None=全库——R2 P2-2 全库覆盖率门数据源；
+        P1-1/R3：org-scoped 外层动态 ds 过滤——只列本组织 datasets）。"""
         org_filter = " AND d.org_id = %(org)s" if org_id is not None else ""
+        ds_filter = " WHERE ds.org_id = %(org)s" if org_id is not None else ""
         rows = self._conn.execute(
             "SELECT ds.id, ds.name,"
             " (SELECT count(*) FROM chunks c"
@@ -3812,7 +3826,7 @@ class PgBackend:
             "   JOIN documents d ON d.id = c.doc_id AND d.active_version = c.version"
             "   JOIN chunk_vectors cv ON cv.rid = c.rid AND cv.embed_model = %(model)s"
             f"   WHERE d.dataset_id = ds.id AND c.tombstone = 0{org_filter})"
-            " FROM datasets ds ORDER BY ds.id",
+            f" FROM datasets ds{ds_filter} ORDER BY ds.id",
             {"org": org_id, "model": embed_model},
         ).fetchall()
         return [

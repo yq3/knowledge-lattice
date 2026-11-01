@@ -2532,8 +2532,13 @@ class SqliteBackend:
     def embedding_coverage(self, org_id: str | None, embed_model: str) -> list[dict]:
         """各知识库嵌入覆盖率（TC-EMB-06 只读面板——RUNBOOK §1 闭合口径：
         分子/分母都限在用块 tombstone=0 且 version=active_version；
-        org_id=None=全库——R2 P2-2 全库覆盖率门数据源）。"""
+        org_id=None=全库——R2 P2-2 全库覆盖率门数据源）。
+
+        P1-1/R3：org-scoped 调用外层**动态 ds 过滤**（只列本组织 datasets——
+        他组织 dataset_id/name 以 total=0 行返回=跨组织元数据泄露；全库口径
+        无外层过滤，gate 内层 org_filter 独立不受影响）。"""
         org_filter = " AND d.org_id = :org" if org_id is not None else ""
+        ds_filter = " WHERE ds.org_id = :org" if org_id is not None else ""
         rows = self._conn.execute(
             "SELECT ds.id, ds.name,"
             " (SELECT count(*) FROM chunks c"
@@ -2543,7 +2548,7 @@ class SqliteBackend:
             "   JOIN documents d ON d.id = c.doc_id AND d.active_version = c.version"
             "   JOIN chunk_vectors cv ON cv.rid = c.rid AND cv.embed_model = :model"
             f"   WHERE d.dataset_id = ds.id AND c.tombstone = 0{org_filter})"
-            " FROM datasets ds ORDER BY ds.id",
+            f" FROM datasets ds{ds_filter} ORDER BY ds.id",
             {"org": org_id, "model": embed_model},
         ).fetchall()
         return [

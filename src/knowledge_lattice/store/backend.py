@@ -39,9 +39,12 @@ class MembershipExpiredError(Exception):
 
 class MembershipLastAdminError(Exception):
     """最后一名 active org_admin 的终结性操作被拒（m2-6 A3 → 409 防自锁；
-    R2 P3-3：守卫下沉 store 与写操作**同一事务**——TOCTOU 根除〔并发双 admin
-    降级由事务内 count 判定拦截〕，且 pg datetime 比较全部落在 SQL 侧
-    〔CURRENT_TIMESTAMP 同型比较——Python 侧 datetime>str 的 500 根除〕）。"""
+    R2 P3-3/R3 P3-1：守卫下沉 store 与写操作**同一事务**——pg 侧事务开头
+    pg_advisory_xact_lock(org)（并发双事务互降串行化，跨行 TOCTOU 消除；
+    曾试全 admin 行 FOR UPDATE——并发提交后 EPQ 重评抛 tuple concurrently
+    updated，咨询锁无此竞态）、datetime 比较全部落在 SQL 侧
+    〔CURRENT_TIMESTAMP 同型比较——Python 侧 datetime>str 的 500 根除〕；
+    sqlite 侧 BEGIN IMMEDIATE 全局单写者天然串行）。"""
 
 
 class DimensionValueExistsError(Exception):
@@ -600,10 +603,11 @@ class AdminBackend(Protocol):
         归一（B③ 直调面收口）。软停用语义 = expires_at 置过去/指定时点（权限
         计算既有过滤——零新列，择型申报）。
 
-        **最后管理员守卫（R2 P3-3——与更新同一事务）**：目标当前是 active
-        org_admin 且本次操作后其 admin 身份终结（role 降级 / expires 过去）
-        而组织再无其他 active org_admin → MembershipLastAdminError（409 防自锁
-        ——TOCTOU 根除）。audit 同事务。返回更新后行。"""
+        **最后管理员守卫（R2 P3-3 + R3 P3-1——与更新同一事务）**：目标当前
+        是 active org_admin 且本次操作后其 admin 身份终结（role 降级 /
+        expires 过去）而组织再无其他 active org_admin →
+        MembershipLastAdminError（409 防自锁——pg 事务级咨询锁串行化跨行
+        并发、sqlite 单写者串行）。audit 同事务。返回更新后行。"""
 
     def delete_membership(
         self, org_id: str, user_id: str, *,

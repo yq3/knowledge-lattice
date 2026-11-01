@@ -200,9 +200,21 @@ def run_reembed_task(
                 done, total,
             )
         if not converged:
-            raise RuntimeError(
-                "reembed 全库覆盖率未收敛（并发摄取持续超越，任务重试收敛）"
+            # R3 P3-4：未收敛 fail-closed 收口（任务 failed 留重试——不上抛：
+            # 直调/runner 两路径语义一致；切换/清理/联动均未发生）
+            backend.update_task(
+                task_id, status="failed",
+                error="reembed 全库覆盖率未收敛（并发摄取持续超越——任务"
+                "重试收敛；切换与清理未发生）",
             )
+            logger.error(
+                "reembed full-library coverage not converged: org=%s label=%s",
+                org_id, new_label,
+            )
+            return {
+                "task_id": task_id, "status": "failed", "org": org_id,
+                "new_label": new_label, "converged": False,
+            }
         if not alive():
             raise _LostLease(f"reembed aborted before switch: {task_id}")
 
@@ -321,18 +333,16 @@ def run_reindex_task(
         )
         return {"task_id": task_id, "status": "failed"}
     pending_v = doc.get("pending_version")
-    if (
-        version == doc.get("active_version")
-        and pending_v is not None
-        and doc.get("pending_status") != "failed"
-    ):
-        # P3-5②：pending 覆盖上传在途——重置 active 块会与切换事务互相破坏
-        #（reset 后 _guard_alive 判 cancelled、文档停在 parsing 不可搜）
+    if version == doc.get("active_version") and pending_v is not None:
+        # P3-5②/N-2 裁定选 a（R3）：pending 版本存在（**含 failed**）一律拒绝
+        # ——失败 pending 行未清除时 ingest._guard_alive 仍以 pending 为当前
+        # 目标（core 语义不动），重置 active 块会把文档推向 parsing 不可搜。
         backend.update_task(
             task_id, status="failed",
             error=(
-                f"document {doc_id!r} has in-flight pending v{pending_v}"
-                "——pending 期间禁止 reindex（409 语义；待覆盖上传终态后重投）"
+                f"document {doc_id!r} has pending version v{pending_v}"
+                f" ({doc.get('pending_status')})——pending 期间禁止 reindex"
+                "（含失败版本——先处置失败上传/清理 pending 后重投；N-2 裁定 a）"
             ),
         )
         return {"task_id": task_id, "status": "failed"}

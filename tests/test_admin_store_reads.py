@@ -189,8 +189,10 @@ def test_read_org_audit_sink_filters_and_orders(matrix) -> None:
 
 
 def test_audit_chain_error_codes() -> None:
-    """B⑤：AuditChainError 携带分类机器码（multi_heads/hash_mismatch/fork/
-    cycle/orphan_rows）——消费面按 code 分级处置不解析消息文本。"""
+    """B⑤：AuditChainError 携带分类机器码——**断言 3 码**
+    （multi_heads/hash_mismatch/fork）；cycle/orphan_rows 为防御分支（在
+    「append 前逐行 hash 校验」与链头判定语义下不可静态构造——见下方收窄
+    注记，R2 P3-6③/R3 P3-5 如实声明），消费面按 code 分级处置不解析消息文本。"""
     from knowledge_lattice.store.audit_chain import (
         AuditChainError,
         compute_row_hash,

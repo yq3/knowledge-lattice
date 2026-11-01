@@ -425,3 +425,67 @@ def test_last_admin_guard_store_level(matrix) -> None:
     seed_membership(matrix, "adm_old", GUARD_ORG, role="org_admin",
                     expires_at=PAST_TS)
     assert backend.delete_membership(GUARD_ORG, "adm_old")
+
+
+# ============ R3 P3-1：pg 守卫跨行并发（互降双 admin 恰一侧成功） ============
+
+
+def test_last_admin_guard_concurrent_demote_pg(pg_db):
+    """R3 P3-1：两连接并发互降两名 active org_admin——全 admin 行 FOR UPDATE
+    串行化：恰一侧成功、另一侧 MembershipLastAdminError，终态恒 1 admin
+    （修复前 READ COMMITTED 双方 count=2 均放行 → 0 admin）。
+
+    pg 专用（sqlite BEGIN IMMEDIATE 单写者天然串行——无此并发形态；
+    DSN 未设 skip，门禁 skip=失败）。"""
+    import threading
+
+    import psycopg
+
+    from knowledge_lattice.store.backend import MembershipLastAdminError
+    from knowledge_lattice.store.postgres import setup_connection
+    from knowledge_lattice.store.postgres.backend import PgBackend
+
+    from helpers import seed_membership, seed_org, seed_user
+
+    GUARD = "org:guard2"
+    seed_org(pg_db, GUARD, "并发守卫组织")
+    for uid in ("adm_a", "adm_b"):
+        seed_user(pg_db, uid)
+        seed_membership(pg_db, uid, GUARD, role="org_admin")
+
+    # 两连接**串行** setup（setup_connection 的 CREATE OR REPLACE FUNCTION
+    # 并发执行会撞 pg catalog 的 tuple concurrently updated——与本守卫无关），
+    # 业务调用才并发
+    conns = []
+    for _ in range(2):
+        raw = psycopg.connect(pg_db.dsn, autocommit=True)
+        raw.execute(f'SET search_path TO "{pg_db.schema}", public')
+        setup_connection(raw)
+        conns.append(raw)
+
+    results: dict[str, object] = {}
+
+    def _demote(name: str, raw, target: str) -> None:
+        backend = PgBackend(raw)
+        try:
+            backend.update_membership(GUARD, target, role="member")
+            results[name] = "ok"
+        except MembershipLastAdminError:
+            results[name] = "blocked"
+
+    t1 = threading.Thread(target=_demote, args=("t1", conns[0], "adm_a"))
+    t2 = threading.Thread(target=_demote, args=("t2", conns[1], "adm_b"))
+    t1.start(); t2.start(); t1.join(); t2.join()
+    for raw in conns:
+        raw.close()
+
+    assert sorted(results.values()) == ["blocked", "ok"], (
+        f"互降恰一侧成功: {results}"
+    )
+    admins = pg_db.execute(
+        "SELECT count(*) FROM user_org_memberships"
+        " WHERE org_id = ? AND role = 'org_admin'"
+        "   AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)",
+        (GUARD,),
+    ).fetchone()[0]
+    assert admins == 1, "终态恒 1 admin（0 admin 自锁窗口根除）"
