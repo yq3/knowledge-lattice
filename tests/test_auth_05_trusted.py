@@ -80,7 +80,7 @@ def _store(backend):
 _DEFAULT = object()  # sentinel——区分「未传」与显式 None（registry=None 须直传）
 
 
-def _call(backend, settings, *, token="svc-secret-1", obo="u_obo",
+def _call(backend, *, token="svc-secret-1", obo="u_obo",
           assertion_sub="u_obo", org=ORG, sso=None, registry=_DEFAULT,
           limiter=None, with_assertion=True):
     verifier = sso or _verifier()
@@ -122,7 +122,7 @@ def test_trusted_all_constraints_pass(backend, tmp_path) -> None:
     """① 白名单内 + allowed_orgs 匹配 + 在场证据一致 → via=trusted、按声明
     用户计权（user_id=X-On-Behalf-Of）、act=service_id、双身份审计 accepted。"""
     seed_user(backend, "u_obo")
-    ctx = _call(backend, _settings(tmp_path))
+    ctx = _call(backend)
     assert ctx.user_id == "u_obo", "按声明用户计权"
     assert ctx.act == "svc-ok", "服务身份进 AuthContext（审计/凭证三要素同源）"
     assert ctx.via == "trusted"
@@ -138,7 +138,7 @@ def test_trusted_assertion_aud_not_enforced(backend, tmp_path) -> None:
     """在场证据是身份断言（用户签给 agent client 的 id_token）——不做本服务
     aud 校验（择型：断言非访问 token；exp 验签照常）。"""
     seed_user(backend, "u_obo")
-    ctx = _call(backend, _settings(tmp_path))  # assertion aud=("agent-client",)
+    ctx = _call(backend)  # assertion aud=("agent-client",)
     assert ctx.user_id == "u_obo"
 
 
@@ -149,7 +149,7 @@ def test_trusted_org_out_of_allowed_rejected(backend, tmp_path) -> None:
     """② org 越界（请求 org 不在条目 allowed_orgs）→ 403 + refused 审计。"""
     seed_user(backend, "u_obo")
     try:
-        _call(backend, _settings(tmp_path), org="org:other")
+        _call(backend, org="org:other")
         raise AssertionError("org 越界应拒绝")
     except AuthError as exc:
         assert exc.code == 403
@@ -164,7 +164,7 @@ def test_trusted_subject_mismatch_rejected(backend, tmp_path) -> None:
     seed_user(backend, "u_obo")
     seed_user(backend, "u_victim")
     try:
-        _call(backend, _settings(tmp_path), obo="u_victim",
+        _call(backend, obo="u_victim",
               assertion_sub="u_obo")  # 服务只持 u_obo 的断言，却声明 u_victim
         raise AssertionError("sub 不符应拒绝（冒充）")
     except AuthError as exc:
@@ -178,7 +178,7 @@ def test_trusted_unknown_service_rejected(backend, tmp_path) -> None:
     """④ 白名单外服务凭证 → 401 + refused 审计。"""
     seed_user(backend, "u_obo")
     try:
-        _call(backend, _settings(tmp_path), token="rogue-service-token")
+        _call(backend, token="rogue-service-token")
         raise AssertionError("白名单外应拒绝")
     except AuthError as exc:
         assert exc.code == 401
@@ -191,12 +191,12 @@ def test_trusted_no_whitelist_configured_rejected(backend, tmp_path) -> None:
     """未配置白名单（registry 空/None）→ 可信子系统整体关闭（fail-closed）。"""
     seed_user(backend, "u_obo")
     try:
-        _call(backend, _settings(tmp_path), registry=TrustedServiceRegistry.from_json("[]"))
+        _call(backend, registry=TrustedServiceRegistry.from_json("[]"))
         raise AssertionError("空白名单应拒绝")
     except AuthError as exc:
         assert exc.code == 401
     try:
-        _call(backend, _settings(tmp_path), registry=None)
+        _call(backend, registry=None)
         raise AssertionError("registry=None 应拒绝")
     except AuthError:
         pass
@@ -206,7 +206,7 @@ def test_trusted_missing_user_assertion_rejected(backend, tmp_path) -> None:
     """在场证据缺失 → 拒绝（约束②——防服务凭证单凭白名单冒充离线用户）。"""
     seed_user(backend, "u_obo")
     try:
-        _call(backend, _settings(tmp_path), with_assertion=False)
+        _call(backend, with_assertion=False)
         raise AssertionError("缺在场证据应拒绝")
     except AuthError as exc:
         assert exc.code == 401
@@ -233,7 +233,7 @@ def test_trusted_invalid_user_assertion_rejected(backend, tmp_path) -> None:
 def test_trusted_unknown_or_disabled_user_rejected(backend, tmp_path) -> None:
     """声明用户未建档（离线用户从未 SSO 登录）或已禁用 → 拒绝 + refused。"""
     try:  # 未建档：在场证据虽真（IdP 证明其身份），库内无账号不可计权
-        _call(backend, _settings(tmp_path), obo="u_ghost",
+        _call(backend, obo="u_ghost",
               assertion_sub="u_ghost")
         raise AssertionError("未建档用户应拒绝")
     except AuthError as exc:
@@ -244,7 +244,7 @@ def test_trusted_unknown_or_disabled_user_rejected(backend, tmp_path) -> None:
         "UPDATE users SET disabled_at = CURRENT_TIMESTAMP WHERE id = ?", ("u_dis",)
     )
     try:
-        _call(backend, _settings(tmp_path), obo="u_dis", assertion_sub="u_dis")
+        _call(backend, obo="u_dis", assertion_sub="u_dis")
         raise AssertionError("禁用用户应拒绝")
     except AuthError as exc:
         assert exc.code == 401
@@ -256,11 +256,11 @@ def test_trusted_rate_limited(backend, tmp_path) -> None:
     seed_user(backend, "u_obo")
     limiter = ServiceRateLimiter()
     for _ in range(2):
-        ctx = _call(backend, _settings(tmp_path), token="svc-secret-2",
+        ctx = _call(backend, token="svc-secret-2",
                     limiter=limiter)
         assert ctx.act == "svc-lim"
     try:
-        _call(backend, _settings(tmp_path), token="svc-secret-2", limiter=limiter)
+        _call(backend, token="svc-secret-2", limiter=limiter)
         raise AssertionError("超限流应 429")
     except AuthError as exc:
         assert exc.code == 429
@@ -268,12 +268,12 @@ def test_trusted_rate_limited(backend, tmp_path) -> None:
     # 被拒不占配额、不重置窗口：第 4 次仍 429（Tester P3-3 断言强化——
     # 「拒绝后窗口不重置」——若被拒请求计数/重置窗口，此处将放行）
     try:
-        _call(backend, _settings(tmp_path), token="svc-secret-2", limiter=limiter)
+        _call(backend, token="svc-secret-2", limiter=limiter)
         raise AssertionError("窗口内第 4 次仍应 429")
     except AuthError as exc:
         assert exc.code == 429
     # 独立服务不共用配额（svc-ok 不受 svc-lim 窗口影响）
-    ctx = _call(backend, _settings(tmp_path), limiter=limiter)
+    ctx = _call(backend, limiter=limiter)
     assert ctx.act == "svc-ok"
 
 
@@ -281,7 +281,7 @@ def test_trusted_missing_org_context_400(backend, tmp_path) -> None:
     """org 上下文缺失（无 X-Org-Id）→ 400（D18 无隐式默认——OrgContextError）。"""
     seed_user(backend, "u_obo")
     try:
-        _call(backend, _settings(tmp_path), org=None)
+        _call(backend, org=None)
         raise AssertionError("org 缺失应 400")
     except OrgContextError:
         pass
@@ -291,7 +291,7 @@ def test_trusted_missing_on_behalf_of_rejected(backend, tmp_path) -> None:
     """X-On-Behalf-Of 头缺失（域函数独立调用形态）→ 401（协议三件套不全）。"""
     seed_user(backend, "u_obo")
     try:
-        _call(backend, _settings(tmp_path), obo=None)
+        _call(backend, obo=None)
         raise AssertionError("缺 X-On-Behalf-Of 应拒绝")
     except AuthError as exc:
         assert exc.code == 401

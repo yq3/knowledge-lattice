@@ -44,6 +44,13 @@ EVENT_SEMANTIC_YAML_MERGE = "semantic.yaml_merge"
 EVENT_GRANTS_REPLACE = "grants.replace"
 EVENT_DIMENSION_VALUE_DISABLE = "dimension.value_disable"
 EVENT_DIMENSION_RETIRE = "dimension.retire"
+# ---- 成员关系写路径（m2-6 A3——m2-4 N-1 用户裁定选 a：JIT 后 API 面开通闭环） ----
+EVENT_MEMBER_ADD = "member.add"            # 加组织（POST /members）
+EVENT_MEMBER_UPDATE = "member.update"      # 角色变更/软停用/续期（PATCH）
+EVENT_MEMBER_REMOVE = "member.remove"      # 移出组织（DELETE——级联清授权）
+# ---- 维度取值写路径（m2-6 A4——values CRUD + D19 重新启用恢复路径） ----
+EVENT_DIMENSION_VALUE_CREATE = "dimension.value_create"  # 新增取值（POST values）
+EVENT_DIMENSION_VALUE_ENABLE = "dimension.value_enable"   # 重新启用（D19 解锁路径）
 
 # ---- 认证事件（m2-4 M2.2 生产化认证段——TC-AUTH-03/04/05/T13） ----
 
@@ -76,6 +83,11 @@ __all__ = [
     "EVENT_GRANTS_REPLACE",
     "EVENT_DIMENSION_VALUE_DISABLE",
     "EVENT_DIMENSION_RETIRE",
+    "EVENT_MEMBER_ADD",
+    "EVENT_MEMBER_UPDATE",
+    "EVENT_MEMBER_REMOVE",
+    "EVENT_DIMENSION_VALUE_CREATE",
+    "EVENT_DIMENSION_VALUE_ENABLE",
     "EVENT_AUTH_USER_JIT",
     "EVENT_AUTH_DELEGATED",
     "EVENT_AUTH_SSO_REFUSED",

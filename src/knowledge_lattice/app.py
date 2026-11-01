@@ -111,8 +111,12 @@ class InlineWorkerHandle:
 
     def kick(self) -> None:
         """同步消化任务队列（投递方调用）：反复认领执行至队列空——重试回队（attempts
-        有界）也被本轮消化；保持 M1「响应返回前摄取已推进」的时序语义。"""
-        self._wake.set()
+        有界）也被本轮消化；保持 M1「响应返回前摄取已推进」的时序语义。
+
+        m2-6 注记：**不**置 _wake——kick 是同步消化通道，唤醒兜底循环只会
+        引入「兜底线程与 kick 竞争认领」的窗口（-O 门禁实测暴露：reembed
+        被兜底线程抢先、任务在响应后仍在途异步推进）；兜底循环按 poll_s
+        自然轮询。"""
         try:
             for _ in range(self._max_drain):  # 有界防护（attempts 上限天然收敛）
                 if not self._runner.run_once():
@@ -142,10 +146,14 @@ class InlineWorkerHandle:
                 # ② semantic_sync / semantic_build 即时认领（P2-2/R2：手动触发/
                 #    同步后自动投递的构建任务不设陈旧口径——kick 唤醒丢失（outbox
                 #    抛错/进程间崩溃）时的兜底通道，防任务永久滞留 pending；
-                #    m2s-1 P2-2 教训：新任务类型必进本循环）
+                #    m2s-1 P2-2 教训：新任务类型必进本循环）；reindex/reembed
+                #    同组即时认领（m2-6——reembed 执行体投递的 semantic_build
+                #    亦在此被领，蓝绿链路不经 kick 也能收敛）
                 if self._runner.run_once(task_types=("semantic_sync",)):
                     continue
                 if self._runner.run_once(task_types=("semantic_build",)):
+                    continue
+                if self._runner.run_once(task_types=("reindex", "reembed")):
                     continue
                 # ③ ingest 陈旧认领（P2-7：重启遗留/超量滞留/租约过期——poll 内收口；
                 #    新鲜 ingest 恒由投递方 kick 同步消化先抢，保上传时序语义）
@@ -195,6 +203,7 @@ def create_app(
     enhancer=None,
     run_startup_probe: bool = True,
     sso_verifier=None,
+    backend=None,
 ) -> FastAPI:
     """构建 FastAPI 应用（测试可注入 embedder/gate/reranker/enhancer、跳过启动探针）。
 
@@ -202,6 +211,10 @@ def create_app(
     settings.sso_provider 配置化构造（none=缺省 dev 形态——现有门禁/测试零
     感知；mock-idp=mock IdP）。可信子系统白名单恒由 settings.trusted_services_json
     构造（畸形配置 fail-closed raise）。
+
+    backend（m2-6 B⑧）：显式注入优先（API 级 pg 臂测试——pg_db 包装器经此
+    挂载 create_app，CSV diff 等 API 面双方言断言的基建）；缺省走共享工厂
+    ``store.factory.build_backend``（P2-4 先例——与 worker 同源）。
     """
     settings = settings or get_settings()
     if settings.worker_mode not in ("inline", "subprocess"):
@@ -216,9 +229,11 @@ def create_app(
     from knowledge_lattice.adapters.auth_sso import build_sso_verifier
     from knowledge_lattice.core.docs.quality import build_quality_service
     from knowledge_lattice.domain.auth import TrustedServiceRegistry
-    from knowledge_lattice.store.factory import build_backend
 
-    backend = build_backend(settings)
+    if backend is None:
+        from knowledge_lattice.store.factory import build_backend
+
+        backend = build_backend(settings)
 
     gate = gate or EmbeddingGate()
     embedder = embedder or OpenAICompatEmbedder(settings)
@@ -280,6 +295,9 @@ def create_app(
                 # 模糊索引向量层经真实 embedder 写入（inline 是配置支持的
                 # 「最小部署显式选项」，非纯测试形态）
                 _embedder=embedder,
+                # m2-6 A1：quality 注入——reembed 蓝绿完成后的重跑联动
+                # （与 build_default_services 同源装配）
+                quality=quality,
             ),
         )
         worker_handle = InlineWorkerHandle(runner, poll_s=settings.worker_poll_s)

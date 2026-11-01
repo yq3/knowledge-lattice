@@ -16,7 +16,18 @@ import json
 
 class AuditChainError(Exception):
     """审计哈希链验证失败（m2-3 B2——读路径按链遍历后的 fail-closed 信号：
-    破链（哈希不符/分叉/孤儿行）即审计完整性异常，读路径上抛不静默）。"""
+    破链（哈希不符/分叉/孤儿行）即审计完整性异常，读路径上抛不静默）。
+
+    ``code``（m2-6 B⑤——T12 机器码一致性精神）：链完整性异常的分类码——
+    ``multi_heads``（链头数≠1，含空分叉/多链头）/ ``hash_mismatch``（行哈希
+    不符——篡改/错行）/ ``fork``（同 prev 多行分叉）/ ``cycle``（环）/
+    ``orphan_rows``（不在链上的孤儿行）。消费面按 code 分级处置（日志/告警
+    /阻断）不必解析消息文本。
+    """
+
+    def __init__(self, message: str, *, code: str = "chain_broken") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 # audit_events 行字段序（canonical 拼接序——冻结：改序即断链，迁移期不动）
@@ -86,6 +97,7 @@ def _target_of(action: str, payload: dict) -> tuple[str | None, str | None]:
         ("dataset.", "dataset", "dataset_id"),
         ("grants.", "grants", "user_id"),
         ("dimension.", "dimension", "dimension_id"),
+        ("member.", "member", "user_id"),
     ):
         if action.startswith(prefix):
             value = payload.get(key)
@@ -119,7 +131,8 @@ def walk_chain(rows: list[dict]) -> list[dict]:
     if len(heads) != 1:
         raise AuditChainError(
             f"audit chain broken: expected 1 chain head, got {len(heads)}"
-            f" ({len(rows)} rows)"
+            f" ({len(rows)} rows)",
+            code="multi_heads",
         )
     ordered: list[dict] = []
     cur = heads[0]
@@ -129,22 +142,28 @@ def walk_chain(rows: list[dict]) -> list[dict]:
         if not nxt:
             break  # 链尾
         if len(nxt) != 1:
-            raise AuditChainError(f"audit chain fork at prev={cur[:16]}…")
+            raise AuditChainError(
+                f"audit chain fork at prev={cur[:16]}…", code="fork"
+            )
         row = nxt[0]
         expected = compute_row_hash(row, row.get("prev_hash"))
         if row.get("row_hash") != expected:
             raise AuditChainError(
                 f"audit row hash mismatch: id={row.get('id')!r}"
-                f" (stored={str(row.get('row_hash'))[:16]}… expected={expected[:16]}…)"
+                f" (stored={str(row.get('row_hash'))[:16]}… expected={expected[:16]}…)",
+                code="hash_mismatch",
             )
         if row["id"] in seen:
-            raise AuditChainError(f"audit chain cycle at id={row['id']!r}")
+            raise AuditChainError(
+                f"audit chain cycle at id={row['id']!r}", code="cycle"
+            )
         seen.add(row["id"])
         ordered.append(row)
         cur = row["row_hash"]
     if len(ordered) != len(rows):
         raise AuditChainError(
-            f"audit chain has orphan rows: {len(rows) - len(ordered)} not on chain"
+            f"audit chain has orphan rows: {len(rows) - len(ordered)} not on chain",
+            code="orphan_rows",
         )
     return ordered
 

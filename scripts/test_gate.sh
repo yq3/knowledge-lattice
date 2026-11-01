@@ -34,7 +34,11 @@ fi
 # ---- pg 臂在场断言：收集期 [pg] 参数化条目 + PG 专用用例 > 0（收集不执行 fixture、无需容器）----
 # R2-P3-7：PG_COLLECTED 范围扩为「参数化 [pg] 条目 + PG 专用文件（test_pg_*）
 # 收集条目」——防 PG 专用用例被删/没收集到的假绿；${...:-0} 防 set -u 空引用。
-PG_PARAM_COLLECTED="$(uv run pytest -m "not manual" --collect-only -q 2>/dev/null | grep -c '\[pg\]' || true)"
+# m2-6（m2-4 R2 Committer followup）：grep 正则改 \[pg[^]]*\]——parametrize 的
+# 组合 id 形如 [sqlite-pg-*]/[pg-missing]（多参数笛卡尔积），旧 '\[pg\]' 恒
+# 精确匹配漏计组合条目（计数偏小不阻断，但对账口径失真——pg 臂实跑数以
+# pytest 输出为准，双注口径见交付报告）。
+PG_PARAM_COLLECTED="$(uv run pytest -m "not manual" --collect-only -q 2>/dev/null | grep -c '\[pg[^]]*\]' || true)"
 PG_ONLY_COLLECTED="$(uv run pytest tests/test_pg_*.py -m "not manual" --collect-only -q 2>/dev/null | grep -c '::' || true)"
 PG_COLLECTED="$(( ${PG_PARAM_COLLECTED:-0} + ${PG_ONLY_COLLECTED:-0} ))"
 if [[ "$PG_COLLECTED" -eq 0 ]]; then

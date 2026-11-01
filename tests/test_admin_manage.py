@@ -108,12 +108,33 @@ def _mgmt_env(app_env):
 
 
 def test_api_reindex_and_reembed_task_enqueue(_mgmt_env) -> None:
-    """TC-EMB-06 API 面：无 embed_model → reindex 任务（target_version=在用
-    版本）；携带 embed_model → reembed 任务（payload 含 org+embed_model、
-    不限单版本）；owner 与 org_admin 均可；无关成员 403；404。"""
+    """TC-EMB-06 API 面（m2-6 执行体接管后）：无 embed_model → reindex 任务
+    （target_version=在用版本）；携带 embed_model → reembed 任务（payload 含
+    org+embed_model、不限单版本）；owner 与 org_admin 均可；无关成员 403；
+    404。**m2-6 起 inline worker 同步认领执行**——投递即执行到终态（本用例
+    事实升级为 A1/A2 的 API 级集成：reindex done 重索引、reembed done 蓝绿
+    切换断言）。"""
     client, conn = _mgmt_env["client"], _mgmt_env["conn"]
 
-    # owner（u_full）投递 reindex
+    def _task_row(task_id: str):
+        return conn.execute(
+            "SELECT type, status, target_version, payload FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+
+    def _await_terminal(task_id: str, *, timeout_s: float = 15.0) -> tuple:
+        """有界轮询终态（inline 双通道竞态的鲁棒收口：reembed/reindex 可能被
+        兜底循环线程抢先认领——kick 不保证恒为先；-O 门禁实测暴露）。"""
+        import time as _time
+
+        deadline = _time.monotonic() + timeout_s
+        row = _task_row(task_id)
+        while row[1] not in ("done", "failed") and _time.monotonic() < deadline:
+            _time.sleep(0.05)
+            row = _task_row(task_id)
+        return row
+
+    # owner（u_full）投递 reindex → 同步执行 done（重索引全链）
     r = client.post(
         f"/api/orgs/{ORG}/documents/{_mgmt_env['doc_id']}/reindex",
         headers=_mgmt_env["member"],
@@ -121,15 +142,14 @@ def test_api_reindex_and_reembed_task_enqueue(_mgmt_env) -> None:
     assert r.status_code == 202
     body = r.json()
     assert body["type"] == "reindex" and body["embed_model"] is None
-    task = conn.execute(
-        "SELECT type, status, target_version, payload FROM tasks WHERE id = ?",
-        (body["task_id"],),
-    ).fetchone()
-    assert task[0] == "reindex" and task[1] == "pending"
+    task = _await_terminal(body["task_id"])
+    assert task[0] == "reindex" and task[1] == "done", (
+        f"reindex 被 inline worker 同步执行到终态（m2-6 执行体）: {task[1]}"
+    )
     assert task[2] == 1  # active_version
     assert json.loads(task[3])["org"] == ORG
 
-    # org_admin 换模型重嵌入（reembed）
+    # org_admin 换模型重嵌入（reembed）→ 同步执行 done + 蓝绿切换终态
     r = client.post(
         f"/api/orgs/{ORG}/documents/{_mgmt_env['doc_id']}/reindex",
         headers=_mgmt_env["admin"], params={"embed_model": "new-model:1536"},
@@ -137,13 +157,23 @@ def test_api_reindex_and_reembed_task_enqueue(_mgmt_env) -> None:
     assert r.status_code == 202
     body = r.json()
     assert body["type"] == "reembed" and body["embed_model"] == "new-model:1536"
-    task = conn.execute(
-        "SELECT type, status, target_version, payload FROM tasks WHERE id = ?",
-        (body["task_id"],),
-    ).fetchone()
+    task = _await_terminal(body["task_id"])
     assert task[0] == "reembed" and task[2] is None  # 全库任务不限单版本
     payload = json.loads(task[3])
     assert payload == {"org": ORG, "embed_model": "new-model:1536"}
+    assert task[1] == "done", (
+        f"reembed 蓝绿执行体同步完成（TC-EMB-06 四步）: {task[1]}"
+    )
+    # 切换终态：embedder 标签（面板 label 源）已切新标签；全库单标签一致
+    assert _mgmt_env["embedder"].model_label == "new-model:1536"
+    labels = {
+        row[0] for row in conn.execute(
+            "SELECT DISTINCT cv.embed_model FROM chunk_vectors cv"
+            " JOIN chunks c ON c.rid = cv.rid"
+            " JOIN documents d ON d.id = c.doc_id WHERE d.org_id = ?", (ORG,),
+        )
+    }
+    assert labels == {"new-model:1536"}, f"旧标签已清理（单标签一致）: {labels}"
 
     # 普通成员（非 owner 非 admin）→ 403
     r = client.post(
@@ -161,15 +191,22 @@ def test_api_reindex_and_reembed_task_enqueue(_mgmt_env) -> None:
 def test_api_embedding_coverage_readonly(_mgmt_env) -> None:
     """覆盖率端点只读：embed_model=model:dim 形态、各库 done/total；reembed
     窗口进度按**任务目标标签**（payload.embed_model——R2 P2-3）而非当前标签
-    ——蓝绿窗口旧标签覆盖率不冒充进度；非 org_admin 403。"""
+    ——蓝绿窗口旧标签覆盖率不冒充进度；非 org_admin 403。
+
+    m2-6 注记：经端点投递的 reembed 会被 inline worker 同步执行完——「未
+    起步 done=0」窗口改用**直插任务行**（不经端点 kick）构造（执行体存在
+    前的历史形态语义保持可测）。"""
     client, conn = _mgmt_env["client"], _mgmt_env["conn"]
 
-    # 先投一个 reembed（面板 reembed 窗口数据源——目标标签 new-model:1536）
-    r = client.post(
-        f"/api/orgs/{ORG}/documents/{_mgmt_env['doc_id']}/reindex",
-        headers=_mgmt_env["admin"], params={"embed_model": "new-model:1536"},
-    )
-    reembed_task_id = r.json()["task_id"]
+    # 直插 pending reembed（面板 reembed 窗口数据源——目标标签 new-model:1536；
+    # doc_id 关联文档——list_tasks 经 documents JOIN 组织过滤）
+    reembed_task_id = conn.execute(
+        "INSERT INTO tasks(id, doc_id, type, status, payload)"
+        " VALUES('tsk-cov-reembed', ?, 'reembed', 'pending', ?)"
+        " RETURNING id",
+        (_mgmt_env["doc_id"],
+         json.dumps({"org": ORG, "embed_model": "new-model:1536"})),
+    ).fetchone()[0]
 
     # 造目标标签部分向量（1 块）——reembed 进度=目标标签覆盖率
     rid = conn.execute(
@@ -202,17 +239,16 @@ def test_api_embedding_coverage_readonly(_mgmt_env) -> None:
     assert body["reembed"]["total"] >= 1
     assert body["reembed"]["done"] == 1, "目标标签已有向量块计入 reembed 进度"
     # 无目标标签向量时（执行体未认领起步）done=0——不冒充当前标签覆盖率
-    r2 = client.post(
-        f"/api/orgs/{ORG}/documents/{_mgmt_env['doc_id']}/reindex",
-        headers=_mgmt_env["admin"], params={"embed_model": "green:1536"},
-    )
-    task2 = r2.json()["task_id"]
-    # 清掉前一条 reembed（同秒并列下「最近一条」次序不判——单条无歧义）
     conn.execute("DELETE FROM tasks WHERE id = ?", (reembed_task_id,))
+    conn.execute(
+        "INSERT INTO tasks(id, doc_id, type, status, payload)"
+        " VALUES('tsk-cov-reembed2', ?, 'reembed', 'pending', ?)",
+        (_mgmt_env["doc_id"], json.dumps({"org": ORG, "embed_model": "green:1536"})),
+    )
     conn.commit()
     r = client.get(f"/api/orgs/{ORG}/embedding-coverage", headers=_mgmt_env["admin"])
     body = r.json()
-    assert body["reembed"]["task_id"] == task2  # 唯一 reembed 任务
+    assert body["reembed"]["task_id"] == "tsk-cov-reembed2"  # 唯一 reembed 任务
     assert body["reembed"]["done"] == 0, "目标标签零向量 → done=0（非当前标签覆盖率）"
 
     # 非 org_admin → 403
@@ -252,14 +288,19 @@ def test_api_stats_maintenance_keys(_mgmt_env) -> None:
 
 def test_api_cancel_reindex_task(_mgmt_env) -> None:
     """任务取消联动（A5 复引）：投递 reindex → POST cancel → 任务 failed+
-    'cancelled:'（m2-1 取消机制在管理面任务类型上同语义——reindex 未被
-    runner 认领仍处 pending，取消即吸收态）。"""
-    client = _mgmt_env["client"]
-    r = client.post(
-        f"/api/orgs/{ORG}/documents/{_mgmt_env['doc_id']}/reindex",
-        headers=_mgmt_env["admin"],
+    'cancelled:'（m2-1 取消机制在管理面任务类型上同语义）。
+
+    m2-6 注记：经端点投递的 reindex 会被 inline worker 同步执行完（done）
+    ——取消语义的可测窗口改用**直插 pending 任务行**（不经端点 kick）构造；
+    取消对非终态任务的吸收态语义不变。"""
+    client, conn = _mgmt_env["client"], _mgmt_env["conn"]
+    conn.execute(
+        "INSERT INTO tasks(id, doc_id, type, status, target_version, payload)"
+        " VALUES('tsk-cancel-reindex', ?, 'reindex', 'pending', 1, ?)",
+        (_mgmt_env["doc_id"], json.dumps({"org": ORG})),
     )
-    task_id = r.json()["task_id"]
+    conn.commit()
+    task_id = "tsk-cancel-reindex"
     r = client.post(
         f"/api/orgs/{ORG}/tasks/{task_id}/cancel", headers=_mgmt_env["admin"],
     )

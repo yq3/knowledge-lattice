@@ -26,6 +26,21 @@ class DatasetNotEmptyError(Exception):
     """删库被拒：库内仍有文档（RESTRICT 明确语义——非裸外键异常，T19 半句收口/
     TC-OPS-04②；「先删文档再删库」服务层流程，§6.2）。"""
 
+
+class MembershipExistsError(Exception):
+    """成员关系已存在（m2-6 A3 POST /members → 409；含过期行——恢复走
+    DELETE 后重加，T23 续期禁令先例）。"""
+
+
+class MembershipExpiredError(Exception):
+    """已过期成员关系拒绝原地变更（m2-6 A3 PATCH → 409——T23 语义的双方言
+    统一前置检查：删行重加 + 补授权是唯一恢复路径）。"""
+
+
+class DimensionValueExistsError(Exception):
+    """维度取值已存在（m2-6 A4 POST values → 409——(dimension_id, value)
+    唯一性语义化，非裸 IntegrityError）。"""
+
 # ============ AclPlan：方言无关的维度 ACL 编译产物（D24） ============
 #
 # 由编译器（core/docs/acl.py，M0a-2）产出，各后端 acl_render.py 渲染为目标 SQL。
@@ -539,10 +554,77 @@ class AdminBackend(Protocol):
     def list_grants_for_export(self, org_id: str) -> list[dict]:
         """组织全部授权行（CSV 导出 / 导入差异计算数据源）：[{username,
         user_id, dim_key, value, expires_at, source}]——含 sync 行（导出 CSV
-        只取 local；UI 标注 sync 只读）。"""
+        只取 local；UI 标注 sync 只读）。
+
+        **expires_at 字符串契约（m2-6 B⑦）**：恒为库格式字符串
+        ``'YYYY-MM-DD %H:%M:%S'``（TS_FMT）或 None——pg 臂 TIMESTAMP 已在
+        store 内归一（datetime 不外泄），消费方（CSV 导出 / 差异计算 / 审计
+        投影）一律字符串比较，**不得传回 datetime**（api 直调面同理）。"""
 
     def find_user_by_username(self, username: str) -> dict | None:
         """username → 用户行（CSV 导入 username 列解析；无 → None）。"""
+
+    # ---- 成员关系写路径（m2-6 A3——m2-4 N-1 用户裁定选 a：JIT 建档后 API 面
+    #      开通闭环，D16「管理员不建账号只配授权」） ----
+
+    def add_membership(
+        self, org_id: str, user_id: str, *,
+        role: str = "member", expires_at: str | None = None,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        """新建成员关系（A3 POST /members 载体）：用户不存在 → KeyError（404）；
+        已存在成员关系（含过期行）→ MembershipExistsError（409——过期行恢复走
+        DELETE 后重加：T23 续期禁令 + trg_membership_delete_cleanup 级联清授权
+        的 m2-3 先例三步：删行 → 重加 → PUT grants 补授权）；expires_at 经
+        normalize_expires_at 归一（B③ 直调面收口）。audit 治理事件与插入
+        **同一事务**。返回 {user_id, role, expires_at}。"""
+
+    def update_membership(
+        self, org_id: str, user_id: str, *,
+        role: str | None = None, expires_at: object = ...,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """成员关系更新（A3 PATCH——角色变更/软停用/续期）：行不存在 → None
+        （404）；**已过期行 → MembershipExpiredError（409，T23 语义前置检查
+        ——触发器只拦 UPDATE OF expires_at 的过期旧行，本方法把双方言的
+        「过期行拒绝」统一为显式异常，不改 expires_at 的更新同样拒绝——
+        过期行的一切原地变更均走删行重加）**；expires_at：**缺省（Ellipsis
+        哨兵）= 不变**，显式 None = 改永不过期，字符串经 normalize_expires_at
+        归一（B③ 直调面收口）。软停用语义 = expires_at 置过去/指定时点（权限
+        计算既有过滤——零新列，择型申报）。audit 同事务。返回更新后行。"""
+
+    def delete_membership(
+        self, org_id: str, user_id: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> bool:
+        """删除成员关系（A3 DELETE）：行不存在 → False（404）；删除触发
+        trg_membership_delete_cleanup 级联清本组织授权（既有触发器语义——
+        T23 不破坏）。audit 同事务。返回是否实际删除。"""
+
+    def count_active_org_admins(self, org_id: str) -> int:
+        """本组织 active org_admin 数（A3 唯一管理员守卫数据源——最后一名
+        org_admin 不得自删/自停/自降级，409 防自锁；含 expires 过滤）。"""
+
+    # ---- 维度取值写路径（m2-6 A4——新增 + D19 重新启用恢复路径） ----
+
+    def create_dimension_value(
+        self, org_id: str, dim_id: str, value: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """新增维度取值（A4 POST /dimensions/{id}/values）：维度不存在/跨组织
+        → None（404）；维度 retired → ValueError（409——retired 维度不再扩值）；
+        (dimension_id, value) 已存在 → DimensionValueExistsError（409）。
+        audit 同事务。返回 {value_id, value, status}。"""
+
+    def enable_dimension_value(
+        self, org_id: str, dim_id: str, value_id: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """取值重新启用（A4——D19 恢复路径：文档含已停用取值时 PATCH/覆盖上传
+        同锁〔v1.6.3〕，重新启用后解锁——locked_docs 判定面自动联动）：值不存在/
+        跨组织 → None（404）；幂等（已 active 零新审计——沿 disable 先例）；
+        audit 同事务。返回 {docs, grants, users, locked_docs, applied}
+        （影响面口径与 dimension_value_impact 同源）。"""
 
     # ---- 嵌入覆盖率（m2-3——TC-EMB-06 管理面只读面板） ----
 
@@ -553,6 +635,50 @@ class AdminBackend(Protocol):
         ——tombstone=0 且 version=documents.active_version）：[{dataset_id,
         dataset_name, done, total}]——done=已有 (rid, embed_model) cv 行的在用
         块数。"""
+
+    # ---- reembed 蓝绿执行体（m2-6 A1——TC-EMB-06 执行面） ----
+
+    def pending_reembed_batch(
+        self, org_id: str, embed_model: str, *, limit: int = 64,
+    ) -> list[dict]:
+        """reembed 扫描认领（TC-EMB-06 ①扫描谓词）：org 内**非 tombstone 块**
+        （在用 + pending 版本——切换终态不漏在途覆盖上传块）中无
+        (rid, embed_model) cv 行的块，逐批**钉签**（chunks.embed_model=目标标签
+        ——write_embeddings 回写防护谓词要求块已钉该标签）并返回
+        [{rid, content}]（rid 稳定序、limit 截断）。幂等：已有目标标签 cv 行
+        的块不再命中（中断重认领续跑不重嵌）。"""
+
+    def repin_chunk_labels(self, org_id: str, embed_model: str) -> int:
+        """蓝绿切换后的状态标签兜底对齐（TC-EMB-06 ③在途回写防护）：org 内
+        全部块（含 tombstone——单标签一致）chunks.embed_model != :embed_model
+        → 置为目标标签。此后旧模型在途批次的迟到回写（write_embeddings 防护
+        谓词 ``c.embed_model = :batch_label``）零行生效——库内不出现孤儿行。
+        返回改签行数。"""
+
+    def delete_vectors_by_label(self, org_id: str, keep_model: str) -> int:
+        """旧标签延后清理（TC-EMB-06 ④）：DELETE org 内全部块上**非** keep_model
+        标签的 chunk_vectors 行（全库单标签一致的终态收口；sqlite WAL 廉价 /
+        PG 满量死元组靠页内复用——RUNBOOK §1 注记）。返回删除行数。"""
+
+    def invalidate_quality_cache(self, org_id: str) -> int:
+        """quality 检测缓存失效（TC-EMB-06 ④联动——缓存键 (content_sha,
+        embed_model) 的模型维失效面）：org 内在用块 detected_at_scale 置
+        NULL——recompute 候选= 全量（重算用新标签向量；旧 vector_crowding
+        flags 随 recompute 的 delete_open_flags 清除）。返回失效行数。"""
+
+    def read_org_audit(
+        self, org_id: str, *, action: str | None = None, limit: int = 100,
+        now: str | None = None,
+    ) -> list[dict]:
+        """组织审计事件读取（m2-6 B④——api/admin 审计分级查询的读路径下沉）：
+        当月月库（链遍历读序）+ 未搬运 outbox 行双源合并，按 id 去重（月库
+        优先——sqlite 两步搬运崩溃窗同事件不重复）、org 过滤、action 前缀
+        过滤、created_at+id 排序后取最近 limit 条（最近在前）。
+
+        **B5 注记（m2-3 移交）**：read_monthly_events 经重投影后**读回行
+        row_hash 不自洽**（语义列是投影非真相源）——消费者勿以读回行复算链；
+        链验证走 walk_chain（B2 路径）。返回行含 detail_json（分级剥离由
+        api 层做——store 不感知权限）。"""
 
     def read_pending_outbox_events(self) -> list[dict]:
         """未搬运 outbox 行（审计分级查询的当月未落库部分——created_at,id 序）。"""

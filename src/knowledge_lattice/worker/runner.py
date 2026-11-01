@@ -59,9 +59,13 @@ logger = logging.getLogger(__name__)
 # {org} 经 core.semantic.build.run_build_task 执行；semantic_retag 于 m2s-5 接入
 # ——payload {org, dict_rev} 经 core.semantic.tagging.run_retag_task 执行，认领
 # 排序**尾部**（最低优先级——design §5.3「重标不与 ingest 抢资源」）；reindex/
-# reembed/delete 仍为预留分发位，不认领不误伤：未知类型的任务行原地留 pending）
+# reembed 于 **m2-6 接入**——payload {org[, embed_model]} 经 worker/rebuild.py
+# 执行（reindex 文档级〔doc_id+target_version〕/ reembed 组织级蓝绿迁移，认领
+# 序=投递序——0010 单调键）；delete 仍为预留分发位，不认领不误伤：未知类型的
+# 任务行原地留 pending）
 CLAIMABLE_TASK_TYPES = (
     "ingest", "maintenance", "semantic_sync", "semantic_build", "semantic_retag",
+    "reindex", "reembed",
 )
 
 
@@ -70,8 +74,10 @@ class WorkerServices:
     """worker 执行所需服务集（backend 必备；其余按任务类型按需）。
 
     _gate 供子进程写入侧探针（inline 形态可不带——探针随 main()）；
-    _embedder 供 semantic_build 模糊索引向量生成（P2-1/m2s-6 R2 起 inline
-    形态同样携带——app.py 装配注入）。
+    _embedder 供 semantic_build 模糊索引向量生成与 **reembed 迁移外呼**
+    （P2-1/m2s-6 R2 起 inline 形态同样携带——app.py 装配注入）；
+    quality 供 reembed 完成后的 quality 重跑联动（m2-6——None=未装配，
+    联动跳过：沿 ingest quality 阶段可选先例）。
     """
 
     backend: object
@@ -80,6 +86,7 @@ class WorkerServices:
     credentials: object | None = None   # purge_expired()——maintenance 凭证回收
     _gate: object | None = None
     _embedder: object | None = None
+    quality: object | None = None       # recompute(org)——reembed 联动（m2-6）
 
 
 class TaskRunner:
@@ -109,6 +116,8 @@ class TaskRunner:
             "semantic_sync": self._exec_semantic_sync,
             "semantic_build": self._exec_semantic_build,
             "semantic_retag": self._exec_semantic_retag,
+            "reindex": self._exec_reindex,
+            "reembed": self._exec_reembed,
         }
         if executors:
             self._executors.update(executors)
@@ -279,6 +288,24 @@ class TaskRunner:
 
         run_retag_task(
             self._backend, self._settings, task["id"],
+            should_continue=self._should_continue(task["id"], claim_id),
+        )
+
+    def _exec_reindex(self, task: dict, claim_id: str) -> None:
+        """reindex 任务体（m2-6 A2——幂等重置 + ingest 幂等管线重切分全链）。"""
+        from knowledge_lattice.worker.rebuild import run_reindex_task
+
+        run_reindex_task(
+            self._services, task["id"],
+            should_continue=self._should_continue(task["id"], claim_id),
+        )
+
+    def _exec_reembed(self, task: dict, claim_id: str) -> None:
+        """reembed 任务体（m2-6 A1——TC-EMB-06 蓝绿四步执行体）。"""
+        from knowledge_lattice.worker.rebuild import run_reembed_task
+
+        run_reembed_task(
+            self._services, task["id"],
             should_continue=self._should_continue(task["id"], claim_id),
         )
 
@@ -532,7 +559,7 @@ def build_default_services(settings: Settings) -> WorkerServices:
     credentials = CredentialService(backend, settings, settings.data_dir / "objects")
     return WorkerServices(
         backend=backend, settings=settings, ingest=ingest, credentials=credentials,
-        _gate=gate, _embedder=embedder,
+        _gate=gate, _embedder=embedder, quality=quality,
     )
 
 

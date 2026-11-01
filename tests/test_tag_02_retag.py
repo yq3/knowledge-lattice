@@ -359,7 +359,12 @@ def test_p1_restricted_migration_retag_clears_stale_tags(env) -> None:
 # ---- worker 接线：认领类型 + 分发 + 最低优先级 ----
 
 def test_runner_claimable_and_dispatches_semantic_retag(env) -> None:
-    """CLAIMABLE_TASK_TYPES 含 semantic_retag；TaskRunner 认领并执行到终态。"""
+    """CLAIMABLE_TASK_TYPES 含 semantic_retag；TaskRunner 认领并执行到终态。
+
+    m2-6 注记：清空队列（drain）而非断言单条——本用例存在**同秒两条 retag**
+    （r1 构建投递 + alias 增删再投递），旧断言按 (created_at, id) 取 [0] 与
+    claim 的插入序（rowid/seq 单调键——m2-6 B②）在同秒下可能不一致（uuid4
+    id 字典序随机）；drain 语义更强：全部 retag 均被执行到 done。"""
     from knowledge_lattice.core.semantic.tagging import run_retag_task
     from knowledge_lattice.worker.runner import CLAIMABLE_TASK_TYPES, TaskRunner
 
@@ -378,12 +383,19 @@ def test_runner_claimable_and_dispatches_semantic_retag(env) -> None:
     env.sync([EntityRecord(type="concept", key="vat.input_credit",
                            name="进项税额抵扣", aliases=("进项面",))])
     env.build()
-    task_row = _retag_tasks(env)[0]
+    retag_rows = _retag_tasks(env)
+    assert retag_rows, "前置：构建面已投递 retag 任务"
 
     runner = TaskRunner(env.backend, env.settings)
-    assert runner.run_once(), "retag 任务应被认领执行"
-    assert env.backend.get_task(task_row[0])["status"] == "done", \
-        "runner 分发 semantic_retag 到执行体（TC-TAG-02 联动）"
+    for _ in range(len(retag_rows) + 2):  # drain（有界——attempts 收敛）
+        if not runner.run_once():
+            break
+    statuses = {
+        row[0]: env.backend.get_task(row[0])["status"] for row in retag_rows
+    }
+    assert all(s == "done" for s in statuses.values()), (
+        f"runner 分发全部 semantic_retag 到执行体（TC-TAG-02 联动）: {statuses}"
+    )
 
 
 def test_retag_priority_lowest_behind_ingest(env) -> None:

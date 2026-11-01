@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from conftest import ORG
 
 
@@ -64,7 +66,7 @@ def test_read_pending_outbox_events_and_ship_drain(matrix) -> None:
     backend.append_outbox("document.delete", json.dumps({"org_id": ORG}))
     pending = backend.read_pending_outbox_events()
     assert len(pending) == 2
-    # 次序契约=（created_at, id）双键——同秒 ULID 并列下不作跨行次序断言
+    # 次序契约=（created_at, id）双键——同秒 uuid4 随机 id 并列下不作跨行次序断言
     assert {p["event_type"] for p in pending} == {"document.upload", "document.delete"}
     assert all(p["payload_json"] for p in pending)
 
@@ -74,17 +76,23 @@ def test_read_pending_outbox_events_and_ship_drain(matrix) -> None:
 
 def test_read_last_maintenance_stats_latest_wins(matrix) -> None:
     """B4 stats：outbox 多条取**最近一条**（P3-1——created_at 双键；造数显式
-    不同秒，同秒 ULID 并列不判跨行次序）；月库兜底同样取最后一条（链序末行）。
+    不同秒，同秒 uuid4 并列不判跨行次序）；月库兜底同样取最后一条（链序末行）。
 
     R3 P3-1 修复：①月库兜底**真覆盖**——ship 后显式清空 outbox（stats 查询
     不按 shipped_at 过滤，仅 ship 不清则恒走 outbox 分支、reversed() 未验证）；
-    ②时间炸弹根除——造数日期由当月墙钟派生（硬编码 2026-10-1X 跨月即红）。"""
+    ②时间炸弹根除——造数日期由当月墙钟派生（硬编码 2026-10-1X 跨月即红）。
+
+    m2-6 B⑩（R3 Committer P3 ④锁死）：**值序与时间序反向造数**——trimmed
+    随日期递减（(3,2,1)），「取最近」的断言对「取值最大」的实现恒红（此前
+    同向造数 (1,2,3) 下两种实现同绿——写法松）；双分支（outbox/月库兜底）
+    同口径锁死。"""
     from knowledge_lattice.store.taskclock import utc_now_ts
 
     backend = matrix.make_backend()
     now = utc_now_ts()
-    # outbox 三条（直插不同 created_at——当月内递增日，跨月安全）
-    for i, trimmed in enumerate((1, 2, 3)):
+    # outbox 三条（直插不同 created_at——当月内递增日，跨月安全；
+    # trimmed 与日期**反向**：日期最大者 trimmed=1）
+    for i, trimmed in enumerate((3, 2, 1)):
         matrix.execute(
             "INSERT INTO audit_outbox(id, event_type, payload_json, created_at)"
             " VALUES(?, 'maintenance.run', ?, ?)",
@@ -94,7 +102,9 @@ def test_read_last_maintenance_stats_latest_wins(matrix) -> None:
              f"{now[:8]}{10 + i:02d} 00:00:00"),
         )
     stats = backend.read_last_maintenance_stats()
-    assert stats is not None and stats["audit_outbox_trimmed"] == 3, "最近一条胜出"
+    assert stats is not None and stats["audit_outbox_trimmed"] == 1, (
+        "最近一条胜出（日期最大——反向值序下取值最大实现恒红）"
+    )
 
     # 月库兜底（真覆盖）：搬运 + 清空 outbox 行 → 只剩月库数据源
     backend.ship_outbox()
@@ -104,8 +114,8 @@ def test_read_last_maintenance_stats_latest_wins(matrix) -> None:
         if r["event_type"] == "maintenance.run"
     ]
     stats2 = backend.read_last_maintenance_stats()
-    assert stats2 is not None and stats2["audit_outbox_trimmed"] == 3, (
-        "月库兜底取最后一条（链序末行——reversed() 路径真实验证）"
+    assert stats2 is not None and stats2["audit_outbox_trimmed"] == 1, (
+        "月库兜底取最后一条（链序末行——reversed() 路径真实验证，反向值序锁死）"
     )
 
 
@@ -146,4 +156,80 @@ def test_grants_diff_idempotent_after_replace(matrix) -> None:
     }
     assert current[("u_full", "region", "CN")] == target[0][2], (
         "store 读回值须与写入目标串相等（pg datetime 形态即恒不等）"
+    )
+
+
+# ============ m2-6 B④/B⑤：read_org_audit 下沉 + AuditChainError 机器码 ============
+
+
+def test_read_org_audit_sink_filters_and_orders(matrix) -> None:
+    """B④ 下沉：双源合并（outbox 未搬运行进结果）+ org 过滤 + action 前缀 +
+    最近在前 + limit 截断——API 审计分级查询读路径的 store 级锚点。"""
+    backend = matrix.make_backend()
+    backend.append_outbox("member.add", json.dumps({"org_id": ORG, "actor": "a1"}))
+    backend.append_outbox("member.remove", json.dumps({"org_id": ORG, "actor": "a2"}))
+    backend.append_outbox("document.upload", json.dumps({"org_id": "org:gl"}))
+
+    rows = backend.read_org_audit(ORG)
+    actions = [r["action"] for r in rows]
+    assert set(actions) == {"member.add", "member.remove"}, "org:gl 行被过滤"
+
+    only_add = backend.read_org_audit(ORG, action="member.add")
+    assert [r["action"] for r in only_add] == ["member.add"], "action 前缀过滤"
+
+    limited = backend.read_org_audit(ORG, limit=1)
+    assert len(limited) == 1
+
+
+def test_audit_chain_error_codes() -> None:
+    """B⑤：AuditChainError 携带分类机器码（multi_heads/hash_mismatch/fork/
+    cycle/orphan_rows）——消费面按 code 分级处置不解析消息文本。"""
+    from knowledge_lattice.store.audit_chain import (
+        AuditChainError,
+        compute_row_hash,
+        walk_chain,
+    )
+
+    def _row(rid: str, prev: str, payload: str = "x") -> dict:
+        row = {
+            "id": rid, "org_id": "o", "actor": "a", "action": "document.upload",
+            "target_type": None, "target_id": None, "outcome": "accepted",
+            "request_id": None, "detail_json": payload, "created_at": "t",
+            "prev_hash": prev,
+        }
+        row["row_hash"] = compute_row_hash(row, prev)
+        return row
+
+    # 正常链
+    r1, r2 = _row("e1", ""), _row("e2", "")
+    r2["prev_hash"] = r1["row_hash"]
+    r2["row_hash"] = compute_row_hash(r2, r1["row_hash"])
+    assert [r["id"] for r in walk_chain([r2, r1])] == ["e1", "e2"]
+
+    # hash_mismatch：篡改行
+    tampered = dict(r2)
+    tampered["detail_json"] = "tampered"
+    with pytest.raises(AuditChainError) as ei:
+        walk_chain([r1, tampered])
+    assert ei.value.code == "hash_mismatch"
+
+    # multi_heads：两条不同链头的独立链（prev 均不在批内 hash 集）
+    r3 = _row("e3", "sha256:external-prev")
+    with pytest.raises(AuditChainError) as ei:
+        walk_chain([r1, r3])
+    assert ei.value.code == "multi_heads"
+
+    # fork：同 prev 两行
+    r2b = _row("e2b", r1["row_hash"])
+    with pytest.raises(AuditChainError) as ei:
+        walk_chain([r1, r2, r2b])
+    assert ei.value.code == "fork"
+
+    # orphan_rows：链外孤儿
+    orphan = _row("orphan", "sha256:nowhere")
+    with pytest.raises(AuditChainError) as ei:
+        walk_chain([r1, r2, orphan])
+    assert ei.value.code in ("multi_heads", "orphan_rows"), (
+        "孤儿的链头判定先拦（multi_heads）或链尾收口拦（orphan_rows）——"
+        "两者均为链完整性分类码"
     )

@@ -46,6 +46,18 @@ class Embedder(Protocol):
         """模型标签 `model:dim`（如 qwen3-embedding-4b:2560）——D12。"""
         ...
 
+    def with_model(self, model_name: str, dim: int) -> "Embedder":
+        """构造请求模型指向 ``model_name`` 的同款新实例（m2-6 reembed 迁移外呼
+        专用——蓝绿迁移期检索/摄取管线继续用原实例〔旧标签持续服务〕，本方法
+        产物仅产出新模型向量；存储标签由任务参数承载）。"""
+        ...
+
+    def apply_model(self, model_name: str, dim: int) -> None:
+        """原地切换本实例的请求模型与标签（m2-6 reembed 蓝绿**切换点**——
+        覆盖率 100% 后原子切 config 标签的进程内载体：embedder 是检索谓词
+        与摄取钉签的共同源；同批联动见 worker/rebuild.switch_embed_label）。"""
+        ...
+
 
 def validate_dim(vectors: Sequence[Sequence[float]], *, expected: int) -> None:
     """写入前逐向量校验 len == expected（不符 raise——调用方不写库）。"""
@@ -76,6 +88,23 @@ class OpenAICompatEmbedder:
     @property
     def model_label(self) -> str:
         return self._settings.embed_model_label
+
+    def with_model(self, model_name: str, dim: int) -> "OpenAICompatEmbedder":
+        """m2-6 reembed 迁移外呼实例（请求 model 参数指向新模型名）。"""
+        from dataclasses import replace
+
+        return OpenAICompatEmbedder(
+            replace(self._settings, embed_model=model_name, embed_dim=dim)
+        )
+
+    def apply_model(self, model_name: str, dim: int) -> None:
+        """蓝绿切换点（m2-6）：原地替换 settings 引用——embed 请求模型与
+        model_label 同时切到新标签（零 SQL——进程内对象图）。"""
+        from dataclasses import replace
+
+        self._settings = replace(
+            self._settings, embed_model=model_name, embed_dim=dim
+        )
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         resp = self._client.post(
