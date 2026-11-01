@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from helpers import seed_user
 
 from knowledge_lattice.adapters.auth_sso import MockIdpVerifier
@@ -381,3 +383,39 @@ def test_prod_sso_accepted_dev_forms_rejected(backend, tmp_path) -> None:
         raise AssertionError("prod 下静态 token 应 401")
     except AuthError as exc:
         assert exc.code == 401
+
+
+# ============ m2-4 followup ④（m2-5 收口）：outbox 完整性错误掩码 ============
+
+
+def test_jit_outbox_integrity_error_not_masked(backend, tmp_path, monkeypatch) -> None:
+    """audit outbox 写入自身的完整性错误（uuid 碰撞/审计表约束——理论不可达）
+    不得被误归类为「建档冲突」：sqlite 侧旧形态把它当并发建档递归（3 次后
+    RuntimeError「并发兜底重查超限」——完全掩码）、pg 侧 UniqueViolation 被
+    误报「username 占用」（错误谎称）。修复后：如实抛审计写失败（建档同生
+    共死回滚——P3-5 语义不变）、users 零残留。"""
+    verifier = _verifier()
+    token = verifier.issue_token(sub="u_jit_outbox", aud=(AUD,), org=None)
+    real = backend.make_backend()
+
+    if backend.name == "pg":
+        from psycopg import errors as pg_errors
+
+        boom = pg_errors.UniqueViolation("outbox pk dup (fake)")
+    else:
+        import sqlite3
+
+        boom = sqlite3.IntegrityError("outbox pk dup (fake)")
+
+    def poisoned(conn, event_type, payload_json):
+        raise boom
+
+    monkeypatch.setattr(real, "_outbox_insert", poisoned)
+    with pytest.raises(RuntimeError, match="(?s).*outbox.*"):
+        # 修复前 sqlite：RuntimeError「并发兜底重查超限」（掩码）——同样匹配
+        # RuntimeError 但消息不含 outbox；pg：ValueError「username 占用」（掩码）
+        authenticate(real, _settings(tmp_path), token, sso=verifier)
+    n = backend.execute(
+        "SELECT count(*) FROM users WHERE id = ?", ("u_jit_outbox",)
+    ).fetchone()[0]
+    assert n == 0, "建档随审计写失败一并回滚（同生共死——P3-5）"

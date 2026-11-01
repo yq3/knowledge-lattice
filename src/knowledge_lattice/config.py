@@ -240,6 +240,16 @@ def get_settings() -> Settings:
         rerank_candidates=int(_num("LATTICE_RERANK_CANDIDATES", 32)),
         rerank_timeout_s=float(_num("LATTICE_RERANK_TIMEOUT_S", 1.0)),
         rerank_max_concurrency=int(_num("LATTICE_RERANK_MAX_CONCURRENCY", 4)),
+        # P3-14 激活（m2-5 A7②）：rerank 四键 env 覆盖补齐——供应商切换
+        # （百炼 dashscope / Cohere 风格网关）仅经 env、零代码改动
+        rerank_api_base=_f("LATTICE_RERANK_API_BASE",
+                           "http://127.0.0.1:11434/v1"),
+        rerank_api_key=_f("LATTICE_RERANK_API_KEY", "local-dev"),
+        rerank_model=_f("LATTICE_RERANK_MODEL", "qwen3-reranker-8b"),
+        rerank_truncate_tokens=(
+            int(env("LATTICE_RERANK_TRUNCATE_TOKENS"))
+            if env("LATTICE_RERANK_TRUNCATE_TOKENS") is not None else None
+        ),
         query_embed_timeout_s=float(_num("LATTICE_QUERY_EMBED_TIMEOUT_S", 0.5)),
         enhancer=_f("LATTICE_ENHANCER", "none"),
         enhance_budget_s=float(_num("LATTICE_ENHANCE_BUDGET_S", 0.8)),

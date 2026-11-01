@@ -83,3 +83,63 @@ class CohereCompatReranker:
             for item in results
             if "index" in item and "relevance_score" in item
         ]
+
+
+class DashScopeReranker:
+    """DashScope 原生 text-rerank 客户端（m2-5 A7①——百炼实测联调形态）。
+
+    百炼 rerank（gte-rerank-v2，2026-11-01 监督侧探测实测）为 DashScope 原生
+    服务形态，**与 Cohere 契约不同**（G-7「接口不变按形态实现对应 provider」
+    既定口径——Reranker 协议不变，本类新增一档）：
+
+    - POST ``{base}/services/rerank/text-rerank/text-rerank``
+      （rerank_api_base 形如 ``https://dashscope.aliyuncs.com/api/v1``）；
+    - 请求体 ``{model, input: {query, documents}, top_n?}``——documents 嵌套
+      在 input 下（非 Cohere 平铺）；top_n 缺省不携带；
+    - 响应 ``{output: {results: [{index, relevance_score}, ...]}}``——结果在
+      output.results 下（非顶层 results）。
+
+    防御与降级契约与 CohereCompatReranker 一致：缺字段项丢弃（TC-ACL-08）、
+    网络失败/超时原样 raise（降级归调用方）。``transport`` 参数仅供测试注入
+    MockTransport（离线确定）。
+    """
+
+    def __init__(self, settings: Settings, *, transport=None) -> None:
+        import httpx
+
+        self._settings = settings
+        kwargs: dict = {}
+        if transport is not None:
+            kwargs["transport"] = transport
+        self._client = httpx.Client(
+            base_url=settings.rerank_api_base,
+            headers={"Authorization": f"Bearer {settings.rerank_api_key}"},
+            timeout=settings.rerank_timeout_s,  # NFR-8：rerank 超时硬上限
+            **kwargs,
+        )
+
+    def rerank(
+        self, query: str, documents: Sequence[str], *, top_n: int | None = None
+    ) -> list[RankedDocument]:
+        body: dict[str, object] = {
+            "model": self._settings.rerank_model,
+            "input": {"query": query, "documents": list(documents)},
+        }
+        if top_n is not None:
+            body["top_n"] = top_n
+        resp = self._client.post("/services/rerank/text-rerank/text-rerank",
+                                 json=body)
+        resp.raise_for_status()
+        results = (resp.json().get("output") or {}).get("results", [])
+        out: list[RankedDocument] = []
+        for item in results:
+            if "index" not in item or "relevance_score" not in item:
+                continue
+            try:
+                out.append(RankedDocument(
+                    index=int(item["index"]),
+                    relevance_score=float(item["relevance_score"]),
+                ))
+            except (TypeError, ValueError):
+                continue  # 非数值防御（响应注入面——TC-ACL-08 同款口径）
+        return out

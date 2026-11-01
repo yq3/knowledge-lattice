@@ -54,6 +54,7 @@ from knowledge_lattice.store.backend import (
     MembershipExistsError,
     MembershipExpiredError,
     MembershipLastAdminError,
+    OrgExistsError,
 )
 from knowledge_lattice.store.taskclock import utc_now_ts
 
@@ -101,6 +102,60 @@ async def issue_dev_token(
         "org": body.org,
         "act": body.act,
     }
+
+
+class OrgCreateRequest(BaseModel):
+    id: str
+    name: str
+    org_admin: str | None = None  # 首任 org_admin（建组织即挂 membership——新组织开通唯一路径）
+
+
+@router.get("/api/orgs")
+async def list_orgs(request: Request, auth: AuthContext = Depends(get_auth)) -> dict:
+    """组织列表（design §6.2 L1121——m2-5 A1 实装）：系统管理员=全部；普通
+    用户=本人 membership（TC-AZ-02 口径——非本人组织存在性不泄露）。"""
+    service = get_service(request)
+    if auth.is_system_admin:
+        return {"orgs": service.backend.list_all_orgs()}
+    return {"orgs": service.backend.list_orgs_for_user(auth.user_id)}
+
+
+@router.post("/api/orgs", status_code=201)
+async def create_org(
+    request: Request, body: OrgCreateRequest,
+    auth: AuthContext = Depends(get_auth),
+) -> dict:
+    """建组织（**系统管理员专属**——design §6.2；m2-5 A1 实装，TC-AZ-04②
+    载体）。可选 ``org_admin`` 指定首任 org_admin（建组织即挂 membership——
+    members POST 要求操作者已是本组织 org_admin、sysadmin 无成员关系，不在此
+    开通则新组织无人可管）；用户不存在 404 组织零残留（D16 不建账号）；
+    重复组织 409（组织不可删只能停用——P1-1）；审计同事务。"""
+    if not auth.is_system_admin:
+        raise HTTPException(status_code=403, detail="系统管理员专属操作（design §6.2）")
+    service = get_service(request)
+    from knowledge_lattice.domain.audit_events import EVENT_ORG_CREATED
+
+    try:
+        service.backend.create_org(
+            org_id=body.id, name=body.name,
+            org_admin_user_id=body.org_admin,
+            audit=(
+                EVENT_ORG_CREATED,
+                json.dumps({
+                    "org_id": body.id, "name": body.name,
+                    "org_admin": body.org_admin, "actor": auth.user_id,
+                }, ensure_ascii=False),
+            ),
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"用户不存在: {body.org_admin!r}（管理员不建账号——建档走"
+            " SSO JIT，D16）",
+        ) from exc
+    except OrgExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"org_id": body.id, "name": body.name, "org_admin": body.org_admin}
 
 
 @router.get("/api/orgs/{org}/dimensions")
@@ -576,7 +631,8 @@ async def embedding_coverage(
     """嵌入覆盖率只读面板（design §8 M2.3——**不做可改参数**：改模型=走重嵌入
     流程）。各库覆盖率按 RUNBOOK §1 闭合口径（分子/分母都限在用块：
     tombstone=0 且 version=active_version）；reembed 窗口 done/total 进度取
-    全局在用块口径 + 最近 reembed 任务行状态。"""
+    **全库**在用块口径（N-1 裁定——跨组织全库迁移，面板按 org 过滤展示本组织
+    datasets）+ 最近 reembed 任务行状态。"""
     org = org_scoped(request, org, auth)
     service = get_service(request)
     _require_org_admin(service, auth, org)

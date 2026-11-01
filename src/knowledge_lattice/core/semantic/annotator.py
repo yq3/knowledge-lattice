@@ -39,6 +39,10 @@ from collections import defaultdict
 
 import ahocorasick
 
+from knowledge_lattice.core.semantic.fuzzy import (
+    build_fuzzy_terms,
+    fuzzy_layers_for_fragment,
+)
 from knowledge_lattice.core.semantic.norm import normalize_alias
 
 logger = logging.getLogger(__name__)
@@ -196,24 +200,36 @@ class Annotator:
         # ---- m2s-6：模糊兜底内存面（§5.9 第 3 层 a/b——拼音/编辑距离确定性层；
         #      与构建侧 sem_fuzzy_terms 表同源同口径〔fuzzy.build_fuzzy_terms
         #      纯计算〕，向量层走注入 vec_lookup（SQL 在 store））----
-        from knowledge_lattice.core.semantic.fuzzy import (
-            build_fuzzy_terms, fuzzy_layers_for_fragment,
-        )
+        from knowledge_lattice.core.semantic.fuzzy import fuzzy_layers_for_fragment
 
+        # G-24④（m2-5）：**懒构建**——pypinyin 全量计算是万级词典的秒级固定
+        # 开销，fuzzy=False（缺省 annotate/search 主路径）不支付；首次
+        # fuzzy=True 识别时构建一次（同实例不重建）。
+        self.fuzzy_terms: list[dict] | None = None
+        self.fuzzy_stats: dict = {}
+        self._fuzzy_pinyin: dict[str, list[dict]] = {}
+        self._fuzzy_dels: dict[str, list[dict]] = {}
+        self._fuzzy_match = fuzzy_layers_for_fragment
+
+    def _ensure_fuzzy_built(self) -> None:
+        """模糊面懒构建（G-24④——一次构建；索引供 _fuzzy_match 只读直用）。"""
+        if self.fuzzy_terms is not None:
+            return
         term_rows, _del_rows, self.fuzzy_stats = build_fuzzy_terms(
-            snapshot, None, embed_model_label="")
+            self.snapshot, None, embed_model_label="")
         self.fuzzy_terms = term_rows
-        self._fuzzy_pinyin: dict[str, list[dict]] = defaultdict(list)
-        self._fuzzy_dels: dict[str, list[dict]] = defaultdict(list)
+        pinyin: dict[str, list[dict]] = defaultdict(list)
+        dels: dict[str, list[dict]] = defaultdict(list)
         for idx, t in enumerate(term_rows):
             if t["pinyin"]:
-                self._fuzzy_pinyin[t["pinyin"]].append(t)
+                pinyin[t["pinyin"]].append(t)
             if t["kind"] != "definition" and t["term_len"] >= 4:
                 from knowledge_lattice.core.semantic.fuzzy import del_keys
 
                 for key in del_keys(t["text_norm"]):
-                    self._fuzzy_dels[key].append({"idx": idx})
-        self._fuzzy_match = fuzzy_layers_for_fragment
+                    dels[key].append({"idx": idx})
+        self._fuzzy_pinyin = pinyin
+        self._fuzzy_dels = dels
 
     # ---- 主入口 ----
 
@@ -223,6 +239,7 @@ class Annotator:
         fuzzy: bool = False,
         include_restricted: bool = False,
         vec_lookup=None,
+        vec_top: int = 3,
     ) -> dict:
         """文本 → 类型化实体标注（§6.3 契约：mentions + candidates）。
 
@@ -231,6 +248,8 @@ class Annotator:
           via='fuzzy'、confidence 一律低于第 1 层、**落 candidates 不进
           mentions**（G-2 并存裁定：中间件注入一行低信任提示）；向量层经
           vec_lookup(frag_text) -> list[{entity_id, sim}] 注入（SQL 在 store）；
+          vec_top=向量层每片段实体截断（G-24⑤——m2-5 缺省 3，编排面经
+          settings.semantic_fuzzy_vec_top 传入）；
         - include_restricted=True（T-S9 持权路径——semantic:restricted 调用
           方）：restricted 实体别名参与识别（无权调用方零暴露——build 时
           不入主自动机，本参数只对持权请求生效）。"""
@@ -311,8 +330,10 @@ class Annotator:
 
         # ---- 第 3 层模糊兜底（fuzzy=True——§5.9；落 candidates 不进 mentions）----
         if fuzzy:
+            self._ensure_fuzzy_built()
             candidates.extend(
-                self._fuzzy_candidates(text, mentions, vec_lookup=vec_lookup))
+                self._fuzzy_candidates(text, mentions, vec_lookup=vec_lookup,
+                                       vec_top=vec_top))
         return {"mentions": mentions, "candidates": candidates}
 
     # ---- 内部 ----
@@ -405,13 +426,16 @@ class Annotator:
         return chosen
 
     def _fuzzy_candidates(self, text: str, mentions: list[dict],
-                          *, vec_lookup) -> list[dict]:
+                          *, vec_lookup, vec_top: int = 3) -> list[dict]:
         """§5.9 第 3 层：未被 AC 层覆盖的名词性片段 × 三层兜底 → candidates。
 
         - 名词筛选（jieba 词性）+ 长度 ≥2；片段与任一 mention span 重叠即跳过；
         - 拼音完全匹配 → 编辑距离 ≤1（长度 ≥4）→ 向量近邻（阈值 0.75 top-3
           ——vec_lookup 注入），依次短路（同片段只取首个命中层）；
-        - via='fuzzy'、confidence 分层且一律低于第 1 层（0.75/0.65/0.55 < 0.9）。"""
+        - via='fuzzy'、confidence 分层且一律低于第 1 层（0.75/0.65/0.55 < 0.9）；
+        - 索引直读实例映射（G-24④——m2-5 去除每片段 dict() 全量复制；
+          fuzzy_layers_for_fragment 只读 .get 无 mutate）；vec_top 为向量层
+          每片段实体截断（G-24⑤——缺省 3，编排面注入 settings 值）。"""
         from knowledge_lattice.core.semantic.fuzzy import FUZZY_CONFIDENCE
 
         covered = [(m["span"][0], m["span"][1]) for m in mentions]
@@ -424,8 +448,8 @@ class Annotator:
                 continue
             layer = term = None
             for lay, t in self._fuzzy_match(
-                frag_norm, pinyin_index=dict(self._fuzzy_pinyin),
-                del_index=dict(self._fuzzy_dels), terms=self.fuzzy_terms,
+                frag_norm, pinyin_index=self._fuzzy_pinyin,
+                del_index=self._fuzzy_dels, terms=self.fuzzy_terms or (),
             ):
                 layer, term = lay, t
                 break
@@ -444,7 +468,7 @@ class Annotator:
                     out.append(self._fuzzy_candidate(
                         start, end, word, eid, "vec", v.get("text_norm"),
                         confidence=FUZZY_CONFIDENCE["vec"], sim=v.get("sim")))
-                    if len(seen) >= 3:
+                    if len(seen) >= max(1, vec_top):
                         break
             elif layer is not None:
                 out.append(self._fuzzy_candidate(
@@ -740,6 +764,9 @@ def annotate_text(backend, settings, org_id: str, text: str, *,
         text, context_entities=context_entities, prefer_types=prefer_types,
         fuzzy=fuzzy, include_restricted=include_restricted,
         vec_lookup=vec_lookup,
+        # G-24⑤（m2-5）：vec 实体截断经 settings 注入（LATTICE_SEM_FUZZY_VEC_TOP
+        # 端到端消费——此前 store 查询侧已消费、annotator 侧硬编码 3）
+        vec_top=max(1, int(getattr(settings, "semantic_fuzzy_vec_top", 3) or 3)),
     )
     return {"dict_rev": rev, **result}
 

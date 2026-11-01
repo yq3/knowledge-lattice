@@ -20,6 +20,7 @@ EVENT_DOCUMENT_DELETE = "document.delete"          # 删除文档（M1 既有口
 EVENT_TASK_CANCEL = "task.cancel"                  # 任务取消（m2-1 P3-17 清偿）
 EVENT_DOCUMENT_DIMS_CHANGE = "document.dims_change"  # 维度值 PATCH（M1 既有口径）
 EVENT_DATASET_DELETE = "dataset.delete"            # 删库（T19 半句收口——M2.4）
+EVENT_ORG_CREATED = "org.created"                  # 建组织（m2-5 A1——sysadmin 专属，审计同事务）
 EVENT_UPLOAD_CREDENTIAL_ISSUED = "upload.credential_issued"  # 凭证签发（M1 既有口径）
 EVENT_UPLOAD_CONSUME = "upload.consume"            # 凭证消费（M1 既有口径）
 EVENT_UPLOAD_RECLAIM = "upload.reclaim"            # 过期未消费凭证回收（m1-3 既有——

@@ -431,8 +431,10 @@ def test_last_admin_guard_store_level(matrix) -> None:
 
 
 def test_last_admin_guard_concurrent_demote_pg(pg_db):
-    """R3 P3-1：两连接并发互降两名 active org_admin——全 admin 行 FOR UPDATE
-    串行化：恰一侧成功、另一侧 MembershipLastAdminError，终态恒 1 admin
+    """R3 P3-1：两连接并发互降两名 active org_admin——pg_advisory_xact_lock
+    (hashtext(org)) 事务级咨询锁跨行串行化（**全 admin 行 FOR UPDATE 方案已
+    弃用**——并发提交后 EPQ 抛 tuple concurrently updated，R3 择型见提交注记）：
+    恰一侧成功、另一侧 MembershipLastAdminError，终态恒 1 admin
     （修复前 READ COMMITTED 双方 count=2 均放行 → 0 admin）。
 
     pg 专用（sqlite BEGIN IMMEDIATE 单写者天然串行——无此并发形态；

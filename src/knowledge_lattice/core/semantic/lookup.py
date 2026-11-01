@@ -11,8 +11,11 @@ design §3 未单列本模块、随 m2s-2 增设——search_entities/describe_t
 
 from __future__ import annotations
 
+import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 
 from knowledge_lattice.config import Settings
 from knowledge_lattice.core.semantic.constants import SEM_ENTITY_TYPES
@@ -30,6 +33,11 @@ MAX_TOP_K = 50        # §6.3：top_k ≤50
 DESCRIBE_TIMEOUT_S = 3.0   # T-S11：透传超时 3s
 _DESCRIBE_CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
 
+# vec 档嵌入线程池（G-24③——m2-5）：同步 httpx embedder 不阻塞调用线程外的
+# 有界等待面；池小（查询侧单条嵌入，语义端点低 QPS）。core 两包互斥——
+# 不复用 core/docs/retrieve._MODEL_POOL（test_sem_00_layering 守卫）。
+_VEC_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="lattice-semvec")
+
 
 def clear_describe_cache() -> None:
     """清空透传缓存（测试隔离 / 运维强制刷新）。"""
@@ -38,6 +46,54 @@ def clear_describe_cache() -> None:
 
 class DescribeTableDenied(PermissionError):
     """未登记的表名（403——T-S11②：防枚举数仓；非 table 实体同口径）。"""
+
+
+def _audit_sem_vec_degraded(backend, org_id: str, user_id: str | None,
+                            reason: str) -> None:
+    """vec 档降级审计（§5.2 同源口径：search.degraded 事件——reason 一致、
+    scope 标注来源端点；写失败仅告警不阻断检索——增益路语义）。"""
+    try:
+        backend.append_outbox(
+            "search.degraded",
+            json.dumps(
+                {"user_id": user_id, "org_id": org_id,
+                 "reasons": [reason], "scope": "search_entities"},
+                ensure_ascii=False,
+            ),
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("search.degraded (search_entities) audit write failed")
+
+
+def _embed_query_bounded(
+    backend, settings, embedder, q: str, *, org_id: str,
+    user_id: str | None, breakers: dict | None,
+):
+    """vec 档查询嵌入（G-24③——m2-5）：query_embed_timeout_s 有界等待 +
+    breaker 计数/开路跳过 + 降级审计。失败/超时返回 None（层跳过，前三档
+    照常——与 §5.2 向量路降级链同语义；此处为增益层，不阻断）。"""
+    breaker = (breakers or {}).get("embed")
+    if breaker is not None and not breaker.allow():
+        # 熔断开路=「已确认不可达」——直接降级不等超时（NFR-8：慢与不可达
+        # 由熔断区分），降级照常审计
+        _audit_sem_vec_degraded(backend, org_id, user_id, "embed_unreachable")
+        logger.warning("search_entities vec layer skipped: breaker open")
+        return None
+    future = _VEC_POOL.submit(embedder.embed, [q])
+    try:
+        vectors = future.result(timeout=settings.query_embed_timeout_s)
+        vector = vectors[0] if vectors else None
+        if vector is not None:
+            if breaker is not None:
+                breaker.record_success()
+            return vector
+        raise ValueError("search_entities vec embed returned empty vector")
+    except (FutureTimeoutError, Exception) as exc:  # noqa: BLE001
+        if breaker is not None:
+            breaker.record_failure()
+        _audit_sem_vec_degraded(backend, org_id, user_id, "embed_unreachable")
+        logger.warning("search_entities vec layer degraded: %s", exc)
+        return None
 
 
 def search_entities(
@@ -49,12 +105,19 @@ def search_entities(
     top_k: int = 10,
     settings=None,
     embedder=None,
+    breakers: dict | None = None,
+    user_id: str | None = None,
 ) -> dict:
     """search_entities（§6.3 契约）：entities[{id,type,key,name,brief,score,via}]。
 
     - 排序链（TC-SEM-05——S3/m2s-6 补齐拼音/向量）：别名精确 1.0 > 前缀
       0.8 > 拼音完全匹配 0.7 > FTS 模糊 0.5 > 向量近邻（sim——embedder
       注入且 settings 给出时启用；via='vec'）；
+    - vec 档有界超时/熔断/降级审计（G-24③——m2-5）：嵌入经
+      ``settings.query_embed_timeout_s`` 有界等待（非摄入侧 30s）、失败/超时
+      记 ``breakers["embed"]`` 熔断计数、开路直接跳过不发调用；降级统一
+      ``search.degraded`` 审计事件（reason=embed_unreachable、
+      scope=search_entities——§5.2 同源口径；此前仅 warning）；
     - brief 取 curated_json.definition → attrs_json.definition →
       attrs_json.comment（一句话定义）；
     - restricted 实体不出现（fail-closed——T-S9；store 各层谓词同口径）。"""
@@ -78,11 +141,10 @@ def search_entities(
     # REST/MCP 端点自 m2s-6 R2 起注入 settings/embedder（真实端点生效）；
     # 调用方缺省（core 直调/测试）时跳层——前三档语义不变
     if embedder is not None and settings is not None:
-        try:
-            vec = (embedder.embed([q]) or [None])[0]
-        except Exception as exc:  # noqa: BLE001 —— 增益层失败跳过
-            logger.warning("search_entities vec layer degraded: %s", exc)
-            vec = None
+        vec = _embed_query_bounded(
+            backend, settings, embedder, q, org_id=org_id, user_id=user_id,
+            breakers=breakers,
+        )
         if vec is not None:
             min_sim = getattr(settings, "semantic_fuzzy_vec_threshold", 0.75)
             hits = backend.sem_fuzzy_vec_search(

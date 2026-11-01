@@ -58,7 +58,8 @@ from knowledge_lattice.domain.audit_events import EVENT_SEMANTIC_BUILD
 logger = logging.getLogger(__name__)
 
 # 覆盖率收敛轮上限：每轮= 扫描写入至空 + 复算覆盖率；未收敛（并发摄取持续
-# 超越迁移速度）→ raise 交任务重试（attempts 有界收敛）——极端窗口申报。
+# 超越迁移速度）→ 任务 failed 留人工（G-27——**一次失败不自动回队**；subprocess
+# 形态 attempts 框架级重试仍在，但收敛判定不依赖它）——极端窗口申报。
 _MAX_CONVERGE_ROUNDS = 3
 
 
@@ -200,12 +201,13 @@ def run_reembed_task(
                 done, total,
             )
         if not converged:
-            # R3 P3-4：未收敛 fail-closed 收口（任务 failed 留重试——不上抛：
-            # 直调/runner 两路径语义一致；切换/清理/联动均未发生）
+            # R3 P3-4：未收敛 fail-closed 收口（任务 failed **留人工核查**——
+            # G-27 口径：不自动回队重投；错误信息明示处置面。不上抛：直调/
+            # runner 两路径语义一致；切换/清理/联动均未发生）
             backend.update_task(
                 task_id, status="failed",
                 error="reembed 全库覆盖率未收敛（并发摄取持续超越——任务"
-                "重试收敛；切换与清理未发生）",
+                "失败留人工核查后重投；切换与清理未发生）",
             )
             logger.error(
                 "reembed full-library coverage not converged: org=%s label=%s",
