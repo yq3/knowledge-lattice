@@ -280,7 +280,11 @@ def test_request_body_permissions_ignored_and_audited(tmp_path) -> None:
 
 
 def test_request_body_permissions_ignored_dev_jwt_too(tmp_path) -> None:
-    """dev JWT 路径同款口径（FR-4 对一切认证形态生效——不只 SSO）。"""
+    """dev JWT 路径同款口径（FR-4 对一切认证形态生效——不只 SSO）。
+
+    m2-6 P3-11 固化（m2-4 R2 P3-11 行为已修无永久用例）：**org 解析失败
+    （400）的请求不产生忽略事件**——ignored_fields 只在 org 解析成功后记
+    （否则 400 拒绝请求混入「忽略」语义事件，审计面失真）；正常 200 恰 1 条。"""
     settings = _settings(tmp_path)
     from knowledge_lattice.adapters.embedder import EmbeddingGate
     from knowledge_lattice.domain.auth import issue_dev_jwt
@@ -304,6 +308,18 @@ def test_request_body_permissions_ignored_dev_jwt_too(tmp_path) -> None:
     conn.commit()
     with TestClient(app) as client:
         token = issue_dev_jwt(settings, user_id="u_full", org=ORG)
+        # ① org 解析失败（claim 与头不一致 → 400）：不产生忽略事件
+        resp_bad = client.post(
+            "/api/search",
+            json={"query": "留抵退税", "permissions": ["admin"]},
+            headers={"Authorization": f"Bearer {token}", "X-Org-Id": "org:other"},
+        )
+        assert resp_bad.status_code == 400
+        assert conn.execute(
+            "SELECT COUNT(*) FROM audit_outbox WHERE event_type = ?",
+            (EVENT_AUTH_PERMISSIONS_IGNORED,),
+        ).fetchone()[0] == 0, "org 解析失败的 400 请求不混入忽略事件"
+        # ② 正常请求（带权限字段）：恰 1 条
         resp = client.post(
             "/api/search",
             json={"query": "留抵退税", "permissions": ["admin"]},

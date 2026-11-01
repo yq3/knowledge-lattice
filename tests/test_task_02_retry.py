@@ -123,13 +123,18 @@ def test_cancelled_failure_not_retried(runner_backend, wk_settings) -> None:
 
 
 def test_unknown_task_type_not_claimed(runner_backend, wk_settings) -> None:
-    """预留分发位（reindex/reembed/delete/semantic_*）：不认领不误伤。"""
+    """预留分发位（delete 等未知类型）：不认领不误伤。m2-6 起 reindex/reembed
+    已接入认领（worker/rebuild.py 执行体）——本用例的「未知类型」改用仍预留
+    的 delete；顺带断言 reembed/reindex 在 CLAIMABLE（新契约固化）。"""
+    from knowledge_lattice.worker.runner import CLAIMABLE_TASK_TYPES
+
     bk = runner_backend
-    task_id = bk.create_task(None, task_type="reembed")
+    task_id = bk.create_task(None, task_type="delete")
     runner = TaskRunner(bk, wk_settings, worker_id="wk-test")
     assert runner.run_once() is False
-    # 任务行原地 pending（后续段的 executor 落地后接管）
+    # 任务行原地 pending（delete 的 executor 归后续段）
     assert bk.get_task(task_id)["status"] == "pending"
+    assert "reembed" in CLAIMABLE_TASK_TYPES and "reindex" in CLAIMABLE_TASK_TYPES
 
 
 def test_task_id_contextvar_during_execution(runner_backend, wk_settings) -> None:

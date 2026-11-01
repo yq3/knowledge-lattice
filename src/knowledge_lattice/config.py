@@ -8,7 +8,7 @@ M0a-1 骨架：连接工厂所需路径/PRAGMA 常量 + 嵌入四件套占位（
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 # ---- worker 模式枚举（M2.4 m2-2 必做 3：两处字面量收敛——dataclass 默认与
@@ -182,6 +182,28 @@ class Settings:
                 "LATTICE_SEM_SOURCES_JSON 必须是 {org: {adapter: {...}}} JSON 对象"
             )
         return parsed
+
+
+def effective_settings(base: Settings, embedder) -> Settings:
+    """标签/维度随 embedder 派生的**有效 settings**（m2-6 R2 P2-1）。
+
+    reembed 蓝绿切换只原地更新 embedder（``apply_model``——检索谓词/摄取钉签
+    的共同源）；``base`` 的 embed_model/embed_dim 可能滞后（inline 切换后
+    ServiceContext/MCP 闭包仍持旧 settings 对象；subprocess 侧待运维改 env
+    重启）。本函数把「当前生效标签/维度」统一从 ``embedder.model_label``
+    解析并 replace——消费面（semantic vec 查询标签 / 覆盖率面板 dim / 探针
+    维度）与 embedder 永远一致。embedder 为 None 或标签畸形 → base 原样
+    （fail-open 到部署配置——与既有回退语义一致）。"""
+    label = getattr(embedder, "model_label", None)
+    if not label:
+        return base
+    name, sep, dim_raw = label.rpartition(":")
+    if not sep or not name or not dim_raw.isdigit():
+        return base
+    dim = int(dim_raw)
+    if base.embed_model == name and base.embed_dim == dim:
+        return base
+    return replace(base, embed_model=name, embed_dim=dim)
 
 
 def get_settings() -> Settings:

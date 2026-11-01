@@ -1209,10 +1209,10 @@ class SqliteBackend:
         if doc_id is not None:
             sql += " AND t.doc_id = :doc"
             params["doc"] = doc_id
-        # 次级排序键 id——created_at 秒级并列下的确定性 tiebreak（id 为 ULID
-        # 随机非单调、**不保证时间序**——只消除结果不确定性；同秒内「最近」
-        # 歧义本身登记 m2-6（任务 id 加序号列或单调源））
-        sql += " ORDER BY t.created_at DESC, t.id DESC"
+        # 次级排序键 rowid——created_at 秒级并列下的**单调** tiebreak（m2-6 B②：
+        # 原 id 次级键为 uuid4 随机非单调，同秒多任务认领序受字典序摆布——rowid
+        # = 插入序，认领序恒等于投递序；pg 侧对偶为 0010 迁移的 tasks.seq）
+        sql += " ORDER BY t.created_at DESC, t.rowid DESC"
         rows = self._conn.execute(sql, params).fetchall()
         cols = (
             "id", "doc_id", "type", "status", "attempts", "error", "target_version",
@@ -1336,7 +1336,7 @@ class SqliteBackend:
             "          OR (status IN ('leased','running')"
             "              AND lease_until IS NOT NULL AND lease_until <= :now))"
             "   ORDER BY CASE WHEN type = 'semantic_retag' THEN 1 ELSE 0 END,"
-            "     created_at, id LIMIT 1)"
+            "     created_at, rowid LIMIT 1)"
             " RETURNING id, doc_id, type, status, attempts, error, target_version,"
             " lease_owner, lease_until, heartbeat_at, created_at, updated_at",
             params,
@@ -2077,14 +2077,18 @@ class SqliteBackend:
         ).fetchone()
 
     def dimension_value_impact(
-        self, org_id: str, dim_id: str, value_id: str,
+        self, org_id: str, dim_id: str, value_id: str, *,
+        treating_active: bool = False,
     ) -> dict | None:
         """取值停用影响面预估（TC-OPS-07① dry_run 数据源）——只读。
 
         locked_docs（R2 边界3——v1.6.3「维度写锁项」显式化）：组织内引用了
         **非 active 取值（含本次将停用值——dry_run 预估确认后状态）或 retired
         维度取值**的文档数——这些文档的 PATCH/覆盖上传与 _require_values_in_grants
-        同锁（文档级、跨维度；恢复路径=重新启用取值）。"""
+        同锁（文档级、跨维度；恢复路径=重新启用取值）。
+
+        treating_active=True（m2-6 A4）：视**本值为 active**的口径——enable
+        的影响面预估（启用后 locked_docs 不含本值——解锁效果的联动断言面）。"""
         if self._value_row(org_id, dim_id, value_id) is None:
             return None
         docs = self._conn.execute(
@@ -2097,11 +2101,15 @@ class SqliteBackend:
             " FROM user_dimension_grants WHERE value_id = :vid",
             {"vid": value_id},
         ).fetchone()
+        value_filter = (
+            "v.status != 'active' AND v.id != :vid" if treating_active
+            else "v.status != 'active' OR v.id = :vid"
+        )
         locked = self._conn.execute(
             "SELECT count(DISTINCT dd.doc_id) FROM document_dimensions dd"
             " JOIN dimension_values v ON v.id = dd.value_id"
             " JOIN dimensions d ON d.id = v.dimension_id AND d.org_id = :org"
-            " WHERE d.status != 'active' OR v.status != 'active' OR v.id = :vid",
+            f" WHERE d.status != 'active' OR ({value_filter})",
             {"org": org_id, "vid": value_id},
         ).fetchone()[0]
         return {"docs": docs, "grants": grants, "users": users, "locked_docs": locked}
@@ -2199,7 +2207,11 @@ class SqliteBackend:
         audit: tuple[str, str] | None = None,
     ) -> dict:
         """用户 local 授权全量替换（TC-OPS-08——sync 行不动；幂等目标全量态）。
-        rows=(dim_key, value, expires_at)；解析失败 → KeyError（400 语义）。"""
+        rows=(dim_key, value, expires_at)；解析失败 → KeyError（400 语义）；
+        expires_at 经 normalize_expires_at 归一（m2-6 B③——store 直调与 API
+        同一口径，非法值 fail-closed raise ValueError）。"""
+        from knowledge_lattice.store.taskclock import normalize_expires_at
+
         conn = self._conn
         resolved: list[tuple[str, str, str | None]] = []
         for dim_key, value, expires_at in rows:
@@ -2213,7 +2225,7 @@ class SqliteBackend:
                 raise KeyError(
                     f"grant target not found in org: {dim_key!r}={value!r}"
                 )
-            resolved.append((r[0], r[1], expires_at))
+            resolved.append((r[0], r[1], normalize_expires_at(expires_at)))
         conn.execute("BEGIN IMMEDIATE")
         try:
             removed = conn.execute(
@@ -2268,19 +2280,275 @@ class SqliteBackend:
         return {"id": row[0], "username": row[1], "is_system_admin": row[2],
                 "disabled_at": row[3]}
 
-    def embedding_coverage(self, org_id: str, embed_model: str) -> list[dict]:
+    # ---- 成员关系写路径（m2-6 A3） ----
+
+    def add_membership(
+        self, org_id: str, user_id: str, *,
+        role: str = "member", expires_at: str | None = None,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        """新建成员关系（语义见 backend.py 协议——与 audit 同事务）。"""
+        from knowledge_lattice.store.backend import MembershipExistsError
+        from knowledge_lattice.store.taskclock import normalize_expires_at
+
+        if self._conn.execute(
+            "SELECT 1 FROM users WHERE id = :u", {"u": user_id}
+        ).fetchone() is None:
+            raise KeyError(f"user not found: {user_id!r}")
+        expires_norm = normalize_expires_at(expires_at)
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = conn.execute(
+                "INSERT INTO user_org_memberships(user_id, org_id, role, expires_at)"
+                " VALUES(:uid, :org, :role, :exp)",
+                {"uid": user_id, "org": org_id, "role": role, "exp": expires_norm},
+            )
+            if cur.rowcount and audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except sqlite3.IntegrityError as exc:
+            self._rollback()
+            raise MembershipExistsError(
+                f"membership exists: user={user_id!r} org={org_id!r}"
+                "（含过期行——恢复走 DELETE 后重加 + PUT grants 补授权，T23）"
+            ) from exc
+        except BaseException:
+            self._rollback()
+            raise
+        return {"user_id": user_id, "role": role, "expires_at": expires_norm}
+
+    def update_membership(
+        self, org_id: str, user_id: str, *,
+        role: str | None = None, expires_at: object = ...,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """成员关系更新（语义见 backend.py 协议——R2 P3-3：过期判定与最后
+        管理员守卫全部移入**同一事务**〔BEGIN IMMEDIATE 内〕，TOCTOU 根除；
+        expires_at Ellipsis 哨兵=不变 / None=改永不过期 / 字符串=归一写入）。"""
+        from knowledge_lattice.store.backend import (
+            MembershipExpiredError,
+            MembershipLastAdminError,
+        )
+        from knowledge_lattice.store.taskclock import normalize_expires_at
+
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT role, expires_at FROM user_org_memberships"
+                " WHERE user_id = :uid AND org_id = :org",
+                {"uid": user_id, "org": org_id},
+            ).fetchone()
+            if row is None:
+                conn.execute("COMMIT")
+                return None
+            old_role, old_expires = row
+            now = self._now_ts()
+            if old_expires is not None and old_expires <= now:
+                conn.execute("COMMIT")
+                raise MembershipExpiredError(
+                    f"membership expired: user={user_id!r} org={org_id!r}"
+                    "——T23 续期禁令：删行重加（DELETE → POST → PUT grants）"
+                )
+            new_role = role if role is not None else old_role
+            if expires_at is ...:
+                new_expires = old_expires
+            else:
+                new_expires = normalize_expires_at(expires_at)  # None→永久
+            # 最后管理员守卫（事务内——R2 P3-3）：目标 active admin 且操作后
+            # 身份终结 → count 同事务读定
+            if old_role == "org_admin":
+                still_admin = new_role == "org_admin" and (
+                    new_expires is None or new_expires > now
+                )
+                if not still_admin and self._count_active_admins(conn, org_id) <= 1:
+                    conn.execute("COMMIT")
+                    raise MembershipLastAdminError(
+                        f"组织 {org_id!r} 最后一名 active org_admin 不得自锁"
+                        "（降级/停用被拒——先指定继任管理员）"
+                    )
+            conn.execute(
+                "UPDATE user_org_memberships SET role = :role, expires_at = :exp"
+                " WHERE user_id = :uid AND org_id = :org",
+                {"role": new_role, "exp": new_expires,
+                 "uid": user_id, "org": org_id},
+            )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return {"user_id": user_id, "role": new_role, "expires_at": new_expires}
+
+    def delete_membership(
+        self, org_id: str, user_id: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> bool:
+        """删除成员关系（trg_membership_delete_cleanup 级联清授权——T23 不
+        破坏；最后管理员守卫同事务——R2 P3-3）。"""
+        from knowledge_lattice.store.backend import MembershipLastAdminError
+
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT role, expires_at FROM user_org_memberships"
+                " WHERE user_id = :uid AND org_id = :org",
+                {"uid": user_id, "org": org_id},
+            ).fetchone()
+            if row is None:
+                conn.execute("COMMIT")
+                return False
+            if row[0] == "org_admin" and (
+                row[1] is None or row[1] > self._now_ts()
+            ) and self._count_active_admins(conn, org_id) <= 1:
+                conn.execute("COMMIT")
+                raise MembershipLastAdminError(
+                    f"组织 {org_id!r} 最后一名 active org_admin 不得自锁"
+                    "（移出被拒——先指定继任管理员）"
+                )
+            cur = conn.execute(
+                "DELETE FROM user_org_memberships"
+                " WHERE user_id = :uid AND org_id = :org",
+                {"uid": user_id, "org": org_id},
+            )
+            deleted = cur.rowcount > 0
+            if deleted and audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return deleted
+
+    @staticmethod
+    def _count_active_admins(conn, org_id: str) -> int:
+        """事务内 active org_admin 计数（守卫数据源——R2 P3-3）。"""
+        return conn.execute(
+            "SELECT count(*) FROM user_org_memberships"
+            " WHERE org_id = :org AND role = 'org_admin'"
+            "   AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)",
+            {"org": org_id},
+        ).fetchone()[0]
+
+    def _now_ts(self) -> str:
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        return utc_now_ts()
+
+    def count_active_org_admins(self, org_id: str) -> int:
+        """本组织 active org_admin 数（A3 唯一管理员守卫）。"""
+        return self._conn.execute(
+            "SELECT count(*) FROM user_org_memberships"
+            " WHERE org_id = :org AND role = 'org_admin'"
+            "   AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)",
+            {"org": org_id},
+        ).fetchone()[0]
+
+    # ---- 维度取值写路径（m2-6 A4） ----
+
+    def create_dimension_value(
+        self, org_id: str, dim_id: str, value: str, *,
+        label: str | None = None,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """新增维度取值（语义见 backend.py 协议——label 展示名 R2 P3-4）。"""
+        from knowledge_lattice.store.backend import DimensionValueExistsError
+
+        dim = self._conn.execute(
+            "SELECT status FROM dimensions WHERE id = :dim AND org_id = :org",
+            {"dim": dim_id, "org": org_id},
+        ).fetchone()
+        if dim is None:
+            return None
+        if dim[0] == "retired":
+            raise ValueError(
+                f"dimension retired: {dim_id!r}——退役维度不再扩值（T20）"
+            )
+        value_id = f"val:{dim_id}:{value}"
+        display = label if label is not None else value
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                "INSERT INTO dimension_values(id, dimension_id, value, label)"
+                " VALUES(:id, :dim, :value, :label)",
+                {"id": value_id, "dim": dim_id, "value": value,
+                 "label": display},
+            )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except sqlite3.IntegrityError as exc:
+            self._rollback()
+            raise DimensionValueExistsError(
+                f"value exists in dimension: {value!r}"
+            ) from exc
+        except BaseException:
+            self._rollback()
+            raise
+        return {"value_id": value_id, "value": value, "label": display,
+                "status": "active"}
+
+    def enable_dimension_value(
+        self, org_id: str, dim_id: str, value_id: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """取值重新启用（D19 恢复路径——语义见 backend.py 协议；retired 维度
+        409 与 create 对称〔R2 P3-4〕、applied 按 rowcount）。"""
+        impact = self.dimension_value_impact(
+            org_id, dim_id, value_id, treating_active=True
+        )
+        if impact is None:
+            return None
+        dim_status = self._conn.execute(
+            "SELECT status FROM dimensions WHERE id = :dim AND org_id = :org",
+            {"dim": dim_id, "org": org_id},
+        ).fetchone()[0]
+        if dim_status == "retired":
+            raise ValueError(
+                f"dimension retired: {dim_id!r}——退役维度取值不启用（重建"
+                "维度是唯一路径，T20 对称）"
+            )
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = conn.execute(
+                "UPDATE dimension_values SET status = 'active'"
+                " WHERE id = :vid AND status = 'disabled'",
+                {"vid": value_id},
+            )
+            applied = cur.rowcount > 0
+            if applied and audit is not None:
+                self._outbox_insert(conn, *audit)  # 幂等：已 active 零新审计
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return {**impact, "applied": applied}
+
+    def embedding_coverage(self, org_id: str | None, embed_model: str) -> list[dict]:
         """各知识库嵌入覆盖率（TC-EMB-06 只读面板——RUNBOOK §1 闭合口径：
-        分子/分母都限在用块 tombstone=0 且 version=active_version）。"""
+        分子/分母都限在用块 tombstone=0 且 version=active_version；
+        org_id=None=全库——R2 P2-2 全库覆盖率门数据源）。
+
+        P1-1/R3：org-scoped 调用外层**动态 ds 过滤**（只列本组织 datasets——
+        他组织 dataset_id/name 以 total=0 行返回=跨组织元数据泄露；全库口径
+        无外层过滤，gate 内层 org_filter 独立不受影响）。"""
+        org_filter = " AND d.org_id = :org" if org_id is not None else ""
+        ds_filter = " WHERE ds.org_id = :org" if org_id is not None else ""
         rows = self._conn.execute(
             "SELECT ds.id, ds.name,"
             " (SELECT count(*) FROM chunks c"
             "   JOIN documents d ON d.id = c.doc_id AND d.active_version = c.version"
-            "   WHERE d.dataset_id = ds.id AND d.org_id = :org AND c.tombstone = 0),"
+            f"   WHERE d.dataset_id = ds.id AND c.tombstone = 0{org_filter}),"
             " (SELECT count(*) FROM chunks c"
             "   JOIN documents d ON d.id = c.doc_id AND d.active_version = c.version"
             "   JOIN chunk_vectors cv ON cv.rid = c.rid AND cv.embed_model = :model"
-            "   WHERE d.dataset_id = ds.id AND d.org_id = :org AND c.tombstone = 0)"
-            " FROM datasets ds WHERE ds.org_id = :org ORDER BY ds.id",
+            f"   WHERE d.dataset_id = ds.id AND c.tombstone = 0{org_filter})"
+            f" FROM datasets ds{ds_filter} ORDER BY ds.id",
             {"org": org_id, "model": embed_model},
         ).fetchall()
         return [
@@ -2296,6 +2564,99 @@ class SqliteBackend:
         ).fetchall()
         cols = ("id", "event_type", "payload_json", "created_at")
         return [dict(zip(cols, r)) for r in rows]
+
+    # ---- reembed 蓝绿执行体（m2-6 A1——TC-EMB-06 执行面；R2 P2-2：org_id=None
+    #      = 全库——N-1 裁定选 a，扫描/repin/清理/失效均全库口径） ----
+
+    def pending_reembed_batch(
+        self, org_id: str | None, embed_model: str, *, limit: int = 64,
+    ) -> list[dict]:
+        """reembed 扫描认领 + 钉签（TC-EMB-06 ①——docstring 见 backend.py 协议；
+        org_id=None 时无组织过滤〔全库〕）。幂等（已有目标标签行不再命中）。"""
+        org_filter = " AND d.org_id = :org" if org_id is not None else ""
+        rows = self._conn.execute(
+            "UPDATE chunks SET embed_model = :label"
+            " WHERE rid IN ("
+            "   SELECT c.rid FROM chunks c"
+            "   JOIN documents d ON d.id = c.doc_id"
+            f"   WHERE c.tombstone = 0{org_filter}"
+            "     AND NOT EXISTS (SELECT 1 FROM chunk_vectors cv"
+            "       WHERE cv.rid = c.rid AND cv.embed_model = :label)"
+            "   ORDER BY c.rid LIMIT :limit)"
+            " RETURNING rid, content",
+            {"org": org_id, "label": embed_model, "limit": limit},
+        ).fetchall()
+        self._conn.commit()
+        return [{"rid": r[0], "content": r[1]} for r in rows]
+
+    def repin_chunk_labels(self, org_id: str | None, embed_model: str) -> int:
+        """切换后状态标签对齐（TC-EMB-06 ③——迟到旧标签回写谓词不匹配根除；
+        org_id=None=全库）。"""
+        org_filter = " AND org_id = :org" if org_id is not None else ""
+        cur = self._conn.execute(
+            "UPDATE chunks SET embed_model = :label"
+            f" WHERE embed_model != :label AND doc_id IN (SELECT id FROM documents"
+            f"   WHERE 1=1{org_filter})",
+            {"org": org_id, "label": embed_model},
+        )
+        self._conn.commit()
+        return cur.rowcount
+
+    def delete_vectors_by_label(self, org_id: str | None, keep_model: str) -> int:
+        """旧标签延后清理（TC-EMB-06 ④——全库单标签一致；org_id=None=全库）。"""
+        org_filter = " AND d.org_id = :org" if org_id is not None else ""
+        cur = self._conn.execute(
+            "DELETE FROM chunk_vectors WHERE embed_model != :keep AND rid IN ("
+            "  SELECT c.rid FROM chunks c"
+            f"  JOIN documents d ON d.id = c.doc_id WHERE 1=1{org_filter})",
+            {"org": org_id, "keep": keep_model},
+        )
+        self._conn.commit()
+        return cur.rowcount
+
+    def invalidate_quality_cache(self, org_id: str | None) -> int:
+        """quality 检测缓存失效（TC-EMB-06 ④——detected_at_scale 置 NULL 使
+        recompute 候选= 全量；content_sha 由重算路径回写覆盖；全库口径）。"""
+        org_filter = " AND org_id = :org" if org_id is not None else ""
+        cur = self._conn.execute(
+            "UPDATE chunks SET detected_at_scale = NULL"
+            f" WHERE tombstone = 0 AND doc_id IN (SELECT id FROM documents"
+            f"   WHERE 1=1{org_filter})",
+            {"org": org_id},
+        )
+        self._conn.commit()
+        return cur.rowcount
+
+    def list_org_ids(self) -> list[str]:
+        """全部组织 id（reembed 全库联动逐组织遍历面）。"""
+        return [
+            r[0] for r in self._conn.execute(
+                "SELECT id FROM orgs ORDER BY id"
+            ).fetchall()
+        ]
+
+    def read_org_audit(
+        self, org_id: str, *, action: str | None = None, limit: int = 100,
+        now: str | None = None,
+    ) -> list[dict]:
+        """组织审计事件读取（m2-6 B④ 下沉——双源合并/去重/过滤/排序，语义见
+        backend.py 协议；B5 注记同协议——读回行 row_hash 不自洽勿复算链）。"""
+        from knowledge_lattice.store.audit_chain import outbox_row_to_event
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        monthly = self.read_monthly_events(when=now or utc_now_ts())
+        monthly_ids = {r.get("id") for r in monthly}
+        rows: list[dict] = list(monthly)
+        for outbox_row in self.read_pending_outbox_events():
+            event = outbox_row_to_event(outbox_row)
+            if event.get("id") in monthly_ids:
+                continue  # 月库优先去重（崩溃窗同事件不重复）
+            rows.append(event)
+        rows = [r for r in rows if r.get("org_id") == org_id]
+        if action:
+            rows = [r for r in rows if (r.get("action") or "").startswith(action)]
+        rows.sort(key=lambda r: (r.get("created_at") or "", r.get("id") or ""))
+        return list(reversed(rows[-limit:]))  # 最近在前（面板序）
 
     def read_last_maintenance_stats(self) -> dict | None:
         """最近 maintenance.run 的 stats（B4——outbox 优先、月库兜底；P3-1/R2：

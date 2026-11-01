@@ -54,6 +54,25 @@ sqlite 侧 `chunks.embed_model` 为摄取状态标签：重嵌入批次结束、
 新批次标签即当前 config 标签（`mark_embedding_batch` 钉标签机制不变）；旧标签
 残留行不影响检索（谓词在 `chunk_vectors` 侧）。
 
+**m2-6 执行体接管后的操作口径（2026-11-01 交付注记）**：
+
+- **投递**：`POST /api/orgs/{org}/documents/{doc_id}/reindex?embed_model=new:dim`——
+  **sysadmin 专属**（owner/org_admin 403；N-1 用户裁定 2026-11-01：换模型为系统级
+  配置项）；worker 全库扫描（**含所有组织**）→ 全库覆盖率 100% 门 → 进程内原子切
+  标签 + 逐组织 quality 重算与 semantic_build 投递 → 旧标签清理。上方相位 1~5 的
+  SQL 仅供核查，日常走任务执行体。
+- **未收敛处置**：全库覆盖率 3 轮不收敛（并发持续摄取极端窗口）→ 任务 **failed 留
+  人工**（fail-closed，不自动重试——known-gaps G-27）；错误信息含「切换与清理未
+  发生」——核查并发摄取后人工重投。
+- **subprocess 形态任务完成 ≠ 主进程已切换**：worker 子进程内切换只作用于子进程；
+  主进程（API/检索）需改 env（LATTICE_EMBED_MODEL）重启——重启窗口内向量路暂空、
+  BM25 可用。inline 形态（测试/最小部署）同进程共享对象图、切换即时生效。
+- **回退窗口**：旧标签清理执行前可翻回旧标签（上方「回退」段）；**清理执行后不可
+  退**（重嵌入重来）。
+- **单文档 reindex**（不带 embed_model，owner/org_admin）：全量重切窗口内文档暂不可
+  搜（固有代价）；存在 pending_version（**含失败上传**）时 API 409 拒绝——先处置
+  覆盖上传（重传或清理 pending）后重投（N-2 用户裁定 2026-11-01 选 a 保守）。
+
 ## 2. 审计分区回溯（R2-P3-8——deploy 场景注记）
 
 `ensure_month_partition`（`store/postgres/audit.py`）只滚**当月/调用时点月份**分区。
@@ -109,6 +128,11 @@ deploy 场景注意：
 > `benchmarks/report-m2-2-ops05.md`（恢复演练实测）、known-gaps G-5/G-13/G-14。
 > 自动化形态：maintenance 任务族 `backup_snapshot` 任务体（节流
 > `LATTICE_BACKUP_INTERVAL_S` 默认 86400s = RPO 口径）。
+
+> **审计月库读回行注记（m2-6/A5——m2-3 B5 移交收口，2026-11-01）**：
+> `read_monthly_events` 读回行经重投影后 **row_hash 不自洽**（读回的语义列是
+> 投影非真相源）——消费者**勿以读回行复算哈希链**；链验证一律走 `walk_chain`
+> 路径（m2-3 B2 交付——canonical 十语义列重算，六边界 fail-closed）。
 
 ### 4.1 SQLite 后端（VACUUM INTO）
 

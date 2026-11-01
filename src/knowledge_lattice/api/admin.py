@@ -39,12 +39,22 @@ from pydantic import BaseModel
 from knowledge_lattice.domain.audit_events import (
     EVENT_DATASET_DELETE,
     EVENT_DIMENSION_RETIRE,
+    EVENT_DIMENSION_VALUE_CREATE,
     EVENT_DIMENSION_VALUE_DISABLE,
+    EVENT_DIMENSION_VALUE_ENABLE,
     EVENT_GRANTS_REPLACE,
+    EVENT_MEMBER_ADD,
+    EVENT_MEMBER_REMOVE,
+    EVENT_MEMBER_UPDATE,
 )
 from knowledge_lattice.domain.auth import AuthContext, check_path_org, issue_dev_jwt
-from knowledge_lattice.store.audit_chain import outbox_row_to_event
-from knowledge_lattice.store.backend import DatasetNotEmptyError
+from knowledge_lattice.store.backend import (
+    DatasetNotEmptyError,
+    DimensionValueExistsError,
+    MembershipExistsError,
+    MembershipExpiredError,
+    MembershipLastAdminError,
+)
 from knowledge_lattice.store.taskclock import utc_now_ts
 
 from .upload import get_auth, get_service, org_scoped
@@ -153,23 +163,48 @@ async def patch_dimension_value(
     org: str, dim_id: str, value_id: str, request: Request,
     body: ValueStatusRequest, auth: AuthContext = Depends(get_auth),
 ) -> dict:
-    """取值停用（TC-OPS-07①）：dry_run=只返回影响面预估；确认（不带 dry_run）
-    → status=disabled + 审计同事务。**T3 联动**：停用=收紧进计算（read_grants
-    既有 v.status='active' 过滤——下一次检索即时生效）。"""
+    """取值状态迁移（TC-OPS-07① + m2-6 A4 D19 恢复路径）：
+
+    - ``status=disabled``（m2-3）：dry_run=只返回影响面预估；确认 → disabled
+      + 审计同事务。T3 联动：收紧进计算（read_grants 既有过滤即时生效）；
+    - ``status=active``（m2-6 A4——**重新启用**）：D19 恢复路径——文档含已停用
+      取值时 PATCH/覆盖上传同锁（v1.6.3 口径），重新启用后解锁
+      （locked_docs 判定面自动联动——treating_active 影响面视角）；幂等
+      （已 active 零新审计）；审计同事务。
+    """
     org = org_scoped(request, org, auth)
     service = get_service(request)
     _require_org_admin(service, auth, org)
-    if body.status != "disabled":
+    if body.status == "disabled":
+        audit = (EVENT_DIMENSION_VALUE_DISABLE, json.dumps(
+            {"org_id": org, "dimension_id": dim_id, "value_id": value_id,
+             "actor": auth.user_id, "dry_run": body.dry_run}, ensure_ascii=False))
+        result = service.backend.disable_dimension_value(
+            org, dim_id, value_id, dry_run=body.dry_run, audit=audit,
+        )
+    elif body.status == "active":
+        if body.dry_run:
+            raise HTTPException(
+                status_code=400,
+                detail="重新启用不支持 dry_run（enable 是恢复路径——无破坏面）",
+            )
+        audit = (EVENT_DIMENSION_VALUE_ENABLE, json.dumps(
+            {"org_id": org, "dimension_id": dim_id, "value_id": value_id,
+             "actor": auth.user_id}, ensure_ascii=False))
+        try:
+            result = service.backend.enable_dimension_value(
+                org, dim_id, value_id, audit=audit,
+            )
+        except ValueError as exc:
+            # retired 维度 409（与 create 分支对称——R3 P3-2：REST 面映射
+            # 缺失曾致 500）
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    else:
         raise HTTPException(
             status_code=400,
-            detail="仅支持 status=disabled（取值停用——D19 软停用=收紧）",
+            detail="仅支持 status=disabled（取值停用——D19 软停用=收紧）或"
+            " status=active（重新启用——D19 恢复路径）",
         )
-    audit = (EVENT_DIMENSION_VALUE_DISABLE, json.dumps(
-        {"org_id": org, "dimension_id": dim_id, "value_id": value_id,
-         "actor": auth.user_id, "dry_run": body.dry_run}, ensure_ascii=False))
-    result = service.backend.disable_dimension_value(
-        org, dim_id, value_id, dry_run=body.dry_run, audit=audit,
-    )
     if result is None:
         raise HTTPException(status_code=404, detail=f"value not found: {value_id!r}")
     return {"impact": {k: v for k, v in result.items() if k != "applied"},
@@ -265,38 +300,20 @@ async def replace_member_grants(
 
 _GRANT_CSV_COLUMNS = ("username", "dim_key", "value", "expires_at")
 
-_EXPIRES_LIB_FORMAT = "%Y-%m-%d %H:%M:%S"  # 库内统一口径（CURRENT_TIMESTAMP 同格式）
-
-
 def _parse_expires_at(raw: str | None, *, where: str) -> str | None:
-    """expires_at 严格解析（R2 P2-2——sqlite 静默 fail-open 根除）：接受库格式
-    `YYYY-MM-DD HH:MM:SS` 与 ISO 8601（T 分隔，可选 Z/+00:00），归一化为库格式；
-    空/None → None（永久）；非法 → 400 带 where 定位（行号/字段）。"""
-    if raw is None or not str(raw).strip():
-        return None
-    text = str(raw).strip()
-    candidates = (
-        (text, _EXPIRES_LIB_FORMAT),
-        (text.replace("T", " ", 1), _EXPIRES_LIB_FORMAT),  # ISO T 分隔
-    )
-    if text.endswith("Z"):
-        candidates += ((text[:-1].replace("T", " ", 1), _EXPIRES_LIB_FORMAT),)
-    elif "+00:00" in text:
-        candidates += (
-            (text.replace("+00:00", "").replace("T", " ", 1), _EXPIRES_LIB_FORMAT),
-        )
-    for candidate, fmt in candidates:
-        try:
-            from datetime import datetime
+    """expires_at 严格解析（R2 P2-2——sqlite 静默 fail-open 根除）：归一化核心
+    收口 ``store.taskclock.normalize_expires_at``（m2-6 B③——store 直调面同
+    一实现）；本薄壳只做 HTTP 400 映射（带 where 定位——行号/字段）。"""
+    from knowledge_lattice.store.taskclock import normalize_expires_at
 
-            return datetime.strptime(candidate, fmt).strftime(fmt)
-        except ValueError:
-            continue
-    raise HTTPException(
-        status_code=400,
-        detail=f"expires_at 非法（{where}）: {text!r}——须为"
-        f" 'YYYY-MM-DD HH:MM:SS' 或 ISO 8601（UTC）",
-    )
+    try:
+        return normalize_expires_at(raw)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{exc}（{where}）——须为"
+            f" 'YYYY-MM-DD HH:MM:SS' 或 ISO 8601（UTC）",
+        ) from exc
 
 
 @router.get("/api/orgs/{org}/grants/export")
@@ -487,25 +504,55 @@ async def reindex_document(
     org: str, doc_id: str, request: Request, background: BackgroundTasks,
     embed_model: str | None = None, auth: AuthContext = Depends(get_auth),
 ) -> JSONResponse:
-    """手动重索引 / 换模型重嵌入入口（TC-EMB-06——§6.2 M2）：无 embed_model
-    → 投递 `reindex` 任务（重走摄取管线）；携带 embed_model → 投递 `reembed`
-    任务（方案二蓝绿——新旧标签并行写、覆盖率 100% 原子切标签；执行体随
-    m2-1 预留分发位，任务行与 payload 本段就位）。权限 owner/org_admin。"""
-    org = org_scoped(request, org, auth)
+    """手动重索引 / 换模型重嵌入入口（TC-EMB-06——§6.2 M2）：
+
+    - 无 embed_model → 投递 `reindex` 任务（重走摄取管线）——**单文档操作**，
+      权限 owner/org_admin（FR-4 操作矩阵——m2-3 既有语义不变）；
+    - 携带 embed_model → 投递 `reembed` 任务（**全库**蓝绿迁移——N-1 裁定
+      选 a/R2 P2-2）——换模型是**系统级配置变更**：权限 **sysadmin 专属**
+      （org_admin/owner 均 403；不要求 sysadmin 持本组织成员关系——系统级
+      动作）；执行体全库扫描/全库覆盖率门/全库清理 + 全局标签切换。
+    - 目标文档存在 pending 覆盖上传在途（pending_version 非 None 且非 failed）
+      → 409（reindex 与切换事务互相破坏——P3-5② 投递面防线；执行体同语义
+      fail-closed 兜底）。
+    """
+    resolved = check_path_org(path_org=org, org_header=request.headers.get("x-org-id"))
     service = get_service(request)
     doc = service.backend.get_document(doc_id)
-    if doc is None or doc["org_id"] != org:
+    if doc is None or doc["org_id"] != resolved:
         raise HTTPException(status_code=404, detail=f"document not found: {doc_id!r}")
-    _require_owner_or_admin(service, auth, org, doc)
 
     if embed_model:
+        # N-1 裁定（2026-11-01）：换模型=系统级配置变更——sysadmin 专属
+        if not auth.is_system_admin:
+            raise HTTPException(
+                status_code=403,
+                detail="换模型重嵌入（reembed）为系统级全库迁移——仅系统管理员"
+                "（sysadmin）可触发；单文档重索引（不带 embed_model）为"
+                " owner/org_admin（FR-4/N-1 裁定）",
+            )
         task_type = "reembed"
-        payload = json.dumps({"org": org, "embed_model": embed_model})
+        payload = json.dumps({"org": resolved, "embed_model": embed_model})
         target_version = None  # 全库任务（不限单版本）
     else:
+        org = org_scoped(request, org, auth)
+        _require_owner_or_admin(service, auth, org, doc)
         task_type = "reindex"
-        payload = json.dumps({"org": org})
+        payload = json.dumps({"org": resolved})
         target_version = doc["active_version"]
+        pending_v = doc.get("pending_version")
+        if pending_v is not None:
+            # N-2 裁定选 a（2026-11-01，R3）：pending 版本存在（**含 failed**）
+            # 一律拒绝——失败 pending 行未清除时 ingest._guard_alive 仍以
+            # pending 为当前目标（core 语义不动），放行会使文档被 reset 后判
+            # cancelled（不可搜）。先处置失败上传/清理 pending 后重投。
+            raise HTTPException(
+                status_code=409,
+                detail=f"document {doc_id!r} 存在 pending 版本"
+                f"（v{pending_v}，{doc.get('pending_status')}）——pending 期间"
+                "禁止 reindex（含失败版本——先处置失败上传/清理 pending 后重投，"
+                "N-2 裁定 a）",
+            )
     task_id = service.backend.create_task(
         doc_id, task_type=task_type, target_version=target_version, payload=payload,
     )
@@ -533,7 +580,14 @@ async def embedding_coverage(
     org = org_scoped(request, org, auth)
     service = get_service(request)
     _require_org_admin(service, auth, org)
-    label = service.settings.embed_model_label
+    # m2-6：label 读 embedder（检索谓词源——reembed 蓝绿切换后与检索同刻切换；
+    # settings 容器字段在 subprocess 部署形态由运维 env 重启收敛，embedder 优先
+    # 保证面板与向量路一致）；dim 经 effective_settings 同源派生（P2-1/R2）
+    from knowledge_lattice.config import effective_settings
+
+    effective = effective_settings(service.settings, service.embedder)
+    label = service.embedder.model_label if service.embedder is not None \
+        else effective.embed_model_label
     coverage = service.backend.embedding_coverage(org, label)
     total = sum(c["total"] for c in coverage)
     done = sum(c["done"] for c in coverage)
@@ -567,7 +621,7 @@ async def embedding_coverage(
         break
     return {
         "embed_model": label,
-        "dim": service.settings.embed_dim,
+        "dim": effective.embed_dim,
         "coverage": coverage,
         "totals": {"done": done, "total": total},
         "reembed": reembed,
@@ -604,21 +658,11 @@ async def query_audit(
             "or system admin (metadata-only)——FR-6 分级",
         )
 
-    monthly = service.backend.read_monthly_events(when=utc_now_ts())
-    monthly_ids = {r.get("id") for r in monthly}
-    rows: list[dict] = list(monthly)
-    for outbox_row in service.backend.read_pending_outbox_events():
-        event = outbox_row_to_event(outbox_row)  # 未搬运 outbox（投影同搬运侧）
-        if event.get("id") in monthly_ids:
-            continue  # P3-2：月库优先去重（崩溃窗同事件不重复）
-        rows.append(event)
-    rows = [r for r in rows if r.get("org_id") == resolved]
-    if action:
-        rows = [r for r in rows if (r.get("action") or "").startswith(action)]
-    rows.sort(key=lambda r: (r.get("created_at") or "", r.get("id") or ""))
-    rows = rows[-limit:]
-    rows.reverse()  # 最近在前（面板序）
-
+    # 读路径下沉 store（m2-6 B④——双源合并/去重/过滤/排序双方言收口
+    # read_org_audit；B5 注记见其 docstring：读回行 row_hash 不自洽勿复算链）
+    rows = service.backend.read_org_audit(
+        resolved, action=action, limit=limit, now=utc_now_ts(),
+    )
     if full:
         items = rows
     else:
@@ -638,3 +682,179 @@ async def org_stats(
     service = get_service(request)
     _require_org_admin(service, auth, org)
     return {"maintenance": service.backend.read_last_maintenance_stats()}
+
+
+# ============================================================================
+# m2-6 A3：members 增/改/删（m2-4 N-1 用户裁定选 a——JIT 建档后 API 面开通闭环，
+#          D16「管理员不建账号只配授权」；形态按 design §5.6 授权维护闭环 +
+#          trg_membership_no_extend〔T23〕约束设计——择型申报见检查点）
+# ============================================================================
+
+
+class MemberAddRequest(BaseModel):
+    """加成员请求（POST /members）：user_id 须为既有用户（JIT 建档或其他途径
+    ——管理员不建账号，D16）。"""
+
+    user_id: str
+    role: str = "member"
+    expires_at: str | None = None
+
+
+class MemberPatchRequest(BaseModel):
+    """成员关系更新请求（PATCH）：role/expires_at 均可选——只动出现的字段
+    （expires_at 键**显式出现**〔含 null〕= 改永不过期；键缺失 = 不变——
+    pydantic v2 model_fields_set 检测；软停用=置过去/指定时点，零新列择型）。"""
+
+    model_config = {"extra": "forbid"}
+
+    role: str | None = None
+    expires_at: str | None = None
+
+
+def _audit_payload(event_type: str, payload: dict) -> tuple[str, str]:
+    return event_type, json.dumps(payload, ensure_ascii=False)
+
+
+@router.post("/api/orgs/{org}/members", status_code=201)
+async def add_member(
+    org: str, request: Request, body: MemberAddRequest,
+    auth: AuthContext = Depends(get_auth),
+) -> dict:
+    """加成员（A3——JIT 用户入组 API 面）：用户不存在 404（管理员不建账号，
+    D16——建档走 SSO JIT）；已存在成员关系（含过期行）409（过期行恢复 =
+    DELETE 后重加 + PUT grants 补授权——T23 先例三步）。审计同事务。"""
+    org = org_scoped(request, org, auth)
+    service = get_service(request)
+    _require_org_admin(service, auth, org)
+    if body.role not in ("member", "org_admin"):
+        raise HTTPException(
+            status_code=400, detail=f"invalid role: {body.role!r}（member | org_admin）",
+        )
+    expires_at = _parse_expires_at(body.expires_at, where="members expires_at")
+    try:
+        return service.backend.add_membership(
+            org, body.user_id, role=body.role, expires_at=expires_at,
+            audit=_audit_payload(EVENT_MEMBER_ADD, {
+                "org_id": org, "user_id": body.user_id, "actor": auth.user_id,
+                "role": body.role, "expires_at": expires_at,
+            }),
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"用户不存在: {body.user_id!r}（管理员不建账号——建档走 SSO"
+            " JIT，D16）",
+        ) from exc
+    except MembershipExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.patch("/api/orgs/{org}/members/{user_id}")
+async def patch_member(
+    org: str, user_id: str, request: Request, body: MemberPatchRequest,
+    auth: AuthContext = Depends(get_auth),
+) -> dict:
+    """成员关系更新（A3——角色变更/软停用/续期）：不存在 404；**已过期行 409**
+    （T23 续期禁令——删行重加是唯一恢复路径）；唯一管理员自锁 409（守卫）。"""
+    org = org_scoped(request, org, auth)
+    service = get_service(request)
+    _require_org_admin(service, auth, org)
+    if body.role is not None and body.role not in ("member", "org_admin"):
+        raise HTTPException(
+            status_code=400, detail=f"invalid role: {body.role!r}（member | org_admin）",
+        )
+    expires_at = ...  # Ellipsis 哨兵 = 不变（store 协议）
+    if "expires_at" in body.model_fields_set:  # 键显式出现（含 null=改永久）
+        expires_at = _parse_expires_at(body.expires_at, where="members expires_at")
+    try:
+        updated = service.backend.update_membership(
+            org, user_id, role=body.role, expires_at=expires_at,
+            audit=_audit_payload(EVENT_MEMBER_UPDATE, {
+                "org_id": org, "user_id": user_id, "actor": auth.user_id,
+                "role": body.role, "expires_at":
+                    None if expires_at is ... else expires_at,
+            }),
+        )
+    except MembershipExpiredError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except MembershipLastAdminError as exc:
+        # R2 P3-3：守卫已下沉 store（与更新同一事务——TOCTOU 根除、pg 侧
+        # datetime 比较全部 SQL 内）——API 只做 409 映射
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if updated is None:
+        raise HTTPException(
+            status_code=404, detail=f"membership not found: {user_id!r} in {org!r}",
+        )
+    return updated
+
+
+@router.delete("/api/orgs/{org}/members/{user_id}", status_code=204)
+async def remove_member(
+    org: str, user_id: str, request: Request,
+    auth: AuthContext = Depends(get_auth),
+) -> None:
+    """移出成员（A3）：级联清本组织授权（trg_membership_delete_cleanup——
+    T23 不破坏）；不存在 404；唯一管理员自删 409（守卫）。"""
+    org = org_scoped(request, org, auth)
+    service = get_service(request)
+    _require_org_admin(service, auth, org)
+    try:
+        deleted = service.backend.delete_membership(
+            org, user_id,
+            audit=_audit_payload(EVENT_MEMBER_REMOVE, {
+                "org_id": org, "user_id": user_id, "actor": auth.user_id,
+            }),
+        )
+    except MembershipLastAdminError as exc:
+        # R2 P3-3：守卫下沉 store（同事务）——API 只做 409 映射
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(
+            status_code=404, detail=f"membership not found: {user_id!r} in {org!r}",
+        )
+
+
+# ============================================================================
+# m2-6 A4：values CRUD（新增 + D19 重新启用恢复路径——m2-3 已交付停用）
+# ============================================================================
+
+
+class ValueCreateRequest(BaseModel):
+    """新增维度取值请求（POST /dimensions/{id}/values）。"""
+
+    value: str
+    label: str | None = None
+
+
+@router.post(
+    "/api/orgs/{org}/dimensions/{dim_id}/values", status_code=201,
+)
+async def create_dimension_value(
+    org: str, dim_id: str, request: Request, body: ValueCreateRequest,
+    auth: AuthContext = Depends(get_auth),
+) -> dict:
+    """新增维度取值（A4）：维度 retired 409（退役不扩值——T20 二次确认语义
+    的对称面）；(dimension, value) 重复 409；审计同事务。"""
+    org = org_scoped(request, org, auth)
+    service = get_service(request)
+    _require_org_admin(service, auth, org)
+    value = (body.value or "").strip()
+    if not value:
+        raise HTTPException(status_code=400, detail="value 不得为空")
+    try:
+        created = service.backend.create_dimension_value(
+            org, dim_id, value, label=(body.label or "").strip() or None,
+            audit=_audit_payload(EVENT_DIMENSION_VALUE_CREATE, {
+                "org_id": org, "dimension_id": dim_id, "value": value,
+                "actor": auth.user_id,
+            }),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DimensionValueExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if created is None:
+        raise HTTPException(
+            status_code=404, detail=f"dimension not found: {dim_id!r}",
+        )
+    return created

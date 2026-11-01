@@ -322,8 +322,11 @@ async def semantic_annotate(
     from knowledge_lattice.core.semantic.annotator import annotate_text
 
     def _run():
+        from knowledge_lattice.config import effective_settings
+
         return annotate_text(
-            service.backend, service.settings, org, text,
+            service.backend,
+            effective_settings(service.settings, service.embedder), org, text,
             context_entities=ctx, prefer_types=prefer, fuzzy=fuzzy,
             include_restricted=can_restricted,
             embedder=getattr(service, "embedder", None),
@@ -332,7 +335,12 @@ async def semantic_annotate(
     def _restricted_ids(result: dict) -> list[int]:
         from knowledge_lattice.core.semantic.annotator import get_annotator
 
-        ann, _rev = get_annotator(service.backend, org, service.settings)
+        from knowledge_lattice.config import effective_settings
+
+        ann, _rev = get_annotator(
+            service.backend, org,
+            effective_settings(service.settings, service.embedder),
+        )
         if ann is None:
             return []
         return [m["entity_id"] for m in result.get("mentions") or ()
@@ -375,7 +383,12 @@ async def semantic_l0_export(
     )
 
     def _run():
-        ann, rev = get_annotator(service.backend, org, service.settings)
+        from knowledge_lattice.config import effective_settings
+
+        ann, rev = get_annotator(
+            service.backend, org,
+            effective_settings(service.settings, service.embedder),
+        )
         if ann is None:
             return {"dict_rev": None, "fragments": [], "token_estimate": 0}
         return {"dict_rev": rev, **render_l0(ann.snapshot)}
@@ -422,11 +435,13 @@ async def list_semantic_entities(
         # httpx Client（embed_timeout_s=30s），async handler 内直接调用会阻塞
         # 事件循环（§5.2/NFR-8「模型 HTTP 调用绝不阻塞事件循环」——与端点
         # 其余语义读 annotate/get_entity 的 to_thread 形态一致）
+        from knowledge_lattice.config import effective_settings
+
         return await asyncio.to_thread(
             search_entities,
             service.backend, org, q,
             types=types, top_k=top_k,
-            settings=service.settings,
+            settings=effective_settings(service.settings, service.embedder),
             embedder=getattr(service, "embedder", None),
         )
     except ValueError as exc:

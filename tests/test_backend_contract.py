@@ -61,6 +61,12 @@ def test_embedder_protocol_shape() -> None:
         def model_label(self) -> str:  # pragma: no cover - 形态测试
             return "fake:8"
 
+        def with_model(self, model_name, dim):  # pragma: no cover - 形态测试
+            return self
+
+        def apply_model(self, model_name, dim) -> None:  # pragma: no cover - 形态测试
+            return None
+
     assert isinstance(FakeEmbedder(), Embedder)
 
 

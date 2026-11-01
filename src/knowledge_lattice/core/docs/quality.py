@@ -143,6 +143,11 @@ class QualityService:
         self._settings = settings
         self._keywords = keyword_client or NoopKeywordGenerator()
 
+    def apply_settings(self, settings: Settings) -> None:
+        """运行时 settings 替换（m2-6 reembed 蓝绿切换点——检测/重算的向量
+        标签源（settings.embed_model_label）与阈值随新模型切换）。"""
+        self._settings = settings
+
     # ---- 检测路径（入库单块——SQL 暴力扫描） ----
 
     def _idf_stats(

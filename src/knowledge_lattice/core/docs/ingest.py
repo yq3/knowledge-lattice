@@ -182,6 +182,12 @@ class IngestService:
         # worker runner 的 make_ingest_tagger；None=不打标（旧构造兼容））
         self._tagger = tagger
 
+    def apply_settings(self, settings: Settings) -> None:
+        """运行时 settings 替换（m2-6 reembed 蓝绿切换点——worker/rebuild.
+        switch_embed_label 联动：embed 维度校验（validate_dim 的 expected）与
+        批大小随新模型切换；embedder 标签源由 embedder.apply_model 同批切换）。"""
+        self._settings = settings
+
     # ============ 上传入口（写权限校验在 upload 即做——P0-2.1） ============
 
     def create_document(

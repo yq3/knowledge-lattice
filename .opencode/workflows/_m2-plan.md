@@ -19,8 +19,8 @@
 | 4 | task-knowledge-lattice-m2-3 | **M2.3** 管理面 API + 最小 UI：§6.2 全端点（维度停用 dry_run/退役、授权 expires_at、任务取消、重索引含重嵌入入口〔TC-EMB-06〕、嵌入覆盖率面板、审计分级查询〔TC-OPS-03〕）+ grants 写路径 + CSV 批量导入〔TC-OPS-06〕+ 维度退役治理〔TC-OPS-07/T20 半句〕+ grants 替换〔TC-OPS-08〕+ 凭证吊销语义 + m2-2 移交 B1~B6 收编 | m2-1 | ✅ **done**（PR #5，mergeCommit `ad5ab2a`，2026-10-30 合入；门禁 →1000+1；3 轮——两口径裁定落地+m2-6 补段拍板） |
 | 5 | task-knowledge-lattice-m2s-2 | **S1 面上**：semantic_build 骨架（dict_rev 计算+原子切换）+ 首批三工具（get_entity 关系展开/search_entities/describe_table）+ REST 端点（sync/builds/sync-runs 管理）。验收 **T-S5/T-S6/T-S11** | m2s-1 | ✅ **done**（PR #6，mergeCommit `f4d1b74`，2026-10-31 合入；门禁 →1076+1；2 轮——R1 边界 7 条用户裁定登记〔v1.9.5/G-16 全收口/G-17·18〕、R2 APPROVED；TC-BUILD-01/03 提前交付） |
 | 6 | task-knowledge-lattice-m2s-3 | **S2 基础**：scenario_config/report_center 适配器 + YAML 仓库 schema/_schema/CI 校验/yaml_merge.py 合并规则/webhook 端点。验收 **T-S1** | m2s-2 | ✅ **done**（PR #7，mergeCommit `e870fd1`，2026-10-31 合入；门禁 →1209+1；3 轮——边界 4 条裁定〔JSON Schema 升 P2/L0·owner 本段/G-19 登记〕+R2 P3 收尾〔N6〕；**G-15/17/18+O-1 全收口**；m2s-2 挂账九项+m2s-1 移交半句全清偿） |
-| 7 | task-knowledge-lattice-m2-4 | **M2.2** SSO/JIT 对接（M0a 敲定协议）+ 委托 token/可信子系统（三约束+期限）+ RFC 8693 act 对象形态（m1-3 移交必须项） | 无硬前置（与 m2-3 有 token 交叉，顺序可调） | ✅ **done**（2 轮收敛：R1 21778cd〔tester PASS+committer NEEDS_CHANGES——P2×2〕→R2 b24896e〔P2-1 MCP 可信路径忽略审计公共块+P2-2 mock-idp prod 缺省密钥护栏+P3×10 应修尽修〕；门禁 1479+1→**1580+1**；TC-AUTH-03/04/05+T13 生产形态收口+T16 复核全 ✅+RFC 8693 act 三形态〔链式取最外层=current actor——用户裁定按 §4.1 MUST〕m1-3 移交闭环；边界 N-1 用户裁定选 a→m2-6 扩 members 增改删、P2-2 直接修、P3-9→G-26；G-25/G-26 新登记；SSO 验签器协议中立可插拔接口留口子——真实 IdP 联调挂 m2-5/部署期；**PR 待开——交付执行中**） |
-| 7.5 | task-knowledge-lattice-m2-6 | **管理面补全与嵌入执行体**（2026-10-30 用户拍板新增——m2-3 R1 Committer 边界 1/2）：reindex/reembed **蓝绿执行体**（runner 认领、TC-EMB-06 越段项——原子切标签/旧标签清理/quality·semantic_build 重跑联动）+ members GET / **members 增/改/删（m2-4 N-1 用户裁定 2026-11-01 选 a：JIT 建档后 API 面无法把新用户加入组织——PUT grants/CSV 均要求既有 membership，补 membership 写路径使 D16「管理员不建账号只配授权」API 面闭环）** / values CRUD（含 D19 重新启用取值恢复路径）+ m2-3 登记项（read_org_audit 下沉、audit_chain 错误码、同秒 reembed 歧义单调键、replace_local_grants 直调解析器对齐、**B5 读回行 row_hash 不自洽注记**〔read_monthly_events 经重投影后勿以读回行复算链〕、UI fresh 残余 UX〔预填/逐行过期编辑〕、格式常量共享、API 级 pg diff 断言等按需） | m2-3（已满足） | ⬜ |
+| 7 | task-knowledge-lattice-m2-4 | **M2.2** SSO/JIT 对接（M0a 敲定协议）+ 委托 token/可信子系统（三约束+期限）+ RFC 8693 act 对象形态（m1-3 移交必须项） | 无硬前置（与 m2-3 有 token 交叉，顺序可调） | ✅ **done**（2 轮收敛：R1 21778cd〔tester PASS+committer NEEDS_CHANGES——P2×2〕→R2 b24896e〔P2-1 MCP 可信路径忽略审计公共块+P2-2 mock-idp prod 缺省密钥护栏+P3×10 应修尽修〕；门禁 1479+1→**1580+1**；TC-AUTH-03/04/05+T13 生产形态收口+T16 复核全 ✅+RFC 8693 act 三形态〔链式取最外层=current actor——用户裁定按 §4.1 MUST〕m1-3 移交闭环；边界 N-1 用户裁定选 a→m2-6 扩 members 增改删、P2-2 直接修、P3-9→G-26；G-25/G-26 新登记；SSO 验签器协议中立可插拔接口留口子——真实 IdP 联调挂 m2-5/部署期；**PR #11 mergeCommit `c2ebb68`，2026-11-01 合入**） |
+| 7.5 | task-knowledge-lattice-m2-6 | **管理面补全与嵌入执行体**（2026-10-30 用户拍板新增——m2-3 R1 Committer 边界 1/2）：reindex/reembed **蓝绿执行体**（runner 认领、TC-EMB-06 越段项——原子切标签/旧标签清理/quality·semantic_build 重跑联动）+ members GET / **members 增/改/删（m2-4 N-1 用户裁定 2026-11-01 选 a：JIT 建档后 API 面无法把新用户加入组织——PUT grants/CSV 均要求既有 membership，补 membership 写路径使 D16「管理员不建账号只配授权」API 面闭环）** / values CRUD（含 D19 重新启用取值恢复路径）+ m2-3 登记项（read_org_audit 下沉、audit_chain 错误码、同秒 reembed 歧义单调键、replace_local_grants 直调解析器对齐、**B5 读回行 row_hash 不自洽注记**〔read_monthly_events 经重投影后勿以读回行复算链〕、UI fresh 残余 UX〔预填/逐行过期编辑〕、格式常量共享、API 级 pg diff 断言等按需） | m2-3（已满足） | ✅ **done**（3 轮收敛：R1 `f979405`〔tester PASS+committer NEEDS_CHANGES——P2×2+需求边界 N-1〕→R2 `bd9598f`〔P2×2 修复+新发现 P1-1 跨组织泄露/P2-1 pending failed+N-2〕→R3 `00dc486`〔P1/P2 全闭环+P3×3 记录级——双通过 2026-11-01〕；门禁 1580+1→**1651+1**（+71）；TC-EMB-06 四步全绿双后端〔**全库迁移+sysadmin 专属**——N-1 用户裁定 2026-11-01 选 a、effective_settings 标签源统一、未收敛 fail-closed→G-27〕+A2 reindex 执行体〔**N-2 用户裁定选 a**：pending 含 failed 一律 409 双防线、core 不动〕+A3 members 增改删〔JIT→入组→授权→检索 API 全链 D16 闭环+T23+唯一 admin 守卫 pg 咨询锁〕+A4 values CRUD/D19 重新启用解锁 locked_docs+B①~⑩核销〔**B① 3/4**——逐行过期编辑→m2-5/TC-UI〕+A5/B5 落 RUNBOOK §4+m2-4 followups 三项清偿；**PR 待开——合入后补 mergeCommit**） |
 | 8 | task-knowledge-lattice-m2s-4 | **S2 面上**：AC 自动机（pyahocorasick）+ L0 片段 + 构建报告 + annotate（四步消歧+context 短别名）+ 识别评测集 150~200 条与门槛。验收 **T-S4/T-S12** + precision≥0.95/recall≥0.80 | m2s-3 | ✅ **done**（3 轮收敛：R1 2c798bf→R2 9100bfb〔空自动机 IMPL_BUG〕→R3 8d32750〔P1 L0 restricted+P2×3+P3×4〕；门禁 →**1323+1**；**M2-S2 行整行收口**；G-19 收口+G-21 登记〔方案 B〕；边界⑦~⑭ 用户裁定落 docs v1.9.8；**PR #8 mergeCommit `2cb2277`**，2026-10-31 合入） |
 | 9 | task-knowledge-lattice-m2s-5 | **S3 基础**：concept/system 纯人工实体 + ingest 打标（同事务 tag/失败不阻断）+ semantic_retag（最低优先级）+ 版本切换/删块同事务 untag + 定时对账。验收 **T-S10** | m2s-4（词典质量稳定）+ m2-2（删除级联 untag 挂接点——已满足） | ✅ **done**（2 轮收敛：R1 0c127db〔首 commit 9373f11 违规入库打回重做〕→R2 241ee24〔P1 retag 零命中清理+P2×4+歧义 skip 裁定〕；门禁 →**1386+1**；**T-S10/TC-TAG-01~03/TC-BUILD-05 全 ✅+G-21 方案 A 收口**；边界①歧义 skip/②pending/③双层口径用户裁定；**PR #9 mergeCommit `60370d0`**，2026-10-31 合入） |
 | 10 | task-knowledge-lattice-m2s-6 | **S3 收口**：search(entities/auto_entities) 实体召回路（复用 §5.1 ACL 产物）+ 三路 RRF + matched_entities + 越权矩阵 T-S7/S8/S9 + 检索增益评测（不回退才默认开启）+ 模糊兜底（拼音/编辑距离/sem_vec）+ agent 中间件切换 +（可选）语义层视图。验收 **T-S7~S10 全 + AC+模糊 recall@3≥0.92** | m2s-5 | ✅ **done**（3 轮收敛：R1 e5a70d6〔uv.lock 源污染打回 amend 重做〕→R2 e7fac5c〔P2×3 修——REST 阻塞/对账盲区/env 模板〕→R3 4057b40〔P2×2 修——to_thread/内容集合对账+code 收窄〕；门禁 →**1479+1**；**M2-S3 整行收口+语义轨道 6/6**；T-S7~S9/TC-TAG-04/05/TC-SEM-08/09/TC-SEV-03/TC-YAML-05 全 ✅+G-2 并存闭环+G-21 核销 6 再挂 2+G-22~G-24 新登记；边界 8 条用户裁定落 docs v0.9.6/v1.9.10；**PR #10 mergeCommit `eef7acf`，2026-11-01 合入**） |
@@ -34,16 +34,18 @@
 - **m2-3**（管理面，PR #5）：管理面 API 七件（维度治理 dry_run+locked_docs/retire 二次确认〔T20 收口〕/grants 全量替换 expires_at/CSV 导入导出〔按用户全量替换口径〕/任务取消/reindex·reembed 投递〔执行体 → m2-6〕/覆盖率面板〔按任务 payload 目标标签〕/审计分级〔sysadmin 兼任全量优先〕）+ 最小 UI 三视图（i18n/playwright DOM 自测）+ **B1~B6 清偿**（B2 prev_hash 链遍历〔G-13 对冲——walk_chain fail-closed 六边界〕/B3 月库 tar 纳入快照+RUNBOOK §4/…）；两口径裁定 TEST-CASES v1.9.3（按用户全量替换+判别断言/sysadmin 兼任）；**新增 m2-6 补段**（用户拍板——reindex/reembed 蓝绿执行体+members/values CRUD，段序 m2-4→m2-6→m2-5）。
 - **m2s-6**（语义轨道收官段）：实体召回路（recall.py resolve_query_entities 种子≤20+expand depth=1≤50 不沿 uses+recall_by_entities 双方言**同一 visible_docs CTE 同一 Plan**〔T-S8——TC-ACL-06 同构断言扩展〕+三路 RRF+matched_entities）；越权矩阵 T-S7/S8/S9（按裁定三端点口径——T-S9⑥ 查询级审计未实现登记 G-22）；模糊兜底三层（0009 sem_fuzzy_terms/sem_fuzzy_dels 双方言+拼音/编辑距离 deletion neighborhood/向量经 Embedder〔仅 kind='code' 不嵌〕；**最终一致+修复路径**=R3 内容集合对账+落库标记附加触发——裁定 5 口径，残余 G-23）；检索增益（recall@10 sqlite +10.72pp/pg +12.50pp MRR 均升不回退；auto_entities 默认 False 保守档；AC+模糊 recall@3=1.0；黄金集 172→180 +8 pos_typo）；中间件契约（middleware.py G-2 并存①②+localac 两端逐字段一致）；REST/MCP search_entities 注入 settings/embedder（via='vec' 生效+to_thread 下放）；G-21 核销 6 再挂 2；G-2 并存闭环、G-22~G-24 登记（docs v0.9.6/v1.9.10 同批）。
 - **m2-4**（生产化认证段）：SSO 验签**协议中立可插拔接口**（adapters/auth_sso.py SsoTokenVerifier Protocol+MockIdpVerifier 自签 JWT+build_sso_verifier 工厂——LATTICE_SSO_PROVIDER none/mock-idp/未知名 fail-closed；**留口子裁定**：真实 IdP 适配器企业内同形替换）；JIT 建档 upsert_user_jit 双方言（id 复用零更新/username 冲突 401 fail-closed 消息不回显/**建档与审计同事务**〔audit= 先例+崩溃注入〕）；委托 token（aud 透传拒绝四形态+auth.delegated 双身份审计+A-9 双载体〔REST 五键集+MCP deprecated permissions〕）；**RFC 8693 act 三形态**（string/object/链式——链式取最外层=current actor〔用户裁定按 §4.1 MUST〕+act_chain 全链审计——**m1-3 移交闭环**）；可信子系统三约束（LATTICE_TRUSTED_SERVICES_JSON 白名单 sha256 不落明文+allowed_orgs+按服务限流〔线程锁+被拒不占配额〕+X-User-Assertion 在场证据；全拒绝路径 refused reason 级审计——**T13 生产形态收口**）；T16 prod 三断言+mock-idp prod 缺省密钥启动即拒；MCP 面 org/permissions 忽略审计公共块（四认证形态统一）；G-25/G-26 登记；R2 P2×2（MCP 可信路径跳过审计/mock 密钥护栏）+P3×10 应修尽修。
-- **门禁基线**：**1580+1 双后端双模式 0 skipped**（pg 臂实跑 565——gate grep 计数 561=528+33 对 [pg-*] 组合 id 少计 4 条，总数不受影响；十段累计 663→1580 +917）。
-- **分支基线**：origin/develop = `eef7acf`（2026-11-01，PR #10〔m2s-6〕合入后；m2-4 PR 待开）。
+- **m2-6**（管理面补全与嵌入执行体段）：reembed 蓝绿执行体四步（TC-EMB-06 全绿双后端）——**全库迁移口径**（N-1 用户裁定 2026-11-01 选 a+sysadmin 专属：store org_id=None 双口径/全库覆盖率门/多组织同迁单标签一致/单 org 100% 不放行；reembed 触发=owner/org_admin 403、sysadmin 免本组织成员关系 202；单文档 reindex 维持 owner/org_admin）；**effective_settings 标签源统一**（config.py 新帮助函数从 embedder.model_label 派生——semantic_build 实际执行非 skipped/dict_rev·模糊向量·vec 查询/probe dim/coverage dim 全同源；subprocess 形态主进程切换=运维 env 重启）；reindex 执行体（幂等重置+中断重认领不丢不重；**N-2 用户裁定选 a**：pending_version 非空含 failed 一律 API 409+执行体 failed 双防线、core ingest 零改动）；members 三端点（T23 过期行 409 前置/唯一 admin 自锁守卫 store 事务化〔pg advisory_xact_lock〕/软停用=expires_at/DELETE 级联/JIT→入组→授权→检索 API 全链）；values label 显式传递+D19 重新启用解锁+retired 409 对称；0010 同秒单调键（pg seq/sqlite rowid）；**P1-1 教训**：全库化改造时 org-scoped 消费面的行集边界（外层 FROM datasets）须独立验证——Tester R2 漏检、R3 三组织自构造补课；G-27 登记（未收敛 fail-closed）。
+- **门禁基线**：**1651+1 双后端双模式 0 skipped**（pg 臂 614=580 参数化+34 专用——**新正则 `\[pg[^]]*\]` 口径**〔m2-4 followup 兑现，计入 [pg-*] 组合 id〕；十一段累计 663→1651 +988）。
+- **分支基线**：origin/develop = `c2ebb68`（2026-11-01，PR #11〔m2-4〕合入后）。
 
 ## 三、挂账清单（新会话必读）
 
-**工作区未入库（随 m2s-6 交付 chore 归档批入库——docs 批）**：
-- `docs/design.md` v0.9.6（§5.8 模糊索引最终一致口径/§5.9 工程口径/§6.3 G-2 并存+sem_restricted 载体+restricted 持权面+查询级审计缺口/§5.10 matched_entities——非决策）
-- `docs/TEST-CASES.md` v1.9.10（M2-S3 整行收口+T-S7/S8/S9·TC-TAG-04/05·TC-SEM-05/08/09·TC-SEV-01/02/03·TC-YAML-05·A-16 完成态/口径注记）
-- `docs/known-gaps.md`（G-2 闭环+G-21 m2s-6 核销回写+G-22~G-24 新增）
-- `AGENTS.md` 状态行（语义轨道 6/6、下一段 m2-4、门禁 1479+1）+ 本文件 `_m2-plan.md`（row 10 done+§二/§三/§五 更新）+ `task-knowledge-lattice-m2s-6.md` 终态回写 + 工作区遗留 4 流程文档（supervised-coding.md 模型配置/m2s-5 终态补记/_m2-plan 前批/AGENTS 前批——m2s-5 归档批后监督侧改动）
+**工作区未入库（随 m2-6 交付 chore 归档批入库——docs 批，2026-11-01）**：
+- `docs/design.md` v0.9.8（§5.3 全库重嵌入+sysadmin+fail-closed/§5.6 members 写路径/§5.8 effective 标签源/§6.2 端点登记——非决策）
+- `docs/TEST-CASES.md` v1.9.12（m2-6 段完成态+TC-EMB-06 实现口径注记+coverage org 口径+N-1/N-2 裁定落笔）
+- `docs/known-gaps.md`（G-27 新增——未收敛 fail-closed+hashtext 性能面附注）
+- `RUNBOOK.md`（§1 m2-6 执行体操作口径块+§4 审计月库读回行 B5 注记〔A5 移交收口〕）
+- `AGENTS.md` 状态行（主线 5/6、下一段 m2-5、门禁 1651+1）+ 本文件（row 7.5 done+§二/§三/§五 更新）+ `task-knowledge-lattice-m2-6.md` 终态回写 + `task-knowledge-lattice-m2-4.md` 合入条目（m2-4 合入后工作区改动——沿 m2s-6 先例随本段 chore 入库）
 
 **用户侧待办（不阻塞开发）**：
 - TC-UI-01~04 手动走查（M1 里程碑达成宣告唯一待勾——清单 `benchmarks/report-m1-5-tc-ui-walkthrough.md`）
@@ -54,14 +56,15 @@
 
 **known-gaps 本阶段新增**：G-15（关系级消失——M2-S3 承接）、G-16（触发侧两事务 create_task audit= 收口——M2-S2/S3）、G-13（m2-3 审计读路径对冲）、G-14（RUNBOOK §4.2 已注）、G-6 halfvec 复测 + G-8 真实模型复验（挂 m2-5）。
 
-**m2-3 移交 m2-6 收编**（其检查点遗留事项节为权威——2026-10-30 用户拍板新增段）：reindex/reembed 蓝绿执行体+members/values CRUD（含 D19 重新启用）+P3×10（UI fresh 残余 UX/同秒 reembed 单调键/replace_local_grants 直调解析器/read_org_audit 下沉/audit_chain 错误码/格式常量共享/协议 docstring 字符串契约/API 级 pg diff 断言/ULID 字样注释×2/P3-1 值序反向锁死）。
+**m2-3 移交 m2-6 收编——已全清偿**（m2-6 交付：reindex/reembed 蓝绿执行体〔TC-EMB-06 四步全绿〕+members/values CRUD〔D19 重新启用解锁 locked_docs〕+P3×10 全核销〔**B① 3/4**——逐行过期编辑→m2-5/TC-UI 批〕+B5 落 RUNBOOK §4——2026-11-01）。
 
 **m2-3 移交 m2-4：无（token 交叉项原定范围不变）——✅ m2-4 交付时以兼容回归清偿（test_m23_admin_endpoint_with_delegated_token）。**
 
 **m2-4 移交（2026-11-01 交付时登记）**：
 - 真实 IdP/SSO 联调（待决-2/3 维持未决）→ **m2-5/部署期**（与 rerank 真实网关联调同批——SSO 验签器已留协议中立可插拔口子）
 - followups 五项 → 下批/m2-5 测试补强批：①P3-11 固化用例（org 解析顺序——行为已探针实证）②gate pg 正则 `\[pg[^]]*\]` 少计 [pg-*] 组合 id（口径已注 TEST-CASES v1.9.11）③test_auth_05 `_call` settings 形参残留 ④`_outbox_insert` 完整性错误掩码理论面 ⑤MCP 面审计先于 resolve_org 窄面（未来统一时移块）
-- N-1（JIT 后 API 面成员开通缺口）→ **m2-6**（用户裁定选 a——row 7.5 已扩 members 增/改/删）
+- N-1（JIT 后 API 面成员开通缺口）→ **m2-6 ✅ 已清偿**（members 增/改/删交付——JIT→入组→授权 API 全链 D16 闭环，2026-11-01）
+- followups ①②③ → **m2-6 ✅ 已清偿**（P3-11 固化用例/gate 正则 `\[pg[^]]*\]`/`_call` 残留）；④⑤ 维持 → 下批/m2-5 测试补强批
 - G-25（限流进程内态）/G-26（拒绝审计写放大）→ known-gaps 已登记（部署期评估）
 
 **m2s-1 移交 m2s-2 收编——已全清偿**（m2s-2 R1 C 组：P3-r1~r5 全收；G-16 触发+构建两侧全收口）。
@@ -70,18 +73,24 @@
 
 **m2s-3 移交 m2s-4 收编**（其检查点遗留事项节为权威）：G-19 每日兜底调度（窗口/幂等/与 webhook 去重口径）；自校验回退健壮性⑦（type 数组/布尔子 schema/tuple items 回退 false positive——except Exception 兜底，零依赖 only）；sensitivity 两口径（覆盖层删除不回退/非法静默 normal——权限面口径化）；测试卫生 3 项（旧弱断言/inserted 计数/两测试名实——顺手）。
 
+**m2-6 移交（2026-11-01 交付时登记）**：
+- B①「逐行过期编辑」（UI grants 逐行独立 expires 输入）→ **m2-5 / TC-UI 手动走查批**（Committer R1 裁定登记——预填/徽标/langchange 保留已交付，残余仅逐行编辑形态）
+- R3 Committer P3×3 文案/注释（pg 并发用例 docstring 旧称 FOR UPDATE/fail-closed 注释+错误文案旧称「自动重试」/coverage 端点 docstring 旧称「全局口径」）→ **下批卫生**（无功能影响）
+- G-27（reembed 未收敛 fail-closed——failed 留人工）→ known-gaps 已登记（可选收窄=runner 按 error 分类回队）
+- pg 存量 7 个 bench/eval 残留 schema（lattice_eval_*×5+lattice_bench_g6hv_*×2——历史会话产物非任务产物）→ **监督侧核对后 DROP SCHEMA CASCADE 清理**
+
 ## 四、AGENTS.md 状态行（已同步更新指针）
 
 AGENTS.md §1 项目状态行已更新为「M2 进行中（m2-1/m2-2 已交付）+ 指向本文件」——新会话第一读即达。
 
-## 五、下一段开工指引（m2-6）
+## 五、下一段开工指引（m2-5）
 
-1. 按协议 0 建检查点 `task-knowledge-lattice-m2-6`（模板 `_template.md`；createdAt 取真实时间）
-2. 任务书要点：管理面补全与嵌入执行体（row 7.5——含 m2-4 N-1 裁定的 members 增/改/删、reindex/reembed 蓝绿执行体 TC-EMB-06、m2-3 P3×10 登记项）；验收 TC-EMB-06、members/values CRUD、D19 取值恢复
-3. 会话隔离：全新 Coder/Tester/Committer 会话；分支先 ff 至 origin/develop（=m2-4 PR 合入后基线——合入后确认）
-4. 硬约束：门禁 1580+1 起零回归；coder 禁改 docs/；chore 归档批带上工作区遗留流程文档（若有）
+1. 按协议 0 建检查点 `task-knowledge-lattice-m2-5`（模板 `_template.md`；createdAt 取真实时间）；**新会话开工先扫 m2-6 检查点遗留事项节**（B① 逐行过期编辑/P3×3 文案/监督侧 pg 残留清理）
+2. 任务书要点：M2 验收收口段（row 11——跨组织隔离全绿〔TC-OPS-09/T15/TC-AZ-04〕、REST-PG 残项 P3-18、G-6 halfvec 索引化复测〔bench7 脚本已入库〕、G-8 真实模型 MRL+指纹阈值复验、P3-7 quality 两遍流 hardening、真实语料人工复核〔待决-1〕、rerank 真实网关联调〔环境依赖〕+真实 IdP 联调〔同批〕、§六 M2 行总勾验）
+3. 会话隔离：全新 Coder/Tester/Committer 会话；分支先 ff 至 origin/develop（=m2-6 PR mergeCommit——合入后本行补记）
+4. 硬约束：门禁 1651+1 起零回归；coder 禁改 docs/；chore 归档批带上工作区遗留流程文档（若有）
 
-（m2-4 开工指引已执行完毕——2026-11-01 双通过，PR 交付中）
+（m2-6 开工指引已执行完毕——2026-11-01 双通过，PR 交付中）
 
 ## 六、维护规则
 

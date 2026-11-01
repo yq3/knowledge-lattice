@@ -68,8 +68,13 @@ async def search(body: SearchRequest, request: Request) -> dict:
         )
 
         def _resolve():
+            # P3-3/R3：标签/维度经 effective_settings 从 embedder 派生——
+            # 与 semantic 查询/build 消费面同源（该路径无 vec 增益，一致性收口）
+            from knowledge_lattice.config import effective_settings
+
             return resolve_query_entities(
-                service.backend, service.settings, org,
+                service.backend,
+                effective_settings(service.settings, service.embedder), org,
                 query=body.query, entities=body.entities,
                 auto_entities=body.auto_entities,
             )

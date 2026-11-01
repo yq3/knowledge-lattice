@@ -72,8 +72,20 @@ def test_embedding_coverage_active_only_denominator(matrix) -> None:
 
 
 @pytest.fixture()
-def _mgmt_env(app_env):
-    """app_env + admin_tax + 一篇已摄取文档（u_full owner——含当前标签向量）。"""
+def _quiet_inline(app_env):
+    """P3-6①/R2：停 inline 兜底循环线程——直插 pending 任务构造「未执行
+    窗口」的用例隔离（防循环 poll 周期抢走任务造负载下 flake；kick 同步
+    消化通道不受影响——本 fixture 只用于不依赖兜底的直插用例）。"""
+    handle = getattr(app_env["app"].state, "worker", None)
+    if handle is not None and hasattr(handle, "_stop"):
+        handle._stop.set()
+        handle._wake.set()
+    yield app_env
+
+
+def _setup_mgmt(app_env):
+    """管理面造数（_mgmt_env / _mgmt_env_quiet 共用）：admin_tax + 一篇已
+    摄取文档（u_full owner——含当前标签向量）。"""
     from helpers import seed_membership, seed_user
     from knowledge_lattice.domain.auth import hash_token
 
@@ -107,13 +119,49 @@ def _mgmt_env(app_env):
     }
 
 
-def test_api_reindex_and_reembed_task_enqueue(_mgmt_env) -> None:
-    """TC-EMB-06 API 面：无 embed_model → reindex 任务（target_version=在用
-    版本）；携带 embed_model → reembed 任务（payload 含 org+embed_model、
-    不限单版本）；owner 与 org_admin 均可；无关成员 403；404。"""
-    client, conn = _mgmt_env["client"], _mgmt_env["conn"]
+@pytest.fixture()
+def _mgmt_env(app_env):
+    """管理面环境（兜底循环在线——投递/轮询类用例）。"""
+    return _setup_mgmt(app_env)
 
-    # owner（u_full）投递 reindex
+
+@pytest.fixture()
+def _mgmt_env_quiet(_quiet_inline):
+    """管理面环境 + 兜底循环已停（P3-6①/R2——直插 pending 任务的
+    「未执行窗口」用例隔离，防循环抢任务 flake）。"""
+    return _setup_mgmt(_quiet_inline)
+
+
+def test_api_reindex_and_reembed_task_enqueue(_mgmt_env) -> None:
+    """TC-EMB-06 API 面（m2-6 执行体接管后）：无 embed_model → reindex 任务
+    （target_version=在用版本；owner/org_admin 可投）；携带 embed_model →
+    reembed 任务（payload 含 org+embed_model、不限单版本；**sysadmin 专属**
+    ——N-1 裁定选 a/R2 P2-2：换模型为系统级全库迁移，org_admin/owner 均 403）。
+    **m2-6 起 inline worker 同步认领执行**——投递即执行到终态（本用例事实
+    升级为 A1/A2 的 API 级集成：reindex done 重索引、reembed done 蓝绿切换
+    断言）。"""
+    client, conn = _mgmt_env["client"], _mgmt_env["conn"]
+    sysadmin = {"Authorization": f"Bearer {_mgmt_env['static']['sysadmin']}"}
+
+    def _task_row(task_id: str):
+        return conn.execute(
+            "SELECT type, status, target_version, payload FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+
+    def _await_terminal(task_id: str, *, timeout_s: float = 15.0) -> tuple:
+        """有界轮询终态（inline 双通道竞态的鲁棒收口：reembed/reindex 可能被
+        兜底循环线程抢先认领——kick 不保证恒为先；-O 门禁实测暴露）。"""
+        import time as _time
+
+        deadline = _time.monotonic() + timeout_s
+        row = _task_row(task_id)
+        while row[1] not in ("done", "failed") and _time.monotonic() < deadline:
+            _time.sleep(0.05)
+            row = _task_row(task_id)
+        return row
+
+    # owner（u_full）投递 reindex → 同步执行 done（重索引全链）
     r = client.post(
         f"/api/orgs/{ORG}/documents/{_mgmt_env['doc_id']}/reindex",
         headers=_mgmt_env["member"],
@@ -121,29 +169,54 @@ def test_api_reindex_and_reembed_task_enqueue(_mgmt_env) -> None:
     assert r.status_code == 202
     body = r.json()
     assert body["type"] == "reindex" and body["embed_model"] is None
-    task = conn.execute(
-        "SELECT type, status, target_version, payload FROM tasks WHERE id = ?",
-        (body["task_id"],),
-    ).fetchone()
-    assert task[0] == "reindex" and task[1] == "pending"
+    task = _await_terminal(body["task_id"])
+    assert task[0] == "reindex" and task[1] == "done", (
+        f"reindex 被 inline worker 同步执行到终态（m2-6 执行体）: {task[1]}"
+    )
     assert task[2] == 1  # active_version
     assert json.loads(task[3])["org"] == ORG
 
-    # org_admin 换模型重嵌入（reembed）
+    # 换模型重嵌入：sysadmin 专属（N-1 裁定）——owner 与 org_admin 均 403
+    for headers, who in ((_mgmt_env["member"], "owner"),
+                         (_mgmt_env["admin"], "org_admin")):
+        r = client.post(
+            f"/api/orgs/{ORG}/documents/{_mgmt_env['doc_id']}/reindex",
+            headers=headers, params={"embed_model": "new-model:1536"},
+        )
+        assert r.status_code == 403, f"{who} 不得触发全库 reembed（sysadmin 专属）"
+
     r = client.post(
         f"/api/orgs/{ORG}/documents/{_mgmt_env['doc_id']}/reindex",
-        headers=_mgmt_env["admin"], params={"embed_model": "new-model:1536"},
+        headers=sysadmin, params={"embed_model": "new-model:1536"},
     )
-    assert r.status_code == 202
+    assert r.status_code == 202, r.text
     body = r.json()
     assert body["type"] == "reembed" and body["embed_model"] == "new-model:1536"
-    task = conn.execute(
-        "SELECT type, status, target_version, payload FROM tasks WHERE id = ?",
-        (body["task_id"],),
-    ).fetchone()
+    task = _await_terminal(body["task_id"])
     assert task[0] == "reembed" and task[2] is None  # 全库任务不限单版本
     payload = json.loads(task[3])
     assert payload == {"org": ORG, "embed_model": "new-model:1536"}
+    assert task[1] == "done", (
+        f"reembed 蓝绿执行体同步完成（TC-EMB-06 四步）: {task[1]}"
+    )
+    # 切换终态：embedder 标签（面板 label 源）已切新标签；全库单标签一致
+    assert _mgmt_env["embedder"].model_label == "new-model:1536"
+    labels = {
+        row[0] for row in conn.execute(
+            "SELECT DISTINCT cv.embed_model FROM chunk_vectors cv"
+            " JOIN chunks c ON c.rid = cv.rid"
+            " JOIN documents d ON d.id = c.doc_id WHERE d.org_id = ?", (ORG,),
+        )
+    }
+    assert labels == {"new-model:1536"}, f"旧标签已清理（单标签一致）: {labels}"
+
+    # P2-1/R2：覆盖率面板 dim 经 effective_settings 从 embedder 派生——切换
+    # 后与 embedder 一致（settings 容器滞后的 inline 形态下面板不失真）
+    r = client.get(f"/api/orgs/{ORG}/embedding-coverage",
+                   headers=_mgmt_env["admin"])
+    assert r.status_code == 200
+    assert r.json()["embed_model"] == "new-model:1536"
+    assert r.json()["dim"] == 1536, "dim 从当前生效标签派生（非旧 settings）"
 
     # 普通成员（非 owner 非 admin）→ 403
     r = client.post(
@@ -158,22 +231,29 @@ def test_api_reindex_and_reembed_task_enqueue(_mgmt_env) -> None:
     assert r.status_code == 404
 
 
-def test_api_embedding_coverage_readonly(_mgmt_env) -> None:
+def test_api_embedding_coverage_readonly(_mgmt_env_quiet) -> None:
     """覆盖率端点只读：embed_model=model:dim 形态、各库 done/total；reembed
     窗口进度按**任务目标标签**（payload.embed_model——R2 P2-3）而非当前标签
-    ——蓝绿窗口旧标签覆盖率不冒充进度；非 org_admin 403。"""
-    client, conn = _mgmt_env["client"], _mgmt_env["conn"]
+    ——蓝绿窗口旧标签覆盖率不冒充进度；非 org_admin 403。
 
-    # 先投一个 reembed（面板 reembed 窗口数据源——目标标签 new-model:1536）
-    r = client.post(
-        f"/api/orgs/{ORG}/documents/{_mgmt_env['doc_id']}/reindex",
-        headers=_mgmt_env["admin"], params={"embed_model": "new-model:1536"},
-    )
-    reembed_task_id = r.json()["task_id"]
+    m2-6 注记：经端点投递的 reembed 会被 inline worker 同步执行完——「未
+    起步 done=0」窗口改用**直插任务行**（不经端点 kick）构造（执行体存在
+    前的历史形态语义保持可测）。"""
+    client, conn = _mgmt_env_quiet["client"], _mgmt_env_quiet["conn"]
+
+    # 直插 pending reembed（面板 reembed 窗口数据源——目标标签 new-model:1536；
+    # doc_id 关联文档——list_tasks 经 documents JOIN 组织过滤）
+    reembed_task_id = conn.execute(
+        "INSERT INTO tasks(id, doc_id, type, status, payload)"
+        " VALUES('tsk-cov-reembed', ?, 'reembed', 'pending', ?)"
+        " RETURNING id",
+        (_mgmt_env_quiet["doc_id"],
+         json.dumps({"org": ORG, "embed_model": "new-model:1536"})),
+    ).fetchone()[0]
 
     # 造目标标签部分向量（1 块）——reembed 进度=目标标签覆盖率
     rid = conn.execute(
-        "SELECT rid FROM chunks WHERE doc_id = ?", (_mgmt_env["doc_id"],)
+        "SELECT rid FROM chunks WHERE doc_id = ?", (_mgmt_env_quiet["doc_id"],)
     ).fetchone()[0]
     from knowledge_lattice.store.sqlite.vec import pack_f32
 
@@ -184,7 +264,7 @@ def test_api_embedding_coverage_readonly(_mgmt_env) -> None:
     )
     conn.commit()
 
-    r = client.get(f"/api/orgs/{ORG}/embedding-coverage", headers=_mgmt_env["admin"])
+    r = client.get(f"/api/orgs/{ORG}/embedding-coverage", headers=_mgmt_env_quiet["admin"])
     assert r.status_code == 200
     body = r.json()
     assert body["embed_model"], "当前模型标签（model:dim 形态）"
@@ -202,22 +282,34 @@ def test_api_embedding_coverage_readonly(_mgmt_env) -> None:
     assert body["reembed"]["total"] >= 1
     assert body["reembed"]["done"] == 1, "目标标签已有向量块计入 reembed 进度"
     # 无目标标签向量时（执行体未认领起步）done=0——不冒充当前标签覆盖率
-    r2 = client.post(
-        f"/api/orgs/{ORG}/documents/{_mgmt_env['doc_id']}/reindex",
-        headers=_mgmt_env["admin"], params={"embed_model": "green:1536"},
-    )
-    task2 = r2.json()["task_id"]
-    # 清掉前一条 reembed（同秒并列下「最近一条」次序不判——单条无歧义）
     conn.execute("DELETE FROM tasks WHERE id = ?", (reembed_task_id,))
+    conn.execute(
+        "INSERT INTO tasks(id, doc_id, type, status, payload)"
+        " VALUES('tsk-cov-reembed2', ?, 'reembed', 'pending', ?)",
+        (_mgmt_env_quiet["doc_id"], json.dumps({"org": ORG, "embed_model": "green:1536"})),
+    )
     conn.commit()
-    r = client.get(f"/api/orgs/{ORG}/embedding-coverage", headers=_mgmt_env["admin"])
+    r = client.get(f"/api/orgs/{ORG}/embedding-coverage", headers=_mgmt_env_quiet["admin"])
     body = r.json()
-    assert body["reembed"]["task_id"] == task2  # 唯一 reembed 任务
+    assert body["reembed"]["task_id"] == "tsk-cov-reembed2"  # 唯一 reembed 任务
     assert body["reembed"]["done"] == 0, "目标标签零向量 → done=0（非当前标签覆盖率）"
+
+    # 非权限前置：造他组织 dataset（P1-1/R3——org-scoped 端点不得列出）
+    from helpers import seed_dataset, seed_org
+
+    seed_org(conn, "org:gl")
+    seed_dataset(conn, "org:gl", "ds:gl_lib")
+    conn.commit()
+    r = client.get(f"/api/orgs/{ORG}/embedding-coverage", headers=_mgmt_env_quiet["admin"])
+    assert r.status_code == 200
+    body = r.json()
+    scoped_ids = {c["dataset_id"] for c in body["coverage"]}
+    assert "ds:gl_lib" not in scoped_ids, "P1-1：他组织 dataset 不得泄露"
+    assert "ds:vat_lib" in scoped_ids
 
     # 非 org_admin → 403
     r = client.get(
-        f"/api/orgs/{ORG}/embedding-coverage", headers=_mgmt_env["member"],
+        f"/api/orgs/{ORG}/embedding-coverage", headers=_mgmt_env_quiet["member"],
     )
     assert r.status_code == 403
 
@@ -250,18 +342,23 @@ def test_api_stats_maintenance_keys(_mgmt_env) -> None:
     assert r.status_code == 403
 
 
-def test_api_cancel_reindex_task(_mgmt_env) -> None:
+def test_api_cancel_reindex_task(_mgmt_env_quiet) -> None:
     """任务取消联动（A5 复引）：投递 reindex → POST cancel → 任务 failed+
-    'cancelled:'（m2-1 取消机制在管理面任务类型上同语义——reindex 未被
-    runner 认领仍处 pending，取消即吸收态）。"""
-    client = _mgmt_env["client"]
-    r = client.post(
-        f"/api/orgs/{ORG}/documents/{_mgmt_env['doc_id']}/reindex",
-        headers=_mgmt_env["admin"],
+    'cancelled:'（m2-1 取消机制在管理面任务类型上同语义）。
+
+    m2-6 注记：经端点投递的 reindex 会被 inline worker 同步执行完（done）
+    ——取消语义的可测窗口改用**直插 pending 任务行**（不经端点 kick）构造；
+    取消对非终态任务的吸收态语义不变。"""
+    client, conn = _mgmt_env_quiet["client"], _mgmt_env_quiet["conn"]
+    conn.execute(
+        "INSERT INTO tasks(id, doc_id, type, status, target_version, payload)"
+        " VALUES('tsk-cancel-reindex', ?, 'reindex', 'pending', 1, ?)",
+        (_mgmt_env_quiet["doc_id"], json.dumps({"org": ORG})),
     )
-    task_id = r.json()["task_id"]
+    conn.commit()
+    task_id = "tsk-cancel-reindex"
     r = client.post(
-        f"/api/orgs/{ORG}/tasks/{task_id}/cancel", headers=_mgmt_env["admin"],
+        f"/api/orgs/{ORG}/tasks/{task_id}/cancel", headers=_mgmt_env_quiet["admin"],
     )
     assert r.status_code == 200
     body = r.json()
@@ -269,6 +366,136 @@ def test_api_cancel_reindex_task(_mgmt_env) -> None:
     assert body["status"] == "failed" and body["error"].startswith("cancelled:")
     # 幂等不复活
     r = client.post(
-        f"/api/orgs/{ORG}/tasks/{task_id}/cancel", headers=_mgmt_env["admin"],
+        f"/api/orgs/{ORG}/tasks/{task_id}/cancel", headers=_mgmt_env_quiet["admin"],
     )
     assert r.json()["status"] == "failed"
+
+
+def test_api_reindex_rejected_while_pending(_mgmt_env_quiet) -> None:
+    """P3-5②/N-2 裁定选 a（R3）：目标文档存在 pending 版本（**含 failed**）
+    → reindex 一律 409——失败 pending 行未清除时 ingest._guard_alive 仍以
+    pending 为当前目标（core 语义不动），放行会使文档被 reset 后判 cancelled
+    （不可搜）。终态断言：文档保持 searchable_full、在用块保留。"""
+    client, conn = _mgmt_env_quiet["client"], _mgmt_env_quiet["conn"]
+
+    def _doc_state():
+        doc = conn.execute(
+            "SELECT active_status, pending_version, pending_status FROM documents"
+            " WHERE id = ?", (_mgmt_env_quiet["doc_id"],),
+        ).fetchone()
+        chunks = conn.execute(
+            "SELECT count(*) FROM chunks WHERE doc_id = ? AND tombstone = 0",
+            (_mgmt_env_quiet["doc_id"],),
+        ).fetchone()[0]
+        return doc, chunks
+
+    # ① pending 解析中 → 409
+    conn.execute(
+        "UPDATE documents SET pending_version = 2, pending_status = 'parsing'"
+        " WHERE id = ?", (_mgmt_env_quiet["doc_id"],),
+    )
+    conn.commit()
+    r = client.post(
+        f"/api/orgs/{ORG}/documents/{_mgmt_env_quiet['doc_id']}/reindex",
+        headers=_mgmt_env_quiet["admin"],
+    )
+    assert r.status_code == 409
+    assert "pending" in r.json()["detail"]
+
+    # ② N-2 (a)：pending failed 同样 409（保守——先处置失败上传/清理 pending
+    # 后重投；放行会 reset+cancelled 把文档推向不可搜）
+    conn.execute(
+        "UPDATE documents SET pending_status = 'failed',"
+        " pending_error = 'x' WHERE id = ?", (_mgmt_env_quiet["doc_id"],),
+    )
+    conn.commit()
+    r = client.post(
+        f"/api/orgs/{ORG}/documents/{_mgmt_env_quiet['doc_id']}/reindex",
+        headers=_mgmt_env_quiet["admin"],
+    )
+    assert r.status_code == 409, "pending failed 一律拒绝（N-2 选 a）"
+    assert "pending" in r.json()["detail"]
+
+    # 终态断言（false green 根除）：文档不可搜窗口不存在
+    doc, chunks = _doc_state()
+    assert doc[0] == "searchable_full", "文档保持可搜（拒绝路径零触碰）"
+    assert chunks >= 1, "在用块保留"
+    # 任务零投递（409 不产生任务行）
+    n = conn.execute(
+        "SELECT count(*) FROM tasks WHERE type = 'reindex'"
+        " AND doc_id = ?", (_mgmt_env_quiet["doc_id"],),
+    ).fetchone()[0]
+    assert n == 0
+
+
+def test_embedding_coverage_org_scoped_no_cross_org_leak(matrix) -> None:
+    """P1-1/R3：org-scoped coverage 只列**本组织** datasets——R2 全库化把外层
+    WHERE ds.org_id 误删后，其他组织的 dataset_id/name 以 total=0 行泄露
+    （跨组织元数据泄露）。全库口径（org_id=None）不受影响（gate 内层过滤
+    独立）。双后端。"""
+    backend = matrix.make_backend()
+    # org:gl 造 dataset+doc/chunk（隔离对照——无向量）
+    from helpers import seed_dataset, seed_document
+    from helpers import insert_chunk
+
+    seed_dataset(matrix, "org:gl", "ds:gl_lib")
+    seed_document(
+        matrix, "d_gl_cov", org_id="org:gl", dataset_id="ds:gl_lib",
+        owner_user_id="u_gl",
+    )
+    insert_chunk(
+        matrix, doc_id="d_gl_cov", seq=1, version=1, content_seg="gl",
+        title_seg="gl",
+    )
+    matrix.execute(
+        "UPDATE documents SET active_version = 1 WHERE id = 'd_gl_cov'"
+    )
+
+    label = "fake-embed:8"
+    scoped = backend.embedding_coverage(ORG, label)
+    ids = {c["dataset_id"] for c in scoped}
+    assert "ds:gl_lib" not in ids, "org-scoped 不得列出他组织 dataset（P1-1）"
+    assert "ds:vat_lib" in ids
+
+    full = backend.embedding_coverage(None, label)
+    full_ids = {c["dataset_id"] for c in full}
+    assert "ds:gl_lib" in full_ids, "全库口径包含全部组织（gate 数据源不动）"
+    gl_row = next(c for c in full if c["dataset_id"] == "ds:gl_lib")
+    assert gl_row["total"] == 1 and gl_row["done"] == 0
+
+
+def test_api_reembed_sysadmin_without_membership(_mgmt_env_quiet) -> None:
+    """R3（R2 Committer §4 测试缺口）：sysadmin 无本组织成员关系仍可触发
+    reembed——系统级动作不经 org_scoped 成员校验（check_path_org 只校路径/
+    头一致）；N-1 裁定 sysadmin 专属的越权面收口形态实证。"""
+    client, conn = _mgmt_env_quiet["client"], _mgmt_env_quiet["conn"]
+    # 前置：sysadmin 无 org:tax 成员关系（app_env 默认有——删行构造）
+    conn.execute(
+        "DELETE FROM user_org_memberships WHERE user_id = 'sysadmin'"
+        " AND org_id = ?", (ORG,),
+    )
+    assert conn.execute("SELECT count(*) FROM users WHERE id='sysadmin'"
+                        " AND is_system_admin = 1").fetchone()[0] == 1
+    conn.commit()
+
+    r = client.post(
+        f"/api/orgs/{ORG}/documents/{_mgmt_env_quiet['doc_id']}/reindex",
+        headers={"Authorization": f"Bearer {_mgmt_env_quiet['static']['sysadmin']}"},
+        params={"embed_model": "new-model:1536"},
+    )
+    assert r.status_code == 202, r.text
+    task_id = r.json()["task_id"]
+
+    import time as _time
+
+    deadline = _time.monotonic() + 15.0
+    row = conn.execute(
+        "SELECT status FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    while row[0] not in ("done", "failed") and _time.monotonic() < deadline:
+        _time.sleep(0.05)
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+    assert row[0] == "done", "无 membership 的 sysadmin 触发全库迁移执行成功"
+    assert _mgmt_env_quiet["embedder"].model_label == "new-model:1536"
