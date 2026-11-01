@@ -200,8 +200,26 @@ def test_retention_prunes_months_older_than_keep(matrix, tmp_path) -> None:
 
 def test_seal_skips_month_with_pending_outbox(matrix, tmp_path) -> None:
     """仍有未搬运 outbox 行（事件 created_at 落该月）→ 跳过封存（防「先封存
-    后搬运」写入已封存月库的死锁）——搬运后下轮再封。"""
+    后搬运」写入已封存月库的死锁）——搬运后下轮再封。
+
+    时间造数修正（2026-11-01，m2s-6 R1 门禁复验发现）：显式 ensure OCT 月库
+    /分区——原实现隐性依赖「ensure_audit 按**真实时钟**建的当月库恰好落在
+    202610」（UTC 跨入 2026-11 起当月库=202611，seal 候选 `month >= cur_month`
+    永远跳过 → 永久红）。按口径段「时间依赖一律造数」钉死 OCT。"""
+    from datetime import datetime
+
     backend = matrix.make_backend()
+    if matrix.name == "sqlite":
+        from knowledge_lattice.store.sqlite.audit import ensure_monthly_audit
+
+        ensure_monthly_audit(backend._db_dir(),
+                             when=datetime(2026, 10, 15, 10, 0))
+    else:
+        from knowledge_lattice.store.postgres.audit import (
+            ensure_month_partition,
+        )
+
+        ensure_month_partition(matrix.raw, when=datetime(2026, 10, 15, 10, 0))
     _seed_outbox(backend, matrix, count=1, created_at=OCT)
     # 不 ship——10 月有未搬运行
     stats = backend.seal_audit_months(now=NOV)

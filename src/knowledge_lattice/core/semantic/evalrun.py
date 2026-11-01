@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "load_golden", "run_recognition_eval", "EVAL_THRESHOLDS",
-    "golden_eval_runner",
+    "golden_eval_runner", "fuzzy_recall_at_3",
 ]
 
 # TC-SEV-02 门槛：三指标 ≥ 阈值、负样本误报 ≤ 阈值（方向差异见 _below）
@@ -87,7 +87,8 @@ def run_recognition_eval(
     id_to_key = {e["id"]: f'{e["type"]}:{e["key"]}' for e in snapshot["entities"]}
     key_set = set(id_to_key.values())
 
-    pos_items = [i for i in items if i["kind"] != "neg"]
+    pos_items = [i for i in items
+                 if i["kind"] != "neg" and i["kind"] != "pos_typo"]
     applicable = [i for i in pos_items
                   if all(lb[0] in key_set for lb in i["labels"])]
     if (len(applicable) < EVAL_MIN_APPLICABLE
@@ -116,6 +117,9 @@ def run_recognition_eval(
     ambiguous_labeled = ambiguous_correct = 0
     neg_total = neg_flagged = 0
     for item in items:
+        if item["kind"] == "pos_typo":
+            continue    # 错别字正样本为模糊层设计面——AC 层口径整体排除
+                        #（m2s-6：AC 层 miss 属设计内，不稀释 TC-SEV-02 门槛）
         labels = [lb for lb in item["labels"] if lb[0] in key_set]
         mentions = annotator.annotate(item["text"])["mentions"]
         if item["kind"] == "neg":
@@ -145,7 +149,7 @@ def run_recognition_eval(
     precision = (matched / predicted_total) if predicted_total else 1.0
     recall = (matched / labeled_total) if labeled_total else 1.0
     ambiguity = ((ambiguous_correct / ambiguous_labeled)
-                 if ambiguous_labeled else None)
+                  if ambiguous_labeled else None)
     neg_fp = (neg_flagged / neg_total) if neg_total else 0.0
     return {
         "items": len(pos_items) + neg_total,
@@ -183,3 +187,54 @@ def golden_eval_runner(settings) -> Callable | None:
         return metrics
 
     return runner
+
+
+# ---- AC + 模糊 recall@3（TC-SEV-03 / TC-SEM-09——m2s-6） ----
+
+
+def fuzzy_recall_at_3(
+    annotator,
+    items: Sequence[dict],
+    snapshot: dict,
+    *,
+    vec_lookup=None,
+) -> dict:
+    """AC 层 + 模糊层合并 recall@3（门槛 ≥0.92——design §8 M2-S3 验收句）。
+
+    口径：每条正样本（含 pos_typo）跑 ``annotate(text, fuzzy=True)``，取
+    mentions（span 序）在前 + fuzzy candidates 在后的**实体出现序**，去重后
+    截前 3——每个标注实体出现在前 3 实体内即命中；recall = 命中标注数 /
+    标注总数（适用面判定与 run_recognition_eval 同款：标注 key 全在场的
+    条目才计入——参考词典部署外整体 skipped）。"""
+    key_to_id = {f'{e["type"]}:{e["key"]}': e["id"] for e in snapshot["entities"]}
+    pos_items = [i for i in items if i["kind"] != "neg"]
+    applicable = [i for i in pos_items
+                  if all(lb[0] in key_to_id for lb in i["labels"])]
+    if (len(applicable) < EVAL_MIN_APPLICABLE
+            or len(applicable) / len(pos_items) < EVAL_MIN_APPLICABLE_RATIO):
+        return {"skipped": (
+            f"golden set not applicable（可完整解析 {len(applicable)}/"
+            f"{len(pos_items)} 条——参考词典部署外不做半套评测）")}
+    labeled_total = matched = 0
+    for item in applicable:
+        result = annotator.annotate(item["text"], fuzzy=True,
+                                    vec_lookup=vec_lookup)
+        ordered_ids: list[int] = []
+        for m in result.get("mentions") or ():
+            if m["entity_id"] not in ordered_ids:
+                ordered_ids.append(m["entity_id"])
+        for c in result.get("candidates") or ():
+            if c.get("entity_id") not in ordered_ids:
+                ordered_ids.append(c["entity_id"])
+        top3 = set(ordered_ids[:3])
+        for k, _s, _e in item["labels"]:
+            labeled_total += 1
+            if key_to_id[k] in top3:
+                matched += 1
+    recall = (matched / labeled_total) if labeled_total else 1.0
+    return {
+        "items": len(applicable),
+        "labeled": labeled_total,
+        "matched": matched,
+        "recall_at_3": round(recall, 4),
+    }

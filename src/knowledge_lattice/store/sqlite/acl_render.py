@@ -22,6 +22,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from knowledge_lattice.store.acl_ast import (  # noqa: F401  (re-export——既有导入路径不变)
     And,
     BindParam,
@@ -53,6 +55,7 @@ __all__ = [
     "build_acl_ast", "build_where_ast", "build_fts_where_ast",
     "render_sql", "render_select", "render_fts_select",
     "render_fts_recall_select", "render_vec_recall_select",
+    "render_entity_recall_select",
 ]
 
 # CTE 前缀（结构常量——MATERIALIZED 双方言统一；sqlite ≥3.35 同语法，默认物化）
@@ -290,6 +293,53 @@ def render_fts_recall_select(
         " JOIN datasets ds ON ds.id = d.dataset_id"
         f" WHERE {renderer.expr(build_fts_where_ast(plan, query=match_expr))}"
         " ORDER BY score_raw ASC"
+        " LIMIT :top_k"
+    )
+    renderer.params["top_k"] = top_k
+    return sql, renderer.params
+
+
+def render_entity_recall_select(
+    plan: AclPlan,
+    entity_ids: Sequence[int],
+    seed_ids: Sequence[int],
+    *,
+    top_k: int,
+) -> tuple[str, dict[str, object]]:
+    """实体召回路 SQL（M2-S3/m2s-6——design §5.10；三路同构 TC-ACL-06 扩展）：
+
+    - 与基础/FTS/向量路**共用同一 visible_docs CTE 构造与同一 Plan**（§5.10
+      「与 §5.1 完全相同的维度 ACL 编译产物」——实体路不给文档可见性开后门，
+      T-S8）；外层 WHERE = build_visible_docs_outer_where（version/tombstone/
+      org + 可见集引用 + 过滤双保险）；
+    - 得分 `SUM(ce.hits × (种子 1.0 / 扩展 0.5))`——种子/扩展经 InValue 绑定
+      参数（渲染器自控名，数据值不进 SQL 文本）；
+    - matched_entities = GROUP_CONCAT(DISTINCT ce.entity_id)（agent 解释
+      「为什么召回了这段」——§5.10 第 6 点）；
+    - ORDER BY score_raw DESC + LIMIT :top_k（k_entity 缺省 30——backend 层）。
+    """
+    renderer = _Renderer()
+    ent_in = renderer.expr(
+        InValue(ColumnRef("ce", "entity_id"), "ent", tuple(entity_ids)))
+    seed_in = renderer.expr(
+        InValue(ColumnRef("ce", "entity_id"), "seed", tuple(seed_ids)))
+    ce_org = renderer.expr(BindParam("org", plan.org_id))
+    sql = (
+        f"{_CTE_PREFIX}{renderer.expr(_build_cte_where_neutral(plan))})"
+        " SELECT c.rid, c.id AS chunk_id, c.doc_id, d.title, c.page_no, c.sheet_name,"
+        " d.source_uri, d.dataset_id, ds.name AS dataset_name, c.content,"
+        f" SUM(ce.hits * (CASE WHEN {seed_in} THEN 1.0 ELSE 0.5 END)) AS score_raw,"
+        " GROUP_CONCAT(DISTINCT ce.entity_id) AS matched_entities"
+        " FROM sem_chunk_entities ce"
+        " JOIN chunks c    ON c.rid = ce.chunk_rid"
+        " JOIN documents d ON d.id = c.doc_id"
+        " JOIN datasets ds ON ds.id = d.dataset_id"
+        f" WHERE ce.org_id = {ce_org}"
+        f"   AND {ent_in}"
+        f"   AND {renderer.expr(_build_outer_where_neutral(plan))}"
+        " GROUP BY c.rid, c.id, c.doc_id, d.title, c.page_no, c.sheet_name,"
+        " d.source_uri, d.dataset_id, ds.name, c.content"
+        " ORDER BY score_raw DESC, c.rid"
         " LIMIT :top_k"
     )
     renderer.params["top_k"] = top_k

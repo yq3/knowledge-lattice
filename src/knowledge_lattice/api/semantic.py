@@ -253,18 +253,50 @@ def _require_semantic_read(service, org: str, auth) -> None:
         )
 
 
+def _has_semantic_restricted(service, org: str, auth) -> bool:
+    """semantic:restricted 持权判定（T-S9 持权路径——m2s-6）：membership
+    role = sem_restricted（§6.3 权限口径③；org_admin 不默认兼任）。"""
+    membership = service.backend.read_membership(auth.user_id, org)
+    return bool(membership and membership.get("role") == "sem_restricted")
+
+
+def _audit_restricted_access(service, org: str, auth, tool: str,
+                             entity_ids: list[int]) -> None:
+    """持权访问 restricted 实体的权限事件（A-16 口径持权面——outbox）。"""
+    if not entity_ids:
+        return
+    from knowledge_lattice.core.semantic.constants import (
+        EVENT_SEMANTIC_RESTRICTED_ACCESS,
+    )
+
+    try:
+        service.backend.append_outbox(
+            EVENT_SEMANTIC_RESTRICTED_ACCESS,
+            json.dumps(
+                {"org_id": org, "user_id": auth.user_id, "tool": tool,
+                 "entity_ids": sorted(set(entity_ids))},
+                ensure_ascii=False,
+            ),
+        )
+    except Exception:  # noqa: BLE001 —— 审计失败不阻断主路径
+        logger.exception("restricted access audit write failed")
+
+
 @router.post("/api/orgs/{org}/semantic/annotate")
 async def semantic_annotate(
     org: str, request: Request, auth=Depends(get_auth),
 ) -> dict:
     """术语识别（semantic:read——同 MCP annotate；design §6.2 L1136/§6.3）。
 
-    body：{text, context_entities?≤20, prefer_types?}；text ≤4000 字（超长
-    400——不静默截断，附录 A-10）。AC 四步消歧 + L0 片段兜底；restricted
-    实体表现为不存在（T-S9 annotate 侧）。"""
+    body：{text, context_entities?≤20, prefer_types?, fuzzy?=false}；text
+    ≤4000 字（超长 400——不静默截断，附录 A-10）。AC 四步消歧 + L0 片段
+    兜底；fuzzy=true 开第 3 层模糊兜底（§5.9/m2s-6——低信任候选落
+    candidates）；restricted 实体表现为不存在（T-S9——持 semantic:
+    restricted 者可见，命中入权限审计）。"""
     org = org_scoped(request, org, auth)
     service = get_service(request)
     _require_semantic_read(service, org, auth)
+    can_restricted = _has_semantic_restricted(service, org, auth)
 
     try:
         body = await request.json()
@@ -279,21 +311,50 @@ async def semantic_annotate(
         raise HTTPException(status_code=400, detail="text 必填（字符串）")
     ctx = body.get("context_entities")
     prefer = body.get("prefer_types")
+    fuzzy = body.get("fuzzy", False)
     for name, val in (("context_entities", ctx), ("prefer_types", prefer)):
         if val is not None and not isinstance(val, list):
             raise HTTPException(status_code=400,
                                 detail=f"{name} 须为数组")
+    if not isinstance(fuzzy, bool):
+        raise HTTPException(status_code=400, detail="fuzzy 须为布尔值")
 
     from knowledge_lattice.core.semantic.annotator import annotate_text
 
     def _run():
-        return annotate_text(service.backend, service.settings, org, text,
-                             context_entities=ctx, prefer_types=prefer)
+        return annotate_text(
+            service.backend, service.settings, org, text,
+            context_entities=ctx, prefer_types=prefer, fuzzy=fuzzy,
+            include_restricted=can_restricted,
+            embedder=getattr(service, "embedder", None),
+        )
+
+    def _restricted_ids(result: dict) -> list[int]:
+        from knowledge_lattice.core.semantic.annotator import get_annotator
+
+        ann, _rev = get_annotator(service.backend, org, service.settings)
+        if ann is None:
+            return []
+        return [m["entity_id"] for m in result.get("mentions") or ()
+                if (ent := ann.entities.get(m.get("entity_id"))) is not None
+                and ent.get("sensitivity") == "restricted"]
 
     try:
-        return await asyncio.to_thread(_run)
+        result = await asyncio.to_thread(_run)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 —— G-21 P3-16/m2s-6 收口：实现
+        # 异常不再裸 500——统一 500 + 日志（栈帧不外泄，与 describe_table 兜底同款）
+        logger.exception("annotate internal failure: org=%s", org)
+        raise HTTPException(
+            status_code=500,
+            detail=f"annotate 内部错误（{type(exc).__name__}——已记录，"
+                   "请稍后重试或联系运维）",
+        ) from exc
+    if can_restricted:
+        _audit_restricted_access(service, org, auth, "annotate",
+                                 await asyncio.to_thread(_restricted_ids, result))
+    return result
 
 
 @router.get("/api/orgs/{org}/semantic/l0")
@@ -356,7 +417,18 @@ async def list_semantic_entities(
     from knowledge_lattice.core.semantic.lookup import search_entities
 
     try:
-        return search_entities(service.backend, org, q, types=types, top_k=top_k)
+        # P2-2/m2s-6 R2 注入 settings/embedder（via='vec' 向量档）+
+        # **P2-1/R3：to_thread 下放**——vec 档内部 embedder.embed([q]) 为同步
+        # httpx Client（embed_timeout_s=30s），async handler 内直接调用会阻塞
+        # 事件循环（§5.2/NFR-8「模型 HTTP 调用绝不阻塞事件循环」——与端点
+        # 其余语义读 annotate/get_entity 的 to_thread 形态一致）
+        return await asyncio.to_thread(
+            search_entities,
+            service.backend, org, q,
+            types=types, top_k=top_k,
+            settings=service.settings,
+            embedder=getattr(service, "embedder", None),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -368,23 +440,31 @@ async def get_semantic_entity(
     fanout_limit: int = Query(50), include: list[str] = Query(None),
 ) -> dict:
     """实体详情与关系展开（semantic:read——同 MCP get_entity；L1138；
-    不存在/他组织/restricted/非 active 一律 404——存在性零泄露 T-S7/T-S9；
-    参数越界经 core 校验 → 400——与 MCP 口径一致）。"""
+    不存在/他组织/restricted（无权）/非 active 一律 404——存在性零泄露
+    T-S7/T-S9；持 semantic:restricted 者可见 restricted 实体〔m2s-6 持权
+    路径〕；参数越界经 core 校验 → 400——与 MCP 口径一致）。"""
     org = org_scoped(request, org, auth)
     service = get_service(request)
     _require_semantic_read(service, org, auth)
+    can_restricted = _has_semantic_restricted(service, org, auth)
     from knowledge_lattice.core.semantic.expand import EntityNotFound, get_entity
 
     try:
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             get_entity, service.backend, org, entity_id=entity_id,
             expand=expand, depth=depth, fanout_limit=fanout_limit,
-            include=include,
+            include=include, can_restricted=can_restricted,
         )
     except EntityNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if can_restricted:
+        row = service.backend.sem_entity_by_id(org, entity_id)
+        if row is not None and row["sensitivity"] == "restricted":
+            _audit_restricted_access(service, org, auth, "get_entity",
+                                     [entity_id])
+    return result
 
 
 @router.get("/api/orgs/{org}/semantic/tables/{table_key}/describe")

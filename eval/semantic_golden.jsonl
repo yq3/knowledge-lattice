@@ -170,3 +170,11 @@
 {"qid": "s170", "kind": "neg", "lang": "zh", "text": "报销单被财务退回了", "labels": []}
 {"qid": "s171", "kind": "neg", "lang": "zh", "text": "行政采购了一批显示器", "labels": []}
 {"qid": "s172", "kind": "neg", "lang": "zh", "text": "停车场月卡续费", "labels": []}
+{"qid": "s173", "kind": "pos_typo", "lang": "zh", "text": "留底税额怎么结转下期", "labels": [["concept:vat.retained_credit", 0, 2]]}
+{"qid": "s174", "kind": "pos_typo", "lang": "zh", "text": "上期留底结转到本期怎么填", "labels": [["concept:vat.retained_credit", 2, 4]]}
+{"qid": "s175", "kind": "pos_typo", "lang": "zh", "text": "一般纳税入的认定标准", "labels": [["concept:vat.general_taxpayer", 0, 5]]}
+{"qid": "s176", "kind": "pos_typo", "lang": "zh", "text": "JXDL 具体指什么", "labels": [["concept:vat.input_credit", 0, 4]]}
+{"qid": "s177", "kind": "pos_typo", "lang": "zh", "text": "LDCE 是啥", "labels": [["concept:vat.retained_credit", 0, 4]]}
+{"qid": "s178", "kind": "pos_typo", "lang": "zh", "text": "纳税申抱的期限是什么", "labels": [["concept:vat.filing", 0, 4]]}
+{"qid": "s179", "kind": "pos_typo", "lang": "zh", "text": "期末留底怎么填", "labels": [["concept:vat.retained_credit", 2, 4]]}
+{"qid": "s180", "kind": "pos_typo", "lang": "zh", "text": "消项税额怎么算", "labels": [["concept:vat.output_tax", 0, 4]]}

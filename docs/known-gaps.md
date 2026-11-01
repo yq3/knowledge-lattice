@@ -11,7 +11,7 @@
 | 编号 | 状态 | 一句话 | 主要关联 | 登记日期 |
 |---|---|---|---|---|
 | [G-1](#g-1-语义层知识不可达窗口四路全-miss-且文档无对应文本) | 已接受（附收窄选项） | 语义知识四路检索全 miss 且文档无对应文本 → 本轮不可达 | D23 / FR-S3 / design §5.9 | 2026-10-19 |
-| [G-2](#g-2-模糊兜底层的触发者与消费者未闭环) | 待澄清（M2-S3 实现前） | 第 3 层 fuzzy 的触发者与消费者未定义，可能形同虚设 | FR-S3 / design §5.9 · §6.3 | 2026-10-19 |
+| [G-2](#g-2-模糊兜底层的触发者与消费者未闭环) | **已闭环**（2026-11-01 m2s-6——用户并存裁定①注入+②引导落地，design v0.9.6 §6.3⑤） | 第 3 层 fuzzy 的触发者与消费者未定义，可能形同虚设 | FR-S3 / design §5.9 · §6.3 | 2026-10-19 |
 | [G-3](#g-3-restricted-实体静默缺失agent-不知道自己缺信息) | 已接受（衍生效应；条件性扩大预登记 #37） | restricted 实体无权时全程无信号，agent 把「无权」当「不存在」 | T-S9 / design §6.3 · #37 | 2026-10-19 |
 | [G-4](#g-4-l0-注入陈旧性dict_rev-记录了但没闭环) | 待澄清（M2-S3 实现前） | L0 进 system prompt 后无刷新机制，dict_rev 记了没人比对 | design §6.3 · §6.2 | 2026-10-19 |
 | [G-5](#g-5-容器化重部署数据易失裸机形态假设与快照恢复引导缺口) | 待澄清（部署平台确认前） | 平台重分配易失容器则 `data/` 随容器销毁；快照机制已有但目的地与启动恢复引导未闭环 | NFR-1 / NFR-10 / D2 / design §2 | 2026-10-19 |
@@ -30,7 +30,10 @@
 | [G-18](#g-18-sem_builds当前构建按最新-ready-取值rev-回退场景-current锚点失真) | **已收口**（m2s-3 R1——0007 activated_at 指针+条件 upsert） | design §4 status 枚举无 superseded/is_current，「最新 ready by id」在 rev 回退时 current/锚点失真（查询面走实时表不受影响）；sqlite 同 rev 竞态双 ready 事件（O-1） | FR-S1 / design §4·§5.8 · M2-S1 | 2026-10-30 |
 | [G-19](#g-19-五源每天一次兜底调度未接线design-§58-适配器表半句) | **已收口**（m2s-4 R1——maintenance 挂载 semantic_daily_sync：五源/日·窗口跨零点·pending 幂等·sem_sync_runs 24h 与 webhook 去重） | design §5.8 适配器表「每天一次兜底」半句——五源仅 webhook/手动两路径，app 兜底循环只认领任务行不投递同步；长期无 webhook 的源停留旧快照 | FR-S1 / design §5.8 · M2-S1 | 2026-10-31 |
 | [G-20](#g-20-webhook-验签前读取完整请求体无大小上限公网入口内存放大) | 已接受（私有化内网面+部署侧反代限流兜底） | webhook 验签前 `await request.body()` 无上限——公网入口内存放大（design 未要求）；公网直曝部署时补应用层上限 | 安全 / design §6.2 · M2-S2 | 2026-10-31 |
-| [G-21](#g-21-annotatello-读-live-快照而非-build-产物冷缓存重启窗口-rev-锚点失真评测门禁非持久m2s-4-p2-1-方案-b-登记项) | **已收口**（m2s-5 方案 A：0008 快照附表+按 current build 取快照+冷缓存/重启服务 build 产物；残留 8 项登记〔快照 GC/pg CHECK/对账双层口径等〕） | annotate/L0 恒读 live：冷缓存/重启 rev 锚点失真、评测拦下词典重启后仍被服务、sync→build 窗口内容/rev 错配 | 语义 / design §5.8·§5.9 · M2-S2 | 2026-10-31 |
+| [G-21](#g-21-annotatello-读-live-快照而非-build-产物冷缓存重启窗口-rev-锚点失真评测门禁非持久m2s-4-p2-1-方案-b-登记项) | **已收口**（m2s-5 方案 A：0008 快照附表+按 current build 取快照+冷缓存/重启服务 build 产物；残留 8 项登记〔快照 GC/pg CHECK/对账双层口径等〕；**m2s-6 核销 6 项+再挂 2 项**〔mixed-mode/l0_extra〕2026-11-01） | annotate/L0 恒读 live：冷缓存/重启 rev 锚点失真、评测拦下词典重启后仍被服务、sync→build 窗口内容/rev 错配 | 语义 / design §5.8·§5.9 · M2-S2 | 2026-10-31 |
+| [G-22](#g-22-查询级异步审计未实现fr-6-既有缺口ts9⑥a-16) | 已登记（POC 接受——事件级审计已闭环，查询级挂起） | 查询级异步审计全库未实现——T-S9⑥/A-16 挂起，refused 查询不可回溯 | FR-6 / design §6.3⑥ · T-S9 | 2026-11-01 |
+| [G-23](#g-23-模糊索引最终一致的残余窗口m2s-6-裁定-5-口径落地后) | 已登记（下批收口——正常路径与写失败路径已覆盖，异常窗口极窄） | `embed_model` 未入内容集合（模型迁移+崩溃窗口向量层静默为空）/标记粘滞（静态词典重触整替）/per-skip 全量重算/`fuzzy_repaired` 观测语义/构建产物 code versioning | design §5.8 · m2s-6 | 2026-11-01 |
+| [G-24](#g-24-语义面-p3-残留集合m2s-6-交付后登记) | 已登记（m2-5/下批分项收口） | `sem_restricted` 无授予入口/持权审计两漏记/vec 档无有界超时降级审计/模糊内存面性能/auto_entities 超长不降级/L1 缺 disambiguation/审计常量登记处 | design §6.3 / NFR-8·11 · m2s-6 | 2026-11-01 |
 
 ---
 
@@ -49,6 +52,7 @@
 
 ## G-2 模糊兜底层的触发者与消费者未闭环
 
+- **状态**：**已闭环（2026-11-01 随 m2s-6 交付）**——用户 2026-10-31 拍板**并存**：①中间件注入 fuzzy candidates 一行低信任提示（计入 600 token 预算）+②annotate 工具描述引导 agent「L1 无命中且判断有业务对象时自行调 annotate(fuzzy=true)」；design v0.9.6 §6.3 补写+参考实现 `core/semantic/middleware.py`+测试锁定（TC-SEM-08 v1.9.10 完成态注记）。
 - **来源**：设计讨论（2026-10-19，G-1 分析中发现的规格缺口）。
 - **问题**：第 3 层模糊兜底 `fuzzy=true` 才跑（FR-S3），结果 `via='fuzzy'`、置信度低于第 1 层，**中间件不自动注入，「只作候选提示」**（design §5.9）。但未写明闭环的两端：**谁传 `fuzzy=true`**（中间件每轮都传？还是不传？），以及** candidates 谁消费**——中间件注入规则只覆盖两类：confidence=1.0 非歧义命中（②）与歧义命中注入候选列表（③），`via='fuzzy'` 的候选不在其中。若中间件调了 fuzzy 但结果丢弃、且没人引导 agent 自己调 `annotate(fuzzy=true)`，第 3 层形同虚设。
 - **影响**：实现期随手处理的失败模式是「谁都不传 fuzzy / 传了结果被丢」，实际 miss 窗口宽于评测口径——**G-1 的 recall@3 ≥ 0.92 假设第 3 层在工作**，它空转则该门槛名不副实。
@@ -225,6 +229,31 @@
 - **状态**：**已收口（2026-10-31 随 m2s-5 方案 A 交付——0008 `sem_build_snapshots` 双方言附表；switch/reactivate 同事务写快照；get_annotator/render_l0 按 current build id 取快照；冷缓存/重启服务 build 产物〔评测拦下词典重启不再被服务〕；无快照回退 live+告警；快照含 relations——共现/L0 消解冷热等价必需）**。
 - **问题**：（历史）annotate（get_annotator 缓存 miss）与 `/semantic/l0` 恒读 live 快照：①进程重启/冷缓存在构建中或构建失败后按 live 字典服务但响应旧 `dict_rev`；②评测门槛拦下的词典已写入 live 表——进程重启后直接被服务；③sync→build 窗口内容/rev 错配。
 - **对冲**：（历史）m2s-4 方案 B：同锚点+冷缓存行为钉死用例。
-- **m2s-4 P3 清单核销（m2s-5 R1 后）**：**已闭**——ambiguity 分子收紧（B1：ambiguous=true 不计正确）/歧义缺省读法显式化（B2：default_reading YAML 字段+消歧第⑤级）/`_build_stats.ambiguous_aliases` 滤 fuzzy_only（r6 随手）/`_audit_build` 重复 import（已删）/R3 用例空转两项（B4 补强）/latin 全角永久用例。**未闭（挂 m2s-6/m2-5 顺手）**——TC-BUILD-04「需人工确认」无确认入口/l0_extra 未被 render_l0 消费/拉丁去空白粘接/alias confidence=0.95 与中间件交互（M2-S3 确认设计意图）/precision 分母不含 neg 预测（口径化）/mixed-mode context 候选级门槛/double_build 测试名实/maintenance 前代四项（m2s-4 期——本段 retag 对账为新代码）/**`/semantic/l0` 无 build 时返回空片段（构建产物语义——TC-SEM-06 注句待落）**/**annotate 端点仅捕 ValueError（其他实现异常 500——低价值清理）**。
+- **m2s-4 P3 清单核销（m2s-5 R1 后）**：**已闭**——ambiguity 分子收紧（B1：ambiguous=true 不计正确）/歧义缺省读法显式化（B2：default_reading YAML 字段+消歧第⑤级）/`_build_stats.ambiguous_aliases` 滤 fuzzy_only（r6 随手）/`_audit_build` 重复 import（已删）/R3 用例空转两项（B4 补强）/latin 全角永久用例。**未闭（挂 m2s-6/m2-5 顺手）**——TC-BUILD-04「需人工确认」无确认入口（→m2-5 运维面）/precision 分母不含 neg 预测（口径化——evalrun docstring）/maintenance 前代四项（m2s-4 期——本段 retag 对账为新代码）/mixed-mode context 候选级门槛（**m2s-6 再挂**——与参考词典刻意的 mixed 歧义面冲突，剔除 ctx-only 候选使 ambiguity 门槛失守〔实测 0.75<0.85〕，需连同词典口径重设计）/l0_extra 未被 render_l0 消费（**m2s-6 再挂**——消费需新库内载体，属数据模型变更超「顺手」量级；参考语义仓未使用 l0.yaml）。**m2s-6 已核销 6 项（2026-11-01）**：annotate 端点 500 兜底（仅捕 ValueError→except Exception+日志）/`/semantic/l0` 无 build 空片段（TC-SEM-06 注句兑现）/拉丁去空白粘接（词边界 `_latin_ok` 拦截+行为锁定用例）/alias confidence=0.95 与中间件交互（设计意图确认——alias 0.95 不注入 L1）/double_build 测试名实（改名 eval_deterministic_repeat）/search_entities 模糊索引升级（拼音层+向量层——v1.9.5 ②登记项兑现）。
 - **残留登记（m2s-5 R1 Committer 审查）**：①PG `snapshot_json` 无 `json_valid` CHECK（写入方受控、sqlite 有——可选 `IS JSON` 补强）；②0008 前存量 ready 行无快照→回退 live，同 rev skipped build 不回填（仅新 rev/重激活写）；③快照含 relations 必需但体积较大（10⁵ 量级或数十 MB）且**无旧 build 快照 GC**（POC 接受，裁剪最小字段/保留策略后续）；④外部篡改快照 JSON 时 get_annotator 抛错不回退 live；⑤**对账双层口径（用户 2026-10-31 裁定接受）**：构建侧仅别名增删投 retag（防风暴）+对账 lagging>0 即投·done 24h 节流（保最终一致）——仅改 definition/sensitivity 的构建当天不投、次日对账补投属预期；⑥无行块恒为 retag 候选（无标记字段——A-14 已知，每日全扫一次）；⑦**YAML 外部语义仓 `_schema/entry.schema.json` 需同步放开 `default_reading` 属性**（ops 项——仓外 schema additionalProperties:false 会拒新字段）；⑧歧义打标 skip 口径（用户裁定——消歧未定不落标）。
 - **重开条件**：无（已收口；残留项见上——③⑦随 M2-S3/m2-5 收口或运维处理）。
+
+## G-22 查询级异步审计未实现（FR-6 既有缺口，T-S9⑥/A-16）
+
+- **来源**：m2s-6 R1 Committer 需求边界审查（2026-11-01）——Tester「docs 查询审计通用套件间接覆盖」结论被推翻（grep 全库无任何 query-audit 实现/用例）。
+- **问题**：design §6.3⑥「annotate / get_entity 普通查询走查询级异步审计，与 docs 查询审计共用月库」全库未实现——docs 检索与语义查询均只有 outbox 权限/业务事件，无查询级 refused/普通查询落审计路径。T-S9⑥（无权尝试走查询级异步审计、refused 可回溯）无法按字面验收。
+- **设计现状与对冲**：FR-6 既有缺口、非 m2s-6 引入；事件级（restricted 持权访问 outbox）已闭环。T-S9 按用户裁定（2026-11-01）以 ①~⑤+持权路径收口。
+- **残留缺口**：查询级审计（语义+docs 两侧）实现与 T-S9⑥ 显式断言挂起。
+- **收窄动作（未排期）**：查询级审计落地时（建议独立任务/主线段）补 T-S9⑥+A-16 关闭。
+- **重开条件**：审计合规要求查询级可回溯时。
+
+## G-23 模糊索引最终一致的残余窗口（m2s-6 裁定 5 口径落地后）
+
+- **来源**：m2s-6 R2/R3 Committer 审查（2026-11-01）——「最终一致+修复路径」口径（design v0.9.6 §5.8）已落地（R3 内容集合对账：期望 `{(entity_id,kind,text_norm)}` vs `sem_fuzzy_terms_all` 不等即整替+向量覆盖+落库标记附加触发），异常窗口收窄后残留。
+- **问题**：①**`embed_model` 未入内容集合**——换嵌入模型+ready 切换后崩溃窗口：旧标签索引内容集合恰好相等且向量覆盖足够时 skipped 构建不触发修复，查询按新标签过滤 → 向量层静默为空至下次 dict_rev 变更（静态词典=永久；一行级修法：集合追加 embed_model+模型迁移回归用例）；②**标记粘滞**——修复成功不清 current 行 `index_write_failed`/`vec_skipped`，静态词典下每次 skipped 重触整替（功能幂等无害，放大 per-skip 成本）；③**per-skip 全量重算**——每次 skipped 构建全量 `build_fuzzy_terms`（pypinyin）+全行读对账（10⁴~10⁵ 规模固定开销——建议 build stats 存内容哈希/先看标记再全量）；④**`fuzzy_repaired` 观测语义**——只在 skipped 返回/审计事件不落库，被修复 build 行仍留 `index_write_failed=True`（历史事实易误读）；⑤**构建产物 code versioning 未入 dict_rev**——pinyin/编辑距离算法或规范化代码变更不触发重建（与 AC/L0 同类 POC 缝隙）。
+- **设计现状与对冲**：正常路径与写失败路径均已覆盖且有 TDD 锁定（收缩/改名/标记三场景）；生产拓扑 inline/子进程 worker 均携带 embedder，NULL 覆盖振荡仅理论存在。
+- **收窄动作（未排期）**：下批合并修法——embed_model 入集合后标记触发面即冗余可整体移除+「再次 skipped 不重触」断言；性能项挂 m2-5（TC-PERF-05 同轮）。
+- **重开条件**：模型迁移场景上线前①必须收口。
+
+## G-24 语义面 P3 残留集合（m2s-6 交付后登记）
+
+- **来源**：m2s-6 R1/R3 Committer P3 清单（2026-11-01，按裁定登记不动）。
+- **问题（分项）**：①`semantic:restricted` 授予载体为 membership `role='sem_restricted'`（design v0.9.6 注记）但**无管理面授予入口**（POC 仅 DB/dev 工具）；②**持权审计两漏记**——get_entity `include=['attrs']` 时 restricted 根实体访问不落审计（审计前提为 curated 非空）；经关系展开「看到」restricted 端点（非根）不审计；③**search_entities vec 档无有界超时/熔断/降级审计**——`embedder.embed` 用 `embed_timeout_s=30s`、未走 `query_embed_timeout_s`/breaker、失败仅 warning（NFR-8/§5.2 口径——to_thread 已消除事件循环阻塞，此为延迟/可观测面）；④**模糊内存面性能**——annotator 每片段 `dict()` 全量复制 pinyin/dels 映射+无条件构建模糊面（10⁴~10⁵ 实体 NFR-11 P99 20ms 风险）；⑤**vec top-3 硬编码**——annotator 未消费 `LATTICE_SEM_FUZZY_VEC_TOP`；⑥**auto_entities 超长不降级**——query >4000 字时 annotate ValueError 上抛 400 整次检索（与增益路失败不阻断相悖——建议 auto 分支返回 None）；⑦**中间件 L1 概念行缺 disambiguation**（mention 契约未携带该字段——design §6.3② 字面含）；⑧**审计事件常量未入 domain/audit_events.py 单一登记处**（EVENT_SEMANTIC_RESTRICTED_ACCESS 在 core/semantic/constants）。
+- **设计现状与对冲**：全部登记级、无功能/安全面阻塞；③④挂 m2-5（TC-PERF-05 同轮），其余下批。
+- **收窄动作（未排期）**：分项入 m2s followups/m2-5。
+- **重开条件**：持权审计合规要求（②）或性能达标测试（③④）触发时优先。

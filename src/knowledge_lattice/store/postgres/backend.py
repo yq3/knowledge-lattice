@@ -206,8 +206,127 @@ class PgBackend:
         for r in rows:
             r["dims"] = dims.get(r["doc_id"], {})
 
-    def recall_by_entities(self, entity_ids, plan: AclPlan, *, top_k: int = 30) -> list[dict]:
-        raise NotImplementedError("实体召回路随 M2-S3（D23 §5.10）")
+    def recall_by_entities(
+        self, entity_ids, plan: AclPlan, *, top_k: int = 30,
+        seed_ids=None,
+    ) -> list[dict]:
+        """实体召回路（M2-S3/m2s-6——design §5.10；与 sqlite 同语义）：得分
+        Σhits×（种子 1.0 / 扩展 0.5）+ rank（1 起名次协议）+ matched_entities
+        （STRING_AGG 拆分回 int 列表）。seed_ids 缺省 = 全部按种子 1.0。"""
+        from knowledge_lattice.store.postgres.acl_render import (
+            render_entity_recall_select,
+        )
+
+        ids = list(dict.fromkeys(entity_ids))
+        if not ids:
+            return []
+        seeds = list(dict.fromkeys(seed_ids)) if seed_ids is not None else ids
+        sql, params = render_entity_recall_select(plan, ids, seeds, top_k=top_k)
+        cursor = self._conn.execute(sql, params)
+        cols = [d[0] for d in cursor.description]
+        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+        self._attach_dims(rows)
+        for rank, row in enumerate(rows, start=1):
+            row["rank"] = rank
+            row["matched_entities"] = [
+                int(x) for x in str(row.get("matched_entities") or "").split(",")
+                if x != ""]
+        return rows
+
+    def sem_fuzzy_replace(
+        self, org_id: str, term_rows: Sequence[dict], del_rows: Sequence[dict],
+    ) -> int:
+        """模糊索引整替（m2s-6——与 sqlite 同语义：先删后插单事务；embedding
+        pgvector 文本形态收口本方言侧 format_vector；del_rows 的 term_idx →
+        新插入 id 内部映射〔RETURNING 回填〕）。"""
+        from knowledge_lattice.store.postgres.vec import format_vector
+
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute("DELETE FROM sem_fuzzy_dels WHERE org_id = %(org)s",
+                         {"org": org_id})
+            conn.execute("DELETE FROM sem_fuzzy_terms WHERE org_id = %(org)s",
+                         {"org": org_id})
+            written = 0
+            for r in term_rows:
+                vec = r.get("embedding")
+                cur = conn.execute(
+                    "INSERT INTO sem_fuzzy_terms(org_id, entity_id, kind,"
+                    " text_norm, term_len, pinyin, embed_model, embedding)"
+                    " VALUES (%(org)s, %(ent)s, %(kind)s, %(norm)s, %(len)s,"
+                    " %(pin)s, %(model)s, %(vec)s::vector)"
+                    " RETURNING id",
+                    {"org": org_id, "ent": r["entity_id"], "kind": r["kind"],
+                     "norm": r["text_norm"], "len": r["term_len"],
+                     "pin": r.get("pinyin") or "", "model": r.get("embed_model"),
+                     "vec": format_vector(vec) if vec is not None else None},
+                )
+                r["id"] = cur.fetchone()[0]
+                written += 1
+            for d in del_rows:
+                conn.execute(
+                    "INSERT INTO sem_fuzzy_dels(org_id, del_key, term_id)"
+                    " VALUES (%(org)s, %(key)s, %(term)s) ON CONFLICT DO NOTHING",
+                    {"org": org_id, "key": d["del_key"],
+                     "term": term_rows[d["term_idx"]]["id"]},
+                )
+            conn.execute("COMMIT")
+            return written
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+    def sem_fuzzy_terms_all(self, org_id: str) -> list[dict]:
+        """org 内全部模糊索引行（与 sqlite 同形——向量层另走 vec_search）。"""
+        rows = self._conn.execute(
+            "SELECT id, entity_id, kind, text_norm, term_len, pinyin,"
+            " embed_model FROM sem_fuzzy_terms WHERE org_id = %(org)s"
+            " ORDER BY id",
+            {"org": org_id},
+        ).fetchall()
+        cols = ("id", "entity_id", "kind", "text_norm", "term_len", "pinyin",
+                "embed_model")
+        return [dict(zip(cols, r)) for r in rows]
+
+    def sem_fuzzy_vec_search(
+        self, org_id: str, query_vec, *, embed_model: str,
+        top_k: int = 3, min_sim: float = 0.75,
+    ) -> list[dict]:
+        """模糊向量近邻（与 sqlite 同语义——`<=>` 余弦距离精确扫描、
+        sim = 1 - 距离；term 级行，实体去重与 min_sim 过滤在消费面）。"""
+        from knowledge_lattice.store.postgres.vec import format_vector
+
+        rows = self._conn.execute(
+            "SELECT entity_id, text_norm, kind,"
+            " 1 - (embedding <=> %(qv)s::vector) AS sim"
+            " FROM sem_fuzzy_terms"
+            " WHERE org_id = %(org)s AND embed_model = %(model)s"
+            "   AND embedding IS NOT NULL"
+            " ORDER BY embedding <=> %(qv)s::vector"
+            " LIMIT %(lim)s",
+            {"qv": format_vector(query_vec), "org": org_id,
+             "model": embed_model, "lim": max(top_k * 4, top_k)},
+        ).fetchall()
+        return [{"entity_id": r[0], "text_norm": r[1], "kind": r[2],
+                 "sim": float(r[3])} for r in rows]
+
+    def sem_fuzzy_index_stats(self, org_id: str) -> dict:
+        """模糊索引对账数据源（m2s-6 R2/P2-1——与 sqlite 同语义）。"""
+        row = self._conn.execute(
+            "SELECT count(*),"
+            " count(embedding) FROM sem_fuzzy_terms WHERE org_id = %(org)s",
+            {"org": org_id}).fetchone()
+        return {"terms": row[0] or 0, "vec_embedded": row[1] or 0}
+
+    def sem_update_build_stats(self, org_id: str, build_id: int,
+                               stats_json: str) -> bool:
+        """build 行 stats_json 原地更新（m2s-6 R2/P2-1——与 sqlite 同语义）。"""
+        cur = self._conn.execute(
+            "UPDATE sem_builds SET stats_json = %(stats)s"
+            " WHERE org_id = %(org)s AND id = %(bid)s",
+            {"stats": stats_json, "org": org_id, "bid": build_id})
+        return cur.rowcount > 0
 
     def expand_relations(self, org_id: str, seed_ids, rels, *, depth: int = 1) -> dict:
         """薄适配实现见 Semantic 域（P3-3/R2——NotImplementedError 占位已删）。"""
@@ -2762,10 +2881,14 @@ class PgBackend:
         self, org_id: str, root_id: int, *,
         outgoing: Sequence[str], incoming: Sequence[str],
         depth: int, fanout_limit: int, node_limit: int,
+        include_restricted: bool = False,
     ) -> dict:
         """BFS 逐层批量展开（递归 CTE 的等价 SQL——与 sqlite 同策略同语义：
         visited 防环 / fanout 每节点截断 / node_limit 总量截断 / restricted 与
-        非 active 端点不出现；P3-2/R2：edges 去重且端点恒 ∈ {root} ∪ nodes）。"""
+        非 active 端点不出现（include_restricted=True 持权放行——m2s-6/T-S9）；
+        P3-2/R2：edges 去重且端点恒 ∈ {root} ∪ nodes）。"""
+        sens_pred = (" AND e.sensitivity = 'normal'" if not include_restricted
+                     else "")
         nodes: dict[int, dict] = {}
         edges: list[dict] = []
         seen_edges: set[tuple[int, str, int]] = set()
@@ -2788,7 +2911,8 @@ class PgBackend:
                         " FROM sem_relations r JOIN sem_entities e"
                         f"   ON e.id = {other}"
                         " WHERE r.org_id = %(org)s AND r.status = 'active'"
-                        "   AND e.status = 'active' AND e.sensitivity = 'normal'"
+                        "   AND e.status = 'active'"
+                        f"{sens_pred}"
                         f"   AND {anchor} = %(node)s"
                         "   AND r.rel_type = ANY(%(rels)s)"
                         f" ORDER BY r.rel_type, {other}",
@@ -2821,10 +2945,13 @@ class PgBackend:
     def sem_search_entities(
         self, org_id: str, q_norm: str, q_raw: str, *,
         types: Sequence[str] | None, top_k: int,
+        q_pinyin: str | None = None,
     ) -> list[dict]:
-        """三层（与 sqlite 同语义）：alias 精确 1.0 > 前缀 0.8 > FTS 模糊 0.5
-        （C.3/m2s-3：LIKE 骨架升级为 tsvector @@ to_tsquery over
+        """四层（与 sqlite 同语义——m2s-6 起拼音层）：alias 精确 1.0 > 前缀
+        0.8 > 拼音完全匹配 0.7（TC-SEM-05 S3——q_pinyin 由 core 侧计算，
+        None=跳层）> FTS 模糊 0.5（C.3/m2s-3：tsvector @@ to_tsquery over
         sem_search_texts——评分差异与 sqlite bm25 按 G-6 口径登记不追平）；
+        向量层在 core 并（embedder 注入——SQL 经 sem_fuzzy_vec_search）。
         LIKE 前缀统一 LOWER + ESCAPE（pg LIKE 默认大小写敏感——显式 LOWER 拉平）。
         P2-1/R2：score 常量显式 ::float8——PG 裸字面量为 NUMERIC（psycopg 归
         Decimal），与 sqlite float 类型漂移会致 FastMCP 出参字符串化。"""
@@ -2850,13 +2977,28 @@ class PgBackend:
             "         CAST(0.8 AS double precision) AS score,"
             "         'alias-prefix' AS via" + base
             + "   AND a.alias_norm LIKE %(q_prefix)s ESCAPE '\\'"
-            ") ORDER BY score DESC, id ASC LIMIT %(lim)s"
         )
+        if q_pinyin:
+            sql += (
+                "  UNION ALL"
+                "  SELECT e.id, e.type, e.key, e.name, e.attrs_json,"
+                "         e.curated_json,"
+                "         CAST(0.7 AS double precision) AS score,"
+                "         'pinyin' AS via"
+                "   FROM sem_fuzzy_terms f JOIN sem_entities e"
+                "     ON e.id = f.entity_id"
+                "  WHERE f.org_id = %(org)s AND f.pinyin = %(q_pinyin)s"
+                "   AND f.pinyin != '' AND e.status = 'active'"
+                "   AND e.sensitivity = 'normal'" + type_filter
+            )
+        sql += ") ORDER BY score DESC, id ASC LIMIT %(lim)s"
         query_params = dict(params)
         query_params.update({
             "q_exact": q_norm, "q_prefix": f"{esc_norm}%",
-            "lim": max(top_k * 2, top_k),
+            "lim": max(top_k * 3, top_k),
         })
+        if q_pinyin:
+            query_params["q_pinyin"] = q_pinyin
         rows = self._conn.execute(sql, query_params).fetchall()
         cols = ("id", "type", "key", "name", "attrs_json", "curated_json",
                 "score", "via")

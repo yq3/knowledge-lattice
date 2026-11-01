@@ -67,3 +67,21 @@ YAML_DIR_TYPE_DOMAINS: dict[str, frozenset[str]] = {
     "report_items": frozenset({"report", "report_item"}),
     "scenarios": frozenset({"scenario"}),
 }
+
+# ---- 实体召回路（design §5.10——m2s-6/M2-S3） ----
+
+# 召回展开关系集：低扇出白名单——**不含 uses**（高扇出防召回发散，TC-TAG-04）
+ENTITY_RECALL_RELS: tuple[str, ...] = (
+    "refers_to", "has_field", "maps_to", "related_to",
+)
+ENTITY_RECALL_MAX_SEEDS = 20       # 调用方种子上限（§5.10 第 1 点 entities ≤20）
+ENTITY_RECALL_MAX_ENTITIES = 50    # 展开后实体集合 E 上限（§5.10 第 2 点）
+
+# ---- restricted 持权（T-S9 持权路径——m2s-6） ----
+
+# membership role 值：普通成员 + semantic:restricted（极少数敏感实体可见权——
+# §6.3 权限口径③；org_admin 不默认兼任——最小面）
+SEM_RESTRICTED_ROLE = "sem_restricted"
+
+# 持权访问 restricted 实体的审计事件（权限事件——A-16 口径持权面）
+EVENT_SEMANTIC_RESTRICTED_ACCESS = "semantic.restricted_access"

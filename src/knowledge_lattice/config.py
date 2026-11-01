@@ -64,6 +64,10 @@ class Settings:
     # 融合与召回窗口（design §5.2：RRF k=60；NFR-8 参考口径 knn 1024 / rerank 候选 32）
     rrf_k: int = 60
     recall_window: int = 1024
+    # 实体召回路（design §5.10——M2-S3/m2s-6）：k_entity 缺省 30、RRF 权重
+    # 可配默认 1.0（「实体路 k 相同、权重可配默认 1.0」——§5.2/§5.10）
+    k_entity: int = 30
+    entity_route_weight: float = 1.0
     # 归一后分数阈值（§5.2「阈值只作用于归一后的最终分」；0=不过滤——数值 M1-4 黄金集校准）
     score_threshold: float = 0.0
     # 熔断（NFR-8 v0.8：连续 3 次失败断开 60s、半开探测恢复）
@@ -130,6 +134,9 @@ class Settings:
     semantic_daily_sync_interval_s: float = 86400.0  # G-19 五源每日兜底：距上次成功 run 超过该间隔才投递（0=关闭；webhook/手动触发的成功 run 同口径去重）
     semantic_eval_golden_path: str = "eval/semantic_golden.jsonl"  # 识别评测黄金集路径（TC-SEV-01——相对进程 CWD；文件缺失 → 构建评测 skipped 不拦截）
     semantic_retag_reconcile_interval_s: float = 86400.0  # 对账 retag 补投节流（m2s-5——距该 org 上次 done retag 不足此值不重复投；无行块重标不消候选，节流防风暴；0=每次投）
+    # 模糊兜底向量层（design §5.9 第 3 层 c——m2s-6）：余弦相似度阈值 0.75 / top-3
+    semantic_fuzzy_vec_threshold: float = 0.75
+    semantic_fuzzy_vec_top: int = 3
     # semantic_batch_rows 上界 1000 = design §5.8「每批 ≤1000 行提交」硬约束
     # （NFR-11 写锁治理）——校验收口（P3-5/R2），不可配置突破
 
@@ -232,6 +239,11 @@ def get_settings() -> Settings:
                                      "eval/semantic_golden.jsonl"),
         semantic_retag_reconcile_interval_s=float(_num(
             "LATTICE_SEM_RETAG_RECONCILE_INTERVAL_S", 86400.0)),
+        k_entity=int(_num("LATTICE_K_ENTITY", 30)),
+        entity_route_weight=float(_num("LATTICE_ENTITY_ROUTE_WEIGHT", 1.0)),
+        semantic_fuzzy_vec_threshold=float(
+            _num("LATTICE_SEM_FUZZY_VEC_THRESHOLD", 0.75)),
+        semantic_fuzzy_vec_top=int(_num("LATTICE_SEM_FUZZY_VEC_TOP", 3)),
         log_level=env("LATTICE_LOG_LEVEL", "INFO"),
         log_format=env("LATTICE_LOG_FORMAT", "json"),
     )

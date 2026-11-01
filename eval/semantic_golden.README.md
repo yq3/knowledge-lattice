@@ -1,6 +1,7 @@
 # 语义识别评测黄金集（TC-SEV-01——集合格式与标注规范）
 
-> 识别评测的仓库级资产：`semantic_golden.jsonl`（172 条）+ 参考词典
+> 识别评测的仓库级资产：`semantic_golden.jsonl`（180 条——m2s-6 起 +8 条
+> pos_typo 错别字正样本）+ 参考词典
 > `semantic_seed.py`（标注 key 的真相源）。每次 `semantic_build` 自动以本集
 > 跑识别评测、指标进构建报告并受门槛约束（TC-SEV-02——precision ≥0.95 /
 > recall ≥0.80 / 歧义 ≥0.85 / 负样本误报 ≤0.05；较上版降 >2pp 不切 ready）。
@@ -17,7 +18,11 @@
 - **kind**：`pos_exact`（规范名/业务键——精确全词档）/ `pos_alias`（人工·
   同步别名）/ `pos_abbr`（拉丁缩写——词边界+大小写折叠）/ `pos_ambiguous`
   （歧义别名消歧——留抵/税率双实体共享面）/ `pos_context`（上下文短别名
-  ——含无佐证丢弃形态）/ `neg`（负样本——无实体文本，labels 恒空）；
+  ——含无佐证丢弃形态）/ `pos_typo`（**错别字正样本——m2s-6 模糊层补入**
+  ：同音错字〔留底→留抵、消项→销项、纳税申抱→纳税申报〕+ 编辑距离 1
+  〔一般纳税入、JXDL→JXDK、LDCE→LDSE〕；AC 层必然 miss 属设计内——
+  **不进 TC-SEV-02 构建门槛分母**、只在 AC+模糊 recall@3〔TC-SEV-03，
+  ≥0.92〕口径参与判定）/ `neg`（负样本——无实体文本，labels 恒空）；
 - **lang**：zh | en | mix（本版全 zh——双语问法 M3 完整黄金集承接，TC-EVAL-02）；
 - **labels**：`[entity_key, start, end]`——span 左闭右开、下标落在**原文
   text** 上；同条目 span 不得重叠；标注**必须覆盖该文本的全部期望命中**

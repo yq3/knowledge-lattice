@@ -46,12 +46,15 @@ def get_entity(
     depth: int = DEFAULT_DEPTH,
     fanout_limit: int = DEFAULT_FANOUT,
     include: list[str] | None = None,
+    can_restricted: bool = False,
 ) -> dict:
     """get_entity（§6.3 契约）：entity + nodes/edges（depth=1 邻接或 depth=2
     两跳）+ truncated + dict_rev。
 
     key/id 二选一（皆无/皆有 → ValueError=400）；include ⊆
-    {curated, attrs, aliases}（缺省 ['curated']——design 契约默认）。"""
+    {curated, attrs, aliases}（缺省 ['curated']——design 契约默认）；
+    can_restricted=True（T-S9 持权路径——m2s-6：api/mcp 层按调用方
+    membership role 判定后传入）放行 restricted 根实体与展开端点。"""
     if not (1 <= depth <= MAX_DEPTH):
         raise ValueError(f"depth 必须在 1..{MAX_DEPTH}（服务端强制上限——附录 A-11）")
     if not (1 <= fanout_limit <= MAX_FANOUT):
@@ -72,9 +75,10 @@ def get_entity(
         row = backend.sem_entity_by_key(org_id, type_, k)
     else:
         row = backend.sem_entity_by_id(org_id, entity_id)
-    if (row is None or row["sensitivity"] == "restricted"
+    if (row is None
+            or (row["sensitivity"] == "restricted" and not can_restricted)
             or row["status"] != "active"):
-        # 他组织（org 第一条件隔离）/ 不存在 / restricted / 非 active
+        # 他组织（org 第一条件隔离）/ 不存在 / restricted（无权）/ 非 active
         # （missing/retired——P3-6/R2 与 describe_table 对齐：工具面只服务
         # active 图，状态面经管理端点）→ 同一 404（存在性零泄露）
         raise EntityNotFound(f"entity not found: id={entity_id!r} key={key!r}")
@@ -83,6 +87,7 @@ def get_entity(
     graph = backend.sem_expand_graph(
         org_id, row["id"], outgoing=outgoing, incoming=incoming,
         depth=depth, fanout_limit=fanout_limit, node_limit=NODE_LIMIT_DEFAULT,
+        include_restricted=can_restricted,
     )
 
     entity = {"id": row["id"], "type": row["type"], "key": row["key"],

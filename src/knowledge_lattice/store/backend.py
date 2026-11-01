@@ -111,8 +111,48 @@ class SearchBackend(Protocol):
         的块级判定（TC-RET-02：本结果缺向量路＝未就绪或降级）。"""
         ...
 
-    def recall_by_entities(self, entity_ids: Sequence[int], plan: AclPlan, *, top_k: int = 30) -> list[dict]:
-        """实体召回路（M2-S3——D23 §5.10；复用同一 Plan）。"""
+    def recall_by_entities(
+        self, entity_ids: Sequence[int], plan: AclPlan, *, top_k: int = 30,
+        seed_ids: Sequence[int] | None = None,
+    ) -> list[dict]:
+        """实体召回路（M2-S3——D23 §5.10；复用同一 Plan——三路同构 T-S8）。
+
+        得分 = Σ ce.hits ×（种子 1.0 / 扩展 0.5）；行含 rank（1 起名次协议）、
+        matched_entities（该块命中实体 id 列表——双方言聚合列拆分等价）。"""
+        ...
+
+    def sem_fuzzy_replace(
+        self, org_id: str, term_rows: Sequence[dict], del_rows: Sequence[dict],
+    ) -> int:
+        """模糊索引整替（m2s-6——TC-SEM-09 构建产物）：org 内 sem_fuzzy_terms/
+        sem_fuzzy_dels 先删后插（同 build 生命周期）。term_rows 含 embedding
+        （方言序列化在 store 侧收口）；**del_rows 的 term_idx 指向 term_rows
+        下标**（新插入 id 由本方法内部映射——调用方无需预知自增 id）。
+        返回写入 term 行数。"""
+        ...
+
+    def sem_fuzzy_terms_all(self, org_id: str) -> list[dict]:
+        """org 内全部模糊索引行（annotate fuzzy 内存面装载——拼音/编辑距离层；
+        embedding 以方言原生形态返回，向量层不走本方法）。"""
+        ...
+
+    def sem_fuzzy_index_stats(self, org_id: str) -> dict:
+        """模糊索引对账数据源（m2s-6 R2/P2-1）：{terms, vec_embedded}——
+        skipped 构建修复路径的存在性/向量覆盖率对账。"""
+        ...
+
+    def sem_update_build_stats(self, org_id: str, build_id: int,
+                               stats_json: str) -> bool:
+        """build 行 stats_json 原地更新（m2s-6 R2/P2-1——模糊索引写失败标记
+        持久化面；仅 UPDATE 不动状态/时间戳）。"""
+        ...
+
+    def sem_fuzzy_vec_search(
+        self, org_id: str, query_vec: Sequence[float], *, embed_model: str,
+        top_k: int = 3, min_sim: float = 0.75,
+    ) -> list[dict]:
+        """模糊向量近邻（§5.9 第 3 层 c：阈值 0.75 top-3——余弦相似度 ≥ min_sim；
+        只扫 embed_model 匹配且 embedding 非空行）。行含 entity_id/text_norm/sim。"""
         ...
 
     def expand_relations(
