@@ -331,9 +331,13 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
                 resolve_query_entities,
             )
 
+            from knowledge_lattice.config import effective_settings
+
             try:
                 entity_ctx = resolve_query_entities(
-                    service.backend, settings, org_id, query=query,
+                    service.backend,
+                    effective_settings(settings, service.embedder),
+                    org_id, query=query,
                     entities=entities, auto_entities=auto_entities,
                 )
             except ValueError as exc:
@@ -492,9 +496,12 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
         can_restricted = _sem_restricted(auth, org_id)
         from knowledge_lattice.core.semantic.annotator import annotate_text
 
+        from knowledge_lattice.config import effective_settings
+
         try:
             result = annotate_text(
-                service.backend, settings, org_id, text,
+                service.backend,
+                effective_settings(settings, service.embedder), org_id, text,
                 context_entities=context_entities,
                 prefer_types=prefer_types,
                 fuzzy=fuzzy,
@@ -552,9 +559,11 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
         auth, org_id = _auth_and_org(ctx, param_org=None)
         _sem_member(auth, org_id)
         try:
+            from knowledge_lattice.config import effective_settings
+
             return search_entities(
                 service.backend, org_id, q, types=types, top_k=top_k,
-                settings=settings,
+                settings=effective_settings(settings, service.embedder),
                 embedder=getattr(service, "embedder", None),
             )
         except ValueError as exc:

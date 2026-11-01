@@ -1,11 +1,12 @@
 """m2-6 A4：values CRUD + D19 重新启用取值恢复路径。
 
-- 新增取值（POST /dimensions/{id}/values——retired 维度 409 / 重复 409 / 审计）；
+- 新增取值（POST /dimensions/{id}/values——retired 维度 409 / 重复 409 / 审计 /
+  label 展示名传递〔R2 P3-4〕）；
 - **重新启用**（PATCH status=active——D19 恢复路径）：文档含已停用取值时
   PATCH/覆盖上传同锁（v1.6.3「维度写锁」口径），重新启用后**解锁**——
-  locked_docs 判定面自动联动（disable 升 / enable 回落）；
-- 幂等（已 active 零新审计）；dry_run 仅 disabled 支持；
-- 维度退役二次确认（T20）兼容：retired 维度上 values 写操作 409。
+  locked_docs 判定面自动联动（disable 升 / enable 回落）；retired 维度
+  enable 409（与 create 对称——R2 P3-4）；幂等 applied=False（按 rowcount）；
+- dry_run 仅 disabled 支持；维度退役二次确认（T20）兼容。
 
 store 级双后端参数化（[sqlite]/[pg]）；REST 端点 sqlite（app_env 惯例）。
 """
@@ -218,3 +219,56 @@ def test_api_retired_dimension_rejects_value_writes(_value_env) -> None:
         headers=_value_env["admin"], json={"value": "ZZ"},
     )
     assert r.status_code == 409
+
+
+# ============ R2 P3-4：label 传递 / retired enable 409 / applied 按 rowcount ============
+
+
+def test_create_value_label_passed_through(matrix) -> None:
+    """label 展示名显式传递（R2 P3-4——API 与 store 直调同参；缺省=value）。"""
+    backend = matrix.make_backend()
+    dim = dim_id_for(ORG, "tax_type")
+    created = backend.create_dimension_value(ORG, dim, "LBL", label="展示名")
+    assert created["label"] == "展示名"
+    stored = matrix.execute(
+        "SELECT label FROM dimension_values WHERE id = ?", (created["value_id"],),
+    ).fetchone()[0]
+    assert stored == "展示名"
+    # 缺省 label=value
+    created2 = backend.create_dimension_value(ORG, dim, "NOLBL")
+    assert created2["label"] == "NOLBL"
+
+
+def test_enable_rejected_on_retired_dimension(matrix) -> None:
+    """retired 维度上 enable 409（与 create 对称——R2 P3-4：退役维度取值不
+    复活，重建维度是唯一路径）。"""
+    backend = matrix.make_backend()
+    dim = dim_id_for(ORG, "region")
+    vid = val_id_for(ORG, "region", "CN")
+    backend.disable_dimension_value(ORG, dim, vid)
+    matrix.execute(
+        "UPDATE dimensions SET status = 'retired' WHERE id = ?", (dim,),
+    )
+    with pytest.raises(ValueError, match="retired"):
+        backend.enable_dimension_value(ORG, dim, vid)
+
+
+def test_enable_idempotent_applied_false(matrix) -> None:
+    """幂等 enable（已 active）→ applied=False（按 rowcount——R2 P3-4）+
+    零新审计。"""
+    backend = matrix.make_backend()
+    dim = dim_id_for(ORG, "region")
+    vid = val_id_for(ORG, "region", "CN")
+    first = backend.enable_dimension_value(ORG, dim, vid)  # 已 active 幂等
+    assert first["applied"] is False
+    # disable → enable → applied=True；再 enable → False
+    backend.disable_dimension_value(ORG, dim, vid)
+    second = backend.enable_dimension_value(ORG, dim, vid,
+                                            audit=("dimension.value_enable", "{}"))
+    assert second["applied"] is True
+    third = backend.enable_dimension_value(ORG, dim, vid)
+    assert third["applied"] is False
+    assert matrix.execute(
+        "SELECT count(*) FROM audit_outbox WHERE event_type ="
+        " 'dimension.value_enable'",
+    ).fetchone()[0] == 1, "幂等路径零新审计"

@@ -88,7 +88,7 @@ def test_sqlite_0002_migrates_legacy_vectors_and_drops_columns(tmp_path: Path) -
             embedding=pack_f32([9.0, 9.0]),
         )
 
-        applied = migrate_db(conn)  # 默认目录 → 0002~0008（v1.1 搬运 + M1-3 uploads + M2.1×2 + M2-S1 semantic_v1 + m2s-3 semantic_yaml + m2s-5 sem_build_snapshots）
+        applied = migrate_db(conn)  # 默认目录 → 0002~0010（v1.1 搬运 + M1-3 uploads + M2.1×2 + M2-S1~S3 semantic + m2-6 0010 task_seq）
         assert applied == [2, 3, 4, 5, 6, 7, 8, 9, 10]
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -196,7 +196,7 @@ def test_pg_0002_migrates_legacy_vectors_and_drops_columns(tmp_path: Path) -> No
             " VALUES('chk:pending', 'd1', 3, 1, 'x', '{}'::jsonb, 'm:old')"
         )
 
-        assert pg_migrate_db(raw) == [2, 3, 4, 5, 6, 7, 8, 9, 10]  # 默认目录 → 0002~0009（… + m2s-3 semantic_yaml + m2s-5 sem_build_snapshots + m2s-6 semantic_fuzzy）
+        assert pg_migrate_db(raw) == [2, 3, 4, 5, 6, 7, 8, 9, 10]  # 默认目录 → 0002~0010（… + m2s-3/4/5/6 semantic + m2-6 0010 task_seq）
         versions = [r[0] for r in raw.execute("SELECT version FROM schema_migrations ORDER BY version")]
         assert versions == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 

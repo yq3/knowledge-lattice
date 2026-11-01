@@ -1,27 +1,31 @@
 """文档域重建类任务执行体（m2-6 A1/A2——design §5.3 重嵌入流程 / TC-EMB-06）。
 
 - **reembed 蓝绿执行体**（``run_reembed_task``——TC-EMB-06 四步，m2-3 已交付
-  投递入口、本段补 worker 执行体）：
-  ① 新标签向量**并行写入** chunk_vectors（``pending_reembed_batch`` 扫描认领
-     = org 内非 tombstone 块〔在用 + pending 版本——切换终态不漏在途覆盖上传
+  投递入口、本段补 worker 执行体；**N-1 裁定选 a/R2 P2-2：全库迁移**——
+  payload.org 仅记录投递上下文，扫描/覆盖率门/清理均全库〔org_id=None〕，
+  全库在用块新标签覆盖率 100% 后方可原子切全局标签；触发权限 sysadmin
+  专属〔api 层收口〕）：
+  ① 新标签向量**并行写入** chunk_vectors（``pending_reembed_batch`` 全库扫描
+     认领 = 非 tombstone 块〔在用 + pending 版本——切换终态不漏在途覆盖上传
      块〕中无 (rid,:new) cv 行，逐批钉签；**迁移外呼经 ``embedder.with_model``
      专用实例**——检索谓词与摄取管线继续用原实例旧标签，功能零降级）；
   ② 覆盖率 100%（限 tombstone=0 且 version=active_version——RUNBOOK §1 闭合
-     口径）后**原子切 config 标签**（零 SQL——``switch_embed_label`` 进程内
-     对象图：embedder.apply_model〔检索谓词/摄取钉签共同源〕+ ingest/quality
-     apply_settings + WorkerServices.settings 替换）；
-  ③ **竞态在途回写防护**：``repin_chunk_labels`` 把 org 内全部块的状态标签
+     口径；**全库**）后**原子切 config 标签**（零 SQL——``switch_embed_label``
+     进程内对象图：embedder.apply_model〔检索谓词/摄取钉签共同源〕+ ingest/
+     quality apply_settings + WorkerServices.settings 替换；semantic 查询/
+     build 面经 ``config.effective_settings`` 从 embedder 派生——P2-1/R2）；
+  ③ **竞态在途回写防护**：``repin_chunk_labels``（全库）把全部块的状态标签
      对齐新标签——旧模型在途批次（慢 fake Embedder 形态）迟到回写的
      ``write_embeddings`` 防护谓词 ``c.embed_model = :batch_label`` 不再匹配，
      零行生效，库内不出现孤儿行；
-  ④ **旧标签延后清理**（``delete_vectors_by_label``——org 内非新标签 cv 行
-     全删，全库单标签一致；sqlite WAL 廉价 / PG 满量死元组页内复用——RUNBOOK
-     注记）+ **quality 重跑联动**（``invalidate_quality_cache`` 使缓存键
-     (content_sha, embed_model) 的模型维失效——recompute 候选= 全量、旧
-     vector_crowding flags 随重算清除；**阈值随新模型重标定**=运维配置动作
+  ④ **旧标签延后清理**（``delete_vectors_by_label``——全库非新标签 cv 行
+     全删，**全库单标签一致**；sqlite WAL 廉价 / PG 满量死元组页内复用——
+     RUNBOOK 注记）+ **quality 重跑联动**（``invalidate_quality_cache``〔全库〕
+     使缓存键 (content_sha, embed_model) 的模型维失效——recompute 候选= 全量、
+     旧 vector_crowding flags 随重算清除；**阈值随新模型重标定**=运维配置动作
      〔quality_crowding_threshold 绝对阈值——M1-5 校准路径〕，重算按当前
-     配置值用新标签向量）+ **semantic_build 强制重跑投递**（dict_rev 含
-     嵌入标签——§5.8「相同则跳过」失效必然重建）。
+     配置值用新标签向量）+ **semantic_build 强制重跑投递**（逐组织——dict_rev
+     含嵌入标签，§5.8「相同则跳过」失效必然重建）。
 
   切换载体择型（申报）：design §5.3 的 config 四件套=环境变量（部署侧切换、
   重启生效）——本执行体的切换是**进程内对象图替换**（零 SQL：不动任何数据
@@ -31,12 +35,13 @@
   步）——重启窗口内主进程检索谓词（旧标签）向量已被清理，向量路暂空、BM25
   可用（申报为 RUNBOOK 注意事项，docs 归监督侧）。
 
-- **reindex 执行体**（``run_reindex_task``——A2）：幂等重置
+- **reindex 执行体**（``run_reindex_task``——A2）：终态/存活/在途 pending
+  三重前置检查（P3-5/R2——取消不重置、pending 拒绝）后幂等重置
   （``delete_by_doc`` 清块 + active_status 回 parsing）→ 复用 ingest.run_task
   幂等管线（parse→chunk→index_fts→embed→quality 全链）。与 reembed 蓝绿
   口径天然对齐：embed 阶段钉**当前服务标签**（迁移期=旧标签，由 reembed
-  扫描谓词兜底补新；已切换=新标签）——无需特判。中断重认领不丢不重：重置
-  幂等 + insert 先删后插 + 阶段续跑。
+  全库扫描谓词兜底补新；已切换=新标签）——无需特判。中断重认领不丢不重：
+  重置幂等 + insert 先删后插 + 阶段续跑。
 """
 
 from __future__ import annotations
@@ -143,7 +148,10 @@ def run_reembed_task(
     )
 
     def _fill_until_empty() -> None:
-        """扫描写入至空批（批次边界存活检查——取消细粒度生效）。"""
+        """扫描写入至空批（批次边界存活检查——取消细粒度生效）。
+
+        **全库口径（N-1 裁定选 a——R2 P2-2）**：扫描不带组织过滤
+        （org_id=None），任一组织的缺块都在补齐范围内。"""
         if migr_embedder is None:
             raise RuntimeError(
                 "reembed requires an embedder（WorkerServices._embedder 未装配）"
@@ -155,7 +163,7 @@ def run_reembed_task(
                     f" {task_id}"
                 )
             batch = backend.pending_reembed_batch(
-                org_id, new_label, limit=batch_size
+                None, new_label, limit=batch_size
             )
             if not batch:
                 return
@@ -176,23 +184,24 @@ def run_reembed_task(
 
     try:
         # ① 写满（多轮收敛——并发摄取的新块由扫描谓词兜住）
+        # 覆盖率门 = **全库**（design §5.3 L794/TC-EMB-06 L224 冻结口径——
+        # 任一组织未达 100% 不得切换；payload.org 仅记录投递上下文）
         converged = False
         for _ in range(_MAX_CONVERGE_ROUNDS):
             _fill_until_empty()
-            rows = backend.embedding_coverage(org_id, new_label)
+            rows = backend.embedding_coverage(None, new_label)
             done = sum(r["done"] for r in rows)
             total = sum(r["total"] for r in rows)
             if done == total:
                 converged = True
                 break
             logger.info(
-                "reembed converge round: org=%s %s/%s（并发摄取窗口——再扫一轮）",
-                org_id, done, total,
+                "reembed converge round: full-library %s/%s（并发摄取窗口——再扫一轮）",
+                done, total,
             )
         if not converged:
             raise RuntimeError(
-                f"reembed 覆盖率未收敛（org={org_id!r}——并发摄取持续超越，"
-                "任务重试收敛）"
+                "reembed 全库覆盖率未收敛（并发摄取持续超越，任务重试收敛）"
             )
         if not alive():
             raise _LostLease(f"reembed aborted before switch: {task_id}")
@@ -205,50 +214,54 @@ def run_reembed_task(
                 replace(settings, embed_model=new_name, embed_dim=new_dim),
             )
             logger.info(
-                "reembed switched embed label: org=%s %s -> %s",
-                org_id, old_label, new_label,
+                "reembed switched embed label (full library): %s -> %s",
+                old_label, new_label,
             )
 
-        # ③ 在途回写防护：状态标签对齐（迟到旧批次回写谓词不再匹配）
-        repinned = backend.repin_chunk_labels(org_id, new_label)
+        # ③ 在途回写防护：状态标签对齐（迟到旧批次回写谓词不再匹配）——全库
+        repinned = backend.repin_chunk_labels(None, new_label)
         # 切换后补扫一轮：re-pin 后无新标签向量的在途块兜底补齐
         _fill_until_empty()
 
-        # ④ 清理 + 联动
-        removed = backend.delete_vectors_by_label(org_id, new_label)
+        # ④ 清理 + 联动（全库单标签一致 + 逐组织 quality/semantic_build）
+        removed = backend.delete_vectors_by_label(None, new_label)
         quality = getattr(services, "quality", None)
         if quality is not None:
-            backend.invalidate_quality_cache(org_id)
-            try:
-                quality.recompute(org_id)  # 新标签向量全量重算（清旧 flags）
-            except Exception:  # noqa: BLE001 —— 沿 ingest quality 阶段 best-effort
-                logger.exception(
-                    "quality recompute after reembed failed: org=%s（可重跑补）",
-                    org_id,
-                )
+            backend.invalidate_quality_cache(None)
+            for org in backend.list_org_ids():
+                try:
+                    quality.recompute(org)  # 新标签向量全量重算（清旧 flags）
+                except Exception:  # noqa: BLE001 —— 沿 ingest quality 阶段 best-effort
+                    logger.exception(
+                        "quality recompute after reembed failed: org=%s（可重跑补）",
+                        org,
+                    )
         import uuid
 
-        build_task_id = f"tsk_{uuid.uuid4()}"
-        backend.create_task(
-            None, task_type="semantic_build", task_id=build_task_id,
-            payload=json.dumps({"org": org_id}),
-            audit=(EVENT_SEMANTIC_BUILD, json.dumps({
-                "org_id": org_id, "task_id": build_task_id,
-                "phase": "forced_by_reembed",
-                "embed_model": new_label, "actor": "system",
-            }, ensure_ascii=False)),
-        )
+        build_tasks: list[str] = []
+        for org in backend.list_org_ids():
+            build_task_id = f"tsk_{uuid.uuid4()}"
+            backend.create_task(
+                None, task_type="semantic_build", task_id=build_task_id,
+                payload=json.dumps({"org": org}),
+                audit=(EVENT_SEMANTIC_BUILD, json.dumps({
+                    "org_id": org, "task_id": build_task_id,
+                    "phase": "forced_by_reembed",
+                    "embed_model": new_label, "actor": "system",
+                }, ensure_ascii=False)),
+            )
+            build_tasks.append(build_task_id)
         backend.update_task(task_id, status="done")
         logger.info(
-            "reembed done: org=%s %s->%s repinned=%s vectors_removed=%s"
-            " build_task=%s",
-            org_id, old_label, new_label, repinned, removed, build_task_id,
+            "reembed done (full library): %s->%s repinned=%s vectors_removed=%s"
+            " build_tasks=%s",
+            old_label, new_label, repinned, removed, build_tasks,
         )
         return {
             "task_id": task_id, "status": "done", "org": org_id,
             "old_label": old_label, "new_label": new_label,
             "repinned": repinned, "vectors_removed": removed,
-            "build_task_id": build_task_id,
+            "build_task_ids": build_tasks,
         }
     except _LostLease:
         # 取消/丢租约：任务行归外部动作方所有——静默退出（TC-TASK-03）
@@ -266,7 +279,14 @@ def run_reindex_task(
 ) -> dict:
     """reindex 任务体（A2）：幂等重置 + 复用 ingest 幂等管线（重切分+重嵌入
     全链含 quality）；任务终态由 ingest.run_task 管理（done/failed/lost_lease
-    同款口径）。"""
+    同款口径）。
+
+    P3-5/R2 防御（重置先于存活/终态检查的不可搜窗口根除）：
+    - 任务已被取消（failed+'cancelled:'——claim 后取消的吸收态）→ **不重置**
+      直接返回（在用块保留、状态不动）；
+    - 文档存在 pending 覆盖上传在途（pending_version 非 None 且非 failed）且
+      目标=active 版本 → 任务 failed 带原因（API 投递面同语义 409——双防线）。
+    """
     backend = services.backend
     ingest = services.ingest
     if ingest is None:
@@ -274,6 +294,12 @@ def run_reindex_task(
     task = backend.get_task(task_id)
     if task is None:
         raise RuntimeError(f"reindex task not found: {task_id!r}")
+    if task["status"] == "failed" and (task.get("error") or "").startswith(
+        "cancelled:"
+    ):
+        # 取消吸收态：重置不发生（P3-5①——取消不得把文档推向不可搜）
+        logger.warning("reindex task cancelled before reset: %s", task_id)
+        return {"task_id": task_id, "status": "cancelled"}
     doc_id = task.get("doc_id")
     if doc_id is None:
         backend.update_task(
@@ -294,6 +320,28 @@ def run_reindex_task(
             error=f"reindex target version unknown: doc={doc_id!r}",
         )
         return {"task_id": task_id, "status": "failed"}
+    pending_v = doc.get("pending_version")
+    if (
+        version == doc.get("active_version")
+        and pending_v is not None
+        and doc.get("pending_status") != "failed"
+    ):
+        # P3-5②：pending 覆盖上传在途——重置 active 块会与切换事务互相破坏
+        #（reset 后 _guard_alive 判 cancelled、文档停在 parsing 不可搜）
+        backend.update_task(
+            task_id, status="failed",
+            error=(
+                f"document {doc_id!r} has in-flight pending v{pending_v}"
+                "——pending 期间禁止 reindex（409 语义；待覆盖上传终态后重投）"
+            ),
+        )
+        return {"task_id": task_id, "status": "failed"}
+
+    alive = _alive_or_none(should_continue)
+    if not alive():
+        # 重置前存活检查（claim 后即刻取消的窗口——不触碰文档）
+        logger.warning("reindex lost lease before reset: %s", task_id)
+        return {"task_id": task_id, "status": "lost_lease"}
 
     # 幂等重置：清块 + 状态回 parsing（_index_fts_done 判定不再跳过——重切分
     # 强制重跑；重认领重跑重复执行无害）。文档暂不可搜=重索引窗口（申报）。

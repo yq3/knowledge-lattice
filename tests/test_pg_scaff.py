@@ -451,7 +451,7 @@ def test_pg_migrate_idempotent_rerun(pg_db, tmp_path: Path) -> None:
 
 
 def _write_extra_v4(tmp_path: Path, violation: bool) -> Path:
-    """构造额外测试迁移（内置迁移水位 0007=semantic_yaml——m2s-3 顺延；
+    """构造额外测试迁移（内置迁移水位 0010=task_seq〔m2-6 B②〕——顺延取 0011；
     P3-17 残：函数名与版本号名实对齐）：加 remark 列；
     （violation=True 时）再插一行违反外键的数据——同事务内约束违例 → 整事务回滚
     （PG 原生约束即时校验，无外键窗口）。"""

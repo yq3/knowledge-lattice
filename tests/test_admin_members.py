@@ -376,3 +376,52 @@ def test_jit_to_grants_full_api_chain(tmp_path) -> None:
         )
         assert r.status_code == 200, r.text
     conn.close()
+
+
+# ============ R2 P3-3：最后管理员守卫事务化（store 级双后端——pg datetime 路径） ============
+
+
+def test_last_admin_guard_store_level(matrix) -> None:
+    """守卫事务内判定（R2 P3-3）：唯一 active org_admin（**带 expires 的
+    pg datetime 路径**——幂等 role 更新/空 PATCH 不再 Python 侧 datetime>str
+    500）降级/停用/删除 → MembershipLastAdminError；双 admin 放行；
+    过期 admin（非 active）不受守卫。独立组织（org:guard）——不受矩阵
+    org:tax 既有 admin 计数干扰。"""
+    from knowledge_lattice.store.backend import MembershipLastAdminError
+
+    from helpers import seed_org
+
+    GUARD_ORG = "org:guard"
+    seed_org(matrix, GUARD_ORG, "守卫专用组织")
+    backend = matrix.make_backend()
+    from helpers import FUTURE_TS, seed_membership
+
+    seed_user(matrix, "adm_exp")
+    seed_membership(matrix, "adm_exp", GUARD_ORG, role="org_admin",
+                    expires_at=FUTURE_TS)
+
+    # 幂等 role 更新（role 不变）+ 带 expires 行——pg 侧 datetime 全程 SQL 比较
+    updated = backend.update_membership(GUARD_ORG, "adm_exp", role="org_admin")
+    assert updated["role"] == "org_admin"
+
+    # 唯一 admin 降级/停用/删除 → 拒
+    with pytest.raises(MembershipLastAdminError):
+        backend.update_membership(GUARD_ORG, "adm_exp", role="member")
+    with pytest.raises(MembershipLastAdminError):
+        backend.update_membership(GUARD_ORG, "adm_exp",
+                                  expires_at="2020-01-01 00:00:00")
+    with pytest.raises(MembershipLastAdminError):
+        backend.delete_membership(GUARD_ORG, "adm_exp")
+
+    # 补第二个 active admin → 降级放行
+    seed_user(matrix, "adm2")
+    seed_membership(matrix, "adm2", GUARD_ORG, role="org_admin")
+    updated = backend.update_membership(GUARD_ORG, "adm_exp", role="member")
+    assert updated["role"] == "member"
+    assert backend.delete_membership(GUARD_ORG, "adm_exp")
+
+    # 过期 admin（非 active）——不受守卫（删除走 T23 恢复路径）
+    seed_user(matrix, "adm_old")
+    seed_membership(matrix, "adm_old", GUARD_ORG, role="org_admin",
+                    expires_at=PAST_TS)
+    assert backend.delete_membership(GUARD_ORG, "adm_old")

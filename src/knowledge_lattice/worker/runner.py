@@ -256,38 +256,64 @@ class TaskRunner:
         if self._services.credentials is None:
             raise RuntimeError("credentials service not wired in worker services")
         run_maintenance(
-            self._backend, self._services.credentials, self._settings, task["id"]
+            self._backend, self._services.credentials, self._services.settings,
+            task["id"],
         )
 
     def _exec_semantic_sync(self, task: dict, claim_id: str) -> None:
         """semantic_sync 任务体（M2-S1——§5.8 一个适配器一次 run；错峰限速 =
-        分批天然限速，夜间窗口配置项本段仅登记不强制）。"""
+        分批天然限速，夜间窗口配置项本段仅登记不强制）。settings 取
+        ``effective_settings(services.settings, services._embedder)``——标签/
+        维度统一从 embedder 派生（P2-1/R2：reembed 蓝绿切换原地更新 embedder，
+        构造期 settings 会滞后；build 写入与查询共用同一标签源，杜绝分裂）。"""
+        from knowledge_lattice.config import effective_settings
+
         from knowledge_lattice.core.semantic.sync import run_sync_task
 
         run_sync_task(
-            self._backend, self._settings, task["id"],
+            self._backend,
+            effective_settings(
+                self._services.settings, getattr(self._services, "_embedder", None)
+            ),
+            task["id"],
             should_continue=self._should_continue(task["id"], claim_id),
         )
 
     def _exec_semantic_build(self, task: dict, claim_id: str) -> None:
         """semantic_build 任务体（m2s-2 骨架 + m2s-6 模糊索引产物：dict_rev
         计算 + 原子切换 + sem_fuzzy_terms/dels 整替〔embedder 注入——向量层；
-        WorkerServices._embedder 缺省 None=向量列空降级〕）。"""
+        WorkerServices._embedder 缺省 None=向量列空降级〕）。settings 同经
+        ``effective_settings`` 从 embedder 派生（P2-1/R2——reembed 切换后
+        dict_rev 与模糊向量行按新嵌入标签，「相同则跳过」按 §5.8 失效；
+        build 写入与 API/MCP 查询共用同一标签源）。"""
+        from knowledge_lattice.config import effective_settings
+
         from knowledge_lattice.core.semantic.build import run_build_task
 
         run_build_task(
-            self._backend, self._settings, task["id"],
+            self._backend,
+            effective_settings(
+                self._services.settings, getattr(self._services, "_embedder", None)
+            ),
+            task["id"],
             should_continue=self._should_continue(task["id"], claim_id),
             embedder=getattr(self._services, "_embedder", None),
         )
 
     def _exec_semantic_retag(self, task: dict, claim_id: str) -> None:
         """semantic_retag 任务体（m2s-5——TC-TAG-02：dict_rev 落后块分批重标；
-        最低优先级由 claim ORDER BY 尾部保证——本 executor 只管执行）。"""
+        最低优先级由 claim ORDER BY 尾部保证——本 executor 只管执行；
+        settings 经 effective_settings 派生——P2-1/R2 同族）。"""
+        from knowledge_lattice.config import effective_settings
+
         from knowledge_lattice.core.semantic.tagging import run_retag_task
 
         run_retag_task(
-            self._backend, self._settings, task["id"],
+            self._backend,
+            effective_settings(
+                self._services.settings, getattr(self._services, "_embedder", None)
+            ),
+            task["id"],
             should_continue=self._should_continue(task["id"], claim_id),
         )
 

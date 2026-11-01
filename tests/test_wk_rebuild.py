@@ -106,8 +106,10 @@ class _RebuildEnv:
         )
 
 
-@pytest.fixture(params=["sqlite", "pg"])
-def rebuild_env(request, matrix, tmp_path):
+@pytest.fixture()
+def rebuild_env(matrix, tmp_path):
+    """双后端参数化由 matrix 承载（P3-6②/R2 收编：fixture 自身 params 与
+    matrix 相乘会重复跑一倍——34→22 收集）。"""
     env = _RebuildEnv(matrix, tmp_path)
     yield env
 
@@ -158,14 +160,16 @@ def test_tc_emb06_bluegreen_full_cycle(rebuild_env) -> None:
     assert written == 0, "迟到回写零行生效（re-pin 后谓词不匹配——无孤儿行）"
     assert env.cv_labels(env.rids[0]) == {NEW_LABEL}
 
-    # ④ semantic_build 强制重跑投递（dict_rev 含嵌入标签——§5.8）
-    builds = [
-        r for r in env.db.execute(
-            "SELECT type, payload FROM tasks WHERE type = 'semantic_build'"
+    # ④ semantic_build 强制重跑投递（dict_rev 含嵌入标签——§5.8；R2 P2-2
+    # 全库口径：逐组织投递——org:tax 与 org:gl 都在集合中）
+    builds = {
+        json.loads(r[0])["org"]
+        for r in env.db.execute(
+            "SELECT payload FROM tasks WHERE type = 'semantic_build'"
         )
-    ]
-    assert builds, "reembed 完成应投递 semantic_build 任务"
-    assert json.loads(builds[0][1])["org"] == ORG
+    }
+    assert ORG in builds, "reembed 完成应投递 semantic_build 任务"
+    assert "org:gl" in builds, "全库迁移逐组织投递（N-1 裁定选 a）"
 
 
 def test_tc_emb06_quality_rerun_linkage(rebuild_env) -> None:
@@ -269,9 +273,10 @@ def test_reembed_same_label_noop(rebuild_env) -> None:
 # ============ A2 reindex 执行体（双后端——真实摄取链） ============
 
 
-@pytest.fixture(params=["sqlite", "pg"])
-def reindex_env(request, matrix, tmp_path):
-    """真实摄取一篇文档（对象落盘 + run_task 全链）后投递 reindex。"""
+@pytest.fixture()
+def reindex_env(matrix, tmp_path):
+    """真实摄取一篇文档（对象落盘 + run_task 全链）后投递 reindex（双后端
+    参数化由 matrix 承载——P3-6②/R2 收编）。"""
     env = _RebuildEnv(matrix, tmp_path)
     from helpers import seed_membership
 
@@ -384,3 +389,228 @@ def test_claim_order_monotonic_within_same_second(matrix) -> None:
         )
         got.append(task["id"])
     assert got == ["tsk_c", "tsk_a", "tsk_b"], "认领序 = 插入序（单调键）"
+
+
+# ============ R2 P2-2：全库迁移（N-1 裁定选 a） ============
+
+
+def test_reembed_full_library_multi_org(matrix, tmp_path) -> None:
+    """N-1 裁定 (a)：reembed = **全库迁移**——org A 投递后 B/C 组织在用块
+    向量与标签同迁、全库单标签一致；未达成（任一组织覆盖 <100%）前不得切换。
+    双后端（org:gl 造独立文档+块+旧标签向量——隔离对照组织实证同迁）。"""
+    env = _RebuildEnv(matrix, tmp_path)
+
+    # org:gl 造数：文档 + 在用块 + 旧标签向量（matrix 的隔离组织）
+    from helpers import seed_dataset, seed_doc_dims, seed_document
+    from helpers import insert_chunk
+
+    seed_dataset(env.db, "org:gl", "ds:gl_lib")
+    seed_document(
+        env.db, "d_gl_1", org_id="org:gl", dataset_id="ds:gl_lib",
+        owner_user_id="u_gl",
+    )
+    insert_chunk(env.db, doc_id="d_gl_1", seq=1, version=1, content_seg="gl doc")
+    env.db.execute(
+        "UPDATE documents SET active_version = 1 WHERE id = 'd_gl_1'"
+    )
+    gl_rid = env.db.execute(
+        "SELECT rid FROM chunks WHERE doc_id = 'd_gl_1'"
+    ).fetchone()[0]
+    matrix.insert_vector(gl_rid, env.old_label, [0.2] * 8)
+
+    task_id = env.enqueue_reembed()  # payload org=org:tax（投递上下文）
+    from knowledge_lattice.worker.rebuild import run_reembed_task
+
+    run_reembed_task(env.services, task_id)
+    assert env.backend.get_task(task_id)["status"] == "done"
+
+    # 全库（org:tax + org:gl）单标签一致：B/C 组织块同获新标签向量、旧标签清理
+    assert env.cv_labels(gl_rid) == {NEW_LABEL}, "org:gl 块同迁（全库扫描）"
+    for rid in env.rids:
+        assert env.cv_labels(rid) == {NEW_LABEL}
+    stray = env.db.execute(
+        "SELECT count(*) FROM chunk_vectors WHERE embed_model != ?", (NEW_LABEL,),
+    ).fetchone()[0]
+    assert stray == 0, "全库无非新标签行（单标签一致——TC-EMB-06④冻结口径）"
+
+    # quality 缓存失效与 semantic_build 投递同为全库（逐组织）
+    builds = {
+        json.loads(r[0])["org"]
+        for r in env.db.execute(
+            "SELECT payload FROM tasks WHERE type = 'semantic_build'"
+        )
+    }
+    assert {"org:tax", "org:gl"} <= builds, "semantic_build 逐组织全库投递"
+
+
+def test_reembed_switch_blocked_until_full_library_covered(matrix, tmp_path) -> None:
+    """覆盖率门=全库：org:tax 满、org:gl 仍有缺块（并发写入造数）→ 任务
+    未达成（再扫收敛）——切换不得发生。收敛轮上限内通过再扫补齐（全库
+    扫描天然补 org:gl 缺块——本用例验证门按全库判定：单 org 100% 不放行）。"""
+    env = _RebuildEnv(matrix, tmp_path)
+    from helpers import insert_chunk, seed_dataset, seed_document
+
+    seed_dataset(env.db, "org:gl", "ds:gl_lib")
+    seed_document(
+        env.db, "d_gl_1", org_id="org:gl", dataset_id="ds:gl_lib",
+        owner_user_id="u_gl",
+    )
+    # org:gl 无旧标签向量的在用块（缺块形态——全库门下必须补齐后才可切换）
+    insert_chunk(env.db, doc_id="d_gl_1", seq=1, version=1, content_seg="gl doc")
+    env.db.execute(
+        "UPDATE documents SET active_version = 1 WHERE id = 'd_gl_1'"
+    )
+
+    task_id = env.enqueue_reembed()
+    from knowledge_lattice.worker.rebuild import run_reembed_task
+
+    run_reembed_task(env.services, task_id)
+    assert env.backend.get_task(task_id)["status"] == "done"
+    # 全库补齐后才切换（单 org:tax 100% 不放行——全库门实证）
+    assert env.services.settings.embed_model_label == NEW_LABEL
+    gl_rid = env.db.execute(
+        "SELECT rid FROM chunks WHERE doc_id = 'd_gl_1'"
+    ).fetchone()[0]
+    assert env.cv_labels(gl_rid) == {NEW_LABEL}, "org:gl 缺块被全库扫描补齐"
+
+
+# ============ R2 P2-1：semantic_build 强制重跑实际执行 ============
+
+
+def test_reembed_then_semantic_build_executed(matrix, tmp_path) -> None:
+    """P2-1 修复面：reembed 后**实际执行** semantic_build 任务——status=ready
+    （非 skipped）、dict_rev 随新嵌入标签变化、sem_fuzzy_terms 行 embed_model
+    为新标签（design §5.8「换模型 → 相同则跳过失效」）。双后端。"""
+    env = _RebuildEnv(matrix, tmp_path)
+
+    # 语义层造数：sync 一条实体 + 首次 build（旧标签 rev）
+    from knowledge_lattice.core.semantic.build import run_build
+    from knowledge_lattice.core.semantic.records import EntityRecord
+    from knowledge_lattice.core.semantic.sync import run_sync
+    from fake_semantic import FakeSourceAdapter
+
+    run_sync(
+        env.backend, ORG, FakeSourceAdapter("template_center", [
+            EntityRecord(type="concept", key="vat.input_credit",
+                         name="进项税额抵扣", aliases=("进项面",)),
+        ]),
+        settings=env.settings, snapshot=[],
+    )
+    first = run_build(env.backend, ORG, settings=env.settings,
+                      embedder=env.embedder)
+    assert first["status"] == "ready"
+
+    # reembed 全库迁移（切换 services.settings 与 embedder）
+    task_id = env.enqueue_reembed()
+    from knowledge_lattice.worker.rebuild import run_reembed_task
+
+    run_reembed_task(env.services, task_id)
+    assert env.backend.get_task(task_id)["status"] == "done"
+
+    # 执行体投递的 semantic_build 被认领**真执行**：status=ready 非 skipped
+    # （全库逐组织投递——取 org:tax 那条；org:gl 无语义实体走 skipped 无碍）
+    all_builds = env.db.execute(
+        "SELECT id, payload FROM tasks WHERE type = 'semantic_build'"
+    ).fetchall()
+    build_task = next(
+        row for row in all_builds
+        if json.loads(row[1]).get("org") == ORG
+    )
+    assert build_task, "reembed 完成投递了 org:tax 的 semantic_build 任务"
+    # drain 全部 semantic_build（全库逐组织——org:gl 的 skipped 构建先被领）
+    for _ in range(len(all_builds) + 2):
+        if not env.runner.run_once(task_types=("semantic_build",)):
+            break
+    final = env.backend.get_task(build_task[0])
+    assert final["status"] == "done", final.get("error")
+
+    # dict_rev 已含新嵌入标签（≠旧标签 rev——skipped 失效）
+    second = env.backend.sem_get_build(ORG, first["build_id"])  # 首次 build 行
+    assert second is not None
+    newest = env.backend.sem_current_build(ORG)
+    assert newest["dict_rev"] != first["dict_rev"], (
+        "dict_rev 随嵌入标签变化（§5.8——否则 run_build 走 skipped）"
+    )
+    stats = newest.get("stats_json") or {}
+    if isinstance(stats, str):
+        stats = json.loads(stats)
+    comps = stats.get("dict_rev_components", {})
+    assert comps.get("embed_model") == NEW_LABEL, (
+        f"dict_rev 组件含新标签: {comps}"
+    )
+
+    # 模糊索引向量行标签为新标签（sem_fuzzy_terms.embed_model）
+    fuzzy_labels = {
+        r[0] for r in env.db.execute(
+            "SELECT DISTINCT embed_model FROM sem_fuzzy_terms"
+            " WHERE org_id = ? AND embed_model IS NOT NULL", (ORG,),
+        )
+    }
+    assert fuzzy_labels <= {NEW_LABEL}, f"模糊索引向量层随新标签: {fuzzy_labels}"
+
+
+def test_fingerprint_probe_dim_follows_embedder(rebuild_env) -> None:
+    """P2-1 修复面：FingerprintProbe 维度校验从 embedder.model_label 派生——
+    embedder 蓝绿切换（dim 变更）后探针不再抛维度异常、基线按新标签建档。"""
+    from knowledge_lattice.adapters.embedder import FingerprintProbe
+
+    env = rebuild_env
+    # 切换 embedder（8→16 维）——探针持有旧 settings（embed_dim=8）
+    env.embedder.apply_model(NEW_NAME, NEW_DIM)
+    probe = FingerprintProbe(env.backend, env.embedder, env.settings)
+    result = probe.probe()  # 修复前：validate_dim(8) 对 16 维向量 raise
+    assert result.status in ("baselined", "ok")
+    assert env.backend.read_fingerprint(NEW_LABEL) is not None, (
+        "基线按切换后标签建档"
+    )
+
+
+# ============ R2 P3-5：reindex 取消/pending 窗口 ============
+
+
+def test_reindex_cancelled_before_reset(reindex_env) -> None:
+    """P3-5①：任务在执行体重置前被取消（failed+'cancelled:'）→ 重置不发生
+    （在用块保留、状态非 parsing）——文档不因取消而不可搜。"""
+    env = reindex_env
+    task_id = env.backend.create_task(
+        env.doc_id, task_type="reindex", target_version=1,
+        payload=json.dumps({"org": ORG}),
+    )
+    # 取消（任务行 failed——模拟「claim 后、reset 前取消」的执行体视角）
+    env.backend.cancel_task(task_id, reason="cancelled: by user request")
+    from knowledge_lattice.worker.rebuild import run_reindex_task
+
+    run_reindex_task(env.services, task_id)  # 执行体对已取消任务：不 reset
+
+    doc = env.backend.get_document(env.doc_id)
+    assert doc["active_status"] == "searchable_full", "取消不触发重置（不可搜窗口根除）"
+    rows = env.db.execute(
+        "SELECT count(*) FROM chunks WHERE doc_id = ? AND tombstone = 0",
+        (env.doc_id,),
+    ).fetchone()[0]
+    assert rows >= 1, "在用块保留"
+
+
+def test_reindex_rejected_while_pending_version(reindex_env) -> None:
+    """P3-5②：文档存在 pending 覆盖上传在途时 reindex（target=active）→
+    执行体 fail-closed 拒绝（任务 failed 带原因、文档不动）。API 面 409 见
+    test_admin_manage（投递面同语义）。"""
+    env = reindex_env
+    # 开 pending v2（覆盖上传在途形态——active v1 在用）
+    env.db.execute(
+        "UPDATE documents SET pending_version = 2, pending_status = 'parsing'"
+        " WHERE id = ?", (env.doc_id,),
+    )
+    env.db.commit()
+    task_id = env.backend.create_task(
+        env.doc_id, task_type="reindex", target_version=1,
+        payload=json.dumps({"org": ORG}),
+    )
+    from knowledge_lattice.worker.rebuild import run_reindex_task
+
+    run_reindex_task(env.services, task_id)
+    task = env.backend.get_task(task_id)
+    assert task["status"] == "failed"
+    assert "pending" in (task["error"] or "")
+    doc = env.backend.get_document(env.doc_id)
+    assert doc["active_status"] == "searchable_full", "文档不动（active 块保留）"

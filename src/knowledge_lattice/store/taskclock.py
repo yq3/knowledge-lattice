@@ -4,10 +4,10 @@
 同格式、同源口径）；租约/心跳的加减秒在调用侧算好以字符串参数下发——
 两方言 backend 共用（store 层内部工具，不暴露给 core）。
 
-m2-6 B⑥（格式常量共享）：``TS_FMT`` 是**库内时间格式的单一常量源**——api 侧
-expires_at 解析（admin._EXPIRES_LIB_FORMAT 旧双源已收编）与 store 侧
-strftime 字面量统一引用本常量；``normalize_expires_at`` 是写路径（API 与
-store 直调〔B③〕）共用的归一化入口。
+m2-6 B⑥（格式常量共享）：``TS_FMT`` 是**库内时间格式的单一常量源**——api
+侧 expires_at 解析与 store 侧（sqlite/pg 的 TIMESTAMP→字符串归一）strftime
+统一引用本常量（原双源字面量已全部收编——R2 P3-2 补齐 store/pg 侧 5 处）；
+``normalize_expires_at`` 是写路径（API 与 store 直调〔B③〕）共用的归一化入口。
 """
 
 from __future__ import annotations

@@ -161,7 +161,12 @@ class FingerprintProbe:
             raise EmbeddingResponseError(
                 f"probe response count mismatch: got {len(vectors)} != {len(SENTINELS)}"
             )
-        validate_dim(vectors, expected=self._settings.embed_dim)
+        # P2-1/R2：维度从 embedder.model_label 派生（与当前生效标签同源——
+        # reembed 蓝绿切换 apply_model 后探针即按新维度校验，settings.embed_dim
+        # 滞后不再引发维度异常；标签畸形回退 settings——部署配置兜底）
+        _, _, dim_raw = label.rpartition(":")
+        expected = int(dim_raw) if dim_raw.isdigit() else self._settings.embed_dim
+        validate_dim(vectors, expected=expected)
         baseline_json = self._backend.read_fingerprint(label)
         stamped = now or datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
         if baseline_json is None:

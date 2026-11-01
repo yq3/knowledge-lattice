@@ -37,6 +37,13 @@ class MembershipExpiredError(Exception):
     统一前置检查：删行重加 + 补授权是唯一恢复路径）。"""
 
 
+class MembershipLastAdminError(Exception):
+    """最后一名 active org_admin 的终结性操作被拒（m2-6 A3 → 409 防自锁；
+    R2 P3-3：守卫下沉 store 与写操作**同一事务**——TOCTOU 根除〔并发双 admin
+    降级由事务内 count 判定拦截〕，且 pg datetime 比较全部落在 SQL 侧
+    〔CURRENT_TIMESTAMP 同型比较——Python 侧 datetime>str 的 500 根除〕）。"""
+
+
 class DimensionValueExistsError(Exception):
     """维度取值已存在（m2-6 A4 POST values → 409——(dimension_id, value)
     唯一性语义化，非裸 IntegrityError）。"""
@@ -591,7 +598,12 @@ class AdminBackend(Protocol):
         过期行的一切原地变更均走删行重加）**；expires_at：**缺省（Ellipsis
         哨兵）= 不变**，显式 None = 改永不过期，字符串经 normalize_expires_at
         归一（B③ 直调面收口）。软停用语义 = expires_at 置过去/指定时点（权限
-        计算既有过滤——零新列，择型申报）。audit 同事务。返回更新后行。"""
+        计算既有过滤——零新列，择型申报）。
+
+        **最后管理员守卫（R2 P3-3——与更新同一事务）**：目标当前是 active
+        org_admin 且本次操作后其 admin 身份终结（role 降级 / expires 过去）
+        而组织再无其他 active org_admin → MembershipLastAdminError（409 防自锁
+        ——TOCTOU 根除）。audit 同事务。返回更新后行。"""
 
     def delete_membership(
         self, org_id: str, user_id: str, *,
@@ -599,22 +611,27 @@ class AdminBackend(Protocol):
     ) -> bool:
         """删除成员关系（A3 DELETE）：行不存在 → False（404）；删除触发
         trg_membership_delete_cleanup 级联清本组织授权（既有触发器语义——
-        T23 不破坏）。audit 同事务。返回是否实际删除。"""
+        T23 不破坏）。**最后管理员守卫同 update（R2 P3-3——同事务）**：
+        目标是本组织唯一 active org_admin → MembershipLastAdminError。
+        audit 同事务。返回是否实际删除。"""
 
     def count_active_org_admins(self, org_id: str) -> int:
-        """本组织 active org_admin 数（A3 唯一管理员守卫数据源——最后一名
-        org_admin 不得自删/自停/自降级，409 防自锁；含 expires 过滤）。"""
+        """本组织 active org_admin 数（读面——R2 P3-3 守卫已下沉 update/
+        delete_membership 事务内〔同事务 count〕，本方法保留为独立读口
+        （管理面板/审计用途）；含 expires 过滤）。"""
 
     # ---- 维度取值写路径（m2-6 A4——新增 + D19 重新启用恢复路径） ----
 
     def create_dimension_value(
         self, org_id: str, dim_id: str, value: str, *,
+        label: str | None = None,
         audit: tuple[str, str] | None = None,
     ) -> dict | None:
         """新增维度取值（A4 POST /dimensions/{id}/values）：维度不存在/跨组织
-        → None（404）；维度 retired → ValueError（409——retired 维度不再扩值）；
+        → None（404）；维度 retired → ValueError（409——退役维度不再扩值）；
         (dimension_id, value) 已存在 → DimensionValueExistsError（409）。
-        audit 同事务。返回 {value_id, value, status}。"""
+        label 展示名（R2 P3-4——显式传递，缺省=value〔api 与 store 直调同参〕）。
+        audit 同事务。返回 {value_id, value, label, status}。"""
 
     def enable_dimension_value(
         self, org_id: str, dim_id: str, value_id: str, *,
@@ -622,49 +639,58 @@ class AdminBackend(Protocol):
     ) -> dict | None:
         """取值重新启用（A4——D19 恢复路径：文档含已停用取值时 PATCH/覆盖上传
         同锁〔v1.6.3〕，重新启用后解锁——locked_docs 判定面自动联动）：值不存在/
-        跨组织 → None（404）；幂等（已 active 零新审计——沿 disable 先例）；
-        audit 同事务。返回 {docs, grants, users, locked_docs, applied}
-        （影响面口径与 dimension_value_impact 同源）。"""
+        跨组织 → None（404）；**维度 retired → ValueError（409——与 create 对称，
+        R2 P3-4：retired 维度取值不复活，重建维度是唯一路径）**；幂等（已
+        active 零行生效零新审计——**applied 按 rowcount**）；audit 同事务。
+        返回 {docs, grants, users, locked_docs, applied}（影响面口径与
+        dimension_value_impact〔treating_active=True〕同源）。"""
 
     # ---- 嵌入覆盖率（m2-3——TC-EMB-06 管理面只读面板） ----
 
     def embedding_coverage(
-        self, org_id: str, embed_model: str,
+        self, org_id: str | None, embed_model: str,
     ) -> list[dict]:
         """各知识库嵌入覆盖率（RUNBOOK §1 闭合口径：分子/分母都限**在用块**
         ——tombstone=0 且 version=documents.active_version）：[{dataset_id,
         dataset_name, done, total}]——done=已有 (rid, embed_model) cv 行的在用
-        块数。"""
+        块数。**org_id=None = 全库**（m2-6 R2 P2-2：reembed 全库覆盖率门的
+        数据源——行不按组织展开，调用方只做 done/total 汇总）。"""
 
-    # ---- reembed 蓝绿执行体（m2-6 A1——TC-EMB-06 执行面） ----
+    # ---- reembed 蓝绿执行体（m2-6 A1——TC-EMB-06 执行面；R2 P2-2：全库口径） ----
 
     def pending_reembed_batch(
-        self, org_id: str, embed_model: str, *, limit: int = 64,
+        self, org_id: str | None, embed_model: str, *, limit: int = 64,
     ) -> list[dict]:
-        """reembed 扫描认领（TC-EMB-06 ①扫描谓词）：org 内**非 tombstone 块**
-        （在用 + pending 版本——切换终态不漏在途覆盖上传块）中无
-        (rid, embed_model) cv 行的块，逐批**钉签**（chunks.embed_model=目标标签
-        ——write_embeddings 回写防护谓词要求块已钉该标签）并返回
+        """reembed 扫描认领（TC-EMB-06 ①扫描谓词；**N-1 裁定选 a：全库迁移**
+        ——org_id=None = 全库全部组织，org_id 具体值 = 单组织（面板/窄用途））：
+        非 tombstone 块（在用 + pending 版本——切换终态不漏在途覆盖上传块）
+        中无 (rid, embed_model) cv 行的块，逐批**钉签**（chunks.embed_model=目标
+        标签——write_embeddings 回写防护谓词要求块已钉该标签）并返回
         [{rid, content}]（rid 稳定序、limit 截断）。幂等：已有目标标签 cv 行
         的块不再命中（中断重认领续跑不重嵌）。"""
 
-    def repin_chunk_labels(self, org_id: str, embed_model: str) -> int:
-        """蓝绿切换后的状态标签兜底对齐（TC-EMB-06 ③在途回写防护）：org 内
-        全部块（含 tombstone——单标签一致）chunks.embed_model != :embed_model
-        → 置为目标标签。此后旧模型在途批次的迟到回写（write_embeddings 防护
-        谓词 ``c.embed_model = :batch_label``）零行生效——库内不出现孤儿行。
-        返回改签行数。"""
+    def repin_chunk_labels(self, org_id: str | None, embed_model: str) -> int:
+        """蓝绿切换后的状态标签兜底对齐（TC-EMB-06 ③在途回写防护）：目标范围
+        （org_id=None=全库）内全部块（含 tombstone——单标签一致）
+        chunks.embed_model != :embed_model → 置为目标标签。此后旧模型在途批次
+        的迟到回写（write_embeddings 防护谓词 ``c.embed_model = :batch_label``）
+        零行生效——库内不出现孤儿行。返回改签行数。"""
 
-    def delete_vectors_by_label(self, org_id: str, keep_model: str) -> int:
-        """旧标签延后清理（TC-EMB-06 ④）：DELETE org 内全部块上**非** keep_model
-        标签的 chunk_vectors 行（全库单标签一致的终态收口；sqlite WAL 廉价 /
-        PG 满量死元组靠页内复用——RUNBOOK §1 注记）。返回删除行数。"""
+    def delete_vectors_by_label(self, org_id: str | None, keep_model: str) -> int:
+        """旧标签延后清理（TC-EMB-06 ④——**全库单标签一致**冻结口径）：DELETE
+        目标范围（org_id=None=全库）内全部块上**非** keep_model 标签的
+        chunk_vectors 行。返回删除行数。"""
 
-    def invalidate_quality_cache(self, org_id: str) -> int:
+    def invalidate_quality_cache(self, org_id: str | None) -> int:
         """quality 检测缓存失效（TC-EMB-06 ④联动——缓存键 (content_sha,
-        embed_model) 的模型维失效面）：org 内在用块 detected_at_scale 置
-        NULL——recompute 候选= 全量（重算用新标签向量；旧 vector_crowding
-        flags 随 recompute 的 delete_open_flags 清除）。返回失效行数。"""
+        embed_model) 的模型维失效面）：目标范围（org_id=None=全库）内在用块
+        detected_at_scale 置 NULL——recompute 候选= 全量（重算用新标签向量；
+        旧 vector_crowding flags 随 recompute 的 delete_open_flags 清除）。
+        返回失效行数。"""
+
+    def list_org_ids(self) -> list[str]:
+        """全部组织 id（m2-6 R2 P2-2：reembed 全库联动的逐组织遍历面——
+        quality recompute 与 semantic_build 投递按组织为粒度）。"""
 
     def read_org_audit(
         self, org_id: str, *, action: str | None = None, limit: int = 100,

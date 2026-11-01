@@ -164,7 +164,8 @@ def test_grants_diff_idempotent_after_replace(matrix) -> None:
 
 def test_read_org_audit_sink_filters_and_orders(matrix) -> None:
     """B④ 下沉：双源合并（outbox 未搬运行进结果）+ org 过滤 + action 前缀 +
-    最近在前 + limit 截断——API 审计分级查询读路径的 store 级锚点。"""
+    最近在前 + limit 截断——API 审计分级查询读路径的 store 级锚点
+    （P3-6④/R2：排序断言补齐——created_at 降序=最近在前）。"""
     backend = matrix.make_backend()
     backend.append_outbox("member.add", json.dumps({"org_id": ORG, "actor": "a1"}))
     backend.append_outbox("member.remove", json.dumps({"org_id": ORG, "actor": "a2"}))
@@ -179,6 +180,12 @@ def test_read_org_audit_sink_filters_and_orders(matrix) -> None:
 
     limited = backend.read_org_audit(ORG, limit=1)
     assert len(limited) == 1
+
+    # 排序（P3-6④）：最近在前（created_at 降序——同秒 id 兜底序）
+    created = [r.get("created_at") or "" for r in rows]
+    assert created == sorted(created, reverse=True), (
+        f"面板序=最近在前: {created}"
+    )
 
 
 def test_audit_chain_error_codes() -> None:
@@ -225,11 +232,16 @@ def test_audit_chain_error_codes() -> None:
         walk_chain([r1, r2, r2b])
     assert ei.value.code == "fork"
 
-    # orphan_rows：链外孤儿
+    # orphan_rows / cycle 两个防御分支的**可达性收窄**（P3-6③/R2——补断言
+    # 或收窄 docstring，选收窄）：
+    # - orphan（prev 指向批外 hash）首先构成第二链头，被 multi_heads 拦截
+    #   ——orphan_rows 是 len 兜底防御（单链头且遍历不达的构造在本算法
+    #   prev/hash 语义下不可独立成立：prev 在批内 hash 集则必达，不在则成
+    #   链头）；
+    # - cycle（seen 命中）在「append 前逐行 hash 校验」约束下**不可静态构造**
+    #   （闭环要求 row_hash 方程解——prev 依赖对端 hash 而 hash 依赖 prev），
+    #   该分支防御动态损坏形态。两分支经 docstring 声明保留，不伪造断言。
     orphan = _row("orphan", "sha256:nowhere")
     with pytest.raises(AuditChainError) as ei:
         walk_chain([r1, r2, orphan])
-    assert ei.value.code in ("multi_heads", "orphan_rows"), (
-        "孤儿的链头判定先拦（multi_heads）或链尾收口拦（orphan_rows）——"
-        "两者均为链完整性分类码"
-    )
+    assert ei.value.code == "multi_heads", "孤儿实际触发路径=第二链头"

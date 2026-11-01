@@ -53,6 +53,7 @@ from knowledge_lattice.store.backend import (
     DimensionValueExistsError,
     MembershipExistsError,
     MembershipExpiredError,
+    MembershipLastAdminError,
 )
 from knowledge_lattice.store.taskclock import TS_FMT, utc_now_ts
 
@@ -294,11 +295,6 @@ async def replace_member_grants(
 
 _GRANT_CSV_COLUMNS = ("username", "dim_key", "value", "expires_at")
 
-# 库内统一口径（CURRENT_TIMESTAMP 同格式）——m2-6 B⑥：常量收编 store/taskclock
-# .TS_FMT（store 侧 strftime 字面量与本处旧 _EXPIRES_LIB_FORMAT 双源消除）
-_EXPIRES_LIB_FORMAT = TS_FMT
-
-
 def _parse_expires_at(raw: str | None, *, where: str) -> str | None:
     """expires_at 严格解析（R2 P2-2——sqlite 静默 fail-open 根除）：归一化核心
     收口 ``store.taskclock.normalize_expires_at``（m2-6 B③——store 直调面同
@@ -503,25 +499,50 @@ async def reindex_document(
     org: str, doc_id: str, request: Request, background: BackgroundTasks,
     embed_model: str | None = None, auth: AuthContext = Depends(get_auth),
 ) -> JSONResponse:
-    """手动重索引 / 换模型重嵌入入口（TC-EMB-06——§6.2 M2）：无 embed_model
-    → 投递 `reindex` 任务（重走摄取管线）；携带 embed_model → 投递 `reembed`
-    任务（方案二蓝绿——新旧标签并行写、覆盖率 100% 原子切标签；执行体随
-    m2-1 预留分发位，任务行与 payload 本段就位）。权限 owner/org_admin。"""
-    org = org_scoped(request, org, auth)
+    """手动重索引 / 换模型重嵌入入口（TC-EMB-06——§6.2 M2）：
+
+    - 无 embed_model → 投递 `reindex` 任务（重走摄取管线）——**单文档操作**，
+      权限 owner/org_admin（FR-4 操作矩阵——m2-3 既有语义不变）；
+    - 携带 embed_model → 投递 `reembed` 任务（**全库**蓝绿迁移——N-1 裁定
+      选 a/R2 P2-2）——换模型是**系统级配置变更**：权限 **sysadmin 专属**
+      （org_admin/owner 均 403；不要求 sysadmin 持本组织成员关系——系统级
+      动作）；执行体全库扫描/全库覆盖率门/全库清理 + 全局标签切换。
+    - 目标文档存在 pending 覆盖上传在途（pending_version 非 None 且非 failed）
+      → 409（reindex 与切换事务互相破坏——P3-5② 投递面防线；执行体同语义
+      fail-closed 兜底）。
+    """
+    resolved = check_path_org(path_org=org, org_header=request.headers.get("x-org-id"))
     service = get_service(request)
     doc = service.backend.get_document(doc_id)
-    if doc is None or doc["org_id"] != org:
+    if doc is None or doc["org_id"] != resolved:
         raise HTTPException(status_code=404, detail=f"document not found: {doc_id!r}")
-    _require_owner_or_admin(service, auth, org, doc)
 
     if embed_model:
+        # N-1 裁定（2026-11-01）：换模型=系统级配置变更——sysadmin 专属
+        if not auth.is_system_admin:
+            raise HTTPException(
+                status_code=403,
+                detail="换模型重嵌入（reembed）为系统级全库迁移——仅系统管理员"
+                "（sysadmin）可触发；单文档重索引（不带 embed_model）为"
+                " owner/org_admin（FR-4/N-1 裁定）",
+            )
         task_type = "reembed"
-        payload = json.dumps({"org": org, "embed_model": embed_model})
+        payload = json.dumps({"org": resolved, "embed_model": embed_model})
         target_version = None  # 全库任务（不限单版本）
     else:
+        org = org_scoped(request, org, auth)
+        _require_owner_or_admin(service, auth, org, doc)
         task_type = "reindex"
-        payload = json.dumps({"org": org})
+        payload = json.dumps({"org": resolved})
         target_version = doc["active_version"]
+        pending_v = doc.get("pending_version")
+        if pending_v is not None and doc.get("pending_status") != "failed":
+            raise HTTPException(
+                status_code=409,
+                detail=f"document {doc_id!r} 已有进行中的 pending 版本"
+                f"（v{pending_v}，{doc.get('pending_status')}）——pending 期间"
+                "禁止 reindex（待覆盖上传终态后重投，P3-5）",
+            )
     task_id = service.backend.create_task(
         doc_id, task_type=task_type, target_version=target_version, payload=payload,
     )
@@ -551,9 +572,12 @@ async def embedding_coverage(
     _require_org_admin(service, auth, org)
     # m2-6：label 读 embedder（检索谓词源——reembed 蓝绿切换后与检索同刻切换；
     # settings 容器字段在 subprocess 部署形态由运维 env 重启收敛，embedder 优先
-    # 保证面板与向量路一致）
+    # 保证面板与向量路一致）；dim 经 effective_settings 同源派生（P2-1/R2）
+    from knowledge_lattice.config import effective_settings
+
+    effective = effective_settings(service.settings, service.embedder)
     label = service.embedder.model_label if service.embedder is not None \
-        else service.settings.embed_model_label
+        else effective.embed_model_label
     coverage = service.backend.embedding_coverage(org, label)
     total = sum(c["total"] for c in coverage)
     done = sum(c["done"] for c in coverage)
@@ -587,7 +611,7 @@ async def embedding_coverage(
         break
     return {
         "embed_model": label,
-        "dim": service.settings.embed_dim,
+        "dim": effective.embed_dim,
         "coverage": coverage,
         "totals": {"done": done, "total": total},
         "reembed": reembed,
@@ -681,30 +705,6 @@ def _audit_payload(event_type: str, payload: dict) -> tuple[str, str]:
     return event_type, json.dumps(payload, ensure_ascii=False)
 
 
-def _last_admin_guard(service, org: str, target_user: str, *, after: dict) -> None:
-    """唯一 active org_admin 自锁守卫（择型申报）：目标当前是 active org_admin
-    且本次操作后其 admin 身份终结（移出/停用/降级——after 以「操作后」字段覆盖
-    当前值），而组织再无其他 active org_admin → 409（防自锁——系统管理员可
-    救，API 面先拦）。"""
-    membership = service.backend.read_membership(target_user, org)
-    if membership is None or membership["role"] != "org_admin":
-        return  # 非 active admin——不受守卫
-    after_role = after.get("role", "org_admin")
-    after_expires = after.get("expires_at", membership["expires_at"])
-    from knowledge_lattice.store.taskclock import utc_now_ts
-
-    still_admin = (
-        after_role == "org_admin"
-        and (after_expires is None or after_expires > utc_now_ts())
-    )
-    if not still_admin and service.backend.count_active_org_admins(org) <= 1:
-        raise HTTPException(
-            status_code=409,
-            detail=f"组织 {org!r} 最后一名 active org_admin 不得自锁"
-            "（移出/停用/降级被拒——先指定继任管理员）",
-        )
-
-
 @router.post("/api/orgs/{org}/members", status_code=201)
 async def add_member(
     org: str, request: Request, body: MemberAddRequest,
@@ -756,13 +756,6 @@ async def patch_member(
     expires_at = ...  # Ellipsis 哨兵 = 不变（store 协议）
     if "expires_at" in body.model_fields_set:  # 键显式出现（含 null=改永久）
         expires_at = _parse_expires_at(body.expires_at, where="members expires_at")
-    # 守卫的 after 视角：本次显式变更字段的操作后值（缺省=维持当前）
-    after: dict = {}
-    if body.role is not None:
-        after["role"] = body.role
-    if expires_at is not ...:
-        after["expires_at"] = expires_at
-    _last_admin_guard(service, org, user_id, after=after)
     try:
         updated = service.backend.update_membership(
             org, user_id, role=body.role, expires_at=expires_at,
@@ -773,6 +766,10 @@ async def patch_member(
             }),
         )
     except MembershipExpiredError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except MembershipLastAdminError as exc:
+        # R2 P3-3：守卫已下沉 store（与更新同一事务——TOCTOU 根除、pg 侧
+        # datetime 比较全部 SQL 内）——API 只做 409 映射
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if updated is None:
         raise HTTPException(
@@ -791,13 +788,16 @@ async def remove_member(
     org = org_scoped(request, org, auth)
     service = get_service(request)
     _require_org_admin(service, auth, org)
-    _last_admin_guard(service, org, user_id, after={"role": None})
-    deleted = service.backend.delete_membership(
-        org, user_id,
-        audit=_audit_payload(EVENT_MEMBER_REMOVE, {
-            "org_id": org, "user_id": user_id, "actor": auth.user_id,
-        }),
-    )
+    try:
+        deleted = service.backend.delete_membership(
+            org, user_id,
+            audit=_audit_payload(EVENT_MEMBER_REMOVE, {
+                "org_id": org, "user_id": user_id, "actor": auth.user_id,
+            }),
+        )
+    except MembershipLastAdminError as exc:
+        # R2 P3-3：守卫下沉 store（同事务）——API 只做 409 映射
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not deleted:
         raise HTTPException(
             status_code=404, detail=f"membership not found: {user_id!r} in {org!r}",
@@ -833,7 +833,7 @@ async def create_dimension_value(
         raise HTTPException(status_code=400, detail="value 不得为空")
     try:
         created = service.backend.create_dimension_value(
-            org, dim_id, value,
+            org, dim_id, value, label=(body.label or "").strip() or None,
             audit=_audit_payload(EVENT_DIMENSION_VALUE_CREATE, {
                 "org_id": org, "dimension_id": dim_id, "value": value,
                 "actor": auth.user_id,

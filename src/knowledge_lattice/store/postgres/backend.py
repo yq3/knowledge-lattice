@@ -1317,7 +1317,7 @@ class PgBackend:
     ) -> list[dict]:
         """崩溃耗尽清扫（P2-2，M2.1 R2——与 sqlite 同构）：过期且 attempts ≥ max
         的 leased/running → failed + error 原因；返回被清扫行供文档侧收尾。"""
-        from knowledge_lattice.store.taskclock import utc_now_ts
+        from knowledge_lattice.store.taskclock import utc_now_ts, TS_FMT
 
         now_ts = now or utc_now_ts()
         # P3-N7 节流（与 sqlite 同构）：常态零行时先读后写——不进 UPDATE 事务
@@ -1743,6 +1743,7 @@ class PgBackend:
             raise
 
     def get_upload_credential(self, upload_id: str) -> dict | None:
+        from knowledge_lattice.store.taskclock import TS_FMT  # noqa: E402 —— R2 P3-2 常量单源
         row = self._conn.execute(
             "SELECT id, org_id, user_id, service_id, filename, size, sha256, content_type,"
             " status, object_key, doc_id, task_id, expires_at, created_at, updated_at"
@@ -1756,7 +1757,7 @@ class PgBackend:
         # UTC `YYYY-MM-DD HH:MM:SS` 字符串（连接工厂 SET TIME ZONE 'UTC'，无漂移）
         for idx in (12, 13, 14):
             if row[idx] is not None:
-                row[idx] = row[idx].strftime("%Y-%m-%d %H:%M:%S")
+                row[idx] = row[idx].strftime(TS_FMT)
         return dict(zip(self._UPLOAD_COLS, row))
 
     def mark_upload_uploaded(self, upload_id: str, *, object_key: str) -> bool:
@@ -3136,6 +3137,7 @@ class PgBackend:
         """搬运 outbox → audit_events 分区表（按事件原时刻 created_at 路由）+
         回填 shipped_at——**同库单事务**（BEGIN…COMMIT：插入+回填原子，
         sqlite 跨文件两步形态的方言对照，接口语义一致：不丢不重）。"""
+        from knowledge_lattice.store.taskclock import TS_FMT  # noqa: E402 —— R2 P3-2 常量单源
         from knowledge_lattice.store.audit_chain import (
             compute_row_hash,
             month_of,
@@ -3164,7 +3166,7 @@ class PgBackend:
                 for r in rows:
                     rec = dict(zip(cols, r))
                     # 时间列归一化：TIMESTAMP → 'YYYY-MM-DD HH:MM:SS'（UTC——连接工厂钉死）
-                    rec["created_at"] = rec["created_at"].strftime("%Y-%m-%d %H:%M:%S")
+                    rec["created_at"] = rec["created_at"].strftime(TS_FMT)
                     by_month.setdefault(month_of(rec["created_at"]), []).append(rec)
                 for month, recs in by_month.items():
                     ensure_month_partition(
@@ -3224,6 +3226,7 @@ class PgBackend:
         """读指定时点所在月的 audit_events（分区范围查询——m2-3 B2：**链遍历
         序**〔walk_chain 按链重排与逐行哈希验证——G-13 对冲，读序不依赖 seq〕；
         B5：语义列 detail_json 兜底。破链 raise AuditChainError——fail-closed）。"""
+        from knowledge_lattice.store.taskclock import TS_FMT  # noqa: E402 —— R2 P3-2 常量单源
         from knowledge_lattice.store.audit_chain import (
             backfill_semantic_cols,
             walk_chain,
@@ -3247,7 +3250,7 @@ class PgBackend:
         for r in rows:
             d = dict(zip(cols, r))
             if d.get("created_at") is not None:
-                d["created_at"] = d["created_at"].strftime("%Y-%m-%d %H:%M:%S")
+                d["created_at"] = d["created_at"].strftime(TS_FMT)
             events.append(d)
         return [backfill_semantic_cols(e) for e in walk_chain(events)]
 
@@ -3510,6 +3513,7 @@ class PgBackend:
         R3 P2-1：expires_at 双方言统一返回**库格式字符串**（pg TIMESTAMP 在
         store 单点归一——diff/export/审计面同源比较，datetime 形态不外泄到
         api 层；created_at 归一先例同款）。"""
+        from knowledge_lattice.store.taskclock import TS_FMT  # noqa: E402 —— R2 P3-2 常量单源
         rows = self._conn.execute(
             "SELECT u.username, g.user_id, d.key, v.value, g.expires_at, g.source"
             " FROM user_dimension_grants g"
@@ -3523,7 +3527,7 @@ class PgBackend:
         for r in rows:
             expires = r[4]
             if expires is not None and not isinstance(expires, str):
-                expires = expires.strftime("%Y-%m-%d %H:%M:%S")  # TIMESTAMP→str
+                expires = expires.strftime(TS_FMT)  # TIMESTAMP→str
             out.append({
                 "username": r[0], "user_id": r[1], "dim_key": r[2],
                 "value": r[3], "expires_at": expires, "source": r[5],
@@ -3587,35 +3591,55 @@ class PgBackend:
         role: str | None = None, expires_at: object = ...,
         audit: tuple[str, str] | None = None,
     ) -> dict | None:
-        """成员关系更新（语义见 backend.py 协议——过期行 T23 拒绝前置；
-        过期判定在 SQL 侧（expires_at TIMESTAMP 与 CURRENT_TIMESTAMP 同库比较）；
+        """成员关系更新（语义见 backend.py 协议——R2 P3-3：过期判定与最后
+        管理员守卫全部移入**同一事务**，比较均在 SQL 侧〔datetime 不出库〕；
         expires_at Ellipsis 哨兵=不变 / None=改永不过期 / 字符串=归一写入）。"""
-        from knowledge_lattice.store.backend import MembershipExpiredError
+        from knowledge_lattice.store.backend import (
+            MembershipExpiredError,
+            MembershipLastAdminError,
+        )
         from knowledge_lattice.store.taskclock import normalize_expires_at
 
-        row = self._conn.execute(
-            "SELECT role,"
-            " (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) AS valid,"
-            " to_char(expires_at, 'YYYY-MM-DD HH24:MI:SS')"
-            " FROM user_org_memberships WHERE user_id = %(uid)s AND org_id = %(org)s",
-            {"uid": user_id, "org": org_id},
-        ).fetchone()
-        if row is None:
-            return None
-        old_role, valid, old_expires = row
-        if not valid:
-            raise MembershipExpiredError(
-                f"membership expired: user={user_id!r} org={org_id!r}"
-                "——T23 续期禁令：删行重加（DELETE → POST → PUT grants）"
-            )
-        new_role = role if role is not None else old_role
-        if expires_at is ...:
-            new_expires = old_expires
-        else:
-            new_expires = normalize_expires_at(expires_at)  # None→永久
         conn = self._conn
         conn.execute("BEGIN")
         try:
+            row = conn.execute(
+                "SELECT role,"
+                " (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) AS valid,"
+                " to_char(expires_at, 'YYYY-MM-DD HH24:MI:SS')"
+                " FROM user_org_memberships WHERE user_id = %(uid)s"
+                " AND org_id = %(org)s FOR UPDATE",
+                {"uid": user_id, "org": org_id},
+            ).fetchone()
+            if row is None:
+                conn.execute("COMMIT")
+                return None
+            old_role, valid, old_expires = row
+            if not valid:
+                conn.execute("COMMIT")
+                raise MembershipExpiredError(
+                    f"membership expired: user={user_id!r} org={org_id!r}"
+                    "——T23 续期禁令：删行重加（DELETE → POST → PUT grants）"
+                )
+            new_role = role if role is not None else old_role
+            if expires_at is ...:
+                new_expires = old_expires
+            else:
+                new_expires = normalize_expires_at(expires_at)  # None→永久
+            if old_role == "org_admin":
+                # 操作后身份是否终结（归一化字符串与 SQL CURRENT_TIMESTAMP
+                # 同格式——SQL 侧比较，datetime 不出库）
+                still_admin = conn.execute(
+                    "SELECT %(role)s = 'org_admin' AND (%(exp)s::timestamp IS NULL"
+                    " OR %(exp)s::timestamp > CURRENT_TIMESTAMP)",
+                    {"role": new_role, "exp": new_expires},
+                ).fetchone()[0]
+                if not still_admin and self._count_active_admins(conn, org_id) <= 1:
+                    conn.execute("COMMIT")
+                    raise MembershipLastAdminError(
+                        f"组织 {org_id!r} 最后一名 active org_admin 不得自锁"
+                        "（降级/停用被拒——先指定继任管理员）"
+                    )
             conn.execute(
                 "UPDATE user_org_memberships SET role = %(role)s,"
                 " expires_at = %(exp)s::timestamp"
@@ -3635,10 +3659,29 @@ class PgBackend:
         self, org_id: str, user_id: str, *,
         audit: tuple[str, str] | None = None,
     ) -> bool:
-        """删除成员关系（trg_membership_delete_cleanup 级联清授权——T23 不破坏）。"""
+        """删除成员关系（trg_membership_delete_cleanup 级联清授权——T23 不
+        破坏；最后管理员守卫同事务——R2 P3-3，行锁 FOR UPDATE）。"""
+        from knowledge_lattice.store.backend import MembershipLastAdminError
+
         conn = self._conn
         conn.execute("BEGIN")
         try:
+            row = conn.execute(
+                "SELECT role, (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)"
+                " FROM user_org_memberships WHERE user_id = %(uid)s"
+                " AND org_id = %(org)s FOR UPDATE",
+                {"uid": user_id, "org": org_id},
+            ).fetchone()
+            if row is None:
+                conn.execute("COMMIT")
+                return False
+            if row[0] == "org_admin" and row[1] \
+                    and self._count_active_admins(conn, org_id) <= 1:
+                conn.execute("COMMIT")
+                raise MembershipLastAdminError(
+                    f"组织 {org_id!r} 最后一名 active org_admin 不得自锁"
+                    "（移出被拒——先指定继任管理员）"
+                )
             cur = conn.execute(
                 "DELETE FROM user_org_memberships"
                 " WHERE user_id = %(uid)s AND org_id = %(org)s",
@@ -3653,6 +3696,16 @@ class PgBackend:
             raise
         return deleted
 
+    @staticmethod
+    def _count_active_admins(conn, org_id: str) -> int:
+        """事务内 active org_admin 计数（守卫数据源——R2 P3-3）。"""
+        return conn.execute(
+            "SELECT count(*) FROM user_org_memberships"
+            " WHERE org_id = %(org)s AND role = 'org_admin'"
+            "   AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)",
+            {"org": org_id},
+        ).fetchone()[0]
+
     def count_active_org_admins(self, org_id: str) -> int:
         """本组织 active org_admin 数（A3 唯一管理员守卫）。"""
         return self._conn.execute(
@@ -3666,9 +3719,10 @@ class PgBackend:
 
     def create_dimension_value(
         self, org_id: str, dim_id: str, value: str, *,
+        label: str | None = None,
         audit: tuple[str, str] | None = None,
     ) -> dict | None:
-        """新增维度取值（语义见 backend.py 协议）。"""
+        """新增维度取值（语义见 backend.py 协议——label 展示名 R2 P3-4）。"""
         from psycopg import errors as pg_errors
 
         from knowledge_lattice.store.backend import DimensionValueExistsError
@@ -3684,13 +3738,15 @@ class PgBackend:
                 f"dimension retired: {dim_id!r}——退役维度不再扩值（T20）"
             )
         value_id = f"val:{dim_id}:{value}"
+        display = label if label is not None else value
         conn = self._conn
         conn.execute("BEGIN")
         try:
             conn.execute(
                 "INSERT INTO dimension_values(id, dimension_id, value, label)"
                 " VALUES(%(id)s, %(dim)s, %(value)s, %(label)s)",
-                {"id": value_id, "dim": dim_id, "value": value, "label": value},
+                {"id": value_id, "dim": dim_id, "value": value,
+                 "label": display},
             )
             if audit is not None:
                 self._outbox_insert(conn, *audit)
@@ -3703,18 +3759,29 @@ class PgBackend:
         except BaseException:
             self._rollback()
             raise
-        return {"value_id": value_id, "value": value, "status": "active"}
+        return {"value_id": value_id, "value": value, "label": display,
+                "status": "active"}
 
     def enable_dimension_value(
         self, org_id: str, dim_id: str, value_id: str, *,
         audit: tuple[str, str] | None = None,
     ) -> dict | None:
-        """取值重新启用（D19 恢复路径——语义见 backend.py 协议）。"""
+        """取值重新启用（D19 恢复路径——语义见 backend.py 协议；retired 维度
+        409 与 create 对称〔R2 P3-4〕、applied 按 rowcount）。"""
         impact = self.dimension_value_impact(
             org_id, dim_id, value_id, treating_active=True
         )
         if impact is None:
             return None
+        dim_status = self._conn.execute(
+            "SELECT status FROM dimensions WHERE id = %(dim)s AND org_id = %(org)s",
+            {"dim": dim_id, "org": org_id},
+        ).fetchone()[0]
+        if dim_status == "retired":
+            raise ValueError(
+                f"dimension retired: {dim_id!r}——退役维度取值不启用（重建"
+                "维度是唯一路径，T20 对称）"
+            )
         conn = self._conn
         conn.execute("BEGIN")
         try:
@@ -3723,26 +3790,29 @@ class PgBackend:
                 " WHERE id = %(vid)s AND status = 'disabled'",
                 {"vid": value_id},
             )
-            if cur.rowcount and audit is not None:
+            applied = cur.rowcount > 0
+            if applied and audit is not None:
                 self._outbox_insert(conn, *audit)  # 幂等：已 active 零新审计
             conn.execute("COMMIT")
         except BaseException:
             self._rollback()
             raise
-        return {**impact, "applied": True}
+        return {**impact, "applied": applied}
 
-    def embedding_coverage(self, org_id: str, embed_model: str) -> list[dict]:
-        """各知识库嵌入覆盖率（TC-EMB-06 只读面板——RUNBOOK §1 闭合口径）。"""
+    def embedding_coverage(self, org_id: str | None, embed_model: str) -> list[dict]:
+        """各知识库嵌入覆盖率（TC-EMB-06 只读面板——RUNBOOK §1 闭合口径；
+        org_id=None=全库——R2 P2-2 全库覆盖率门数据源）。"""
+        org_filter = " AND d.org_id = %(org)s" if org_id is not None else ""
         rows = self._conn.execute(
             "SELECT ds.id, ds.name,"
             " (SELECT count(*) FROM chunks c"
             "   JOIN documents d ON d.id = c.doc_id AND d.active_version = c.version"
-            "   WHERE d.dataset_id = ds.id AND d.org_id = %(org)s AND c.tombstone = 0),"
+            f"   WHERE d.dataset_id = ds.id AND c.tombstone = 0{org_filter}),"
             " (SELECT count(*) FROM chunks c"
             "   JOIN documents d ON d.id = c.doc_id AND d.active_version = c.version"
             "   JOIN chunk_vectors cv ON cv.rid = c.rid AND cv.embed_model = %(model)s"
-            "   WHERE d.dataset_id = ds.id AND d.org_id = %(org)s AND c.tombstone = 0)"
-            " FROM datasets ds WHERE ds.org_id = %(org)s ORDER BY ds.id",
+            f"   WHERE d.dataset_id = ds.id AND c.tombstone = 0{org_filter})"
+            " FROM datasets ds ORDER BY ds.id",
             {"org": org_id, "model": embed_model},
         ).fetchall()
         return [
@@ -3752,6 +3822,7 @@ class PgBackend:
 
     def read_pending_outbox_events(self) -> list[dict]:
         """未搬运 outbox 行（审计分级查询当月未落库部分）。"""
+        from knowledge_lattice.store.taskclock import TS_FMT  # noqa: E402 —— R2 P3-2 常量单源
         rows = self._conn.execute(
             "SELECT id, event_type, payload_json, created_at FROM audit_outbox"
             " WHERE shipped_at IS NULL ORDER BY created_at, id"
@@ -3761,22 +3832,25 @@ class PgBackend:
         for r in rows:
             d = dict(zip(cols, r))
             if d.get("created_at") is not None:
-                d["created_at"] = d["created_at"].strftime("%Y-%m-%d %H:%M:%S")
+                d["created_at"] = d["created_at"].strftime(TS_FMT)
             out.append(d)
         return out
 
-    # ---- reembed 蓝绿执行体（m2-6 A1——TC-EMB-06 执行面） ----
+    # ---- reembed 蓝绿执行体（m2-6 A1——TC-EMB-06 执行面；R2 P2-2：org_id=None
+    #      = 全库——N-1 裁定选 a） ----
 
     def pending_reembed_batch(
-        self, org_id: str, embed_model: str, *, limit: int = 64,
+        self, org_id: str | None, embed_model: str, *, limit: int = 64,
     ) -> list[dict]:
-        """reembed 扫描认领 + 钉签（TC-EMB-06 ①——docstring 见 backend.py 协议）。"""
+        """reembed 扫描认领 + 钉签（TC-EMB-06 ①——docstring 见 backend.py 协议；
+        org_id=None 时无组织过滤〔全库〕）。"""
+        org_filter = " AND d.org_id = %(org)s" if org_id is not None else ""
         rows = self._conn.execute(
             "UPDATE chunks SET embed_model = %(label)s"
             " WHERE rid IN ("
             "   SELECT c.rid FROM chunks c"
             "   JOIN documents d ON d.id = c.doc_id"
-            "   WHERE d.org_id = %(org)s AND c.tombstone = 0"
+            f"   WHERE c.tombstone = 0{org_filter}"
             "     AND NOT EXISTS (SELECT 1 FROM chunk_vectors cv"
             "       WHERE cv.rid = c.rid AND cv.embed_model = %(label)s)"
             "   ORDER BY c.rid LIMIT %(limit)s)"
@@ -3785,36 +3859,48 @@ class PgBackend:
         ).fetchall()
         return [{"rid": r[0], "content": r[1]} for r in rows]
 
-    def repin_chunk_labels(self, org_id: str, embed_model: str) -> int:
-        """切换后状态标签对齐（TC-EMB-06 ③——迟到的旧标签回写谓词不匹配根除）。"""
+    def repin_chunk_labels(self, org_id: str | None, embed_model: str) -> int:
+        """切换后状态标签对齐（TC-EMB-06 ③——迟到旧标签回写谓词不匹配根除；
+        org_id=None=全库）。"""
+        org_filter = " AND org_id = %(org)s" if org_id is not None else ""
         cur = self._conn.execute(
             "UPDATE chunks SET embed_model = %(label)s"
-            " WHERE embed_model != %(label)s AND doc_id IN"
-            "   (SELECT id FROM documents WHERE org_id = %(org)s)",
+            " WHERE embed_model != %(label)s AND doc_id IN (SELECT id FROM documents"
+            f"   WHERE 1=1{org_filter})",
             {"org": org_id, "label": embed_model},
         )
         return cur.rowcount
 
-    def delete_vectors_by_label(self, org_id: str, keep_model: str) -> int:
-        """旧标签延后清理（TC-EMB-06 ④——org 内全部块非 keep 标签 cv 行删除）。"""
+    def delete_vectors_by_label(self, org_id: str | None, keep_model: str) -> int:
+        """旧标签延后清理（TC-EMB-06 ④——全库单标签一致；org_id=None=全库）。"""
+        org_filter = " AND d.org_id = %(org)s" if org_id is not None else ""
         cur = self._conn.execute(
             "DELETE FROM chunk_vectors WHERE embed_model != %(keep)s AND rid IN ("
             "  SELECT c.rid FROM chunks c"
-            "  JOIN documents d ON d.id = c.doc_id WHERE d.org_id = %(org)s)",
+            f"  JOIN documents d ON d.id = c.doc_id WHERE 1=1{org_filter})",
             {"org": org_id, "keep": keep_model},
         )
         return cur.rowcount
 
-    def invalidate_quality_cache(self, org_id: str) -> int:
+    def invalidate_quality_cache(self, org_id: str | None) -> int:
         """quality 检测缓存失效（TC-EMB-06 ④——detected_at_scale 置 NULL 使
-        recompute 候选= 全量；content_sha 由重算路径回写覆盖）。"""
+        recompute 候选= 全量；org_id=None=全库）。"""
+        org_filter = " AND org_id = %(org)s" if org_id is not None else ""
         cur = self._conn.execute(
             "UPDATE chunks SET detected_at_scale = NULL"
-            " WHERE tombstone = 0 AND doc_id IN"
-            "   (SELECT id FROM documents WHERE org_id = %(org)s)",
+            f" WHERE tombstone = 0 AND doc_id IN (SELECT id FROM documents"
+            f"   WHERE 1=1{org_filter})",
             {"org": org_id},
         )
         return cur.rowcount
+
+    def list_org_ids(self) -> list[str]:
+        """全部组织 id（reembed 全库联动逐组织遍历面）。"""
+        return [
+            r[0] for r in self._conn.execute(
+                "SELECT id FROM orgs ORDER BY id"
+            ).fetchall()
+        ]
 
     def read_org_audit(
         self, org_id: str, *, action: str | None = None, limit: int = 100,
