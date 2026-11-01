@@ -17,16 +17,17 @@ import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from knowledge_lattice.core.docs.retrieve import search as run_search
 from knowledge_lattice.domain.auth import (
+    REQUEST_PERMISSION_FIELD_KEYS,
     AuthContext,
-    authenticate,
+    audit_ignored_permission_fields,
     resolve_org,
 )
 
-from .upload import get_service
+from .upload import get_auth, get_service
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ router = APIRouter()
 
 
 class SearchRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")  # 权限字段检测需要（FR-4——忽略并记审计）
     query: str
     top_k: int = Field(default=8, ge=1, le=100)
     datasets: list[str] | None = None
@@ -42,20 +44,16 @@ class SearchRequest(BaseModel):
     auto_entities: bool = False            # 服务端（api 层）AC 识别 query 后实体召回
 
 
-def _auth(request: Request) -> AuthContext:
-    header = request.headers.get("authorization")
-    if not header or not header.lower().startswith("bearer "):
-        from knowledge_lattice.domain.auth import AuthError
-
-        raise AuthError("missing Bearer token")
-    service = get_service(request)
-    return authenticate(service.backend, service.settings, header[7:].strip())
-
-
 @router.post("/api/search")
 async def search(body: SearchRequest, request: Request) -> dict:
     service = get_service(request)
-    auth = _auth(request)
+    auth: AuthContext = get_auth(request)
+    # 请求体权限字段 → 忽略并记审计、请求正常处理（FR-4/D18 v0.6.1 统一口径
+    # ——附录 A-9；计权恒走 token 身份，请求体声明不参与）
+    present = [k for k in (body.model_extra or {}) if k in REQUEST_PERMISSION_FIELD_KEYS]
+    audit_ignored_permission_fields(
+        service.backend, user_id=auth.user_id, present_fields=present
+    )
     org = resolve_org(
         org_claim=auth.org_claim, org_header=request.headers.get("x-org-id")
     )

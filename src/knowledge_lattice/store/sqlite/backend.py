@@ -1609,6 +1609,50 @@ class SqliteBackend:
             return None
         return {"is_system_admin": bool(row[0]), "disabled_at": row[1]}
 
+    def upsert_user_jit(
+        self, *, user_id: str, username: str, display_name: str | None
+    ) -> dict:
+        """SSO 首次登录 JIT 建档（D16——TC-AUTH-03）：复用不更新/插入建档/
+        username 冲突 ValueError（协议语义见 store/backend.py）。"""
+        existing = self._conn.execute(
+            "SELECT username, is_system_admin, disabled_at FROM users WHERE id = :id",
+            {"id": user_id},
+        ).fetchone()
+        if existing is not None:
+            return {
+                "id": user_id, "username": existing[0],
+                "is_system_admin": bool(existing[1]),
+                "disabled_at": existing[2], "created": False,
+            }
+        clash = self._conn.execute(
+            "SELECT id FROM users WHERE username = :u", {"u": username}
+        ).fetchone()
+        if clash is not None:
+            raise ValueError(
+                f"JIT 建档冲突：username {username!r} 已被用户 {clash[0]!r} 占用"
+            )
+        try:
+            self._conn.execute(
+                "INSERT INTO users(id, username, display_name) VALUES (:i, :u, :d)",
+                {"i": user_id, "u": username, "d": display_name},
+            )
+        except sqlite3.IntegrityError:
+            # 并发窗口兜底（同 id 并发登录/竞态 username）：回读定性
+            row = self._conn.execute(
+                "SELECT id FROM users WHERE username = :u", {"u": username}
+            ).fetchone()
+            if row is not None and row[0] != user_id:
+                raise ValueError(
+                    f"JIT 建档冲突：username {username!r} 已被用户 {row[0]!r} 占用"
+                ) from None
+            return self.upsert_user_jit(
+                user_id=user_id, username=username, display_name=display_name
+            )
+        return {
+            "id": user_id, "username": username, "is_system_admin": False,
+            "disabled_at": None, "created": True,
+        }
+
     # ============ 上传凭证（M1-3 三步式——design §6.1/§6.2/§6.3） ============
 
     _UPLOAD_COLS = (

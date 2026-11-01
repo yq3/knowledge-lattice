@@ -95,6 +95,17 @@ class Settings:
     jwt_ttl_s: float = 12 * 3600.0
     mcp_timeout_s: float = 60.0  # MCP 60s 超时中间件（ragflow 纪律）
 
+    # SSO/委托 token（M2.2 m2-4——D16/D18；待决-2 维持未决：协议中立可插拔，
+    # mock-idp 为 POC 交付形态，真实 IdP 适配器企业内在 adapters/auth_sso.py
+    # build_sso_verifier 登记替换）
+    sso_provider: str = "none"  # none=缺省 dev 形态（不注入验签器）| mock-idp
+    sso_mock_secret: str = "dev-mock-idp-secret"  # mock IdP 签名密钥（部署另配）
+    sso_audience: str = "knowledge-lattice"  # 委托 token 受众（aud 校验——透传拒绝依据）
+    # 可信子系统白名单（m2-4 A4/T13 真实载体）：JSON 数组
+    # [{service_id, token, allowed_orgs: [org...], rate_limit_rpm?}]——
+    # 空串/[] = 可信子系统整体关闭（fail-closed）；mTLS 形态归真实部署期
+    trusted_services_json: str = ""
+
     # 上传凭证（M1-3 三步式——P3-10/P3-13 择型：TTL 15min、全局上限 200MB 均可配置）
     upload_credential_ttl_s: float = 900.0  # 凭证有效期（签发 → expires_at）
     upload_max_bytes: int = 200 * 1024 * 1024  # 全局上限（PUT 独立生效——413，P3-13）
@@ -209,6 +220,10 @@ def get_settings() -> Settings:
         score_threshold=float(_num("LATTICE_SCORE_THRESHOLD", 0.0)),
         dev_jwt_secret=_f("LATTICE_DEV_JWT_SECRET", "dev-only-insecure-secret-0123456789ab"),
         mcp_timeout_s=float(_num("LATTICE_MCP_TIMEOUT_S", 60.0)),
+        sso_provider=_f("LATTICE_SSO_PROVIDER", "none"),
+        sso_mock_secret=_f("LATTICE_SSO_MOCK_SECRET", "dev-mock-idp-secret"),
+        sso_audience=_f("LATTICE_SSO_AUDIENCE", "knowledge-lattice"),
+        trusted_services_json=_f("LATTICE_TRUSTED_SERVICES_JSON", ""),
         upload_credential_ttl_s=float(_num("LATTICE_UPLOAD_TTL_S", 900.0)),
         upload_max_bytes=int(_num("LATTICE_UPLOAD_MAX_BYTES", 200 * 1024 * 1024)),
         maintenance_interval_s=float(_num("LATTICE_MAINTENANCE_INTERVAL_S", 300.0)),

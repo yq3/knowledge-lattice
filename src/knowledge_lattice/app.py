@@ -64,6 +64,8 @@ class ServiceContext:
         enhancer=None,
         breakers=None,
         worker=None,
+        sso=None,
+        trusted=None,
     ) -> None:
         self.settings = settings
         self.backend = backend
@@ -76,6 +78,10 @@ class ServiceContext:
         self.enhancer = enhancer
         self.breakers = breakers
         self.worker = worker
+        # M2.2 m2-4：SSO/委托 token 验签器（可插拔——缺省 None 保持 dev 形态）
+        # + 可信子系统白名单（含按服务限流器——TC-AUTH-05/T13）
+        self.sso = sso
+        self.trusted = trusted
 
 
 class InlineWorkerHandle:
@@ -188,8 +194,15 @@ def create_app(
     reranker=None,
     enhancer=None,
     run_startup_probe: bool = True,
+    sso_verifier=None,
 ) -> FastAPI:
-    """构建 FastAPI 应用（测试可注入 embedder/gate/reranker/enhancer、跳过启动探针）。"""
+    """构建 FastAPI 应用（测试可注入 embedder/gate/reranker/enhancer、跳过启动探针）。
+
+    m2-4 auth 装配分层：``sso_verifier`` 显式注入优先；否则按
+    settings.sso_provider 配置化构造（none=缺省 dev 形态——现有门禁/测试零
+    感知；mock-idp=mock IdP）。可信子系统白名单恒由 settings.trusted_services_json
+    构造（畸形配置 fail-closed raise）。
+    """
     settings = settings or get_settings()
     if settings.worker_mode not in ("inline", "subprocess"):
         raise ValueError(
@@ -200,7 +213,9 @@ def create_app(
 
     # P2-4/P2-5（M2.1 R2）：backend/quality 经共享工厂装配——与 worker 子进程
     # build_default_services 同源（杜绝主/子进程装配分叉）
+    from knowledge_lattice.adapters.auth_sso import build_sso_verifier
     from knowledge_lattice.core.docs.quality import build_quality_service
+    from knowledge_lattice.domain.auth import TrustedServiceRegistry
     from knowledge_lattice.store.factory import build_backend
 
     backend = build_backend(settings)
@@ -274,6 +289,9 @@ def create_app(
         credentials=credentials, quality=quality, embedder=embedder,
         reranker=reranker, enhancer=enhancer, breakers=breakers,
         worker=worker_handle,
+        sso=sso_verifier if sso_verifier is not None
+        else build_sso_verifier(settings),
+        trusted=TrustedServiceRegistry.from_json(settings.trusted_services_json),
     )
 
     mcp_server = build_mcp_server(service, settings)
