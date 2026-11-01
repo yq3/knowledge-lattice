@@ -3635,6 +3635,25 @@ class SqliteBackend:
         return [{"entity_id": r[0], "text_norm": r[1], "kind": r[2],
                  "sim": r[3]} for r in rows]
 
+    def sem_fuzzy_index_stats(self, org_id: str) -> dict:
+        """模糊索引对账数据源（m2s-6 R2/P2-1——skipped 构建修复路径）：
+        {terms: 行数, vec_embedded: embedding 非空行数}。"""
+        row = self._conn.execute(
+            "SELECT count(*),"
+            " sum(CASE WHEN embedding IS NOT NULL THEN 1 ELSE 0 END)"
+            " FROM sem_fuzzy_terms WHERE org_id = ?", (org_id,)).fetchone()
+        return {"terms": row[0] or 0, "vec_embedded": row[1] or 0}
+
+    def sem_update_build_stats(self, org_id: str, build_id: int,
+                               stats_json: str) -> bool:
+        """build 行 stats_json 原地更新（m2s-6 R2/P2-1——模糊索引写失败标记
+        持久化面；仅 UPDATE 不动状态/时间戳，rowcount 判生效）。"""
+        cur = self._conn.execute(
+            "UPDATE sem_builds SET stats_json = ?"
+            " WHERE org_id = ? AND id = ?",
+            (stats_json, org_id, build_id))
+        return cur.rowcount > 0
+
     def sem_table_columns(self, org_id: str, table_id: int) -> list[dict]:
         rows = self._conn.execute(
             "SELECT c.key, c.name FROM sem_relations r"

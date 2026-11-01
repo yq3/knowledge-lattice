@@ -261,6 +261,10 @@ def create_app(
             services=WorkerServices(
                 backend=backend, settings=settings, ingest=ingest,
                 credentials=credentials,
+                # P2-1/m2s-6 R2：inline 模式补 _embedder——semantic_build 的
+                # 模糊索引向量层经真实 embedder 写入（inline 是配置支持的
+                # 「最小部署显式选项」，非纯测试形态）
+                _embedder=embedder,
             ),
         )
         worker_handle = InlineWorkerHandle(runner, poll_s=settings.worker_poll_s)

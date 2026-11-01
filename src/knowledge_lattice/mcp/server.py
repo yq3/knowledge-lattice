@@ -33,8 +33,9 @@ describe_table；annotate 归 M2-S2 后段、search 实体参数归 M2-S3）：
   restricted 实体 fail-closed 静默（404/无命中/不出现——T-S9，持权路径 M2-S3）；
 - get_entity：key/id 二选一 + expand 方向后缀 + depth≤2/fanout≤200（超限 400
   ——附录 A-11）；多跳由 Agent 迭代调用；
-- search_entities：alias 精确 > 前缀 > label 模糊（拼音/向量 M2-S3）；q≤200、
-  top_k≤50；
+- search_entities：alias 精确 > 前缀 > 拼音（同音错字）> label 模糊 > 向量
+  近邻（m2s-6 全档——拼音/向量经模糊索引，embedder 注入时 vec 档生效）；
+  q≤200、top_k≤50；
 - describe_table：只对已登记 table 实体开放（403 防枚举数仓）+ 3s 超时降级
   degraded=true + 5min 缓存（T-S11）。
 """
@@ -81,7 +82,9 @@ logger = logging.getLogger(__name__)
 SEARCH_TOOL_DESCRIPTION = (
     "检索企业知识库。缺私有信息（制度/手册/申报口径）时调用；"
     "query 越具体越好（含税种、区域、文档关键词）；返回结果自带 chunk_id 溯源，"
-    "回答时请引用。"
+    "回答时请引用。可传 entities（实体 id 列表，≤20）启用实体召回路，或"
+    " auto_entities=true 由服务端先识别 query 中的业务对象再召回——命中的块"
+    "附带 matched_entities 说明召回原因（对话中已识别实体时优先用它们检索）。"
 )
 
 FETCH_TOOL_DESCRIPTION = (
@@ -109,8 +112,9 @@ GET_ENTITY_TOOL_DESCRIPTION = (
 )
 
 SEARCH_ENTITIES_TOOL_DESCRIPTION = (
-    "按名称、别名或描述片段查业务实体（先查到实体再用 get_entity 取详情）。"
-    "排序：别名精确命中 > 别名前缀 > 名称模糊；top_k ≤50、q ≤200。"
+    "按名称、别名、同音词或语义相近的描述片段查业务实体（先查到实体再用 "
+    "get_entity 取详情）。排序：别名精确命中 > 别名前缀 > 拼音（同音错字）> "
+    "名称模糊 > 向量近邻（语义相近——via='vec'）；top_k ≤50、q ≤200。"
 )
 
 DESCRIBE_TABLE_TOOL_DESCRIPTION = (
@@ -493,13 +497,15 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
         top_k: int = 10,
         ctx: Context = None,
     ) -> dict:
-        """search_entities（§6.3）：别名精确 > 前缀 > 名称模糊三层排序
-        （拼音/向量归后续段）；q ≤200、top_k ≤50。"""
+        """search_entities（§6.3）：别名精确 > 前缀 > 拼音 > 名称模糊 > 向量
+        近邻排序链（m2s-6 全档——拼音/向量层经模糊索引）；q ≤200、top_k ≤50。"""
         auth, org_id = _auth_and_org(ctx, param_org=None)
         _sem_member(auth, org_id)
         try:
             return search_entities(
-                service.backend, org_id, q, types=types, top_k=top_k
+                service.backend, org_id, q, types=types, top_k=top_k,
+                settings=settings,
+                embedder=getattr(service, "embedder", None),
             )
         except ValueError as exc:
             raise ToolError(f"400: {exc}") from exc

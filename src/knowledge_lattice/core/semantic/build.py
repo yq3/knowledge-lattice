@@ -315,10 +315,12 @@ def run_build(
       >2pp → **行置 failed（不切 ready）**、stats.eval 留因——返回
       status="failed"（不上抛：非故障是治理拦截，人工修复词典后重建）；
     - **模糊索引产物（m2s-6——§5.8 产物 2 / TC-SEM-09）**：eval 门过后
-      随快照产 sem_fuzzy_terms/dels（向量经 embedder 注入、失败降级为空——
-      拼音/编辑距离层不受影响；标签=embed_model 已入 dict_rev，换模型强制
-      重算）；**ready 切换成功后写库**（拦下的词典不生效到模糊面；写失败
-      记 warning 不回滚构建——下次构建整替收敛，模糊面非可用性前提）；
+      随快照产 sem_fuzzy_terms/dels（向量经 embedder 注入、缺失/失败降级
+      为空并标记 vec_skipped——拼音/编辑距离层不受影响；标签=embed_model
+      已入 dict_rev，换模型强制重算）；ready 切换成功后写库（拦下的词典
+      不生效到模糊面）；**写失败标记持久化进 build stats（P2-1/R2）**，
+      **同 rev 的 skipped 构建做对账修复**（行缺失/向量覆盖不全且当前有
+      embedder → 整替补写——「最终一致+修复路径」为正式口径，用户裁定 5）；
     - ready/failed 事件与终态行**同一事务**（store switch/fail 的 audit=——
       P3-5/R2；G-16 构建侧收口）；
     - 切换无效且 current 已是同 rev ready（并发输者——P2-2/R2）→ 按 skipped
@@ -336,11 +338,18 @@ def run_build(
         current = backend.sem_current_build(org_id)
         if current is not None and current["dict_rev"] == dict_rev:
             stats = {"skipped": True, "current_build_id": current["id"]}
+            # P2-1/R2（裁定 5「最终一致+修复路径」）：同 dict_rev skip 前做
+            # 模糊索引对账——写失败/向量降级的遗留缺口的真实收敛路径
+            #（每次 skipped 构建都会对账；只补缺不降级——见函数 docstring）
+            repaired = _repair_fuzzy_index_if_needed(
+                backend, org_id, snapshot, settings, embedder)
+            if repaired is not None:
+                stats["fuzzy_repaired"] = repaired
             _audit_build(backend, org_id, "skipped",
                          {"build_id": current["id"], "dict_rev": dict_rev,
                           "stats": stats})
-            logger.info("semantic build skipped (dict_rev unchanged): org=%s rev=%s",
-                        org_id, dict_rev)
+            logger.info("semantic build skipped (dict_rev unchanged): org=%s rev=%s"
+                        " fuzzy_repaired=%s", org_id, dict_rev, repaired)
             return {"build_id": current["id"], "dict_rev": dict_rev,
                     "status": "skipped", "stats": stats}
         # prev 保留引用（retag 投递判定的 diff 基线——TC-BUILD-05）
@@ -451,7 +460,7 @@ def run_build(
             logger.info("semantic build reactivated (rev rollback): org=%s"
                         " build=%s rev=%s", org_id, build_id, dict_rev)
             _write_fuzzy_index(backend, org_id, fuzzy_term_rows,
-                               fuzzy_del_rows, stats)
+                               fuzzy_del_rows, stats, build_id=build_id)
             stats["retag_enqueued"] = _maybe_enqueue_retag(
                 backend, org_id, dict_rev, stats, prev_build)
             return {"build_id": build_id, "dict_rev": dict_rev, "status": "ready",
@@ -487,9 +496,9 @@ def run_build(
         logger.info("semantic build ready: org=%s build=%s rev=%s entities=%s",
                     org_id, build_id, dict_rev, stats["entities"])
         # 模糊索引写库（m2s-6——ready 可见后写：eval 拦下的词典不生效到模糊面；
-        # 写失败记 warning 不回滚——下次构建整替收敛）
+        # P2-1/R2：写失败标记持久化进 build stats，收敛交 skipped 对账修复路径）
         _write_fuzzy_index(backend, org_id, fuzzy_term_rows, fuzzy_del_rows,
-                           stats)
+                           stats, build_id=build_id)
         stats["retag_enqueued"] = _maybe_enqueue_retag(
             backend, org_id, dict_rev, stats, prev_build)
         return {"build_id": build_id, "dict_rev": dict_rev, "status": "ready",
@@ -539,18 +548,80 @@ def _build_fuzzy_products(snapshot: dict, settings: Settings, embedder):
 
 
 def _write_fuzzy_index(backend, org_id: str, term_rows: list[dict],
-                       del_rows: list[dict], stats: dict) -> None:
-    """模糊索引整替写库（成功切换后——失败记 warning 不回滚构建）。"""
+                       del_rows: list[dict], stats: dict,
+                       *, build_id: int | None = None) -> None:
+    """模糊索引整替写库（成功切换后——失败标记**持久化**进 build 行 stats
+    〔P2-1/R2：sem_update_build_stats，build_report 可见〕；收敛交 skipped
+    对账修复路径——见 _repair_fuzzy_index_if_needed）。"""
     try:
         written = backend.sem_fuzzy_replace(org_id, term_rows, del_rows)
         logger.info("semantic fuzzy index written: org=%s terms=%s dels=%s",
                     org_id, written, len(del_rows))
-    except Exception:  # noqa: BLE001 —— 非可用性前提：下次构建整替收敛
+    except Exception:  # noqa: BLE001 —— 非可用性前提：不回滚构建
+        logger.exception(
+            "semantic fuzzy index write failed: org=%s（模糊面沿用旧索引；"
+            "标记入 build stats，同 rev 的下次构建对账修复）", org_id)
         stats["fuzzy"] = {**(stats.get("fuzzy") or {}),
                           "index_write_failed": True}
+        if build_id is not None:
+            try:
+                backend.sem_update_build_stats(
+                    org_id, build_id,
+                    json.dumps(stats, ensure_ascii=False, default=str))
+            except Exception:  # noqa: BLE001 —— 标记持久化失败不掩盖主路径
+                logger.exception(
+                    "fuzzy index_write_failed marker persist failed:"
+                    " org=%s build=%s", org_id, build_id)
+
+
+def _repair_fuzzy_index_if_needed(backend, org_id: str, snapshot: dict,
+                                  settings: Settings, embedder) -> dict | None:
+    """skipped 构建的模糊索引对账修复（P2-1/R2——用户裁定 5「最终一致+
+    修复路径」正式口径）：
+
+    - **对账**：现状（sem_fuzzy_index_stats）vs 当前快照期望——行缺失
+      （terms < 期望）或**向量覆盖不全且当前有 embedder**（vec_embedded <
+      terms）即触发整替补写（用当前 embedder 全量重算——行与向量一起最新）；
+    - 只补缺不降级：embedder 缺席时不因「期望向量数低」覆盖既有好向量
+      （对账条件为 vec_embedded < terms 的**补齐方向**，绝不把非空向量
+      覆盖为空）；行完整且向量满覆盖（或无 embedder 且本就无向量）→ 零动作；
+    - 修复成功返回 {"terms": n, "vec_embedded": k}（调用方进 skipped 返回
+      stats.fuzzy_repaired 供观测）；失败记 warning——下次 skipped 构建再对账
+      （每次同 rev 构建都会走到本函数——真实收敛路径）。
+    """
+    try:
+        from knowledge_lattice.core.semantic.fuzzy import build_fuzzy_terms
+
+        _rows, _dels, expected = build_fuzzy_terms(
+            snapshot, None, embed_model_label=settings.embed_model_label)
+        expect_terms = expected["terms"]
+        # 可嵌行数（code/sync 键不嵌——NULL 属预期；对账以此为满覆盖基准）
+        expect_vec = expected["vec_expected"]
+        have = backend.sem_fuzzy_index_stats(org_id)
+        need = False
+        if have["terms"] < expect_terms:
+            need = True          # 行缺失（写失败恢复 / 词典未落）
+        elif (embedder is not None
+              and have["vec_embedded"] < expect_vec):
+            need = True          # 向量覆盖不全且当前有能力补（降级自愈）
+        if not need:
+            return None
+        term_rows, del_rows, _stats = _build_fuzzy_products(
+            snapshot, settings, embedder)
+        written = backend.sem_fuzzy_replace(org_id, term_rows, del_rows)
+        after = backend.sem_fuzzy_index_stats(org_id)
+        logger.warning(
+            "semantic fuzzy index repaired on skipped build: org=%s"
+            " terms=%s vec_embedded=%s（对账触发：have=%s"
+            " expect_terms=%s expect_vec=%s）",
+            org_id, written, after["vec_embedded"], have, expect_terms,
+            expect_vec)
+        return after
+    except Exception:  # noqa: BLE001 —— 修复失败下次 skipped 构建再试
         logger.exception(
-            "semantic fuzzy index write failed: org=%s（模糊面沿用旧索引，"
-            "下次构建整替收敛）", org_id)
+            "semantic fuzzy index repair failed on skipped build: org=%s"
+            "（下次同 rev 构建再对账）", org_id)
+        return None
 
 
 # ---- 构建报告（A4——REST GET /semantic/builds/{id}/report 数据源） ----

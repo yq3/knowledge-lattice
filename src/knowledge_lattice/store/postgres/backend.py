@@ -311,6 +311,23 @@ class PgBackend:
         return [{"entity_id": r[0], "text_norm": r[1], "kind": r[2],
                  "sim": float(r[3])} for r in rows]
 
+    def sem_fuzzy_index_stats(self, org_id: str) -> dict:
+        """模糊索引对账数据源（m2s-6 R2/P2-1——与 sqlite 同语义）。"""
+        row = self._conn.execute(
+            "SELECT count(*),"
+            " count(embedding) FROM sem_fuzzy_terms WHERE org_id = %(org)s",
+            {"org": org_id}).fetchone()
+        return {"terms": row[0] or 0, "vec_embedded": row[1] or 0}
+
+    def sem_update_build_stats(self, org_id: str, build_id: int,
+                               stats_json: str) -> bool:
+        """build 行 stats_json 原地更新（m2s-6 R2/P2-1——与 sqlite 同语义）。"""
+        cur = self._conn.execute(
+            "UPDATE sem_builds SET stats_json = %(stats)s"
+            " WHERE org_id = %(org)s AND id = %(bid)s",
+            {"stats": stats_json, "org": org_id, "bid": build_id})
+        return cur.rowcount > 0
+
     def expand_relations(self, org_id: str, seed_ids, rels, *, depth: int = 1) -> dict:
         """薄适配实现见 Semantic 域（P3-3/R2——NotImplementedError 占位已删）。"""
         return _expand_relations_thin(self, org_id, seed_ids, rels, depth=depth)

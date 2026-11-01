@@ -136,6 +136,17 @@ class SearchBackend(Protocol):
         embedding 以方言原生形态返回，向量层不走本方法）。"""
         ...
 
+    def sem_fuzzy_index_stats(self, org_id: str) -> dict:
+        """模糊索引对账数据源（m2s-6 R2/P2-1）：{terms, vec_embedded}——
+        skipped 构建修复路径的存在性/向量覆盖率对账。"""
+        ...
+
+    def sem_update_build_stats(self, org_id: str, build_id: int,
+                               stats_json: str) -> bool:
+        """build 行 stats_json 原地更新（m2s-6 R2/P2-1——模糊索引写失败标记
+        持久化面；仅 UPDATE 不动状态/时间戳）。"""
+        ...
+
     def sem_fuzzy_vec_search(
         self, org_id: str, query_vec: Sequence[float], *, embed_model: str,
         top_k: int = 3, min_sim: float = 0.75,

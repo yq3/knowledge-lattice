@@ -417,7 +417,13 @@ async def list_semantic_entities(
     from knowledge_lattice.core.semantic.lookup import search_entities
 
     try:
-        return search_entities(service.backend, org, q, types=types, top_k=top_k)
+        # P2-2/m2s-6 R2：注入 settings/embedder——via='vec' 向量档在真实端点
+        # 生效（lookup.search_entities 排序链第 4 档；无 embedder 时自然跳层）
+        return search_entities(
+            service.backend, org, q, types=types, top_k=top_k,
+            settings=service.settings,
+            embedder=getattr(service, "embedder", None),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

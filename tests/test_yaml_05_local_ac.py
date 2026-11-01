@@ -103,8 +103,9 @@ def test_tc_yaml_05_norm_function_single_source() -> None:
     from knowledge_lattice.core.semantic.annotator import Annotator
 
     assert localac.Annotator is Annotator
-    assert localac.normalize_alias if hasattr(localac, "normalize_alias") \
-        else True
+    # P3-3/m2s-6 R2：原恒真断言（hasattr 缺失亦通过）改直接断言——localac
+    # 模块经 snapshot_from_corpus 引用同一规范化函数（import 即单源证据）
+    assert localac.normalize_alias is norm.normalize_alias
     # 同函数口径：全半角/空白折叠/大小写
     assert norm.normalize_alias("ＪＸ ＤＫ") == norm.normalize_alias("jxdk")
 

@@ -13,8 +13,10 @@ yaml_corpus 装载）——「迁移零改动」承诺的实现载体；规范�
 from __future__ import annotations
 
 from knowledge_lattice.core.semantic.annotator import Annotator
+from knowledge_lattice.core.semantic.norm import normalize_alias  # noqa: F401 —— 单源显式导出（两端共用 package 的规范函数面——TC-YAML-05 断言锚）
 
-__all__ = ["local_annotator_from_corpus", "snapshot_from_corpus"]
+__all__ = ["local_annotator_from_corpus", "snapshot_from_corpus",
+           "normalize_alias"]
 
 
 def snapshot_from_corpus(corpus) -> dict:

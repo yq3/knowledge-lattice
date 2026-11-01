@@ -127,13 +127,17 @@ def build_fuzzy_terms(
     for eid, ent in entities.items():
         if ent.get("sensitivity") == "restricted":
             continue
-        candidates: list[tuple[str, str]] = [("name", ent["name"])]
+        # (kind, text, embed)：code/sync 类源系统键**不嵌向量**（P2-2/R2——
+        # 拉丁键与业务词无语义关系，真实 embedder 下徒占 top-3 槽位、确定性
+        # embedder 下与 default 向量碰撞制造伪命中；拼音/编辑距离面保留）
+        candidates: list[tuple[str, str, bool]] = [("name", ent["name"], True)]
         import json
 
         for a in snapshot["aliases"]:
             if a["entity_id"] != eid:
                 continue
-            candidates.append(("alias", a["alias"]))
+            candidates.append(("alias", a["alias"],
+                               a.get("kind") not in ("code", "sync")))
         curated = {}
         try:
             curated = json.loads(ent.get("curated_json") or "{}")
@@ -141,8 +145,8 @@ def build_fuzzy_terms(
             curated = {}
         first = definition_first_sentence(curated)
         if first:
-            candidates.append(("definition", first))
-        for kind, text in candidates:
+            candidates.append(("definition", first, True))
+        for kind, text, embed in candidates:
             norm = normalize_alias(str(text or ""))
             if not norm:
                 continue
@@ -160,7 +164,8 @@ def build_fuzzy_terms(
                 "embedding": None,
             }
             term_rows.append(row)
-            pending.append(len(term_rows) - 1)
+            if embed:
+                pending.append(len(term_rows) - 1)
 
     vec_skipped = False
     if embed_fn is not None and pending:
@@ -177,6 +182,10 @@ def build_fuzzy_terms(
             logger.warning(
                 "fuzzy index vector embed failed (%s: %s)——向量层降级为空"
                 "（拼音/编辑距离层不受影响）", type(exc).__name__, exc)
+    elif pending:
+        # P2-1/R2：embedder 缺失（embed_fn=None）且存在待嵌行——同样标记降级
+        #（构建报告不误报「未降级」；向量经 skipped 构建对账修复路径补齐）
+        vec_skipped = True
 
     del_rows: list[dict] = []
     for idx, row in enumerate(term_rows):
@@ -190,6 +199,8 @@ def build_fuzzy_terms(
     stats = {
         "terms": len(term_rows),
         "dels": len(del_rows),
+        # vec_expected：可嵌行数（code/sync 键不嵌——NULL 属预期，非降级）
+        "vec_expected": len(pending),
         "vec_embedded": sum(1 for r in term_rows if r["embedding"] is not None),
         "vec_skipped": vec_skipped,
     }
