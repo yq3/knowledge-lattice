@@ -17,6 +17,10 @@ WORKER_MODE_INLINE = "inline"        # 进程内 TaskRunner（测试/最小部�
 WORKER_MODE_SUBPROCESS = "subprocess"  # 子进程隔离（默认——M2.1 R2 裁定 A(a)）
 WORKER_MODES = (WORKER_MODE_INLINE, WORKER_MODE_SUBPROCESS)
 
+# mock IdP 公开缺省密钥（m2-4 R2 P2-2：仓库公开常量——prod + 该缺省值组合被
+# build_sso_verifier fail-closed 拒绝，与 dev JWT P2-5 同口径〔公开密钥=可伪造〕）
+DEFAULT_SSO_MOCK_SECRET = "dev-mock-idp-secret"
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -97,9 +101,10 @@ class Settings:
 
     # SSO/委托 token（M2.2 m2-4——D16/D18；待决-2 维持未决：协议中立可插拔，
     # mock-idp 为 POC 交付形态，真实 IdP 适配器企业内在 adapters/auth_sso.py
-    # build_sso_verifier 登记替换）
+    # build_sso_verifier 登记）
     sso_provider: str = "none"  # none=缺省 dev 形态（不注入验签器）| mock-idp
-    sso_mock_secret: str = "dev-mock-idp-secret"  # mock IdP 签名密钥（部署另配）
+    sso_mock_secret: str = DEFAULT_SSO_MOCK_SECRET  # mock IdP 签名密钥（部署另配——
+    #  公开缺省值 + prod 组合被 build_sso_verifier fail-closed 拒绝〔P2-2〕）
     sso_audience: str = "knowledge-lattice"  # 委托 token 受众（aud 校验——透传拒绝依据）
     # 可信子系统白名单（m2-4 A4/T13 真实载体）：JSON 数组
     # [{service_id, token, allowed_orgs: [org...], rate_limit_rpm?}]——
@@ -221,7 +226,7 @@ def get_settings() -> Settings:
         dev_jwt_secret=_f("LATTICE_DEV_JWT_SECRET", "dev-only-insecure-secret-0123456789ab"),
         mcp_timeout_s=float(_num("LATTICE_MCP_TIMEOUT_S", 60.0)),
         sso_provider=_f("LATTICE_SSO_PROVIDER", "none"),
-        sso_mock_secret=_f("LATTICE_SSO_MOCK_SECRET", "dev-mock-idp-secret"),
+        sso_mock_secret=_f("LATTICE_SSO_MOCK_SECRET", DEFAULT_SSO_MOCK_SECRET),
         sso_audience=_f("LATTICE_SSO_AUDIENCE", "knowledge-lattice"),
         trusted_services_json=_f("LATTICE_TRUSTED_SERVICES_JSON", ""),
         upload_credential_ttl_s=float(_num("LATTICE_UPLOAD_TTL_S", 900.0)),

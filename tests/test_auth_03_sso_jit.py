@@ -116,7 +116,8 @@ def test_sso_username_fallback_to_sub(backend, tmp_path) -> None:
 
 def test_sso_username_conflict_rejected(backend, tmp_path) -> None:
     """既有不同 id 同 username 用户 → JIT 建档 fail-closed 拒绝（users.username
-    UNIQUE——不静默顶替他人账号）。"""
+    UNIQUE——不静默顶替他人账号）；异常消息不回显占用者 id（P3-7——防经
+    401 body 外泄其他账号信息）。"""
     seed_user(backend, "u_existing", username="zhang.san")
     verifier = _verifier()
     token = verifier.issue_token(
@@ -127,6 +128,7 @@ def test_sso_username_conflict_rejected(backend, tmp_path) -> None:
         raise AssertionError("username 冲突应拒绝")
     except AuthError as exc:
         assert exc.code == 401
+        assert "u_existing" not in str(exc), "冲突消息不得回显他用户 id（P3-7）"
     assert backend.execute(
         "SELECT COUNT(*) FROM users WHERE id = ?", ("u_sso_9",)
     ).fetchone()[0] == 0
@@ -188,7 +190,8 @@ def test_sso_disabled_user_rejected(backend, tmp_path) -> None:
 
 
 def test_sso_token_missing_sub_rejected(backend, tmp_path) -> None:
-    """sub claim 缺失 → 401（全局用户解析失败）。"""
+    """sub claim 缺失 → 401（全局用户解析失败）+ refused 审计（P3-6——SSO
+    拒绝面审计口径一致：reason=missing_sub）。"""
     verifier = _verifier()
     token = verifier.issue_token(sub="", aud=(AUD,))
     try:
@@ -196,6 +199,109 @@ def test_sso_token_missing_sub_rejected(backend, tmp_path) -> None:
         raise AssertionError("缺 sub 应 401")
     except AuthError:
         pass
+    refused = [
+        e for e in _outbox_events(backend, "auth.sso_refused")
+        if e.get("reason") == "missing_sub"
+    ]
+    assert len(refused) == 1, "缺 sub 拒绝须留 refused 审计（P3-6）"
+
+
+def test_sso_nonstring_claims_normalized(backend, tmp_path) -> None:
+    """P3-2：claims 类型归一——sub 非 str（int）→ 验签层即拒（pyjwt
+    ``Subject must be a string``——不透传成 user_id 落 SQL 绑定异常 500，
+    且不建档）；org/username/display_name 非 str → 降级 None（资料性 claim
+    缺失语义，建档成功 username 回退 sub）。"""
+    verifier = _verifier()
+    # sub 非 str：pyjwt 层拒收（等价签名无效——SSO 拒绝审计不适用于验签失败面）
+    token_int_sub = verifier.issue_token(sub="u-x", aud=(AUD,), extra={"sub": 12345})
+    try:
+        _authenticate(backend, _settings(tmp_path), token_int_sub, sso=verifier)
+        raise AssertionError("非 str sub 应 401")
+    except AuthError as exc:
+        assert exc.code == 401
+    assert backend.execute(
+        "SELECT COUNT(*) FROM users WHERE id = ?", ("u-x",)
+    ).fetchone()[0] == 0, "非 str sub 不得建档"
+    # 资料 claim 非 str → 降级 None 不炸绑定
+    token_bad_meta = verifier.issue_token(
+        sub="u_sso_meta", aud=(AUD,), org=99,
+        username=["a"], display_name={"k": 1},
+    )
+    ctx = _authenticate(backend, _settings(tmp_path), token_bad_meta, sso=verifier)
+    assert ctx.user_id == "u_sso_meta"
+    assert ctx.org_claim is None, "非 str org claim 降级 None（不入 SQL）"
+    row = backend.execute(
+        "SELECT username, display_name FROM users WHERE id = ?", ("u_sso_meta",)
+    ).fetchone()
+    assert row[0] == "u_sso_meta"  # username 回退 sub
+    assert row[1] is None
+
+
+def test_sso_token_without_exp_rejected(backend, tmp_path) -> None:
+    """P3-4：mock 验签强制 exp/iss 在场（require）——缺 exp 的手工构造 token
+    → 401（真实 IdP 适配器同契约，防「无过期时间的永久 token」）。"""
+    import time
+
+    import jwt as pyjwt
+
+    verifier = _verifier()
+    now = time.time()
+    no_exp = pyjwt.encode(
+        {"iss": "mock-idp", "sub": "u_noexp", "aud": AUD, "iat": now},
+        SECRET, algorithm="HS256",
+    )
+    try:
+        _authenticate(backend, _settings(tmp_path), no_exp, sso=verifier)
+        raise AssertionError("缺 exp token 应 401")
+    except AuthError as exc:
+        assert exc.code == 401
+
+
+def test_sso_disabled_user_refused_audited(backend, tmp_path) -> None:
+    """P3-6：SSO 路径禁用用户拒绝 → refused 审计（reason=user_disabled——
+    与 audience/invalid_act 拒绝面口径一致）。"""
+    verifier = _verifier()
+    token = verifier.issue_token(sub="u_sso_dis", aud=(AUD,))
+    _authenticate(backend, _settings(tmp_path), token, sso=verifier)
+    backend.execute(
+        "UPDATE users SET disabled_at = CURRENT_TIMESTAMP WHERE id = ?",
+        ("u_sso_dis",),
+    )
+    token2 = verifier.issue_token(sub="u_sso_dis", aud=(AUD,))
+    try:
+        _authenticate(backend, _settings(tmp_path), token2, sso=verifier)
+        raise AssertionError("禁用用户应 401")
+    except AuthError:
+        pass
+    refused = [
+        e for e in _outbox_events(backend, "auth.sso_refused")
+        if e.get("reason") == "user_disabled"
+    ]
+    assert len(refused) == 1, "禁用拒绝须留 refused 审计（P3-6）"
+
+
+def test_jit_user_row_and_audit_atomic(backend, tmp_path, monkeypatch) -> None:
+    """P3-5：JIT 建档与 JIT 审计**同事务**（upsert audit= 先例——崩溃注入：
+    outbox 写失败 → 建档一并回滚，users 零残留行（不出现「已建号但永久缺
+    JIT 事件」的半状态）。"""
+    verifier = _verifier()
+    token = verifier.issue_token(sub="u_atomic", aud=(AUD,), username="atomic.u")
+    store = backend.make_backend()
+
+    def _boom(conn, event_type: str, payload_json: str) -> None:
+        raise RuntimeError("audit outbox down（崩溃注入——同事务锚点）")
+
+    # 注入同事务写入锚点（upsert_user_jit 的 outbox 写经 _outbox_insert——
+    # 与建档同事务；打 append_outbox 打不中该路径）
+    monkeypatch.setattr(store, "_outbox_insert", _boom)
+    try:
+        authenticate(store, _settings(tmp_path), token, sso=verifier)
+        raise AssertionError("outbox 写失败应传播（审计完整性优先）")
+    except RuntimeError:
+        pass
+    assert backend.execute(
+        "SELECT COUNT(*) FROM users WHERE id = ?", ("u_atomic",)
+    ).fetchone()[0] == 0, "建档必须与审计同生共死（P3-5）"
 
 
 # ============ T16 生产形态复核（A5）：prod 下 SSO 可用 / dev 全拒绝 ============
@@ -218,6 +324,33 @@ def test_sso_verifier_factory_injection() -> None:
         raise AssertionError("未知 provider 应 fail-closed")
     except ValueError:
         pass
+
+
+def test_mock_idp_prod_default_secret_rejected() -> None:
+    """P2-2：prod + mock-idp + **公开缺省密钥** → 构造即拒（dev JWT 已按 P2-5
+    同口径 prod 拒绝公开默认密钥——mock IdP 缺省密钥同为仓库公开常量，可伪造
+    任意 sub 含既有管理员）；显式密钥 / 非 prod 环境缺省密钥不拦（mock 形态
+    本身不禁止——只拦「公开缺省值 + 生产」组合）。"""
+    from knowledge_lattice.adapters.auth_sso import (
+        MockIdpVerifier, build_sso_verifier,
+    )
+
+    try:
+        build_sso_verifier(Settings(
+            environment="prod", sso_provider="mock-idp",
+            sso_mock_secret="dev-mock-idp-secret",  # 公开缺省值
+        ))
+        raise AssertionError("prod + 公开缺省密钥应 fail-closed")
+    except ValueError as exc:
+        assert "LATTICE_SSO_MOCK_SECRET" in str(exc)
+    # prod + 显式密钥 → 放行（企业内网 POC 形态可用）
+    assert isinstance(build_sso_verifier(Settings(
+        environment="prod", sso_provider="mock-idp", sso_mock_secret="real-secret",
+    )), MockIdpVerifier)
+    # dev/test + 缺省密钥 → 放行（本地开发零配置）
+    assert isinstance(build_sso_verifier(Settings(
+        environment="test", sso_provider="mock-idp",
+    )), MockIdpVerifier)
 
 
 def test_prod_sso_accepted_dev_forms_rejected(backend, tmp_path) -> None:

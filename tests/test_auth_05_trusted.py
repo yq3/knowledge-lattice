@@ -36,7 +36,10 @@ from helpers import (
 from knowledge_lattice.adapters.auth_sso import MockIdpVerifier
 from knowledge_lattice.app import create_app
 from knowledge_lattice.config import Settings
-from knowledge_lattice.domain.audit_events import EVENT_AUTH_TRUSTED_SUBSYSTEM
+from knowledge_lattice.domain.audit_events import (
+    EVENT_AUTH_PERMISSIONS_IGNORED,
+    EVENT_AUTH_TRUSTED_SUBSYSTEM,
+)
 from knowledge_lattice.domain.auth import (
     AuthError,
     OrgContextError,
@@ -86,7 +89,7 @@ def _call(backend, settings, *, token="svc-secret-1", obo="u_obo",
         if with_assertion else None
     )
     return authenticate_trusted(
-        _store(backend), settings,
+        _store(backend),
         service_token=token, on_behalf_of=obo, user_assertion=assertion,
         org=org, sso=verifier,
         registry=_registry() if registry is _DEFAULT else registry,
@@ -216,7 +219,7 @@ def test_trusted_invalid_user_assertion_rejected(backend, tmp_path) -> None:
     forged = MockIdpVerifier(secret="attacker").issue_token(sub="u_obo", aud=(AUD,))
     try:
         authenticate_trusted(
-            _store(backend), _settings(tmp_path),
+            _store(backend),
             service_token="svc-secret-1", on_behalf_of="u_obo",
             user_assertion=forged, org=ORG,
             sso=_verifier(), registry=_registry(),
@@ -262,6 +265,13 @@ def test_trusted_rate_limited(backend, tmp_path) -> None:
     except AuthError as exc:
         assert exc.code == 429
     assert _refused(backend)[-1]["reason"] == "rate_limited"
+    # 被拒不占配额、不重置窗口：第 4 次仍 429（Tester P3-3 断言强化——
+    # 「拒绝后窗口不重置」——若被拒请求计数/重置窗口，此处将放行）
+    try:
+        _call(backend, _settings(tmp_path), token="svc-secret-2", limiter=limiter)
+        raise AssertionError("窗口内第 4 次仍应 429")
+    except AuthError as exc:
+        assert exc.code == 429
     # 独立服务不共用配额（svc-ok 不受 svc-lim 窗口影响）
     ctx = _call(backend, _settings(tmp_path), limiter=limiter)
     assert ctx.act == "svc-ok"
@@ -293,14 +303,19 @@ def test_trusted_missing_on_behalf_of_rejected(backend, tmp_path) -> None:
 @pytest.mark.parametrize("bad", [
     "not-json", "[]extra", '{"service_id": "x"}',  # 非 JSON / 非数组元素
     '[{"service_id": "x"}]',  # 缺 token
-    '[{"token": "t", "allowed_orgs": []}]',  # 缺 service_id
-    '[{"service_id": "x", "token": "t", "allowed_orgs": "org:tax"}]',  # orgs 非数组
-    '[{"service_id": "", "token": "t", "allowed_orgs": []}]',  # 空 id
+    '[{"token": "leak-me-secret", "allowed_orgs": []}]',  # 缺 service_id（条目带 token——P3-1）
+    '[{"service_id": "x", "token": "leak-me-secret", "allowed_orgs": "org:tax"}]',  # orgs 非数组
+    '[{"service_id": "", "token": "leak-me-secret", "allowed_orgs": []}]',  # 空 id
+    '["leak-me-secret"]',  # 条目非对象
 ])
 def test_trusted_registry_malformed_config_fail_closed(bad) -> None:
-    """畸形白名单配置 → 构造即 raise（fail-closed——不静默忽略条目）。"""
-    with pytest.raises(ValueError):
+    """畸形白名单配置 → 构造即 raise（fail-closed——不静默忽略条目）；异常
+    消息不回显条目内容（P3-1——token 明文不得进启动日志）。"""
+    with pytest.raises(ValueError) as excinfo:
         TrustedServiceRegistry.from_json(bad)
+    assert "leak-me-secret" not in str(excinfo.value), (
+        "畸形配置异常消息不得泄露 token 明文"
+    )
 
 
 def test_trusted_registry_normalization() -> None:
@@ -464,3 +479,166 @@ def test_trusted_rest_without_whitelist_401(tmp_path) -> None:
             },
         )
         assert resp.status_code == 401
+
+
+def test_trusted_rest_missing_org_400(tmp_path) -> None:
+    """观察2：REST 可信面 org 缺失（trusted 头齐备但无 X-Org-Id）→ 400
+    （D18 无隐式默认——域函数已测，此处固化 REST 接线层行为）。"""
+    app, client, verifier, _ = _trusted_app(tmp_path)
+    with client:
+        assertion = verifier.issue_token(sub="u_full", aud=("agent-client",))
+        resp = client.post(
+            "/api/search",
+            json={"query": "留抵退税"},
+            headers={
+                "Authorization": "Bearer svc-secret-1",
+                "X-On-Behalf-Of": "u_full",
+                "X-User-Assertion": assertion,
+                # 无 X-Org-Id
+            },
+        )
+        assert resp.status_code == 400
+
+
+def test_trusted_assertion_bearer_prefix_case_insensitive(backend, tmp_path) -> None:
+    """P3-3：在场证据 Bearer 前缀大小写不敏感（'bearer <jwt>' 同样接受）。"""
+    seed_user(backend, "u_obo")
+    verifier = _verifier()
+    assertion = "bearer " + verifier.issue_token(sub="u_obo", aud=("agent-client",))
+    ctx = authenticate_trusted(
+        _store(backend),
+        service_token="svc-secret-1", on_behalf_of="u_obo",
+        user_assertion=assertion, org=ORG,
+        sso=verifier, registry=_registry(),
+    )
+    assert ctx.user_id == "u_obo" and ctx.act == "svc-ok"
+
+
+def test_rate_limiter_thread_safe() -> None:
+    """P3-8：限流计数线程安全——并发 allow 不丢计数（无锁 read-modify-write
+    会少记 → 允许数超限；锁下恰等于 limit）。300 = 4 workers × 75 轮（每轮
+    Barrier(4) 对齐起跑，最大化竞态窗口且无整除性死锁）。"""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    limiter = ServiceRateLimiter()
+    barrier = threading.Barrier(4)
+
+    def hit(_i: int) -> bool:
+        barrier.wait()  # 对齐起跑，最大化竞态窗口
+        return limiter.allow("svc", 200)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(hit, range(300)))
+    assert sum(results) == 200, "并发窗口内放行数必须恰等于 limit（不丢计数）"
+
+
+# ============ MCP 可信路径接线专项（P2-1——R1 缺口回归） ============
+
+
+def test_mcp_trusted_search_param_ignore_audited(tmp_path) -> None:
+    """P2-1 核心：MCP 可信路径（X-On-Behalf-Of 形态）**同样执行**工具参数
+    忽略审计——search 带 org+permissions 参数 → 调用正常返回且
+    mcp.org_param_ignored 与 auth.request_permissions_ignored 双事件落
+    outbox（D18「工具参数中的 org 一律忽略并记审计」/FR-4·A-9 对一切认证
+    形态生效；R1 该分支提前 return 跳过审计）。"""
+    import asyncio
+
+    import httpx
+    from fastmcp import Client
+    from fastmcp.client.transports import StreamableHttpTransport
+
+    app, _, verifier, conn = _trusted_app(tmp_path)
+    assertion = verifier.issue_token(sub="u_full", aud=("agent-client",))
+    headers = {
+        "Authorization": "Bearer svc-secret-1",
+        "X-On-Behalf-Of": "u_full",
+        "X-User-Assertion": assertion,
+        "X-Org-Id": ORG,
+    }
+
+    def factory(**kw):
+        return httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), **kw
+        )
+
+    async def flow():
+        client = Client(
+            StreamableHttpTransport(
+                url="http://testserver/mcp", headers=headers,
+                httpx_client_factory=factory,
+            )
+        )
+        async with client:
+            await client.call_tool(
+                "search",
+                {"query": "留抵退税", "org": "org:llm-filled",
+                 "permissions": ["admin"]},
+            )
+
+    from fastapi.testclient import TestClient
+    with TestClient(app):
+        asyncio.run(flow())
+    org_events = conn.execute(
+        "SELECT COUNT(*) FROM audit_outbox WHERE event_type = ?",
+        ("mcp.org_param_ignored",),
+    ).fetchone()[0]
+    perm_events = conn.execute(
+        "SELECT COUNT(*) FROM audit_outbox WHERE event_type = ?",
+        (EVENT_AUTH_PERMISSIONS_IGNORED,),
+    ).fetchone()[0]
+    assert org_events == 1, "可信路径 org 参数忽略须记审计（P2-1）"
+    assert perm_events == 1, "可信路径 permissions 参数忽略须记审计（P2-1）"
+
+
+def test_mcp_trusted_impersonation_403(tmp_path) -> None:
+    """P2-1 附加：MCP 可信冒充（在场证据 sub≠X-On-Behalf-Of）→ ToolError 403
+    + refused 审计（接线层真实路径——域函数直测之外的端到端覆盖）。"""
+    import asyncio
+
+    import httpx
+    import pytest as _pytest
+    from fastmcp import Client
+    from fastmcp.client.transports import StreamableHttpTransport
+    from fastmcp.exceptions import ToolError
+
+    app, _, verifier, conn = _trusted_app(tmp_path)
+    # 服务持 u_obo2 的断言，却声明 u_full（冒充）
+    assertion = verifier.issue_token(sub="u_obo2", aud=("agent-client",))
+    from helpers import seed_user
+    seed_user(conn, "u_obo2")
+    conn.commit()
+    headers = {
+        "Authorization": "Bearer svc-secret-1",
+        "X-On-Behalf-Of": "u_full",
+        "X-User-Assertion": assertion,
+        "X-Org-Id": ORG,
+    }
+
+    def factory(**kw):
+        return httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), **kw
+        )
+
+    async def flow():
+        client = Client(
+            StreamableHttpTransport(
+                url="http://testserver/mcp", headers=headers,
+                httpx_client_factory=factory,
+            )
+        )
+        async with client:
+            await client.call_tool("search", {"query": "留抵退税"})
+
+    from fastapi.testclient import TestClient
+    with TestClient(app):
+        with _pytest.raises(ToolError) as excinfo:
+            asyncio.run(flow())
+    assert "403" in str(excinfo.value)
+    rows = conn.execute(
+        "SELECT payload_json FROM audit_outbox WHERE event_type = ?",
+        (EVENT_AUTH_TRUSTED_SUBSYSTEM,),
+    ).fetchall()
+    payloads = [json.loads(r[0]) for r in rows]
+    refused = [p for p in payloads if p.get("outcome") == "refused"]
+    assert refused[-1]["reason"] == "subject_mismatch"

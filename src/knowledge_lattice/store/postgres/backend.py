@@ -1643,12 +1643,19 @@ class PgBackend:
         return {"is_system_admin": bool(row[0]), "disabled_at": row[1]}
 
     def upsert_user_jit(
-        self, *, user_id: str, username: str, display_name: str | None
+        self, *, user_id: str, username: str, display_name: str | None,
+        audit: tuple[str, str] | None = None, _depth: int = 0,
     ) -> dict:
         """SSO 首次登录 JIT 建档（D16——TC-AUTH-03；与 sqlite 实现同构）：
-        ON CONFLICT (id) DO NOTHING 原子建档，username 独立 UNIQUE 冲突回读定性。"""
+        ON CONFLICT (id) DO NOTHING 原子建档；INSERT 与 outbox 写同一事务
+        （P3-5）；username 独立 UNIQUE 冲突回读定性、消息不回显占用者（P3-7）；
+        并发兜底重查受 _depth 上限保护（P3-12）。"""
         from psycopg import errors as pg_errors
 
+        if _depth >= 3:  # P3-12：并发兜底递归上限（理论不可达）
+            raise RuntimeError(
+                "upsert_user_jit 并发兜底重查超限（理论不可达——疑似 schema 漂移）"
+            )
         existing = self._conn.execute(
             "SELECT username, is_system_admin, disabled_at FROM users WHERE id = %(id)s",
             {"id": user_id},
@@ -1660,26 +1667,33 @@ class PgBackend:
                 "disabled_at": existing[2], "created": False,
             }
         try:
+            self._conn.execute("BEGIN")
             inserted = self._conn.execute(
                 "INSERT INTO users(id, username, display_name)"
                 " VALUES (%(i)s, %(u)s, %(d)s)"
                 " ON CONFLICT (id) DO NOTHING RETURNING id",
                 {"i": user_id, "u": username, "d": display_name},
             ).fetchone()
+            if inserted is None:
+                # 并发窗口：同 id 已被并发登录建档 → 复用（不重复写审计）
+                self._conn.execute("COMMIT")
+                return self.upsert_user_jit(
+                    user_id=user_id, username=username, display_name=display_name,
+                    audit=None, _depth=_depth + 1,  # 复用方不写 audit（并发方已写）
+                )
+            if audit is not None:
+                self._outbox_insert(self._conn, *audit)
+            self._conn.execute("COMMIT")
         except pg_errors.UniqueViolation as exc:
             # username 被其他 id 占用（id 冲突已被 ON CONFLICT 豁免）
-            row = self._conn.execute(
-                "SELECT id FROM users WHERE username = %(u)s", {"u": username}
-            ).fetchone()
+            self._rollback()
             raise ValueError(
-                f"JIT 建档冲突：username {username!r} 已被用户"
-                f" {(row[0] if row else '?')!r} 占用"
+                f"JIT 建档冲突：username {username!r} 已被其他账号占用"
+                "（fail-closed，不回显占用者）"
             ) from exc
-        if inserted is None:
-            # 并发窗口：同 id 已被并发登录建档 → 回读复用
-            return self.upsert_user_jit(
-                user_id=user_id, username=username, display_name=display_name
-            )
+        except BaseException:
+            self._rollback()
+            raise
         return {
             "id": user_id, "username": username, "is_system_admin": False,
             "disabled_at": None, "created": True,

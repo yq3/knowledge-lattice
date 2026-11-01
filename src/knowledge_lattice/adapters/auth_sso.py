@@ -77,6 +77,12 @@ def _normalize_aud(aud: object) -> tuple[str, ...]:
     return ()
 
 
+def _opt_str(value: object) -> str | None:
+    """资料性 claim 类型归一（P3-2）：非 str（含 None）→ None 降级——
+    防 int/list/dict 透传进 SQL 绑定异常（500）；语义由 domain 承载。"""
+    return value if isinstance(value, str) else None
+
+
 class MockIdpVerifier:
     """mock IdP 验签器（自签 JWT·HS256）——POC 交付形态（待决-2）。
 
@@ -123,32 +129,59 @@ class MockIdpVerifier:
         return pyjwt.encode(payload, self._secret, algorithm=MOCK_IDP_ALG)
 
     def verify(self, token: str) -> SsoClaims:
-        """验签（签名/过期/受众形态失败 → SsoVerificationError）。"""
+        """验签（签名/过期/claim 在场性失败 → SsoVerificationError）。
+
+        - ``require: ["exp", "iss"]``（P3-4）：无过期时间的永久 token 拒收——
+          **真实 IdP 适配器同契约**且必须另做 iss 值白名单校验（mock 依赖共享
+          密钥免 iss 值校验；TODO(真实适配器): 校验 iss ∈ 可信签发者 + JWKS
+          公钥验签）；
+        - sub/org/username/display_name 类型归一（P3-2）：非 str 一律降 None/
+          空——claims 形态语义（如缺失 sub → 401）由 domain 承载。
+        """
         try:
             claims = pyjwt.decode(
                 token, self._secret, algorithms=[MOCK_IDP_ALG],
-                options={"verify_aud": False},  # aud 校验语义（本服务受众）归 domain
+                options={
+                    "verify_aud": False,  # aud 校验语义（本服务受众）归 domain
+                    "require": ["exp", "iss"],
+                },
             )
         except pyjwt.PyJWTError as exc:
             raise SsoVerificationError(str(exc)) from exc
         return SsoClaims(
-            sub=claims.get("sub") or "",
+            sub=_opt_str(claims.get("sub")) or "",
             aud=_normalize_aud(claims.get("aud")),
-            org=claims.get("org"),
+            org=_opt_str(claims.get("org")),
             act=claims.get("act"),
-            username=claims.get("preferred_username"),
-            display_name=claims.get("name"),
+            username=_opt_str(claims.get("preferred_username")),
+            display_name=_opt_str(claims.get("name")),
             raw=claims,
         )
 
 
 def build_sso_verifier(settings) -> SsoTokenVerifier | None:
     """配置化注入工厂（auth 装配分层——A5：缺省 dev 形态返回 None，现有
-    门禁/测试零感知）。畸形 provider 名 fail-closed raise。"""
+    门禁/测试零感知）。畸形 provider 名 fail-closed raise。
+
+    P2-2 护栏：prod + mock-idp + **公开缺省密钥** → raise（仓库公开常量等于
+    可伪造任意 sub 含既有管理员——与 dev JWT 的 P2-5 同口径；只拦「公开缺省
+    值 + 生产」组合，不拦 mock 形态本身——内网 POC 显式配密钥可用）。
+    """
+    from knowledge_lattice.config import DEFAULT_SSO_MOCK_SECRET
+
     provider = settings.sso_provider
     if provider == "none":
         return None
     if provider == "mock-idp":
+        if (
+            settings.environment == "prod"
+            and settings.sso_mock_secret == DEFAULT_SSO_MOCK_SECRET
+        ):
+            raise ValueError(
+                "prod 环境拒绝 mock-idp 公开缺省密钥（可伪造任意身份——与 dev"
+                " JWT 生产禁用同口径）；请显式配置 LATTICE_SSO_MOCK_SECRET 或"
+                " 替换真实 IdP 适配器（待决-2）"
+            )
         return MockIdpVerifier(secret=settings.sso_mock_secret)
     raise ValueError(
         f"unknown sso_provider {provider!r}（合法值：none | mock-idp——真实 IdP"

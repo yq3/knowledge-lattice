@@ -1610,11 +1610,22 @@ class SqliteBackend:
         return {"is_system_admin": bool(row[0]), "disabled_at": row[1]}
 
     def upsert_user_jit(
-        self, *, user_id: str, username: str, display_name: str | None
+        self, *, user_id: str, username: str, display_name: str | None,
+        audit: tuple[str, str] | None = None, _depth: int = 0,
     ) -> dict:
-        """SSO 首次登录 JIT 建档（D16——TC-AUTH-03）：复用不更新/插入建档/
-        username 冲突 ValueError（协议语义见 store/backend.py）。"""
-        existing = self._conn.execute(
+        """SSO 首次登录 JIT 建档（D16——TC-AUTH-03；协议语义见 store/backend.py）。
+
+        事务形态（P3-5——沿 create_upload_credential audit= 先例）：INSERT 与
+        outbox 写在同一 BEGIN IMMEDIATE 事务（outbox 失败 → 建档一并回滚）；
+        复用路径（id 已存在）不写审计不更新字段。并发兜底重查受 _depth 上限
+        保护（P3-12——理论不可达，防御性收口）。
+        """
+        if _depth >= 3:  # P3-12：并发兜底递归上限（理论不可达——schema 仅
+            raise RuntimeError(  #  id/username 两唯一约束，BEGIN IMMEDIATE 已串行写
+                "upsert_user_jit 并发兜底重查超限（理论不可达——疑似 schema 漂移）"
+            )
+        conn = self._conn
+        existing = conn.execute(
             "SELECT username, is_system_admin, disabled_at FROM users WHERE id = :id",
             {"id": user_id},
         ).fetchone()
@@ -1624,30 +1635,46 @@ class SqliteBackend:
                 "is_system_admin": bool(existing[1]),
                 "disabled_at": existing[2], "created": False,
             }
-        clash = self._conn.execute(
-            "SELECT id FROM users WHERE username = :u", {"u": username}
-        ).fetchone()
-        if clash is not None:
-            raise ValueError(
-                f"JIT 建档冲突：username {username!r} 已被用户 {clash[0]!r} 占用"
-            )
         try:
-            self._conn.execute(
+            conn.execute("BEGIN IMMEDIATE")
+            # 事务内重查（BEGIN IMMEDIATE 拿到写锁后串行化——另一并发请求
+            # 可能已建档：复用语义、不重复写审计）
+            existing = conn.execute(
+                "SELECT username, is_system_admin, disabled_at FROM users WHERE id = :id",
+                {"id": user_id},
+            ).fetchone()
+            if existing is not None:
+                conn.execute("COMMIT")
+                return {
+                    "id": user_id, "username": existing[0],
+                    "is_system_admin": bool(existing[1]),
+                    "disabled_at": existing[2], "created": False,
+                }
+            clash = conn.execute(
+                "SELECT id FROM users WHERE username = :u", {"u": username}
+            ).fetchone()
+            if clash is not None:
+                raise ValueError(  # 事务内只读未写——随 except 统一 ROLLBACK
+                    f"JIT 建档冲突：username {username!r} 已被其他账号占用"
+                    "（fail-closed，不回显占用者）"
+                )
+            conn.execute(
                 "INSERT INTO users(id, username, display_name) VALUES (:i, :u, :d)",
                 {"i": user_id, "u": username, "d": display_name},
             )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
         except sqlite3.IntegrityError:
-            # 并发窗口兜底（同 id 并发登录/竞态 username）：回读定性
-            row = self._conn.execute(
-                "SELECT id FROM users WHERE username = :u", {"u": username}
-            ).fetchone()
-            if row is not None and row[0] != user_id:
-                raise ValueError(
-                    f"JIT 建档冲突：username {username!r} 已被用户 {row[0]!r} 占用"
-                ) from None
+            # 理论兜底（预查 + IMMEDIATE 串行下不可达）：定性后交上层重试/拒绝
+            self._rollback()
             return self.upsert_user_jit(
-                user_id=user_id, username=username, display_name=display_name
+                user_id=user_id, username=username, display_name=display_name,
+                audit=audit, _depth=_depth + 1,
             )
+        except BaseException:
+            self._rollback()
+            raise
         return {
             "id": user_id, "username": username, "is_system_admin": False,
             "disabled_at": None, "created": True,

@@ -48,14 +48,16 @@ class SearchRequest(BaseModel):
 async def search(body: SearchRequest, request: Request) -> dict:
     service = get_service(request)
     auth: AuthContext = get_auth(request)
+    org = resolve_org(
+        org_claim=auth.org_claim, org_header=request.headers.get("x-org-id")
+    )
     # 请求体权限字段 → 忽略并记审计、请求正常处理（FR-4/D18 v0.6.1 统一口径
-    # ——附录 A-9；计权恒走 token 身份，请求体声明不参与）
+    # ——附录 A-9；计权恒走 token 身份，请求体声明不参与）。审计在 org 上下文
+    # 解析成功后落（P3-11——org 缺失/不一致的 400 请求不混入 ignored_fields
+    # 事件，拒绝语义与忽略语义不叠加）
     present = [k for k in (body.model_extra or {}) if k in REQUEST_PERMISSION_FIELD_KEYS]
     audit_ignored_permission_fields(
         service.backend, user_id=auth.user_id, present_fields=present
-    )
-    org = resolve_org(
-        org_claim=auth.org_claim, org_header=request.headers.get("x-org-id")
     )
     # 实体参数解析（m2s-6：识别/展开钉 api/mcp 层——resolve_query_entities；
     # entities 与 auto_entities 并存时显式种子优先）

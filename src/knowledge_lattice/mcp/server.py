@@ -180,8 +180,9 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
 
         m2-4 M2.2：①SSO/委托 token 验签（service.sso 注入——aud/act 语义与
         JIT 建档在 domain/auth）；②X-On-Behalf-Of 头在场 → 可信子系统三约束
-        路径（TC-AUTH-05/T13）；③工具参数 permissions（权限声明）→ 忽略并记
-        审计、调用正常处理（FR-4/D18 v0.6.1——附录 A-9；与 org 参数同款先例）。
+        路径（TC-AUTH-05/T13）；③工具参数 org（D18）与 permissions（FR-4/
+        A-9）忽略并记审计——**对一切认证形态生效**（R2 P2-1：审计块在认证
+        成功后统一执行，trusted 分支不提前 return 跳过）。
         """
         request = getattr(ctx.request_context, "request", None) if ctx else None
         auth_header = request.headers.get("authorization") if request is not None else None
@@ -197,29 +198,27 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
             if on_behalf_of is not None or user_assertion is not None:
                 from knowledge_lattice.domain.auth import authenticate_trusted
 
-                # 可信子系统：org 上下文由 X-Org-Id 承载（服务凭证无 org claim）
-                org_header = (
-                    request.headers.get("x-org-id") if request is not None else None
+                # 可信子系统：org 上下文由 X-Org-Id 承载（服务凭证无 org claim，
+                # 约束③）；缺失/越界在 authenticate_trusted 内 fail-closed
+                auth = authenticate_trusted(
+                    service.backend,
+                    service_token=auth_header[7:].strip(),
+                    on_behalf_of=on_behalf_of,
+                    user_assertion=user_assertion,
+                    org=request.headers.get("x-org-id") if request is not None else None,
+                    sso=getattr(service, "sso", None),
+                    registry=getattr(service, "trusted", None),
                 )
-                try:
-                    auth = authenticate_trusted(
-                        service.backend, settings,
-                        service_token=auth_header[7:].strip(),
-                        on_behalf_of=on_behalf_of,
-                        user_assertion=user_assertion,
-                        org=org_header,
-                        sso=getattr(service, "sso", None),
-                        registry=getattr(service, "trusted", None),
-                    )
-                except OrgContextError as exc:
-                    raise ToolError(f"400: {exc}") from exc
-                return auth, _org_from_header(auth, org_header)
-            auth = authenticate(
-                service.backend, settings, auth_header[7:].strip(),
-                sso=getattr(service, "sso", None),
-            )
+            else:
+                auth = authenticate(
+                    service.backend, settings, auth_header[7:].strip(),
+                    sso=getattr(service, "sso", None),
+                )
         except AuthError as exc:
             raise ToolError(f"{exc.code}: {exc}") from exc
+        except OrgContextError as exc:
+            raise ToolError(f"400: {exc}") from exc
+        # ---- 工具参数忽略审计（公共块——一切认证形态，R2 P2-1） ----
         # 工具参数 org 一律忽略并记审计（D18——org 不是 LLM 可填参数）
         if param_org is not None:
             service.backend.append_outbox(
@@ -234,20 +233,13 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
                 service.backend, user_id=auth.user_id,
                 present_fields=["permissions"],
             )
+        # ---- 组织上下文统一规则（trusted 路径 claim=已校验的 X-Org-Id，直通） ----
         org_header = request.headers.get("x-org-id") if request is not None else None
         try:
             org = resolve_org(org_claim=auth.org_claim, org_header=org_header)
         except OrgContextError as exc:
             raise ToolError(f"400: {exc}") from exc
         return auth, org
-
-    def _org_from_header(auth: AuthContext, org_header: str | None) -> str:
-        """可信子系统路径 org 解析（authenticate_trusted 已校验缺失/越界——
-        此处直取 claim（=X-Org-Id 注入值），与 resolve_org 行为对齐）。"""
-        try:
-            return resolve_org(org_claim=auth.org_claim, org_header=org_header)
-        except OrgContextError as exc:  # pragma: no cover —— org 已在可信路径校验
-            raise ToolError(f"400: {exc}") from exc
 
     def _sem_member(auth: AuthContext, org_id: str) -> None:
         """semantic:read 门控（§6.3 权限口径：组织成员默认具备——无成员关系

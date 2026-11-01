@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 from conftest import ORG
@@ -172,6 +173,34 @@ def test_delegated_direct_login_no_act_event(backend, tmp_path) -> None:
     token = verifier.issue_token(sub="u_del_2", aud=(AUD,))
     _authenticate(backend, _settings(tmp_path), token, sso=verifier)
     assert _outbox(backend, EVENT_AUTH_DELEGATED) == []
+
+
+@pytest.mark.parametrize(
+    "aud_override,expect_ok",
+    [
+        (None, False),               # 缺失（无 aud claim）
+        (("svc-x", AUD), True),      # 数组多值含本服务 → 受众语义放行
+        (("svc-x", "svc-y"), False),  # 数组多值不含本服务
+        (12345, False),              # 非串（归一空元组）
+    ],
+    ids=["missing", "multi-contains", "multi-excludes", "non-string"],
+)
+def test_delegated_aud_edge_forms(backend, tmp_path, aud_override, expect_ok) -> None:
+    """Tester P3-2：aud 边界四形态固化（缺失/多值含/多值不含/非串——防回归；
+    多值含本服务放行为 RFC 受众语义：本服务 ∈ 受众集即可）。"""
+    verifier = _verifier()
+    token = verifier.issue_token(
+        sub="u_del_aud", aud=(AUD,), extra={"aud": aud_override},
+    )
+    if expect_ok:
+        ctx = _authenticate(backend, _settings(tmp_path), token, sso=verifier)
+        assert ctx.user_id == "u_del_aud"
+    else:
+        try:
+            _authenticate(backend, _settings(tmp_path), token, sso=verifier)
+            raise AssertionError(f"aud={aud_override!r} 应拒绝")
+        except AuthError as exc:
+            assert exc.code == 401
 
 
 # ============ app 级（sqlite）：org claim 流 / 请求体权限字段 / m2-3 兼容 ============

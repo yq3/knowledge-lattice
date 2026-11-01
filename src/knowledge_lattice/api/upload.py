@@ -49,7 +49,8 @@ def get_service(request: Request):
 
 
 def get_auth(request: Request) -> AuthContext:
-    """Bearer 认证依赖（401 → 401；无头 → 401）。
+    """Bearer 认证依赖（无头/验签失败 → 401；可信路径另有 403 越界·冒充 /
+    429 限流 / 400 org 缺失——R2 P3-10 docstring 口径）。
 
     m2-4 M2.2：①SSO/委托 token——service.sso 验签器注入（authenticate 内
     优先）；②X-On-Behalf-Of 头在场 → 可信子系统三约束路径（服务凭证 +
@@ -66,7 +67,7 @@ def get_auth(request: Request) -> AuthContext:
         from knowledge_lattice.domain.auth import authenticate_trusted
 
         return authenticate_trusted(
-            service.backend, service.settings,
+            service.backend,
             service_token=header[7:].strip(),
             on_behalf_of=on_behalf_of,
             user_assertion=request.headers.get("x-user-assertion"),

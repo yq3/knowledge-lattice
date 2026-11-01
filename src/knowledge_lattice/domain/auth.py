@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import time
 from dataclasses import dataclass
 
@@ -148,9 +149,11 @@ def resolve_act_claim(act: object) -> tuple[str, list[str]]:
 
 
 def _authenticate_sso_claims(backend, settings: Settings, claims) -> AuthContext:
-    """SSO/委托 token 验签通过后的语义校验 + JIT 建档 + 认证审计。"""
-    from knowledge_lattice.adapters.auth_sso import SsoClaims  # noqa: F401 —— 类型
+    """SSO/委托 token 验签通过后的语义校验 + JIT 建档 + 认证审计。
 
+    SSO 拒绝面审计口径一致（P3-6）：audience_mismatch / missing_sub /
+    invalid_act / user_disabled 全部留 ``auth.sso_refused``（reason 级）。
+    """
     from knowledge_lattice.domain.audit_events import (
         EVENT_AUTH_DELEGATED,
         EVENT_AUTH_SSO_REFUSED,
@@ -172,6 +175,9 @@ def _authenticate_sso_claims(backend, settings: Settings, claims) -> AuthContext
             "（透传用户原始 token 拒绝——MCP 规范）"
         )
     if not claims.sub:
+        _audit(backend, EVENT_AUTH_SSO_REFUSED, {
+            "user_id": None, "reason": "missing_sub",
+        })
         raise AuthError("token missing sub claim")
     try:
         act, act_chain = resolve_act_claim(claims.act)
@@ -183,22 +189,28 @@ def _authenticate_sso_claims(backend, settings: Settings, claims) -> AuthContext
             "error": str(exc),
         })
         raise
-    # JIT 建档（D16：管理员不建账号只配授权——首次登录自动落库，二次复用）
+    # JIT 建档（D16：管理员不建账号只配授权——首次登录自动落库，二次复用）；
+    # 建档与 JIT 审计**同事务**（P3-5——upsert audit= 先例：outbox 写失败即
+    # 整体回滚，不出现「已建号但永久缺 JIT 事件」的半状态；复用路径 store
+    # 侧不写审计）
+    jit_event = json.dumps({
+        "user_id": claims.sub,
+        "username": claims.username or claims.sub,
+        "display_name": claims.display_name,
+    }, ensure_ascii=False)
     try:
         user = backend.upsert_user_jit(
             user_id=claims.sub,
             username=claims.username or claims.sub,
             display_name=claims.display_name,
+            audit=(EVENT_AUTH_USER_JIT, jit_event),
         )
     except ValueError as exc:  # username 冲突（users.username UNIQUE）——fail-closed
         raise AuthError(str(exc)) from exc
-    if user["created"]:
-        _audit(backend, EVENT_AUTH_USER_JIT, {
-            "user_id": claims.sub,
-            "username": claims.username or claims.sub,
-            "display_name": claims.display_name,
-        })
     if user["disabled_at"] is not None:
+        _audit(backend, EVENT_AUTH_SSO_REFUSED, {
+            "user_id": claims.sub, "reason": "user_disabled",
+        })
         raise AuthError(f"user disabled: {claims.sub}")
     if act:  # 委托 token：双身份审计（sub 计权 + act 进审计——TC-AUTH-04）
         _audit(backend, EVENT_AUTH_DELEGATED, {
@@ -318,12 +330,17 @@ class TrustedServiceRegistry:
         entries = []
         for item in items:
             if not isinstance(item, dict):
-                raise ValueError(f"trusted services 条目须为对象：{item!r}")
+                raise ValueError(
+                    f"trusted services 条目须为对象（got {type(item).__name__}）"
+                )
             service_id = item.get("service_id")
             token = item.get("token")
             orgs = item.get("allowed_orgs")
             if not isinstance(service_id, str) or not service_id:
-                raise ValueError(f"trusted services 条目缺 service_id：{item!r}")
+                # P3-1：异常消息只带键名清单——条目值（含 token 明文）不进日志
+                raise ValueError(
+                    f"trusted services 条目缺 service_id（条目键：{sorted(item)}）"
+                )
             if not isinstance(token, str) or not token:
                 raise ValueError(f"trusted services 条目缺 token：{service_id!r}")
             if not isinstance(orgs, list) or not all(isinstance(o, str) for o in orgs):
@@ -351,28 +368,34 @@ class TrustedServiceRegistry:
 
 
 class ServiceRateLimiter:
-    """按服务固定窗口限流（单进程内存态——NFR 零中间件；窗口内请求数上限）。"""
+    """按服务固定窗口限流（单进程内存态——NFR 零中间件；窗口内请求数上限）。
+
+    计数路径持线程锁（P3-8：REST/MCP 同步依赖走线程池，read-modify-write
+    丢计数会超发放行；锁下计数精确）。进程内态不改（多实例共享限流为
+    known-gaps G-25 架构项——重开条件=多实例部署）。
+    """
 
     def __init__(self) -> None:
         self._windows: dict[str, tuple[float, int]] = {}
+        self._lock = threading.Lock()
 
     def allow(self, service_id: str, limit: int, *, now: float | None = None) -> bool:
         """窗口内计数放行；超限拒绝。被拒请求不重置窗口（计数不回退）。"""
-        now = time.monotonic() if now is None else now
-        window_start, count = self._windows.get(service_id, (now, 0))
-        if now - window_start >= 60.0:  # 固定 60s 窗口（rpm 语义）
-            window_start, count = now, 0
-        allowed = count < limit
-        if allowed:
-            self._windows[service_id] = (window_start, count + 1)
-        else:
-            self._windows[service_id] = (window_start, count)
-        return allowed
+        with self._lock:
+            now = time.monotonic() if now is None else now
+            window_start, count = self._windows.get(service_id, (now, 0))
+            if now - window_start >= 60.0:  # 固定 60s 窗口（rpm 语义）
+                window_start, count = now, 0
+            allowed = count < limit
+            if allowed:
+                self._windows[service_id] = (window_start, count + 1)
+            else:
+                self._windows[service_id] = (window_start, count)
+            return allowed
 
 
 def authenticate_trusted(
     backend,
-    settings: Settings,
     *,
     service_token: str,
     on_behalf_of: str | None,
@@ -389,7 +412,8 @@ def authenticate_trusted(
     按服务限流 → ①按声明用户计权、双身份（service+user）审计 accepted。
 
     - 在场证据是身份断言（用户签给 agent client 的 id_token）——验签但不做
-      本服务 aud 校验（断言非访问 token；exp 验签照常）；
+      本服务 aud 校验（断言非访问 token；exp 验签照常）；``Bearer `` 前缀
+      大小写不敏感（P3-3）；
     - org 缺失 → OrgContextError（D18 无隐式默认）；
     - 未配置白名单（registry None/空）→ 可信子系统整体关闭（401）。
     """
@@ -435,7 +459,9 @@ def authenticate_trusted(
     if sso is None:
         raise _refuse("no_sso_verifier", code=401,
                       service_id=entry.service_id, user_id=on_behalf_of, org_id=org)
-    raw_assertion = user_assertion.removeprefix("Bearer ").strip()
+    raw_assertion = user_assertion.strip()
+    if raw_assertion.lower().startswith("bearer "):  # P3-3：大小写不敏感裁前缀
+        raw_assertion = raw_assertion[7:].strip()
     try:
         assertion_claims = sso.verify(raw_assertion)
     except SsoVerificationError as exc:
