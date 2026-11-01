@@ -45,6 +45,20 @@ EVENT_GRANTS_REPLACE = "grants.replace"
 EVENT_DIMENSION_VALUE_DISABLE = "dimension.value_disable"
 EVENT_DIMENSION_RETIRE = "dimension.retire"
 
+# ---- 认证事件（m2-4 M2.2 生产化认证段——TC-AUTH-03/04/05/T13） ----
+
+EVENT_AUTH_USER_JIT = "auth.user_jit_created"       # SSO 首次登录 JIT 建档（D16）
+EVENT_AUTH_DELEGATED = "auth.delegated"             # 委托 token 认证成功（双身份
+                                                    #  user+act——TC-AUTH-04）
+EVENT_AUTH_SSO_REFUSED = "auth.sso_refused"         # SSO token 拒绝（透传原始
+                                                    #  token / act 非法——outcome=refused）
+EVENT_AUTH_TRUSTED_SUBSYSTEM = "auth.trusted_subsystem"  # 可信子系统判定（成功
+                                                    #  accepted / 越界·冒充·白名单
+                                                    #  外·限流 refused——T13）
+EVENT_AUTH_PERMISSIONS_IGNORED = "auth.request_permissions_ignored"  # 请求体权限
+                                                    #  字段忽略并记审计（FR-4/D18
+                                                    #  v0.6.1 统一口径——附录 A-9）
+
 __all__ = [
     "EVENT_DOCUMENT_UPLOAD",
     "EVENT_DOCUMENT_OVERWRITE",
@@ -62,4 +76,9 @@ __all__ = [
     "EVENT_GRANTS_REPLACE",
     "EVENT_DIMENSION_VALUE_DISABLE",
     "EVENT_DIMENSION_RETIRE",
+    "EVENT_AUTH_USER_JIT",
+    "EVENT_AUTH_DELEGATED",
+    "EVENT_AUTH_SSO_REFUSED",
+    "EVENT_AUTH_TRUSTED_SUBSYSTEM",
+    "EVENT_AUTH_PERMISSIONS_IGNORED",
 ]

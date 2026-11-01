@@ -22,6 +22,9 @@ upload/list_documents 全四工具就位，M1-5 收口）。
   visible_docs CTE（compile_acl 产物）与 _attach_dims（D22 真相源）；
 - 组织上下文（D18/TC-AUTH-02）：token org claim 优先 / 运行时注入 X-Org-Id 头兜底；
   并存且不一致 → 400（ToolError）；缺失 → 400；**工具参数 org 一律忽略并记审计**；
+- 认证形态（m2-4 M2.2）：委托 token / SSO（service.sso 验签器注入——aud/act/
+  JIT 在 domain/auth）与可信子系统（X-On-Behalf-Of + 在场证据三约束，T13）；
+  工具参数 permissions（权限声明）忽略并记审计（FR-4/D18 v0.6.1——附录 A-9）；
 - 60s 超时中间件（ragflow 纪律——超时请求不悬挂，TC-E2E-06）；超时值随
   settings.mcp_timeout_s（默认 60，测试可注入短值）。
 
@@ -73,6 +76,7 @@ from knowledge_lattice.domain.auth import (
     AuthContext,
     AuthError,
     OrgContextError,
+    audit_ignored_permission_fields,
     authenticate,
     resolve_org,
 )
@@ -168,17 +172,53 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
     )
     mcp.add_middleware(ToolTimeoutMiddleware(timeout_s=settings.mcp_timeout_s))
 
-    def _auth_and_org(ctx: Context, *, param_org: str | None) -> tuple[AuthContext, str]:
+    def _auth_and_org(ctx: Context, *, param_org: str | None,
+                      param_permissions: list[str] | None = None
+                      ) -> tuple[AuthContext, str]:
         """认证 + 组织上下文统一规则（D18）——401/400 语义以 ToolError 透出；
-        返回完整 AuthContext（M1-3：act＝服务身份进凭证三一致校验）。"""
+        返回完整 AuthContext（M1-3：act＝服务身份进凭证三一致校验）。
+
+        m2-4 M2.2：①SSO/委托 token 验签（service.sso 注入——aud/act 语义与
+        JIT 建档在 domain/auth）；②X-On-Behalf-Of 头在场 → 可信子系统三约束
+        路径（TC-AUTH-05/T13）；③工具参数 org（D18）与 permissions（FR-4/
+        A-9）忽略并记审计——**对一切认证形态生效**（R2 P2-1：审计块在认证
+        成功后统一执行，trusted 分支不提前 return 跳过）。
+        """
         request = getattr(ctx.request_context, "request", None) if ctx else None
         auth_header = request.headers.get("authorization") if request is not None else None
         if not auth_header or not auth_header.lower().startswith("bearer "):
-            raise ToolError("401: missing Bearer token（MCP 调用须持开发 JWT / 委托 token）")
+            raise ToolError("401: missing Bearer token（MCP 调用须持委托 token / SSO / 开发 JWT）")
         try:
-            auth = authenticate(service.backend, settings, auth_header[7:].strip())
+            on_behalf_of = (
+                request.headers.get("x-on-behalf-of") if request is not None else None
+            )
+            user_assertion = (
+                request.headers.get("x-user-assertion") if request is not None else None
+            )
+            if on_behalf_of is not None or user_assertion is not None:
+                from knowledge_lattice.domain.auth import authenticate_trusted
+
+                # 可信子系统：org 上下文由 X-Org-Id 承载（服务凭证无 org claim，
+                # 约束③）；缺失/越界在 authenticate_trusted 内 fail-closed
+                auth = authenticate_trusted(
+                    service.backend,
+                    service_token=auth_header[7:].strip(),
+                    on_behalf_of=on_behalf_of,
+                    user_assertion=user_assertion,
+                    org=request.headers.get("x-org-id") if request is not None else None,
+                    sso=getattr(service, "sso", None),
+                    registry=getattr(service, "trusted", None),
+                )
+            else:
+                auth = authenticate(
+                    service.backend, settings, auth_header[7:].strip(),
+                    sso=getattr(service, "sso", None),
+                )
         except AuthError as exc:
-            raise ToolError(f"401: {exc}") from exc
+            raise ToolError(f"{exc.code}: {exc}") from exc
+        except OrgContextError as exc:
+            raise ToolError(f"400: {exc}") from exc
+        # ---- 工具参数忽略审计（公共块——一切认证形态，R2 P2-1） ----
         # 工具参数 org 一律忽略并记审计（D18——org 不是 LLM 可填参数）
         if param_org is not None:
             service.backend.append_outbox(
@@ -187,6 +227,13 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
                     {"user_id": auth.user_id, "ignored_org": param_org}, ensure_ascii=False
                 ),
             )
+        # 工具参数权限声明 → 忽略并记审计（FR-4/D18——附录 A-9 统一口径）
+        if param_permissions is not None:
+            audit_ignored_permission_fields(
+                service.backend, user_id=auth.user_id,
+                present_fields=["permissions"],
+            )
+        # ---- 组织上下文统一规则（trusted 路径 claim=已校验的 X-Org-Id，直通） ----
         org_header = request.headers.get("x-org-id") if request is not None else None
         try:
             org = resolve_org(org_claim=auth.org_claim, org_header=org_header)
@@ -267,6 +314,7 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
         entities: list[int] | None = None,
         auto_entities: bool = False,
         org: str | None = None,  # deprecated——忽略并记审计（D18：org 来自 token claim / 注入头）
+        permissions: list[str] | None = None,  # deprecated——忽略并记审计（FR-4：权限声明不来自请求方）
         ctx: Context = None,
     ) -> dict:
         """search（§6.1）：完整配方检索 + 实体召回路（M2-S3/m2s-6——§5.10）。
@@ -274,7 +322,9 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
         entities/auto_entities 解析钉本（api/mcp）层——resolve_query_entities
         识别与展开（core/docs 不调 annotate，§3 规则 2）；返回块附
         matched_entities（实体路命中——agent 解释召回原因）。"""
-        auth, org_id = _auth_and_org(ctx, param_org=org)
+        auth, org_id = _auth_and_org(
+            ctx, param_org=org, param_permissions=permissions
+        )
         entity_ctx = None
         if entities is not None or auto_entities:
             from knowledge_lattice.core.semantic.recall import (

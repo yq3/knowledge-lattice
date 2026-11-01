@@ -581,6 +581,22 @@ class AdminBackend(Protocol):
         """认证侧用户态（存在 / 禁用 / 系统管理员）。"""
         ...
 
+    def upsert_user_jit(
+        self, *, user_id: str, username: str, display_name: str | None,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        """SSO 首次登录 JIT 建档（D16/m2-4 TC-AUTH-03）：id 存在 → 复用既有行
+        **不更新任何字段**（管理员对档案的改动优先）且**不写审计**（复用非
+        建档）；不存在 → 插入 (id, username, display_name)——插入与
+        ``audit=(event_type, payload_json)`` **同一事务**（P3-5——JIT 事件与
+        建档同生共死，outbox 写失败即整体回滚；沿 create_upload_credential
+        audit= 先例）。username 被其他 id 占用 → ValueError（fail-closed——
+        users.username UNIQUE，不静默顶替；消息不回显占用者 id〔P3-7〕）。
+
+        返回 {id, username, is_system_admin, disabled_at, created}。
+        """
+        ...
+
     # ---- 上传凭证（M1-3 三步式——design §6.1/§6.2/§6.3；状态机
     #      issued→uploaded→consumed，「用掉」＝摄取成功入队——v1.4 口径） ----
 
