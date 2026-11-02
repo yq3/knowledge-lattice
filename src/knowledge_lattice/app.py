@@ -241,13 +241,27 @@ def create_app(
     # 路径）；查询侧熔断器共享态（NFR-8：连续 3 失败断开 60s、半开恢复）
     from knowledge_lattice.adapters.breaker import CircuitBreaker
     from knowledge_lattice.adapters.enhancer import NoopEnhancer, OpenAICompatEnhancer
-    from knowledge_lattice.adapters.reranker import CohereCompatReranker, NoopReranker
+    from knowledge_lattice.adapters.reranker import (
+        CohereCompatReranker,
+        DashScopeReranker,
+        NoopReranker,
+    )
 
     if reranker is None:
-        reranker = (
-            NoopReranker() if settings.reranker == "none"
-            else CohereCompatReranker(settings)
-        )
+        # m2-5 A7①：dashscope 档（DashScope 原生 text-rerank——百炼
+        # gte-rerank-v2 实测形态）；未知档位 fail-closed（拼错供应商名静默
+        # 回退 none 会掩盖「配置了真实网关却跑无重排」的部署错误）
+        if settings.reranker == "none":
+            reranker = NoopReranker()
+        elif settings.reranker == "cohere":
+            reranker = CohereCompatReranker(settings)
+        elif settings.reranker == "dashscope":
+            reranker = DashScopeReranker(settings)
+        else:
+            raise ValueError(
+                f"invalid reranker {settings.reranker!r}（合法值："
+                " none | cohere | dashscope——fail-closed，不静默回退）"
+            )
     if enhancer is None:
         enhancer = (
             NoopEnhancer() if settings.enhancer == "none"

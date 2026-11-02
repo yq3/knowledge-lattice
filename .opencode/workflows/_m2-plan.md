@@ -20,11 +20,11 @@
 | 5 | task-knowledge-lattice-m2s-2 | **S1 面上**：semantic_build 骨架（dict_rev 计算+原子切换）+ 首批三工具（get_entity 关系展开/search_entities/describe_table）+ REST 端点（sync/builds/sync-runs 管理）。验收 **T-S5/T-S6/T-S11** | m2s-1 | ✅ **done**（PR #6，mergeCommit `f4d1b74`，2026-10-31 合入；门禁 →1076+1；2 轮——R1 边界 7 条用户裁定登记〔v1.9.5/G-16 全收口/G-17·18〕、R2 APPROVED；TC-BUILD-01/03 提前交付） |
 | 6 | task-knowledge-lattice-m2s-3 | **S2 基础**：scenario_config/report_center 适配器 + YAML 仓库 schema/_schema/CI 校验/yaml_merge.py 合并规则/webhook 端点。验收 **T-S1** | m2s-2 | ✅ **done**（PR #7，mergeCommit `e870fd1`，2026-10-31 合入；门禁 →1209+1；3 轮——边界 4 条裁定〔JSON Schema 升 P2/L0·owner 本段/G-19 登记〕+R2 P3 收尾〔N6〕；**G-15/17/18+O-1 全收口**；m2s-2 挂账九项+m2s-1 移交半句全清偿） |
 | 7 | task-knowledge-lattice-m2-4 | **M2.2** SSO/JIT 对接（M0a 敲定协议）+ 委托 token/可信子系统（三约束+期限）+ RFC 8693 act 对象形态（m1-3 移交必须项） | 无硬前置（与 m2-3 有 token 交叉，顺序可调） | ✅ **done**（2 轮收敛：R1 21778cd〔tester PASS+committer NEEDS_CHANGES——P2×2〕→R2 b24896e〔P2-1 MCP 可信路径忽略审计公共块+P2-2 mock-idp prod 缺省密钥护栏+P3×10 应修尽修〕；门禁 1479+1→**1580+1**；TC-AUTH-03/04/05+T13 生产形态收口+T16 复核全 ✅+RFC 8693 act 三形态〔链式取最外层=current actor——用户裁定按 §4.1 MUST〕m1-3 移交闭环；边界 N-1 用户裁定选 a→m2-6 扩 members 增改删、P2-2 直接修、P3-9→G-26；G-25/G-26 新登记；SSO 验签器协议中立可插拔接口留口子——真实 IdP 联调挂 m2-5/部署期；**PR #11 mergeCommit `c2ebb68`，2026-11-01 合入**） |
-| 7.5 | task-knowledge-lattice-m2-6 | **管理面补全与嵌入执行体**（2026-10-30 用户拍板新增——m2-3 R1 Committer 边界 1/2）：reindex/reembed **蓝绿执行体**（runner 认领、TC-EMB-06 越段项——原子切标签/旧标签清理/quality·semantic_build 重跑联动）+ members GET / **members 增/改/删（m2-4 N-1 用户裁定 2026-11-01 选 a：JIT 建档后 API 面无法把新用户加入组织——PUT grants/CSV 均要求既有 membership，补 membership 写路径使 D16「管理员不建账号只配授权」API 面闭环）** / values CRUD（含 D19 重新启用取值恢复路径）+ m2-3 登记项（read_org_audit 下沉、audit_chain 错误码、同秒 reembed 歧义单调键、replace_local_grants 直调解析器对齐、**B5 读回行 row_hash 不自洽注记**〔read_monthly_events 经重投影后勿以读回行复算链〕、UI fresh 残余 UX〔预填/逐行过期编辑〕、格式常量共享、API 级 pg diff 断言等按需） | m2-3（已满足） | ✅ **done**（3 轮收敛：R1 `f979405`〔tester PASS+committer NEEDS_CHANGES——P2×2+需求边界 N-1〕→R2 `bd9598f`〔P2×2 修复+新发现 P1-1 跨组织泄露/P2-1 pending failed+N-2〕→R3 `00dc486`〔P1/P2 全闭环+P3×3 记录级——双通过 2026-11-01〕；门禁 1580+1→**1651+1**（+71）；TC-EMB-06 四步全绿双后端〔**全库迁移+sysadmin 专属**——N-1 用户裁定 2026-11-01 选 a、effective_settings 标签源统一、未收敛 fail-closed→G-27〕+A2 reindex 执行体〔**N-2 用户裁定选 a**：pending 含 failed 一律 409 双防线、core 不动〕+A3 members 增改删〔JIT→入组→授权→检索 API 全链 D16 闭环+T23+唯一 admin 守卫 pg 咨询锁〕+A4 values CRUD/D19 重新启用解锁 locked_docs+B①~⑩核销〔**B① 3/4**——逐行过期编辑→m2-5/TC-UI〕+A5/B5 落 RUNBOOK §4+m2-4 followups 三项清偿；**PR 待开——合入后补 mergeCommit**） |
+| 7.5 | task-knowledge-lattice-m2-6 | **管理面补全与嵌入执行体**（2026-10-30 用户拍板新增——m2-3 R1 Committer 边界 1/2）：reindex/reembed **蓝绿执行体**（runner 认领、TC-EMB-06 越段项——原子切标签/旧标签清理/quality·semantic_build 重跑联动）+ members GET / **members 增/改/删（m2-4 N-1 用户裁定 2026-11-01 选 a：JIT 建档后 API 面无法把新用户加入组织——PUT grants/CSV 均要求既有 membership，补 membership 写路径使 D16「管理员不建账号只配授权」API 面闭环）** / values CRUD（含 D19 重新启用取值恢复路径）+ m2-3 登记项（read_org_audit 下沉、audit_chain 错误码、同秒 reembed 歧义单调键、replace_local_grants 直调解析器对齐、**B5 读回行 row_hash 不自洽注记**〔read_monthly_events 经重投影后勿以读回行复算链〕、UI fresh 残余 UX〔预填/逐行过期编辑〕、格式常量共享、API 级 pg diff 断言等按需） | m2-3（已满足） | ✅ **done**（3 轮收敛：R1 `f979405`〔tester PASS+committer NEEDS_CHANGES——P2×2+需求边界 N-1〕→R2 `bd9598f`〔P2×2 修复+新发现 P1-1 跨组织泄露/P2-1 pending failed+N-2〕→R3 `00dc486`〔P1/P2 全闭环+P3×3 记录级——双通过 2026-11-01〕；门禁 1580+1→**1651+1**（+71）；TC-EMB-06 四步全绿双后端〔**全库迁移+sysadmin 专属**——N-1 用户裁定 2026-11-01 选 a、effective_settings 标签源统一、未收敛 fail-closed→G-27〕+A2 reindex 执行体〔**N-2 用户裁定选 a**：pending 含 failed 一律 409 双防线、core 不动〕+A3 members 增改删〔JIT→入组→授权→检索 API 全链 D16 闭环+T23+唯一 admin 守卫 pg 咨询锁〕+A4 values CRUD/D19 重新启用解锁 locked_docs+B①~⑩核销〔**B① 3/4**——逐行过期编辑→m2-5/TC-UI〕+A5/B5 落 RUNBOOK §4+m2-4 followups 三项清偿；**PR 待开——已合入：PR #12 mergeCommit `d3dfdc0f506632cdf6a4f131c0fb2a6f05bfb4b1`（2026-11-01，本地 develop_opencode 已 ff 同步）**） |
 | 8 | task-knowledge-lattice-m2s-4 | **S2 面上**：AC 自动机（pyahocorasick）+ L0 片段 + 构建报告 + annotate（四步消歧+context 短别名）+ 识别评测集 150~200 条与门槛。验收 **T-S4/T-S12** + precision≥0.95/recall≥0.80 | m2s-3 | ✅ **done**（3 轮收敛：R1 2c798bf→R2 9100bfb〔空自动机 IMPL_BUG〕→R3 8d32750〔P1 L0 restricted+P2×3+P3×4〕；门禁 →**1323+1**；**M2-S2 行整行收口**；G-19 收口+G-21 登记〔方案 B〕；边界⑦~⑭ 用户裁定落 docs v1.9.8；**PR #8 mergeCommit `2cb2277`**，2026-10-31 合入） |
 | 9 | task-knowledge-lattice-m2s-5 | **S3 基础**：concept/system 纯人工实体 + ingest 打标（同事务 tag/失败不阻断）+ semantic_retag（最低优先级）+ 版本切换/删块同事务 untag + 定时对账。验收 **T-S10** | m2s-4（词典质量稳定）+ m2-2（删除级联 untag 挂接点——已满足） | ✅ **done**（2 轮收敛：R1 0c127db〔首 commit 9373f11 违规入库打回重做〕→R2 241ee24〔P1 retag 零命中清理+P2×4+歧义 skip 裁定〕；门禁 →**1386+1**；**T-S10/TC-TAG-01~03/TC-BUILD-05 全 ✅+G-21 方案 A 收口**；边界①歧义 skip/②pending/③双层口径用户裁定；**PR #9 mergeCommit `60370d0`**，2026-10-31 合入） |
 | 10 | task-knowledge-lattice-m2s-6 | **S3 收口**：search(entities/auto_entities) 实体召回路（复用 §5.1 ACL 产物）+ 三路 RRF + matched_entities + 越权矩阵 T-S7/S8/S9 + 检索增益评测（不回退才默认开启）+ 模糊兜底（拼音/编辑距离/sem_vec）+ agent 中间件切换 +（可选）语义层视图。验收 **T-S7~S10 全 + AC+模糊 recall@3≥0.92** | m2s-5 | ✅ **done**（3 轮收敛：R1 e5a70d6〔uv.lock 源污染打回 amend 重做〕→R2 e7fac5c〔P2×3 修——REST 阻塞/对账盲区/env 模板〕→R3 4057b40〔P2×2 修——to_thread/内容集合对账+code 收窄〕；门禁 →**1479+1**；**M2-S3 整行收口+语义轨道 6/6**；T-S7~S9/TC-TAG-04/05/TC-SEM-08/09/TC-SEV-03/TC-YAML-05 全 ✅+G-2 并存闭环+G-21 核销 6 再挂 2+G-22~G-24 新登记；边界 8 条用户裁定落 docs v0.9.6/v1.9.10；**PR #10 mergeCommit `eef7acf`，2026-11-01 合入**） |
-| 11 | task-knowledge-lattice-m2-5 | **M2 验收收口段**（M1-5 形态）：跨组织隔离全绿（TC-OPS-09/T15/TC-AZ-04）、REST-PG 残项（P3-18 顺延）、**G-6 halfvec 索引化复测**（bench7 脚本已入库）、**G-8 真实模型 MRL+指纹阈值复验**、P3-7 quality 两遍流 hardening、真实语料人工复核（待决-1）、rerank 真实网关联调（环境依赖）、§六 M2 行总勾验 | 主线全部 + 语义轨道尽量 | ⬜ |
+| 11 | task-knowledge-lattice-m2-5 | **M2 验收收口段**（M1-5 形态）：跨组织隔离全绿（TC-OPS-09/T15/TC-AZ-04）、REST-PG 残项（P3-18 顺延）、**G-6 halfvec 索引化复测**（bench7 脚本已入库）、**G-8 真实模型 MRL+指纹阈值复验**、P3-7 quality 两遍流 hardening、真实语料人工复核（待决-1）、rerank 真实网关联调（环境依赖）、§六 M2 行总勾验 | 主线全部 + 语义轨道尽量 | ✅ **done**（2 轮收敛：R1 db52009〔tester PASS+committer NEEDS_CHANGES——P2×5 证据口径+边界 4 条用户裁定〕→R2 d0d8bbe〔P2 全闭环+P3 应修尽修——真实边图/全链 SLO 1361.6ms 同口径复跑/37 端点/T15 真实路由/backlog 口径〕；门禁 1651+1→**1715+1**（+64）；**M2 主线 6/6+语义 6/6 全交付**：跨组织隔离全绿〔37 端点+三组织行集+`/api/orgs` 实装〕+REST-PG 残项收口+G-6〔halfvec 不引入/全链 SLO 两数据并列不关重开/真实基线 0.9286·1.0000 饱和态〕+G-8〔百炼实测 MRL 分辨率内零损失/指纹维持〕+G-7〔DashScopeReranker+parameters.top_n〕+TC-PERF-05 真实边图全达标〔16.301ms〕+G-24③④⑤ 收口+P3-7+B① 4/4+followups ④⑤+配置切换便利性〔换供应商仅 env 零代码〕；待决-1/真实 IdP 受阻申报；边界裁定：§6.2 五方法组合 backlog issue+P99 稳态口径+组织停用 issue+语义 gate G-24⑨；2026-11-02 双通过） |
 
 ## 二、已完成段要点（新会话快速对齐）
 
@@ -35,8 +35,9 @@
 - **m2s-6**（语义轨道收官段）：实体召回路（recall.py resolve_query_entities 种子≤20+expand depth=1≤50 不沿 uses+recall_by_entities 双方言**同一 visible_docs CTE 同一 Plan**〔T-S8——TC-ACL-06 同构断言扩展〕+三路 RRF+matched_entities）；越权矩阵 T-S7/S8/S9（按裁定三端点口径——T-S9⑥ 查询级审计未实现登记 G-22）；模糊兜底三层（0009 sem_fuzzy_terms/sem_fuzzy_dels 双方言+拼音/编辑距离 deletion neighborhood/向量经 Embedder〔仅 kind='code' 不嵌〕；**最终一致+修复路径**=R3 内容集合对账+落库标记附加触发——裁定 5 口径，残余 G-23）；检索增益（recall@10 sqlite +10.72pp/pg +12.50pp MRR 均升不回退；auto_entities 默认 False 保守档；AC+模糊 recall@3=1.0；黄金集 172→180 +8 pos_typo）；中间件契约（middleware.py G-2 并存①②+localac 两端逐字段一致）；REST/MCP search_entities 注入 settings/embedder（via='vec' 生效+to_thread 下放）；G-21 核销 6 再挂 2；G-2 并存闭环、G-22~G-24 登记（docs v0.9.6/v1.9.10 同批）。
 - **m2-4**（生产化认证段）：SSO 验签**协议中立可插拔接口**（adapters/auth_sso.py SsoTokenVerifier Protocol+MockIdpVerifier 自签 JWT+build_sso_verifier 工厂——LATTICE_SSO_PROVIDER none/mock-idp/未知名 fail-closed；**留口子裁定**：真实 IdP 适配器企业内同形替换）；JIT 建档 upsert_user_jit 双方言（id 复用零更新/username 冲突 401 fail-closed 消息不回显/**建档与审计同事务**〔audit= 先例+崩溃注入〕）；委托 token（aud 透传拒绝四形态+auth.delegated 双身份审计+A-9 双载体〔REST 五键集+MCP deprecated permissions〕）；**RFC 8693 act 三形态**（string/object/链式——链式取最外层=current actor〔用户裁定按 §4.1 MUST〕+act_chain 全链审计——**m1-3 移交闭环**）；可信子系统三约束（LATTICE_TRUSTED_SERVICES_JSON 白名单 sha256 不落明文+allowed_orgs+按服务限流〔线程锁+被拒不占配额〕+X-User-Assertion 在场证据；全拒绝路径 refused reason 级审计——**T13 生产形态收口**）；T16 prod 三断言+mock-idp prod 缺省密钥启动即拒；MCP 面 org/permissions 忽略审计公共块（四认证形态统一）；G-25/G-26 登记；R2 P2×2（MCP 可信路径跳过审计/mock 密钥护栏）+P3×10 应修尽修。
 - **m2-6**（管理面补全与嵌入执行体段）：reembed 蓝绿执行体四步（TC-EMB-06 全绿双后端）——**全库迁移口径**（N-1 用户裁定 2026-11-01 选 a+sysadmin 专属：store org_id=None 双口径/全库覆盖率门/多组织同迁单标签一致/单 org 100% 不放行；reembed 触发=owner/org_admin 403、sysadmin 免本组织成员关系 202；单文档 reindex 维持 owner/org_admin）；**effective_settings 标签源统一**（config.py 新帮助函数从 embedder.model_label 派生——semantic_build 实际执行非 skipped/dict_rev·模糊向量·vec 查询/probe dim/coverage dim 全同源；subprocess 形态主进程切换=运维 env 重启）；reindex 执行体（幂等重置+中断重认领不丢不重；**N-2 用户裁定选 a**：pending_version 非空含 failed 一律 API 409+执行体 failed 双防线、core ingest 零改动）；members 三端点（T23 过期行 409 前置/唯一 admin 自锁守卫 store 事务化〔pg advisory_xact_lock〕/软停用=expires_at/DELETE 级联/JIT→入组→授权→检索 API 全链）；values label 显式传递+D19 重新启用解锁+retired 409 对称；0010 同秒单调键（pg seq/sqlite rowid）；**P1-1 教训**：全库化改造时 org-scoped 消费面的行集边界（外层 FROM datasets）须独立验证——Tester R2 漏检、R3 三组织自构造补课；G-27 登记（未收敛 fail-closed）。
-- **门禁基线**：**1651+1 双后端双模式 0 skipped**（pg 臂 614=580 参数化+34 专用——**新正则 `\[pg[^]]*\]` 口径**〔m2-4 followup 兑现，计入 [pg-*] 组合 id〕；十一段累计 663→1651 +988）。
-- **分支基线**：origin/develop = `c2ebb68`（2026-11-01，PR #11〔m2-4〕合入后）。
+- **m2-5**（M2 收口段，2026-11-02 双通过）：跨组织隔离矩阵（TC-OPS-09 37 端点=34×403+webhook 401+search/uploads 403〔非实现全集——未扫 4 条共享守卫注记〕/T15 真实路由 PATCH values·POST retire·POST values 404〔GET 单维度端点不存在——design 缺口〕/TC-AZ-04①~④+**`/api/orgs` 实装**〔历史缺口：org_admin 必填〔422/400 拒死组织〕+D16 404 零残留+409 pg 竞态映射+审计同事务〕）+三组织行集边界（org:ops——m2-6 P1-1 同型面）；REST-PG 残项以 [pg] 臂实跑收口（P3-18）；**首次真实模型数据**（百炼 text-embedding-v4/gte-rerank-v2，key 走 .env）：真实基线 r@10 sqlite 0.9286/pg 1.0000〔28-query 饱和态〕+TokenBag 代理低估证实、MRL dimensions 截断本集分辨率内零损失（服务端原生 MRL）、指纹 60 样本全 1.0 维持 0.99/0.95、全链 SLO 复跑 P95 1361.6ms PASS〔vs M1-5 真值 2443.2 两数据并列不关 G-6 重开〕、halfvec 不引入〔LIMIT64 欠召回/LIMIT1024 零收益〕、DashScopeReranker provider〔parameters.top_n 实测生效〕+P3-14 env 覆盖激活〔换供应商仅 env 零代码〕；TC-PERF-05 真实边图全达标〔16.301ms/0.054ms——R1 零边图证据作废重做〕+G-24③④⑤ 收口〔vec 档超时熔断审计/懒构建 Lock 哨兵序/vec_top 参数化〕；P3-7 两遍流 hardening〔non-finite+池缩水〕；B① 逐行过期编辑 4/4；m2-4 followups ④⑤；边界裁定 4 条〔§6.2 五方法 backlog issue/P99 稳态/组织停用 issue/语义 gate G-24⑨〕。
+- **分支基线**：origin/develop = `d3dfdc0`（2026-11-01，PR #12〔m2-6〕合入后）；m2-5 交付后推进（PR 合入时更新）。
+- **门禁基线**：**1715+1 双后端双模式 0 skipped**（pg 臂 guard 633=599 参数化+34 专用〔新正则 `\[pg[^]]*\]` 口径〕+orgs pg_db 专项计入总数不计 guard——pg-only 全实跑；十二段累计 663→1715 +1052）。
 
 ## 三、挂账清单（新会话必读）
 
@@ -73,24 +74,36 @@
 
 **m2s-3 移交 m2s-4 收编**（其检查点遗留事项节为权威）：G-19 每日兜底调度（窗口/幂等/与 webhook 去重口径）；自校验回退健壮性⑦（type 数组/布尔子 schema/tuple items 回退 false positive——except Exception 兜底，零依赖 only）；sensitivity 两口径（覆盖层删除不回退/非法静默 normal——权限面口径化）；测试卫生 3 项（旧弱断言/inserted 计数/两测试名实——顺手）。
 
-**m2-6 移交（2026-11-01 交付时登记）**：
-- B①「逐行过期编辑」（UI grants 逐行独立 expires 输入）→ **m2-5 / TC-UI 手动走查批**（Committer R1 裁定登记——预填/徽标/langchange 保留已交付，残余仅逐行编辑形态）
-- R3 Committer P3×3 文案/注释（pg 并发用例 docstring 旧称 FOR UPDATE/fail-closed 注释+错误文案旧称「自动重试」/coverage 端点 docstring 旧称「全局口径」）→ **下批卫生**（无功能影响）
-- G-27（reembed 未收敛 fail-closed——failed 留人工）→ known-gaps 已登记（可选收窄=runner 按 error 分类回队）
-- pg 存量 7 个 bench/eval 残留 schema（lattice_eval_*×5+lattice_bench_g6hv_*×2——历史会话产物非任务产物）→ **监督侧核对后 DROP SCHEMA CASCADE 清理**
+**m2-6 移交 m2-5 收编——已全清偿**（m2-5 交付 2026-11-02：B① 逐行过期编辑 ✅ 4/4〔playwright DOM 三断言〕；R3 P3×3 文案 ✅；**pg 存量 7 个 bench/eval 残留 schema ✅ 监督侧 DROP CASCADE 清理**〔交付前置完成〕）。
+
+**m2-4 移交 m2-5 收编——已清偿/顺延**（m2-5 交付 2026-11-02：followups ④`_outbox_insert` 完整性错误专用上抛 ✅ ⑤MCP 审计移 resolve_org 后 ✅；真实 IdP/SSO 联调 → 受阻申报顺延**部署期**〔待决-2/3 未决——report-m2-5-blocked.md〕）。
+
+**m2s-6 移交 m2-5 收编——已清偿/裁定后移**（m2-5 交付 2026-11-02：TC-PERF-05 性能兜底 ✅ 真实边图全达标+G-24③④⑤ 收口；「下批语义 followups」四项 → **用户裁定 2026-11-01 后移 M3/独立语义补强批**〔G-23 残余收口/显式断言三补〔T-S9⑥ 依赖 G-22〕/R1 P3 残留/构建产物 code versioning〕）。
+
+**m1-5 移交 m2-5 收编——已清偿/顺延**（m2-5 交付 2026-11-02：G-6 halfvec 复测 ✅〔不引入〕+真实模型重测双后端基线 ✅〔28-query 饱和态注记〕、G-8 真实模型 MRL+指纹 ✅、P3-7 ✅、REST-PG 残项 ✅；待决-1 真实语料人工复核 → **受阻申报顺延维持**〔语料未提供——report-m2-5-blocked.md〕）。
+
+**m2-5 移交（2026-11-02 交付时登记）——全部 M3 backlog**：
+- §6.2 五方法组合未实现（GET /members、POST/PATCH datasets、POST/PATCH dimensions、GET values——issue 登记）+ GET 单维度/单取值端点缺口 → **M3 管理面补强批**
+- 组织停用无载体（orgs 无 status 列/停用端点——issue）→ **M3**
+- 语义查询面不随 probe gate 关闭+annotate fuzzy vec 无界/无 breaker/审计（known-gaps G-24⑨）→ **M3 语义补强批**
+- conftest teardown 吞 DROP 失败（test-infra 低优先 issue）→ **下次测试基建批**
+- 真实 IdP/rerank 公司网关联调 → **部署期**（DashScope 档已交付可用）
+- 待决-1 真实语料 → **维持未决**（TC-EVAL-06 完整收口+MRL 判据正式落笔依赖）
+- G-6 全链 SLO 生产首部署复测（1361.6 vs 2443.2 两数据并列定论）+双路召回缺口（464.3ms>300ms）+真实向量 halfvec 10 万档评估 → **部署期/M3**
+- TC-UI-01~04 manual 走查 → **用户侧**（M1+M2 里程碑达成宣告唯一待勾；B① 新形态一并走查）
 
 ## 四、AGENTS.md 状态行（已同步更新指针）
 
 AGENTS.md §1 项目状态行已更新为「M2 进行中（m2-1/m2-2 已交付）+ 指向本文件」——新会话第一读即达。
 
-## 五、下一段开工指引（m2-5）
+## 五、下一段开工指引（M3——未开工）
 
-1. 按协议 0 建检查点 `task-knowledge-lattice-m2-5`（模板 `_template.md`；createdAt 取真实时间）；**新会话开工先扫 m2-6 检查点遗留事项节**（B① 逐行过期编辑/P3×3 文案/监督侧 pg 残留清理）
-2. 任务书要点：M2 验收收口段（row 11——跨组织隔离全绿〔TC-OPS-09/T15/TC-AZ-04〕、REST-PG 残项 P3-18、G-6 halfvec 索引化复测〔bench7 脚本已入库〕、G-8 真实模型 MRL+指纹阈值复验、P3-7 quality 两遍流 hardening、真实语料人工复核〔待决-1〕、rerank 真实网关联调〔环境依赖〕+真实 IdP 联调〔同批〕、§六 M2 行总勾验）
-3. 会话隔离：全新 Coder/Tester/Committer 会话；分支先 ff 至 origin/develop（=m2-6 PR mergeCommit——合入后本行补记）
-4. 硬约束：门禁 1651+1 起零回归；coder 禁改 docs/；chore 归档批带上工作区遗留流程文档（若有）
+1. **M2 已全部交付（2026-11-02 m2-5 双通过——主线 6/6+语义 6/6）**；M3 任务拆段待用户确认（design §8 M3 节为依据）
+2. **M3 backlog 池**（本文件 §三「m2-5 移交」+各 issue）：§6.2 五方法组合+组织停用（管理面补强批）、语义 gate/annotate fuzzy 无界（语义补强批）、真实语料待决-1、部署期联调（真实 IdP/公司 rerank 网关/G-6 生产复测）、TC-UI 用户走查
+3. 新任务开工仍按协议 0：扫历史检查点遗留事项（m2-5 检查点遗留节为最新权威）+ 建检查点 + 用户确认
+4. 硬约束：门禁 1715+1 起零回归；coder 禁改 docs/；chore 归档批带上工作区遗留流程文档（若有）
 
-（m2-6 开工指引已执行完毕——2026-11-01 双通过，PR 交付中）
+（m2-5 开工指引已执行完毕——2026-11-02 双通过，交付归档中）
 
 ## 六、维护规则
 

@@ -434,7 +434,9 @@ async def list_semantic_entities(
         # **P2-1/R3：to_thread 下放**——vec 档内部 embedder.embed([q]) 为同步
         # httpx Client（embed_timeout_s=30s），async handler 内直接调用会阻塞
         # 事件循环（§5.2/NFR-8「模型 HTTP 调用绝不阻塞事件循环」——与端点
-        # 其余语义读 annotate/get_entity 的 to_thread 形态一致）
+        # 其余语义读 annotate/get_entity 的 to_thread 形态一致）；
+        # G-24③（m2-5）：vec 档改经 query_embed_timeout_s 有界等待 + 共享
+        # embed 熔断器 + search.degraded 降级审计（core 侧 _embed_query_bounded）
         from knowledge_lattice.config import effective_settings
 
         return await asyncio.to_thread(
@@ -443,6 +445,7 @@ async def list_semantic_entities(
             types=types, top_k=top_k,
             settings=effective_settings(service.settings, service.embedder),
             embedder=getattr(service, "embedder", None),
+            breakers=service.breakers, user_id=auth.user_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

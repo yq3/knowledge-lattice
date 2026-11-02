@@ -52,9 +52,9 @@ updatedAt: 2026-11-01T14:49:30+0800          # 每次写检查点必更新为当
 ## 遗留事项（跨任务移交）
 - [x] **本轮清偿**：m1-3 L82「RFC 8693 act 对象形态兼容——M2 SSO/JIT 落地必须项」✅ 本段 A3 交付闭环（act string/object/链式三形态+审计；链式取最外层=current actor 用户裁定按 RFC 8693 §4.1——来源 task-knowledge-lattice-m2-4，2026-11-01）；m2-3 token 交叉项 ✅ 兼容回归清偿；m1-3 L81 尾项 docstring ✅ 核验历史批次已修（B 项闭环零改动）
 - [x] **移交 m2-6**：N-1（JIT 建档后 API 面成员开通缺口——用户裁定选 a：members 增/改/删入 m2-6 范围，_m2-plan row 7.5 已落）
-- [x] **移交 m2-5/部署期**：真实 IdP/SSO 联调（待决-2/3 维持未决——SSO 验签器已留协议中立可插拔口子，与 rerank 真实网关联调同批）
+- [x] **移交 m2-5/部署期**：真实 IdP/SSO 联调（待决-2/3 维持未决——SSO 验签器已留协议中立可插拔口子，与 rerank 真实网关联调同批）（✅ m2-5 处置 2026-11-02：受阻申报顺延**部署期**〔待决-2/3 未决结构上不可执行——report-m2-5-blocked.md〕；rerank 侧百炼联调已收口〔DashScopeReranker——G-7〕）
 - [x] **移交 known-gaps**：G-25（可信子系统限流器进程内态——线程锁已加，重开=多实例部署）、G-26（认证拒绝路径审计写放大——部署侧准入兜底）
-- [x] **移交 followups（下批/m2-5 测试补强批）**：①P3-11 固化用例（org 解析顺序——行为已探针实证正确）②gate pg 正则 `\[pg[^]]*\]` 少计 [pg-*] 组合 id（口径已注 TEST-CASES v1.9.11）③test_auth_05 `_call` settings 形参残留（R2 签名调整机械残留）④`_outbox_insert` 完整性错误掩码（理论面）⑤MCP 面忽略审计先于 resolve_org 窄面（未来统一时移块——既定修法内生形态）
+- [x] **移交 followups（下批/m2-5 测试补强批）**：①P3-11 固化用例（org 解析顺序——行为已探针实证正确）②gate pg 正则 `\[pg[^]]*\]` 少计 [pg-*] 组合 id（口径已注 TEST-CASES v1.9.11）③test_auth_05 `_call` settings 形参残留（R2 签名调整机械残留）④`_outbox_insert` 完整性错误掩码（理论面）⑤MCP 面忽略审计先于 resolve_org 窄面（未来统一时移块——既定修法内生形态）（✅ **④⑤已清偿：来源 task-knowledge-lattice-m2-5**〔2026-11-02〕——④完整性错误专用 RuntimeError 上抛不掩码〔双方言+poisoned 注入〕；⑤公共块移 resolve_org 后〔与 REST P3-11 同口径+两用例〕）
 - [x] m1-3 L82 余量处置：multipart/upload_id 顺延确认（不做——任务书「不做」边界）、NFR-6 shared-storage 已登记 G-12 不动
 （新任务开工时 supervised-coding 读历史检查点的本节 + 轮次记录中"移交/待办"条目；未了结事项默认并入新任务处理并更新相应测试用例；处理完毕回写勾选并注来源任务 ID，继续移交的注明去向）
 

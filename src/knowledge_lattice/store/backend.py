@@ -32,6 +32,10 @@ class MembershipExistsError(Exception):
     DELETE 后重加，T23 续期禁令先例）。"""
 
 
+class OrgExistsError(Exception):
+    """组织已存在（m2-5 A1 POST /api/orgs → 409；组织不可删只能停用——P1-1）。"""
+
+
 class MembershipExpiredError(Exception):
     """已过期成员关系拒绝原地变更（m2-6 A3 PATCH → 409——T23 语义的双方言
     统一前置检查：删行重加 + 补授权是唯一恢复路径）。"""
@@ -695,6 +699,22 @@ class AdminBackend(Protocol):
     def list_org_ids(self) -> list[str]:
         """全部组织 id（m2-6 R2 P2-2：reembed 全库联动的逐组织遍历面——
         quality recompute 与 semantic_build 投递按组织为粒度）。"""
+
+    def list_all_orgs(self) -> list[dict]:
+        """全部组织 {org_id, name}（m2-5 A1：GET /api/orgs sysadmin 面）。"""
+
+    def list_orgs_for_user(self, user_id: str) -> list[dict]:
+        """用户 membership 组织行 {org_id, name, role, expires_at}（m2-5 A1：
+        GET /api/orgs 普通用户面——只列本人组织，含过期行如实返回）。"""
+
+    def create_org(
+        self, *, org_id: str, name: str,
+        org_admin_user_id: str | None = None,
+        audit: tuple[str, str] | None = None,
+    ) -> None:
+        """建组织 + 可选首任 org_admin membership 同一事务（m2-5 A1：
+        POST /api/orgs sysadmin 专属）。org_admin 不存在 KeyError → 404
+        组织零残留（D16 不建账号）；重复 OrgExistsError → 409；审计同事务。"""
 
     def read_org_audit(
         self, org_id: str, *, action: str | None = None, limit: int = 100,

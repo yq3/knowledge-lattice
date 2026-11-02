@@ -5,13 +5,13 @@ target: /Users/youqi/develop/knowledge-lattice
 coderTaskId: ses_e6a18509affeLOmueMfB4vItlo
 testerTaskId: ses_e69ca7427ffe909TXr7yUZvXIO
 committerTaskId: ses_e69aa3034ffeswmU0kfrWYy0rF
-status: approved
+status: done
 round: 3
 maxRounds: 3
 testVerdict: PASS
 reviewVerdict: APPROVED
 testedSha: 00dc486ab3d6351702a079e07207dfc63903e059
-reviewedSha: 00dc486ab3d6351702a079e07207dfc63903e059
+reviewedSha: 1076f939d29d043e2015d073849664bd4f886785
 # 以上 SHA = coder 最近一轮本地 commit（[taskId] R<n>）后的 HEAD；修复轮 commit 后 reviewedSha 置空待重审
 filesChanged:
   - scripts/test_gate.sh
@@ -55,7 +55,7 @@ filesChanged:
   - src/knowledge_lattice/mcp/server.py
 endReason: null
 createdAt: 2026-11-01T14:51:55+0800          # 创建时间（30 天清理审计用，见 README §4.5）
-updatedAt: 2026-11-01T20:32:42+0800          # 每次写检查点必更新为当前时间（ISO 8601 含时区），不得沿用旧值
+updatedAt: 2026-11-01T20:50:01+0800          # 每次写检查点必更新为当前时间（ISO 8601 含时区），不得沿用旧值
 ---
 
 # task-knowledge-lattice-m2-6: 管理面补全与嵌入执行体——reindex/reembed 蓝绿执行体+members 增改删+values CRUD
@@ -91,9 +91,9 @@ updatedAt: 2026-11-01T20:32:42+0800          # 每次写检查点必更新为当
 - [x] **本轮清偿**：m2-3 移交 P3×10 全核销（B①~⑩——**B① 3/4 子项**：预填/既有值徽标/langchange 保留交付，逐行过期编辑见下行移交；B5 落 RUNBOOK §4〔A5〕）——来源 task-knowledge-lattice-m2-3，2026-11-01
 - [x] **本轮清偿**：m2-4 移交 N-1 members 增/改/删（JIT→入组→授权→检索 API 全链 D16 闭环+T23 回归+唯一 admin 守卫）+followups ①②③（P3-11 固化用例/gate 正则 `\[pg[^]]*\]`/test_auth_05 `_call` 残留）——来源 task-knowledge-lattice-m2-4，2026-11-01
 - [x] G-27 登记（reembed 覆盖率未收敛 fail-closed——known-gaps 已落笔；可选收窄=runner 按 error 分类回队）
-- [ ] **移交 m2-5 / TC-UI 手动走查批**：B①「逐行过期编辑」（Committer R1 裁定登记——UI grants 逐行独立 expires 输入，非门禁面）
-- [ ] **移交下批卫生**：R3 Committer P3×3 文案/注释（pg 并发用例 docstring 旧称 FOR UPDATE／fail-closed 注释+错误文案旧称「自动重试」／coverage 端点 docstring 旧称「全局口径」——无功能影响）
-- [ ] **监督侧待办**：pg 存量 7 个 bench/eval 残留 schema（`lattice_eval_*`×5+`lattice_bench_g6hv_*`×2——历史会话产物非本任务产物）核对后 `DROP SCHEMA ... CASCADE` 清理
+- [x] **移交 m2-5 / TC-UI 手动走查批**：B①「逐行过期编辑」（Committer R1 裁定登记——UI grants 逐行独立 expires 输入，非门禁面）（✅ 已清偿：来源 task-knowledge-lattice-m2-5〔2026-11-02 双通过〕——B① 4/4 全清偿：逐行独立输入+初始=库内值+新选行预填+保存逐行读回〔playwright DOM 三断言〕；TC-UI-01~04 manual 走查归用户）
+- [x] **移交下批卫生**：R3 Committer P3×3 文案/注释（pg 并发用例 docstring 旧称 FOR UPDATE／fail-closed 注释+错误文案旧称「自动重试」／coverage 端点 docstring 旧称「全局口径」——无功能影响）（✅ 已清偿：来源 task-knowledge-lattice-m2-5 R1〔2026-11-02〕）
+- [x] **监督侧待办**：pg 存量 7 个 bench/eval 残留 schema（`lattice_eval_*`×5+`lattice_bench_g6hv_*`×2——历史会话产物非本任务产物）核对后 `DROP SCHEMA ... CASCADE` 清理（✅ 已清偿：supervised-coding 2026-11-02 m2-5 交付前置执行——7 schema 核对一致后 DROP CASCADE，残留计数归零）
 （新任务开工时 supervised-coding 读历史检查点的本节 + 轮次记录中"移交/待办"条目；未了结事项默认并入新任务处理并更新相应测试用例；处理完毕回写勾选并注来源任务 ID，继续移交的注明去向）
 
 ## 轮次记录
@@ -111,7 +111,9 @@ updatedAt: 2026-11-01T20:32:42+0800          # 每次写检查点必更新为当
 - R3: tester **PASS**（2026-11-01 20:22，**续接 R1/R2 会话**，testerTaskId=ses_e69ca7427ffe909TXr7yUZvXIO，testedSha=00dc486ab3d6351702a079e07207dfc63903e059 全 SHA 复核一致；**最后一轮严格标准——未发现任何新 P1/P2 缺陷**）——门禁独立复跑 **GATE PASS 1651+1 双后端双模式 0 skipped**（pg 臂 614=580+34 全实跑；+9 对账独立核对闭合：wk_rebuild +4/manage +3/members +1/values +1；def test 只增——diff 中 3 个「删除函数名」逐个核实均为重写/改名、2 行删 assert 为 N-2 语义变更替换非弱化）。**修复闭环逐条勾验全 ✅**：P1-1 跨组织泄露根除（双方言 ds_filter/org_filter 双层 SQL 审读分层验证——gate 全库门不受影响；**R2 漏检根因复盘**〔验证停在计数口径未到行集泄露面〕+**三组织/多 dataset 自构造独立验证 ALL PASS**〔含 total>0 真实行形态，强于 coder 造数〕+注入①判别实证）；P2-1 N-2 (a) 双防线（core ingest 零改动 diff 证实；false green 重写三重终态断言；pending 参数化双形态双后端；**注入②双防线独立性实证**——API 回退红而执行体 4 条仍绿）；P3-1 咨询锁（EPQ 弃用记因 docstring+注释双处诚实；pg 两连接真并发互降恰一侧 ok+终态恒 1 admin；**注入③ 5/5 红复核 coder 证伪声明**）；P3-2 REST 409 链路；P3-3 一行；P3-4 正路径改名+负向四重断言；P3-5 卫生；sysadmin 无 membership 202 用例。**择型 3 条全 ACCEPT**（③附行为注记：未收敛从「runner 自动重试」收窄为「failed 留人工」——fail-closed 已申报，后续可在 runner 按 error 分类回队〔docs 批可选登记〕；①hashtext 键冲突=跨组织偶发串行化纯性能面）。回归面 ✅（R1 57+R2 5 全存量绿、择型核心语义零回归〔re-pin/with_model/pending 超集/kick〕、m2-3 投递面延续）。**注入验证 3 组红绿**（①ds_filter 摘除泄露精确复现 ②pending failed 豁免回退+双防线独立性 ③advisory lock 摘除 5/5 红——业务代码零残留）。临时产物清理 ✅（pg 零新增〔存量 7 个维持监督侧〕/临时目录全删/工作区终态一致）。**P1/P2/P3 新增均无**；观察 4 条（择型③行为注记 docs 批可选/hashtext 性能面/pg 残留+RUNBOOK 维持登记/三轮遗留登记核对合规——B①→m2-5、m2-4 followups 余二→下批 m2-5）。报告全文见「最新验证意见原文」details 块（R3 Tester）。
 - R3: committer **APPROVED**（2026-11-01 20:26，**续接 R1/R2 会话**，committerTaskId=ses_e69aa3034ffeswmU0kfrWYy0rF，reviewedSha=00dc486ab3d6351702a079e07207dfc63903e059=testedSha=HEAD **三一致**；R3 diff=bd9598f..00dc486 11 files 逐文件核对；门禁采信 Tester 独立复跑+对账/测试 diff 独立核验——3 个「删除函数名」核实为重写/改名、2 行删 assert 为 N-2 语义变更，**零弱化**）。**R2 意见闭环核验全 ✅**：P1-1 闭合（双方言外层 ds_filter+内层 org_filter 独立——gate 全库门不动；全部调用面核阅无同类泄露残留；注入①判别）；P2-1 闭合（N-2 (a) 双防线+core 零改动 diff 证实+false green 重写三重终态断言+注入②双防线独立性）；P3-1 闭合（advisory_xact_lock BEGIN 后即刻取锁、**无死锁面**〔每事务一锁无嵌套〕、EPQ 弃用记因双处诚实、注入③ 5/5 红复核）；P3-2~P3-5+sysadmin 无 membership 全清偿；B①维持登记合规。**R3 择型 3 条全 ACCEPT**（③附 docs 批登记——fail-closed 行为变化 + P3-2 文案）。安全性终审 ✅（P1-1 修复完整性/advisory lock 无死锁/409 无绕过/sysadmin 无新越权/审计无缺失——无新 P1/P2）。**P1:0 P2:0；P3×3 记录级**（P3-1 pg 并发用例 docstring 旧称「FOR UPDATE」/P3-2 fail-closed 注释+错误文案旧称「自动重试」/P3-3 coverage 端点 docstring 旧称「全局口径」——均文案精度无功能影响，转 docs 批+下批卫生）。**需求边界无新增**（N-1/N-2 均闭合；择型③行为变化归 docs 批登记）。**docs 批终版建议八项**（TEST-CASES v1.9.12——TC-EMB-06 全库口径+扫描谓词超集注记+coverage org 只列本组织+reindex pending 含 failed 409+sysadmin 含无 membership+未收敛 failed 留人工+B① 3/4 改注+members/values 端点形态+A5/B5+门禁 1651+1；known-gaps——fail-closed 登记/hashtext 性能面可选/B①+m2-4 followups 余二去向/pg 残留运维清理/**G-27 不再需要**；design v0.9.8 非决策——§5.3 全库迁移/sysadmin/切换载体/清理与回退窗口/fail-closed+§5.6/§6.2 端点表+§5.8 effective 标签源+reindex pending；RUNBOOK §1 蓝绿操作序列+重启窗口+未收敛处置+§4 重索引窗口+审计 B5+pg 残留可选；AGENTS §1 状态行；_m2-plan row 7.5 done+挂账；检查点终态；工作区 docs 随 chore 入库）。**遗留事项终版去向**（供遗留事项节回写）：B①→m2-5/TC-UI 批；m2-4 followups 余二→下批/m2-5 测试补强批；P3×3 文案/注释→docs 批+下批卫生；fail-closed 行为→docs 批登记（后续 runner 按 error 分类回队可选）；pg 残留→监督侧 DROP CASCADE；RUNBOOK 注记→docs 批；TC-UI→用户侧；无 G-27 新登记。**manifest 要点**：双 SHA=00dc486 三一致/门禁 1651+1 双模式 0 skipped（pg 614=580+34）/+9 对账/rounds=3（PASS·NC→PASS·NC→PASS·APPROVED）/specRulings（R1 任务书确认+N-1 全库·sysadmin+N-2 保守 409）/gapClosures/handover/stale=false。本轮只读零修改零 git 写。报告全文见「最新验证意见原文」details 块（R3 Committer）。
 - **双通过达成（2026-11-01 20:26，round 3/3 收敛）**：testVerdict=PASS + reviewVerdict=APPROVED，testedSha=reviewedSha=00dc486=当前 HEAD（develop_opencode）——status=approved，待用户确认交付。
-- **交付执行（2026-11-01 20:33，用户确认交付「同意」）**：① 监督侧 docs 批落笔完成（TEST-CASES **v1.9.12**——m2-6 段完成态+TC-EMB-06 实现口径注记+coverage org 口径+N-1/N-2 裁定+B① 3/4 改注；known-gaps **G-27** 新增〔未收敛 fail-closed+hashtext 性能面附注〕；design **v0.9.8**——§5.3 全库重嵌入+sysadmin+fail-closed/§5.6 members 写路径/§5.8 effective 标签源/§6.2 端点登记〔非决策〕；**RUNBOOK** §1 m2-6 执行体操作口径块+§4 审计月库读回行 B5 注记〔A5 移交收口〕；AGENTS §1+`_m2-plan` row 7.5 done/§二要点/§三挂账清偿回写/§五 m2-5 指引）；遗留事项节回写（m2-3 P3×10+m2-4 N-1·followups①②③ 清偿+B①/P3×3 移交去向）；② chore 归档批（SHA 待 commit 后回填）；③ 待办：Coder push+PR → Committer gh pr review 留痕 → Coder manifest 入 PR description。
+- **交付执行（2026-11-01 20:33，用户确认交付「同意」）**：① 监督侧 docs 批落笔完成（TEST-CASES **v1.9.12**——m2-6 段完成态+TC-EMB-06 实现口径注记+coverage org 口径+N-1/N-2 裁定+B① 3/4 改注；known-gaps **G-27** 新增〔未收敛 fail-closed+hashtext 性能面附注〕；design **v0.9.8**——§5.3 全库重嵌入+sysadmin+fail-closed/§5.6 members 写路径/§5.8 effective 标签源/§6.2 端点登记〔非决策〕；**RUNBOOK** §1 m2-6 执行体操作口径块+§4 审计月库读回行 B5 注记〔A5 移交收口〕；AGENTS §1+`_m2-plan` row 7.5 done/§二要点/§三挂账清偿回写/§五 m2-5 指引）；遗留事项节回写（m2-3 P3×10+m2-4 N-1·followups①②③ 清偿+B①/P3×3 移交去向）；② chore 归档批 **`1076f939d29d043e2015d073849664bd4f886785`**（8 files +911/−29 docs-only——doc-only 验证通过〔src/tests 零改动〕；reviewedSha 按 m2-2/m1-4/m2-4 先例更新为归档 HEAD、testedSha 保持 00dc486）；③ 交付链执行（2026-11-01 20:44，coder 续接会话——首次调用限额中断后核查未执行任何步骤、续接重跑）：push 成功（fcc80ef..1076f93，SSH）；**PR #12 已开**（base=develop，https://github.com/yq3/knowledge-lattice/pull/12 ，4 commits：f979405/bd9598f/00dc486/1076f93，body 含交付摘要+Evidence Manifest 占位）。④ Committer PR 审查留痕 **`PRR_kwDOVZ9dhM8AAAABVWwwYA`**（2026-11-01 20:46，COMMENTED 形态〔self-approve 限制沿 #2~#11 先例〕——正文首行 APPROVED+R1→R3 轨迹+门禁采信+残余登记+归档 commit 1076f93 doc-only 复核〔8 files 零 src/tests〕+合入留所有者）；⑤ Coder manifest JSON 入 PR #12 description（回读校验 json.loads 通过+原摘要 3682 字符零丢失；监督侧补正 sessions.coder 转写偏差一处——MfB/Bf4 颠倒，gh pr edit 修正后复核 JSON OK）。
+- **合入（终章）**（2026-11-01 20:50，用户指令「合入」）：**PR #12 MERGED**——mergeCommit **`d3dfdc0f506632cdf6a4f131c0fb2a6f05bfb4b1`**（merge 形态沿 #2~#11 先例、远端分支保留）。origin/develop 前进至 d3dfdc0；本地 develop_opencode 已 ff 同步。下段（m2-5）开工时以 d3dfdc0 为基线（_m2-plan §五 指引补记随 m2-5 批）。本合入条目为 chore 批 1076f93 之后的工作区改动（随下段 m2-5 chore 归档批入库——沿先例）。**任务闭环（3 轮，1580+1→1651+1）**。
+- **交付完成（终态）**（2026-11-01 20:48，status=done 自 20:33 起持续有效）：**PR #12 OPEN/MERGEABLE 待用户合入**：https://github.com/yq3/knowledge-lattice/pull/12 ——交付摘要+4 commits+Committer 留痕（PRR_kwDOVZ9dhM8AAAABVWwwYA）+17 键 evidence manifest（双 SHA=00dc486/1076f93+shaNote 归档先例+gate 1651+1+rounds=3+specRulings 3 条+gapClosures/gapRegistrations G-27/handover 4 条/stale=false）全在位。**未执行 merge（协议约定——合入指令归用户）**。本条目及④⑤为 chore 批 1076f93 之后的工作区改动（随下段 m2-5 chore 归档批入库——沿 m2s-6/m2-4 先例）。
 
 ## 最新验证意见原文
 

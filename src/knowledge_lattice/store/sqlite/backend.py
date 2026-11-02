@@ -1663,7 +1663,17 @@ class SqliteBackend:
                 {"i": user_id, "u": username, "d": display_name},
             )
             if audit is not None:
-                self._outbox_insert(conn, *audit)
+                # m2-4 followup ④（m2-5）：outbox 完整性错误不得落入下方
+                # IntegrityError 兜底（会被误归类「建档冲突」递归掩码——
+                # P3-12 上限抛「重查超限」谎报）。转专用错误如实上抛：
+                # 建档随 BaseException 分支回滚（同生共死——P3-5 不变）
+                try:
+                    self._outbox_insert(conn, *audit)
+                except sqlite3.IntegrityError as exc:
+                    raise RuntimeError(
+                        f"audit outbox 写入完整性错误（{exc}）——JIT 建档"
+                        "已一并回滚（同生共死，P3-5）"
+                    ) from exc
             conn.execute("COMMIT")
         except sqlite3.IntegrityError:
             # 理论兜底（预查 + IMMEDIATE 串行下不可达）：定性后交上层重试/拒绝
@@ -2634,6 +2644,68 @@ class SqliteBackend:
                 "SELECT id FROM orgs ORDER BY id"
             ).fetchall()
         ]
+
+    def list_all_orgs(self) -> list[dict]:
+        """全部组织 {id, name}（GET /api/orgs sysadmin 面——m2-5 A1）。"""
+        return [
+            {"org_id": r[0], "name": r[1]}
+            for r in self._conn.execute(
+                "SELECT id, name FROM orgs ORDER BY id"
+            ).fetchall()
+        ]
+
+    def list_orgs_for_user(self, user_id: str) -> list[dict]:
+        """用户 membership 组织行 {org_id, name, role, expires_at}——GET
+        /api/orgs 普通用户面（m2-5 A1；含过期行如实返回——过滤语义归权限
+        计算，列表面只作展示）。"""
+        return [
+            {"org_id": r[0], "name": r[1], "role": r[2], "expires_at": r[3]}
+            for r in self._conn.execute(
+                "SELECT m.org_id, o.name, m.role, m.expires_at"
+                " FROM user_org_memberships m JOIN orgs o ON o.id = m.org_id"
+                " WHERE m.user_id = ? ORDER BY m.org_id", (user_id,),
+            ).fetchall()
+        ]
+
+    def create_org(
+        self, *, org_id: str, name: str,
+        org_admin_user_id: str | None = None,
+        audit: tuple[str, str] | None = None,
+    ) -> None:
+        """建组织（sysadmin 专属——design §6.2；m2-5 A1）：组织 + 可选首任
+        org_admin membership **同一事务**（org_admin 指定不存在用户 →
+        KeyError 上抛 404——组织零残留，D16 管理员不建账号）；重复组织
+        OrgExistsError → 409。审计同事务（崩溃零残留）。"""
+        from knowledge_lattice.store.backend import OrgExistsError
+
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            dup = self._conn.execute(
+                "SELECT 1 FROM orgs WHERE id = ?", (org_id,)
+            ).fetchone()
+            if dup is not None:
+                raise OrgExistsError(f"组织已存在: {org_id!r}（组织不可删只能停用）")
+            self._conn.execute(
+                "INSERT INTO orgs(id, name) VALUES (:i, :n)",
+                {"i": org_id, "n": name},
+            )
+            if org_admin_user_id is not None:
+                user = self._conn.execute(
+                    "SELECT 1 FROM users WHERE id = ?", (org_admin_user_id,)
+                ).fetchone()
+                if user is None:
+                    raise KeyError(org_admin_user_id)  # 404——不建账号（D16）
+                self._conn.execute(
+                    "INSERT INTO user_org_memberships(user_id, org_id, role)"
+                    " VALUES (:u, :o, 'org_admin')",
+                    {"u": org_admin_user_id, "o": org_id},
+                )
+            if audit is not None:
+                self._outbox_insert(self._conn, *audit)
+            self._conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
 
     def read_org_audit(
         self, org_id: str, *, action: str | None = None, limit: int = 100,

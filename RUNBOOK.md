@@ -73,6 +73,20 @@ sqlite 侧 `chunks.embed_model` 为摄取状态标签：重嵌入批次结束、
   搜（固有代价）；存在 pending_version（**含失败上传**）时 API 409 拒绝——先处置
   覆盖上传（重传或清理 pending）后重投（N-2 用户裁定 2026-11-01 选 a 保守）。
 
+### 1.x 嵌入/重排供应商切换（m2-5 起——仅改 env 零代码，D12 端点中立）
+
+- **嵌入**：`LATTICE_EMBED_API_BASE/_KEY/_MODEL/_DIM`——OpenAI 兼容端点均可用；
+  百炼示例 `https://dashscope.aliyuncs.com/compatible-mode/v1` + `text-embedding-v4`
+  （dimensions **枚举** [64,128,256,512,768,1024,1536,2048,3072]，无 2560——改维
+  需 reembed 蓝绿全库迁移，见 §1）。切换后按 §1 执行重嵌入。
+- **重排**：`LATTICE_RERANKER ∈ {none, cohere, dashscope}`（未知档位启动即拒）+
+  `LATTICE_RERANK_API_BASE/_KEY/_MODEL`。dashscope 档为百炼原生 text-rerank
+  （gte-rerank-v2——`parameters.top_n` 生效；m2-5 实测联调，live 探测脚本
+  `benchmarks/rerank_dashscope_live.py`）；cohere 档为公司网关 Cohere 风格 `/rerank`
+  （部署期联调）。示例见 `.env.example` rerank 段。
+- m2-5 实验复跑：`benchmarks/{bench8_g6_halfvec_50k,calib_m2_5,perf_m2_5}.py` +
+  `bench5_slo_perf03.py --scales 50000 --backends pg`（全链 SLO）。
+
 ## 2. 审计分区回溯（R2-P3-8——deploy 场景注记）
 
 `ensure_month_partition`（`store/postgres/audit.py`）只滚**当月/调用时点月份**分区。

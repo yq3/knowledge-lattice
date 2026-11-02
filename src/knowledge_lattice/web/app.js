@@ -170,10 +170,12 @@ async function doSearch() {
 
 /* ---------- 权限视图（m2-3：grants 管理 / CSV 导入导出 / expires_at） ---------- */
 
-const accessState = { rows: [], members: [], picked: {}, expires: {}, fresh: new Set(), existing: {} };
-// fresh：用户本轮显式（重）选中的 key 集——保存时应用输入框 expires；
-// 未动过的既有 key（picked 值来自装载原值）沿用库内 expires（R3 P2-2）；
-// existing：当前成员库内既有 expires 映射（chip 显示 + 选中预填——m2-6 B①）
+const accessState = { rows: [], members: [], picked: {}, expires: {}, existing: {} };
+// expires：**逐行独立** expires_at 输入值（B① m2-5——每行 input.chip-exp
+// 的唯一真值源；渲染时初始化为库内既有值，未编辑保存即沿用——R3 P2-2 语义
+// 由「初始值=库内值」自然成立）；existing：当前成员库内既有 expires 映射
+// （chip 徽标 + 行内输入框初始值）。R2/P3-10：旧 fresh 集合（m2-6 全局
+// 输入框真值源语义）已随逐行编辑废止移除。
 
 async function loadGrants() {
   if (!state.token || !state.org) return;
@@ -210,18 +212,18 @@ async function loadGrants() {
 }
 
 function renderGrantChips(preserve = false) {
-  // preserve=true（langchange 重渲染）：保留 picked/fresh/输入框——语言切换
+  // preserve=true（langchange 重渲染）：保留 picked/expires/输入框——语言切换
   // 不清用户已选状态（m2-6 B①）；缺省（成员切换/装载）重置为装载态
   const member = $("#gMember").value;
   const box = $("#gChips");
   box.innerHTML = "";
   const mine = accessState.rows.filter((r) => r.username === member);
-  // 既有 expires 映射（chip 显示 + 选中预填——m2-6 B①）
+  // 既有 expires 映射（chip 徽标 + 行内输入框初始值——m2-6 B①/m2-5 逐行编辑）
   accessState.existing = {};
   mine.forEach((r) => { accessState.existing[`${r.dimKey}=${r.value}`] = r.expiresAt; });
   if (!preserve) {
     accessState.picked = { ...accessState.existing };
-    accessState.fresh.clear();  // 装载态=无用户改动（保存沿用库内 expires）
+    accessState.expires = { ...accessState.existing };  // 行内初始值=库内值（未编辑即沿用）
   }
   state.dims.forEach((dim) => {
     const g = document.createElement("div");
@@ -247,33 +249,47 @@ function renderGrantChips(preserve = false) {
       chip.onclick = () => {
         if (key in accessState.picked) {
           delete accessState.picked[key];
-          accessState.fresh.delete(key);
+          delete accessState.expires[key];
+          const rowInput = g.querySelector(`input.chip-exp[data-key="${CSS.escape(key)}"]`);
+          if (rowInput) rowInput.remove();
         } else {
-          // 预填：该 key 库内既有 expires 且输入框为空 → 带入输入框
-          //（用户可见将沿用什么；不覆盖已输入值——显式意图优先）
-          if (existing && !$("#gExpires").value.trim()) {
-            $("#gExpires").value = existing;
-          }
-          accessState.picked[key] = $("#gExpires").value.trim();
-          accessState.fresh.add(key);  // 显式新选——保存应用输入框值
+          accessState.picked[key] = "";
+          // 新选行预填：全局输入框值优先（显式意图），否则库内既有值
+          accessState.expires[key] = $("#gExpires").value.trim() || existing || "";
+          chip.after(_rowExpiresInput(key));
         }
         chip.classList.toggle("on", key in accessState.picked);
       };
       g.appendChild(chip);
+      if (on) g.appendChild(_rowExpiresInput(key));  // 选中态行内输入框（B①）
     });
     box.appendChild(g);
   });
 }
 
+// B①（m2-5）：选中行的独立 expires_at 输入框——每行一个（互不影响）；
+// 值读写 accessState.expires[key]（唯一真值源）
+function _rowExpiresInput(key) {
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "chip-exp";
+  input.dataset.key = key;
+  input.setAttribute("data-i18n-ph", "access.expires.row.ph");
+  input.placeholder = t("access.expires.row.ph");
+  input.value = accessState.expires[key] || "";
+  input.oninput = () => { accessState.expires[key] = input.value.trim(); };
+  return input;
+}
+
 async function saveGrants() {
   const member = $("#gMember").value;
   if (!member) return;
-  // R3 P2-2：expires 语义——**未动过的既有 key 沿用库内值**（防静默清除既有
-  // 临时授权）；仅**本轮显式（重）选中的 key** 应用输入框值（空=永久）。
-  const expiresNow = $("#gExpires").value.trim();
+  // B①（m2-5）：逐行独立 expires——每行取自身输入框值（accessState.expires，
+  // 渲染时初始化为库内值——未编辑的既有 key 沿用库内 expires，R3 P2-2 语义
+  // 由初始值承载；空=永久）。全局 #gExpires 仅作新选行预填源。
   const grants = Object.keys(accessState.picked).map((k) => {
     const [dimKey, value] = k.split("=");
-    const expires = accessState.fresh.has(k) ? expiresNow : (accessState.picked[k] || "");
+    const expires = accessState.expires[k] ?? accessState.existing[k] ?? "";
     return { dim_key: dimKey, value, expires_at: expires || null };
   });
   const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/members/${encodeURIComponent(member)}/grants`, {
@@ -548,7 +564,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("langchange", () => {
     renderDimChips(); // chips 内的动态文案随语言重渲染
     renderGovernanceDims(); // 治理视图按钮文案
-    // m2-6 B①：语言切换保留已选/输入状态（preserve 重渲染——不清 picked/fresh）
+    // m2-6 B①：语言切换保留已选/输入状态（preserve 重渲染——不清 picked/expires）
     if (state.view === "access" && accessState.members.length) renderGrantChips(true);
   });
 

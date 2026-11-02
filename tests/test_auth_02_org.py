@@ -126,6 +126,48 @@ def test_mcp_tool_org_param_ignored_and_audited(app_env) -> None:
     assert json.loads(events[0][1])["ignored_org"] == "org:gl"
 
 
+def test_mcp_org_param_ignored_not_audited_on_org_400(app_env) -> None:
+    """m2-4 followup ⑤（m2-5 收口）：忽略审计在 resolve_org **成功后**落——
+    org 上下文 400（缺失/不一致）的请求不写 mcp.org_param_ignored（拒绝语义
+    与忽略语义不叠加，与 REST 面 m2-4 R2 P3-11 同口径；窄面：修复前公共块
+    在 resolve_org 之前，400 请求也会写忽略事件）。"""
+    async def flow():
+        async with _mcp_client(
+            app_env["app"],
+            # 静态 token 无 org claim + 无 X-Org-Id → resolve_org 400
+            {"Authorization": f"Bearer {app_env['static']['u_full']}"},
+        ) as client:
+            await client.call_tool(
+                "search", {"query": "x", "org": "org:gl"}
+            )
+
+    with pytest.raises(ToolError) as exc_info:
+        _run(flow())
+    assert "400" in str(exc_info.value)
+    events = [e for e in _outbox(app_env) if e[0] == "mcp.org_param_ignored"]
+    assert events == [], "org 400 请求不得混入忽略事件（拒绝与忽略不叠加）"
+
+
+def test_mcp_permissions_ignored_not_audited_on_org_400(app_env) -> None:
+    """同口径 permissions 参数：org 400 时不写 ignored_fields 审计（移动公共
+    块须两事件同移——单一公共块的完整性）。"""
+    async def flow():
+        async with _mcp_client(
+            app_env["app"],
+            {"Authorization": f"Bearer {app_env['static']['u_full']}"},
+        ) as client:
+            await client.call_tool(
+                "search", {"query": "x", "permissions": ["admin"]}
+            )
+
+    with pytest.raises(ToolError) as exc_info:
+        _run(flow())
+    assert "400" in str(exc_info.value)
+    events = [e for e in _outbox(app_env)
+              if e[0] == "auth.request_permissions_ignored"]
+    assert events == [], "org 400 请求不得混入权限忽略事件"
+
+
 def test_rest_path_org_header_mismatch_400(app_env) -> None:
     """⑤ REST 路径 org 与 X-Org-Id 并存且不一致 → 400。"""
     resp = app_env["client"].get(

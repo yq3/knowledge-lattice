@@ -218,7 +218,16 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
             raise ToolError(f"{exc.code}: {exc}") from exc
         except OrgContextError as exc:
             raise ToolError(f"400: {exc}") from exc
-        # ---- 工具参数忽略审计（公共块——一切认证形态，R2 P2-1） ----
+        # ---- 组织上下文统一规则（trusted 路径 claim=已校验的 X-Org-Id，直通） ----
+        org_header = request.headers.get("x-org-id") if request is not None else None
+        try:
+            org = resolve_org(org_claim=auth.org_claim, org_header=org_header)
+        except OrgContextError as exc:
+            raise ToolError(f"400: {exc}") from exc
+        # ---- 工具参数忽略审计（公共块——一切认证形态，R2 P2-1；m2-4
+        #      followup ⑤/m2-5：移至 resolve_org **成功后**——org 上下文 400
+        #      的请求不写忽略事件（拒绝语义与忽略语义不叠加，与 REST 面
+        #      m2-4 R2 P3-11 同口径） ----
         # 工具参数 org 一律忽略并记审计（D18——org 不是 LLM 可填参数）
         if param_org is not None:
             service.backend.append_outbox(
@@ -233,12 +242,6 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
                 service.backend, user_id=auth.user_id,
                 present_fields=["permissions"],
             )
-        # ---- 组织上下文统一规则（trusted 路径 claim=已校验的 X-Org-Id，直通） ----
-        org_header = request.headers.get("x-org-id") if request is not None else None
-        try:
-            org = resolve_org(org_claim=auth.org_claim, org_header=org_header)
-        except OrgContextError as exc:
-            raise ToolError(f"400: {exc}") from exc
         return auth, org
 
     def _sem_member(auth: AuthContext, org_id: str) -> None:
@@ -565,6 +568,9 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
                 service.backend, org_id, q, types=types, top_k=top_k,
                 settings=effective_settings(settings, service.embedder),
                 embedder=getattr(service, "embedder", None),
+                # G-24③（m2-5）：vec 档有界超时/熔断/降级审计——共享 embed
+                # 熔断器与 §5.2 检索向量路同一状态
+                breakers=service.breakers, user_id=auth.user_id,
             )
         except ValueError as exc:
             raise ToolError(f"400: {exc}") from exc
