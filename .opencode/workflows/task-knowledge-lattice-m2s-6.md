@@ -59,10 +59,10 @@ updatedAt: 2026-11-01T10:37:59+0800          # 每次写检查点必更新为当
 
 ## 遗留事项（跨任务移交）
 - [x] 无——m2s-5 移交清单全清偿（TC-TAG-04/05、TC-SEM-08/09+错别字正样本、TC-SEV-03+检索增益、TC-YAML-05、T-S7~S9、G-21 未闭 P3 顺手——来源 task-knowledge-lattice-m2s-5，随本段交付 ✅）
-- [ ] → **m2-5**（性能兜底轮）：TC-PERF-05（含 m2s-6 新增面：`_repair` per-skip 全量重算 pypinyin 开销、search_entities vec 档超时/熔断/降级审计〔G-24③④〕、模糊内存面 dict 全量复制+vec top-3 硬编码〔G-24④⑤〕）
-- [ ] → **下批语义 followups**（Committer R3 §6.2，来源本段 R3 登记）：①G-23 残余收口——`embed_model` 入内容集合+标记清除/移除+「模型迁移崩溃窗口」回归+「再次 skipped 不重触」断言；②显式断言三补——T-S7 describe_table/l0、T-S8 真随机向量三路、T-S9⑥（依赖 G-22 查询级审计落地）；③R1 P3 残留（G-24 清单：持权审计两漏记/auto_entities 超长降级/L1 disambiguation/审计常量登记处/评测报告 TokenBag 方法学/matched_entities 空数组形态——docs 口径已注记）；④构建产物 code versioning（G-23⑤）
+- [x] → **m2-5**（性能兜底轮）：TC-PERF-05（含 m2s-6 新增面：`_repair` per-skip 全量重算 pypinyin 开销、search_entities vec 档超时/熔断/降级审计〔G-24③〕、模糊内存面 dict 全量复制+vec top-3 硬编码〔G-24④⑤〕）（✅ 已清偿：来源 task-knowledge-lattice-m2-5〔2026-11-02 双通过〕——TC-PERF-05 真实边图全达标〔表扇出 depth2 P99 16.301ms/annotate 0.054ms〕+G-24③④⑤ 全收口〔vec 档 query_embed_timeout_s+共享熔断+search.degraded scope 审计/懒构建 Lock 哨兵序/LATTICE_SEM_FUZZY_VEC_TOP 端到端〕；`_repair` per-skip 重算未单列复测——随 G-24④ 懒构建收口面覆盖，M3 backlog 如需专项再开）
+- [ ] → **下批语义 followups**（Committer R3 §6.2，来源本段 R3 登记）：①G-23 残余收口——`embed_model` 入内容集合+标记清除/移除+「模型迁移崩溃窗口」回归+「再次 skipped 不重触」断言；②显式断言三补——T-S7 describe_table/l0、T-S8 真随机向量三路、T-S9⑥（依赖 G-22 查询级审计落地）；③R1 P3 残留（G-24 清单：持权审计两漏记/auto_entities 超长降级/L1 disambiguation/审计常量登记处/评测报告 TokenBag 方法学/matched_entities 空数组形态——docs 口径已注记）；④构建产物 code versioning（G-23⑤）（**去向更新 2026-11-02：用户裁定后移 M3/独立语义补强批**〔m2-5 需求确认裁定②〕）
 - [ ] → **known-gap 挂账**（非任务）：G-22 查询级异步审计 FR-6 实现（T-S9⑥/A-16 挂起——建议独立任务/主线段）；G-24① sem_restricted 管理面授予入口（POC 仅 DB/dev）
-- [ ] → **用户侧**：TC-UI-01~04 手动走查（M1 里程碑待勾——持续挂账）
+- [ ] → **用户侧**：TC-UI-01~04 手动走查（M1 里程碑待勾——持续挂账；**M2 里程碑达成宣告同候此项**〔m2-5 已交付 B① 新形态一并走查〕）
 （新任务开工时 supervised-coding 读历史检查点的本节 + 轮次记录中"移交/待办"条目；未了结事项默认并入新任务处理并更新相应测试用例；处理完毕回写勾选并注来源任务 ID，继续移交的注明去向）
 
 ## 轮次记录

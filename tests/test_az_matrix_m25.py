@@ -199,7 +199,8 @@ SCAN_ENDPOINTS: list[tuple[str, str, dict | None, int]] = [
 
 def test_tc_ops09_u_gl_scan_org_tax_all_denied(az_env) -> None:
     """TC-OPS-09 主面：u_gl（仅 org:gl）对 org:tax 的端点扫描——管理面
-    §6.2 + 语义端点 + 文档/任务面共 35 条 org 路径全部 403（成员关系校验
+    §6.2 + 语义端点 + 文档/任务面共 34 条 org 路径 403 + webhook 1 条 401
+    （R2 口径——无签名 fail-closed 先行；成员关系校验
     先行——org_id 第一条件；绝不返回他组织资源内容/行集）。**覆盖口径**
     （R2/P2-3）：非实现全集——未扫 6 条及共享守卫论证见 SCAN_ENDPOINTS
     注释与 benchmarks/report-m2-5-matrix.md。"""

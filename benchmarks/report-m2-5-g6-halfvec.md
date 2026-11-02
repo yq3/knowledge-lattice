@@ -36,7 +36,7 @@ ThreadLocalPgBackend 每线程一连接（M1-5 R3 池化口径）、5 线程 12s
 |---|---|---|
 | pg 5 万 C_full N=5 **P95** | **2443.2ms（>2s FAIL）** | **1361.6ms（≤2s PASS）** |
 | P50 / P99 | — | 1074.6 / 1545.5 ms |
-| rps | — | 3.54（一致性校验 3.62 ✓） |
+| rps | — | 3.54 |
 | 单请求 C_full wall P95 | 836.2~1106.2ms（两轮） | 911.4ms |
 | 分段 P95（embed/recall/fuse/rerank） | — | 160.9 / 464.3 / 78.2 / 210.3 ms |
 
