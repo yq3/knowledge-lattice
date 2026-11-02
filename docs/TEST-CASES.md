@@ -514,7 +514,7 @@
 
 - **步骤**：u_gl（仅 org:gl）对 org:tax 的检索 / 文档详情 / 任务 / 审计 / 语义端点全量扫描。
 - **预期**：全部拒绝或空集——`org_id = :org` 第一条件 + 成员关系校验（M2.6 验收「跨组织隔离全绿」；T15 / T-S7 汇总）。
-- ✅ **复核（m2-5，v1.9.13）**：`test_az_matrix_m25`（R2 11 用例×双后端）+矩阵报告 benchmarks/report-m2-5-matrix.md——扫描 **37 端点**（34×403+webhook 401+search/uploads 403；**非实现全集**：未扫 4 条〔documents POST/quality-flags×2/uploads PUT〕共享守卫/独立身份防线注记）+三组织行集边界（org:ops）+语义隔离对照；REST-PG 残项（P3-18 顺延）以 [pg] 臂实跑补齐。
+- ✅ **复核（m2-5，v1.9.13）**：`test_az_matrix_m25`（R2 9 用例×双后端）+`test_orgs_admin`（11 用例）=29 passed；矩阵报告 benchmarks/report-m2-5-matrix.md——扫描 **37 端点**（34×403+webhook 401+search/uploads 403；**非实现全集**：未扫 4 条〔documents POST/quality-flags×2/uploads PUT〕共享守卫/独立身份防线注记）+三组织行集边界（org:ops）+语义隔离对照；REST-PG 残项（P3-18 顺延）以 [pg] 臂实跑补齐。
 
 ### TC-UI 界面国际化（FR-8，v1.5 新增——需求 v0.9 对话决策）
 

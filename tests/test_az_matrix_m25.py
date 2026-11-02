@@ -202,7 +202,7 @@ def test_tc_ops09_u_gl_scan_org_tax_all_denied(az_env) -> None:
     §6.2 + 语义端点 + 文档/任务面共 34 条 org 路径 403 + webhook 1 条 401
     （R2 口径——无签名 fail-closed 先行；成员关系校验
     先行——org_id 第一条件；绝不返回他组织资源内容/行集）。**覆盖口径**
-    （R2/P2-3）：非实现全集——未扫 6 条及共享守卫论证见 SCAN_ENDPOINTS
+    （R2/P2-3）：非实现全集——未扫 4 条及共享守卫论证见 SCAN_ENDPOINTS
     注释与 benchmarks/report-m2-5-matrix.md。"""
     client = az_env["client"]
     headers = _hdr(az_env, "u_gl")
