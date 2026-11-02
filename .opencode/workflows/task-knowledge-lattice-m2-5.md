@@ -5,7 +5,7 @@ target: /Users/youqi/develop/knowledge-lattice
 coderTaskId: ses_e68aad188ffe4PQPO0YyX50g2G
 testerTaskId: ses_e686349f3ffel5L77mqunMleuO
 committerTaskId: ses_e6852a652ffe0LMwyPw9XbOUzd
-status: approved
+status: done
 round: 2
 maxRounds: 3
 testVerdict: PASS
@@ -16,7 +16,7 @@ reviewedSha: d0d8bbe1cdef1778198ea7bf609dbee7a00679f0
 filesChanged: [".env.example", "benchmarks/bench8_g6_halfvec_50k.py", "benchmarks/calib_m2_5.py", "benchmarks/perf_m2_5.py", "benchmarks/rerank_dashscope_live.py", "benchmarks/report-m2-5-blocked.md", "benchmarks/report-m2-5-g6-halfvec.md", "benchmarks/report-m2-5-g8-real-model.md", "benchmarks/report-m2-5-m2-checklist.md", "benchmarks/report-m2-5-matrix.md", "benchmarks/report-m2-5-perf05.md", "src/knowledge_lattice/adapters/reranker.py", "src/knowledge_lattice/api/admin.py", "src/knowledge_lattice/api/semantic.py", "src/knowledge_lattice/app.py", "src/knowledge_lattice/config.py", "src/knowledge_lattice/core/docs/quality.py", "src/knowledge_lattice/core/semantic/annotator.py", "src/knowledge_lattice/core/semantic/lookup.py", "src/knowledge_lattice/domain/audit_events.py", "src/knowledge_lattice/mcp/server.py", "src/knowledge_lattice/store/backend.py", "src/knowledge_lattice/store/postgres/backend.py", "src/knowledge_lattice/store/sqlite/backend.py", "src/knowledge_lattice/web/app.js", "src/knowledge_lattice/web/i18n.js", "src/knowledge_lattice/web/index.html", "src/knowledge_lattice/web/style.css", "src/knowledge_lattice/worker/rebuild.py", "tests/test_admin_members.py", "tests/test_auth_02_org.py", "tests/test_auth_03_sso_jit.py", "tests/test_az_matrix_m25.py", "tests/test_emb_08_dashscope.py", "tests/test_orgs_admin.py", "tests/test_qual_07_hardening.py", "tests/test_sem_g24_hardening.py"]
 endReason: null
 createdAt: 2026-11-01T20:53:52+0800
-updatedAt: 2026-11-02T11:13:27+0800
+updatedAt: 2026-11-02T11:24:26+0800
 ---
 
 # task-knowledge-lattice-m2-5: M2 验收收口段
@@ -104,6 +104,9 @@ updatedAt: 2026-11-02T11:13:27+0800
 - **双通过达成（2026-11-02 10:56，round=2 收敛）**：testVerdict=PASS + reviewVerdict=APPROVED，testedSha=reviewedSha=d0d8bbe1cdef1778198ea7bf609dbee7a00679f0=当前 HEAD——status=approved，待用户确认交付（交付序列：监督侧 docs 批+issue×4+报告勘误→coder chore 归档批〔含工作区 2 流程文件〕→push+PR→committer gh pr review→coder manifest 入 PR description→用户合入）。
 
 - **交付执行（2026-11-02 11:09，用户确认交付「同意」，status 维持 approved→归档中）**：① 监督侧 docs 批落笔完成——design **v0.9.9**（§6.2 orgs 实装注记+实现状态注记块〔五方法 backlog #13/停用 #14/dashscope 档〕）；TEST-CASES **v1.9.13**（TC-OPS-09/T15/TC-AZ-04/TC-PERF-05 四用例完成态+版本行+§六 M2 行 m2-5 段——验收句已清偿≠端点全集）；known-gaps **G-6 v1.3/G-7 v2/G-8 v2/G-24 v2（③④⑤ 划销+新⑨语义 gate）**；RUNBOOK **§1.x 供应商切换**（百炼/env 示例/复跑命令）；AGENTS §1 M2 全部交付+M3 backlog；_m2-plan row 11 done+§二/§三/§五（M3 指引）；遗留事项节终态登记+原检查点回写（m2-6 三条勾选/m2-4 ④⑤+IdP/m2s-6 TC-PERF-05 勾选+followups 去向 M3/m1-1 rerank 勾选/m1-5 总注记）；报告勘误 14 处（matrix 6/checklist 4/perf05 1/g6 1/g8 1——按 R2 Committer §四 C 清单）；② **issue×4 创建**：#13 §6.2 五方法、#14 组织停用、#15 语义 gate（G-24⑨）、#16 conftest teardown；③ **pg 存量 7 schema 监督侧 DROP CASCADE 清理完成**（核对一致→残留 0）；④ Coder chore 归档批完成（11:13 报告，续接会话）：**`faead74`**（18 files +720/−59——docs 批+报告勘误+检查点×7〔m2-5 新入库+m1-1/m1-5/m2-4/m2-6/m2s-6/_m2-plan/m2-6 清偿回写〕+tests docstring 一行〔matrix:202 措辞〕）；doc-only 复核 ✓（git diff d0d8bbe -- src/ 为空）；origin/develop=d3dfdc0 无前进确认；**push 成功 1076f93..faead74**（三 commits：db52009/d0d8bbe/faead74）；**PR #17 已开**（base=develop，https://github.com/yq3/knowledge-lattice/pull/17 ，body 含交付摘要+Evidence Manifest 占位）。待办：Committer gh pr review 留痕 + Coder manifest JSON 入 PR description + 用户合入。
+⑤ Committer PR 审查留痕完成（11:2x，续接会话）：`--approve` 因 GitHub 自审限制失败（PR 作者=gh 账号 yq3——沿 #2~#12 先例），回退 **COMMENTED 形态完整留痕**（review id `PRR_kwDOVZ9dhM8AAAABVaNMhw`，body 含 APPROVED 结论/R2 审查要点/faead74 doc-only 复核无夹带/残余登记/合人留给所有者）；**faead74 doc-only 复核通过**（src/ diff 为空、docs 批与 §四 A 清单一致）；留痕发现 3 处文档计数残留（az_matrix 11→9 用例/matrix GET 3→2+store 1/未扫 6→4）。⑥ Coder 交付收尾完成（11:22，续接会话）：监督侧修 2 处（TEST-CASES TC-OPS-09 注记+m2-checklist L10「9 用例×双后端」）+coder 修 2 处（tests docstring 未扫 4 条/matrix GET 2+store 1）→**勘误批 `d683da3`**（5 files +6/−6 doc-only，push 成功 faead74..d683da3）；**Evidence Manifest JSON 入 PR #17 description**（18 顶层键：双 SHA=d0d8bbe/deliveryHead 链 faead74→d683da3/gate 1715+1 明细/rounds=2 四轮 verdicts/specRulings 6 条/gapClosures/artifacts 覆写注记/sessions/issues #13~#16/handover/stale=false——回读双校验通过：原摘要零丢失+json.loads 可解析）。
+- **交付完成（终态）（2026-11-02 11:22，status=done）**：PR #17 OPEN/**MERGEABLE**/CLEAN，4 commits=[db52009（R1）, d0d8bbe（R2）, faead74（chore 归档）, d683da3（交付勘误）]，base=develop——https://github.com/yq3/knowledge-lattice/pull/17 。**待用户合入**；合入后 M2 主线 6/6+语义轨道 6/6 全部收官（M2 里程碑达成宣告同候 TC-UI-01~04 手动走查——用户侧，含本段 B① 新形态）。本合入后续条目（mergeCommit/origin develop 前进）待合入后补记。
+- **合入（2026-11-02 11:24，用户确认「合入」）**：**PR #17 MERGED**——mergeCommit `8b3515314edc8194249b891df19f3047a934bf38`（mergedAt 2026-11-02T03:24:04Z，merge 形态沿 #2~#12 先例、远端分支保留）。origin/develop 前进至 8b35153；develop_opencode 已 ff 同步。**M2 里程碑正式收官——主线 6/6（m2-1~m2-6+m2-5）+ 语义轨道 6/6（m2s-1~m2s-6），门禁 663→1715+1。**M2 达成宣告待 TC-UI-01~04 手动走查（用户侧唯一待勾，含 B① 新形态）；下一段 M3（backlog 池见 _m2-plan §三/§五）。本合入条目为勘误批 d683da3 之后的工作区改动（随下段 chore 归档批入库——沿先例）。
 
 ## 最新验证意见原文
 （tester/committer 报告逐字保留——恢复时给 coder 的修复依据）
