@@ -362,9 +362,10 @@ def test_p2_1_inflight_sink_survives_purge(cred_env) -> None:
     )
     try:
         sink.write(PAYLOAD)
-        # PUT 进行中（staging .part 在场）跑清理任务：新鲜 .part 不得被删
+        # PUT 进行中（staging .part 在场）跑清理任务：新鲜 .part 不被删
+        # （M2.1 P3-6：staging 文件名带随机后缀——按 id 前缀 glob 断言）
         assert creds.purge_expired()["reclaimed"] == 0
-        assert creds.staging_dir.joinpath(f"{issued['upload_id']}.part").is_file()
+        assert list(creds.staging_dir.glob(f"{issued['upload_id']}.*.part"))
         result = sink.finalize()
     except BaseException:
         sink.abort()
@@ -395,8 +396,9 @@ def test_p2_1_finalize_rejects_expired_410_no_orphan(cred_env) -> None:
     with pytest.raises(CredentialExpiredError) as exc_info:
         sink.finalize()
     assert exc_info.value.code == "upload_expired"
-    # staging 清理 + 无 final 对象（uploads/<id> 不存在）
-    assert not creds.staging_dir.joinpath(f"{issued['upload_id']}.part").exists()
+    # staging 清理 + 无 final 对象（uploads/<id> 不存在；P3-6 随机后缀按 glob）
+    assert not list(creds.staging_dir.glob(f"{issued['upload_id']}.*.part"))
+    assert not list(creds.staging_dir.glob("*.part"))
     assert not (cred_env["objects_dir"] / "uploads" / issued["upload_id"]).exists()
 
 

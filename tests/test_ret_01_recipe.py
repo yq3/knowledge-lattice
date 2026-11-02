@@ -325,7 +325,7 @@ def test_ret_04_rerank_semaphore_and_event_loop_not_blocked(tmp_path) -> None:
 
     settings = Settings(
         environment="test", data_dir=tmp_path, embed_dim=8, embed_model="fake-embed",
-        reranker="cohere", rerank_max_concurrency=2,
+        reranker="cohere", rerank_max_concurrency=2, worker_mode="inline",
     )
     reranker = FakeReranker(delay_s=0.15, track_concurrency=True)
     app = create_app(

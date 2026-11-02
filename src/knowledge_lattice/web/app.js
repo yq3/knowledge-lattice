@@ -46,7 +46,7 @@ async function loadMeta() {
     dsSel.innerHTML = "";
     (dsRes.datasets || []).forEach((d) => {
       const o = document.createElement("option");
-      o.value = d.id; o.textContent = `${d.name}（${d.id}）`;
+      o.value = d.id; o.textContent = `${d.name} (${d.id})`;
       dsSel.appendChild(o);
     });
     const qDs = $("#qDataset");
@@ -56,7 +56,7 @@ async function loadMeta() {
     qDs.appendChild(all);
     (dsRes.datasets || []).forEach((d) => {
       const o = document.createElement("option");
-      o.value = d.id; o.textContent = `${d.name}（${d.id}）`;
+      o.value = d.id; o.textContent = `${d.name} (${d.id})`;
       qDs.appendChild(o);
     });
     state.dims = dimRes.dimensions || [];
@@ -74,13 +74,13 @@ function renderDimChips() {
     g.className = "dim-group";
     const label = document.createElement("div");
     label.className = "dim-label";
-    label.textContent = `${dim.name}（${dim.key}）${dim.required ? " · " + t("upload.required") : ""}`;
+    label.textContent = `${dim.name} (${dim.key})${dim.required ? " · " + t("upload.required") : ""}`;
     g.appendChild(label);
     (dim.values || []).forEach((v) => {
       const chip = document.createElement("button");
       chip.type = "button";
       chip.className = "chip" + (isPicked(dim.key, v.value) ? " on" : "");
-      chip.textContent = `${v.label}（${v.value}）`;
+      chip.textContent = `${v.label} (${v.value})`;
       chip.onclick = () => togglePick(dim.key, v.value, chip);
       g.appendChild(chip);
     });
@@ -130,7 +130,7 @@ async function refreshStatus() {
     [t("status.doc"), esc(state.docId)],
     [t("status.active"), `v${doc.active_version ?? "-"} · ${esc(doc.active_status ?? "-")}${doc.active_error ? " · " + esc(doc.active_error) : ""}`],
     [t("status.pending"), doc.pending_version ? `v${doc.pending_version} · ${esc(doc.pending_status)}` : "—"],
-    [t("status.task"), `${esc(task.status ?? "-")}（${t("status.attempts")} ${task.attempts ?? 0}）${task.error ? " · " + esc(task.error) : ""}`],
+    [t("status.task"), `${esc(task.status ?? "-")}(${t("status.attempts")} ${task.attempts ?? 0})${task.error ? " · " + esc(task.error) : ""}`],
   ].map(([k, v]) => `<dt>${k}</dt><dd class="mono">${v}</dd>`).join("");
 }
 
@@ -168,11 +168,391 @@ async function doSearch() {
     </tr>`).join("");
 }
 
+/* ---------- 权限视图（m2-3：grants 管理 / CSV 导入导出 / expires_at） ---------- */
+
+const accessState = { rows: [], members: [], picked: {}, expires: {}, existing: {} };
+// expires：**逐行独立** expires_at 输入值（B① m2-5——每行 input.chip-exp
+// 的唯一真值源；渲染时初始化为库内既有值，未编辑保存即沿用——R3 P2-2 语义
+// 由「初始值=库内值」自然成立）；existing：当前成员库内既有 expires 映射
+// （chip 徽标 + 行内输入框初始值）。R2/P3-10：旧 fresh 集合（m2-6 全局
+// 输入框真值源语义）已随逐行编辑废止移除。
+
+async function loadGrants() {
+  if (!state.token || !state.org) return;
+  const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/grants/export`);
+  if (!resp.ok) { $("#gMsg").textContent = `${resp.status}`; return; }
+  const lines = (await resp.text()).trim().split(/\r?\n/);
+  accessState.rows = lines.length > 1
+    ? lines.slice(1).map((l) => {
+        // P3-14/R2：引号形态 CSV 单行解析（值含逗号不错位——split(",") 弃用）
+        const cols = l.match(/("([^"]|"")*"|[^,]*)(,|$)/g)
+          .slice(0, 4)
+          .map((c) => c.replace(/,$/, "").replace(/^"(.*)"$/, "$1").replace(/""/g, '"'));
+        return { username: cols[0], dimKey: cols[1], value: cols[2],
+                 expiresAt: cols[3] || "" };
+      })
+    : [];
+  accessState.members = [...new Set(accessState.rows.map((r) => r.username))].sort();
+  const sel = $("#gMember");
+  sel.innerHTML = "";
+  if (!accessState.members.length) {
+    const o = document.createElement("option");
+    o.setAttribute("data-i18n", "access.member.none");
+    o.textContent = t("access.member.none");
+    sel.appendChild(o);
+    $("#gChips").innerHTML = `<span class="muted">${t("access.member.none")}</span>`;
+    return;
+  }
+  accessState.members.forEach((m) => {
+    const o = document.createElement("option");
+    o.value = m; o.textContent = m;
+    sel.appendChild(o);
+  });
+  renderGrantChips();
+}
+
+function renderGrantChips(preserve = false) {
+  // preserve=true（langchange 重渲染）：保留 picked/expires/输入框——语言切换
+  // 不清用户已选状态（m2-6 B①）；缺省（成员切换/装载）重置为装载态
+  const member = $("#gMember").value;
+  const box = $("#gChips");
+  box.innerHTML = "";
+  const mine = accessState.rows.filter((r) => r.username === member);
+  // 既有 expires 映射（chip 徽标 + 行内输入框初始值——m2-6 B①/m2-5 逐行编辑）
+  accessState.existing = {};
+  mine.forEach((r) => { accessState.existing[`${r.dimKey}=${r.value}`] = r.expiresAt; });
+  if (!preserve) {
+    accessState.picked = { ...accessState.existing };
+    accessState.expires = { ...accessState.existing };  // 行内初始值=库内值（未编辑即沿用）
+  }
+  state.dims.forEach((dim) => {
+    const g = document.createElement("div");
+    g.className = "dim-group";
+    const label = document.createElement("div");
+    label.className = "dim-label";
+    label.textContent = `${dim.name} (${dim.key})`;
+    g.appendChild(label);
+    (dim.values || []).forEach((v) => {
+      const key = `${dim.key}=${v.value}`;
+      const on = key in accessState.picked;
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "chip" + (on ? " on" : "");
+      chip.textContent = `${v.label} (${v.value})`;
+      // 显示既有值：选中且库内带 expires → title + 徽标样式（不占布局）
+      const existing = accessState.existing[key];
+      if (on && existing) {
+        chip.title = `${t("access.expires.existing")}: ${existing}`;
+        chip.classList.add("has-exp");
+        chip.dataset.expires = existing;
+      }
+      chip.onclick = () => {
+        if (key in accessState.picked) {
+          delete accessState.picked[key];
+          delete accessState.expires[key];
+          const rowInput = g.querySelector(`input.chip-exp[data-key="${CSS.escape(key)}"]`);
+          if (rowInput) rowInput.remove();
+        } else {
+          accessState.picked[key] = "";
+          // 新选行预填：全局输入框值优先（显式意图），否则库内既有值
+          accessState.expires[key] = $("#gExpires").value.trim() || existing || "";
+          chip.after(_rowExpiresInput(key));
+        }
+        chip.classList.toggle("on", key in accessState.picked);
+      };
+      g.appendChild(chip);
+      if (on) g.appendChild(_rowExpiresInput(key));  // 选中态行内输入框（B①）
+    });
+    box.appendChild(g);
+  });
+}
+
+// B①（m2-5）：选中行的独立 expires_at 输入框——每行一个（互不影响）；
+// 值读写 accessState.expires[key]（唯一真值源）
+function _rowExpiresInput(key) {
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "chip-exp";
+  input.dataset.key = key;
+  input.setAttribute("data-i18n-ph", "access.expires.row.ph");
+  input.placeholder = t("access.expires.row.ph");
+  input.value = accessState.expires[key] || "";
+  input.oninput = () => { accessState.expires[key] = input.value.trim(); };
+  return input;
+}
+
+async function saveGrants() {
+  const member = $("#gMember").value;
+  if (!member) return;
+  // B①（m2-5）：逐行独立 expires——每行取自身输入框值（accessState.expires，
+  // 渲染时初始化为库内值——未编辑的既有 key 沿用库内 expires，R3 P2-2 语义
+  // 由初始值承载；空=永久）。全局 #gExpires 仅作新选行预填源。
+  const grants = Object.keys(accessState.picked).map((k) => {
+    const [dimKey, value] = k.split("=");
+    const expires = accessState.expires[k] ?? accessState.existing[k] ?? "";
+    return { dim_key: dimKey, value, expires_at: expires || null };
+  });
+  const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/members/${encodeURIComponent(member)}/grants`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ grants }),
+  });
+  const body = await resp.json().catch(() => ({}));
+  if (!resp.ok) { $("#gMsg").textContent = `${resp.status}: ${body.detail || body.error || ""}`; return; }
+  $("#gMsg").textContent = t("access.saved", body);
+  loadGrants();
+}
+
+function downloadCsv(text) {
+  const blob = new Blob([text], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `grants-${state.org}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+async function importCsv(dryRun) {
+  const text = $("#csvText").value.trim();
+  if (!text) return;
+  const resp = await api(
+    `/api/orgs/${encodeURIComponent(state.org)}/grants/import${dryRun ? "?dry_run=1" : ""}`,
+    { method: "POST", body: text }
+  );
+  const body = await resp.json().catch(() => ({}));
+  if (!resp.ok) { $("#csvMsg").textContent = `${resp.status}: ${body.detail || body.error || ""}`; return; }
+  if (dryRun) {
+    const d = body.diff;
+    $("#csvDiff").hidden = false;
+    $("#csvDiff").textContent = JSON.stringify(d, null, 2);
+    $("#csvMsg").textContent = `+${d.added.length} / -${d.removed.length} / ~${d.changed.length} / rejected ${body.rejected.length}`;
+    return;
+  }
+  $("#csvDiff").hidden = true;
+  $("#csvMsg").textContent = t("access.csv.applied", {
+    users: body.applied_users, rejected: body.rejected.length,
+  });
+  loadGrants();
+}
+
+/* ---------- 维度治理视图（m2-3：停用 dry_run / 退役二次确认） ---------- */
+
+const dimsState = { pending: null }; // {action: 'disable'|'retire', dim, value}
+
+async function loadGovernanceDims() {
+  await loadMeta();
+  renderGovernanceDims();
+}
+
+function renderGovernanceDims() {
+  const body = $("#dimsBody");
+  body.innerHTML = "";
+  const dims = state.dims || [];
+  $("#dimsTable").hidden = dims.length === 0;
+  $("#dimsEmpty").hidden = dims.length > 0;
+  dims.forEach((dim) => {
+    const tr = document.createElement("tr");
+    const vals = (dim.values || []).map((v) => {
+      const chip = document.createElement("span");
+      chip.className = "chip d";
+      chip.textContent = `${v.label} (${v.value})`;
+      const btn = document.createElement("button");
+      btn.className = "btn ghost sm";
+      btn.textContent = t("dims.disable");
+      btn.onclick = () => askDisableValue(dim, v);
+      const wrap = document.createElement("span");
+      wrap.className = "val-item";
+      wrap.appendChild(chip); wrap.appendChild(btn);
+      return wrap;
+    });
+    const retireBtn = document.createElement("button");
+    retireBtn.className = "btn ghost sm";
+    retireBtn.textContent = t("dims.retire");
+    retireBtn.onclick = () => askRetireDim(dim);
+    const cells = [
+      `<td><b>${esc(dim.name)}</b><div class="tiny muted mono">${esc(dim.key)}</div></td>`,
+      `<td>${dim.required ? t("upload.required") : "—"}</td>`,
+    ];
+    tr.innerHTML = cells.join("");
+    const tdVals = document.createElement("td");
+    vals.forEach((v) => tdVals.appendChild(v));
+    tr.appendChild(tdVals);
+    const tdAct = document.createElement("td");
+    tdAct.appendChild(retireBtn);
+    tr.appendChild(tdAct);
+    body.appendChild(tr);
+  });
+}
+
+async function askDisableValue(dim, v) {
+  // dry_run 影响面 → 二次确认
+  const resp = await api(
+    `/api/orgs/${encodeURIComponent(state.org)}/dimensions/${encodeURIComponent(dim.id)}` +
+    `/values/${encodeURIComponent(v.id)}`,
+    { method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "disabled", dry_run: true }) }
+  );
+  const body = await resp.json().catch(() => ({}));
+  if (!resp.ok) { alert(`${resp.status}: ${body.detail || ""}`); return; }
+  const imp = body.impact;
+  showConfirm(
+    t("dims.disable.ask", { value: v.value }),
+    `${t("dims.impact.docs")}: ${imp.docs} · ${t("dims.impact.grants")}: ${imp.grants}` +
+      ` · ${t("dims.impact.users")}: ${imp.users} · ${t("dims.impact.locked")}: ${imp.locked_docs}`,
+    { action: "disable", dim, v }
+  );
+}
+
+async function askRetireDim(dim) {
+  const resp = await api(
+    `/api/orgs/${encodeURIComponent(state.org)}/dimensions/${encodeURIComponent(dim.id)}/retire`,
+    { method: "POST" }
+  );
+  const body = await resp.json().catch(() => ({}));
+  if (!resp.ok) { alert(`${resp.status}: ${body.detail || ""}`); return; }
+  const imp = body.impact;
+  showConfirm(
+    t("dims.retire.ask", { key: dim.key }),
+    `${t("dims.impact.docs")}: ${imp.docs} · ${t("dims.impact.grants")}: ${imp.grants} · ${t("dims.impact.values")}: ${imp.values}`,
+    { action: "retire", dim }
+  );
+}
+
+function showConfirm(title, detail, pending) {
+  dimsState.pending = pending;
+  $("#dimsConfirmTitle").textContent = title;
+  $("#dimsConfirmBody").textContent = detail;
+  $("#dimsConfirm").hidden = false;
+}
+
+async function runConfirmed() {
+  const p = dimsState.pending;
+  if (!p) return;
+  let resp;
+  if (p.action === "disable") {
+    resp = await api(
+      `/api/orgs/${encodeURIComponent(state.org)}/dimensions/${encodeURIComponent(p.dim.id)}` +
+      `/values/${encodeURIComponent(p.v.id)}`,
+      { method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "disabled" }) }
+    );
+  } else {
+    resp = await api(
+      `/api/orgs/${encodeURIComponent(state.org)}/dimensions/${encodeURIComponent(p.dim.id)}/retire?confirm=1`,
+      { method: "POST" }
+    );
+  }
+  $("#dimsConfirm").hidden = true;
+  dimsState.pending = null;
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    alert(`${resp.status}: ${body.detail || ""}`);
+  }
+  loadGovernanceDims();
+}
+
+/* ---------- 任务与审计视图（m2-3：取消 / 重嵌入 / 覆盖率 / 审计 / stats） ---------- */
+
+async function loadOps() {
+  if (!state.token || !state.org) return; // 未连接早退（防 404 噪音）
+  await Promise.all([loadTasks(), loadCoverage(), loadAudit(), loadStats()]);
+}
+
+async function loadTasks() {
+  const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/tasks`);
+  const body = await resp.json().catch(() => ({ tasks: [] }));
+  const tasks = body.tasks || [];
+  $("#tasksTable").hidden = tasks.length === 0;
+  $("#tasksBody").innerHTML = tasks.map((task) => `<tr>
+      <td class="mono tiny">${esc(task.task_id)}</td>
+      <td class="tiny">${esc(task.type)}</td>
+      <td class="mono tiny">${esc(task.doc_id ?? "—")}</td>
+      <td class="tiny">${esc(task.status)}${(task.error || "").startsWith("cancelled:") ? ` · ${t("ops.cancelled")}` : ""}</td>
+      <td class="tiny muted">${esc(task.error || "")}</td>
+      <td>${["pending", "leased", "running"].includes(task.status)
+        ? `<button class="btn ghost sm" data-cancel="${esc(task.task_id)}">${t("ops.cancel")}</button>` : ""}</td>
+    </tr>`).join("");
+  $("#tasksBody").querySelectorAll("[data-cancel]").forEach((b) => {
+    b.onclick = async () => {
+      await api(`/api/orgs/${encodeURIComponent(state.org)}/tasks/${b.dataset.cancel}/cancel`, { method: "POST" });
+      loadTasks();
+    };
+  });
+}
+
+async function loadCoverage() {
+  const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/embedding-coverage`);
+  if (!resp.ok) { $("#covKv").innerHTML = `<dd>${resp.status}</dd>`; return; }
+  const body = await resp.json();
+  const pct = body.totals.total ? Math.round((body.totals.done / body.totals.total) * 1000) / 10 : 100;
+  const reembed = body.reembed
+    ? `${body.reembed.status} · ${body.reembed.done}/${body.reembed.total}`
+    : "—";
+  $("#covKv").innerHTML = [
+    [t("ops.cover.model"), `<span class="mono">${esc(body.embed_model)}</span>`],
+    [t("ops.cover.dim"), esc(body.dim)],
+    [t("ops.cover.ratio"), `${body.totals.done}/${body.totals.total} (${pct}%)`],
+    [t("ops.cover.progress"), esc(reembed)],
+  ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+  $("#covBars").innerHTML = (body.coverage || []).map((c) => {
+    const p = c.total ? Math.round((c.done / c.total) * 100) : 100;
+    return `<div class="fn-row">
+      <span class="tiny">${esc(c.dataset_name)}</span>
+      <div class="fn-bar"><span class="fb-ok" style="width:${p}%"></span></div>
+      <span class="tiny mono">${c.done}/${c.total}</span>
+    </div>`;
+  }).join("");
+}
+
+async function enqueueReembed() {
+  const docId = $("#reembedDoc").value.trim();
+  if (!docId) return;
+  const model = $("#reembedModel").value.trim();
+  const q = model ? `?embed_model=${encodeURIComponent(model)}` : "";
+  const resp = await api(
+    `/api/orgs/${encodeURIComponent(state.org)}/documents/${encodeURIComponent(docId)}/reindex${q}`,
+    { method: "POST" }
+  );
+  const body = await resp.json().catch(() => ({}));
+  if (!resp.ok) { $("#reembedMsg").textContent = `${resp.status}: ${body.detail || ""}`; return; }
+  $("#reembedMsg").textContent = t("ops.reembed.ok", { type: body.type, task: body.task_id });
+  loadTasks(); loadCoverage();
+}
+
+async function loadAudit() {
+  const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/audit?limit=50`);
+  if (!resp.ok) { $("#auditEmpty").hidden = false; return; }
+  const body = await resp.json();
+  $("#auditScope").textContent = body.scope === "full" ? "" : t("ops.audit.metadata");
+  const events = body.events || [];
+  $("#auditTable").hidden = events.length === 0;
+  $("#auditEmpty").hidden = events.length > 0;
+  $("#auditBody").innerHTML = events.map((e) => `<tr>
+      <td class="mono tiny">${esc(e.created_at ?? "")}</td>
+      <td class="tiny">${esc(e.actor ?? "")}</td>
+      <td class="tiny mono">${esc(e.action ?? "")}</td>
+      <td class="tiny muted">${esc(e.detail_json ? String(e.detail_json).slice(0, 160) : "—")}</td>
+    </tr>`).join("");
+}
+
+async function loadStats() {
+  const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/stats`);
+  if (!resp.ok) { $("#statsKv").innerHTML = ""; return; }
+  const body = await resp.json();
+  const m = body.maintenance || {};
+  $("#statsKv").innerHTML = Object.entries(m).map(([k, v]) =>
+    `<dt class="mono tiny">${esc(k)}</dt><dd class="tiny">${esc(typeof v === "object" ? JSON.stringify(v) : String(v))}</dd>`
+  ).join("");
+}
+
 /* ---------- 视图切换 / 语言切换 / 装配 ---------- */
 function switchView(view) {
   state.view = view;
   document.querySelectorAll(".nav-item").forEach((b) => b.classList.toggle("on", b.dataset.view === view));
   document.querySelectorAll(".view").forEach((v) => (v.hidden = v.id !== "view-" + view));
+  if (view === "access") loadGrants();
+  if (view === "dims") loadGovernanceDims();
+  if (view === "ops") loadOps();
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -183,6 +563,9 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   document.addEventListener("langchange", () => {
     renderDimChips(); // chips 内的动态文案随语言重渲染
+    renderGovernanceDims(); // 治理视图按钮文案
+    // m2-6 B①：语言切换保留已选/输入状态（preserve 重渲染——不清 picked/expires）
+    if (state.view === "access" && accessState.members.length) renderGrantChips(true);
   });
 
   loadCfg();
@@ -192,5 +575,21 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#upRefresh").addEventListener("click", refreshStatus);
   $("#qGo").addEventListener("click", doSearch);
   $("#qInput").addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !ev.isComposing) doSearch(); });
+  // 管理面三视图（m2-3）
+  $("#gMember").addEventListener("change", renderGrantChips);
+  $("#gSave").addEventListener("click", saveGrants);
+  $("#grantsExport").addEventListener("click", async () => {
+    const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/grants/export`);
+    if (resp.ok) downloadCsv(await resp.text());
+  });
+  $("#csvDryRun").addEventListener("click", () => importCsv(true));
+  $("#csvApply").addEventListener("click", () => importCsv(false));
+  $("#dimsRefresh").addEventListener("click", loadGovernanceDims);
+  $("#dimsConfirmOk").addEventListener("click", runConfirmed);
+  $("#dimsConfirmCancel").addEventListener("click", () => {
+    $("#dimsConfirm").hidden = true; dimsState.pending = null;
+  });
+  $("#opsRefresh").addEventListener("click", loadOps);
+  $("#reembedGo").addEventListener("click", enqueueReembed);
   if (state.token && state.org) loadMeta();
 });

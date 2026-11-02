@@ -41,6 +41,13 @@ input[type="file"] { font-size: 13px; color: var(--ink-2); }
 .dim-label { width: 100%; font-size: 12px; color: var(--ink-3); }
 .chip { border: 1px solid var(--rule); background: var(--paper-2); border-radius: 999px; padding: 3px 12px; cursor: pointer; font-size: 12.5px; color: var(--ink-2); }
 .chip.on { background: var(--moss-w); border-color: var(--moss); color: var(--moss); font-weight: 600; }
+/* 带既有临时授权的选中 chip（m2-6 B①）：点状徽标 + title 展示库内 expires */
+.chip.on.has-exp::after { content: " ⏱"; font-size: 11px; opacity: 0.8; }
+/* 选中行的独立 expires 输入框（m2-5 B① 逐行过期编辑）：紧随 chip、窄幅 */
+.chip-exp { border: 1px dashed var(--rule); border-radius: 6px; padding: 2px 8px;
+  font-size: 12px; width: 150px; margin-left: 6px; color: var(--ink-2);
+  background: var(--paper); }
+.chip-exp:focus { border-color: var(--moss); outline: none; }
 .btn { border: 1px solid var(--rule); background: var(--paper-2); border-radius: 8px; padding: 7px 16px; cursor: pointer; font-size: 13.5px; color: var(--ink); }
 .btn:hover { background: var(--paper-3); }
 .btn.primary { background: var(--seal); border-color: var(--seal); color: #fff; font-weight: 600; }
@@ -67,3 +74,20 @@ input[type="file"] { font-size: 13px; color: var(--ink-2); }
 .view { animation: fade .18s ease-out; }
 @keyframes fade { from { opacity: .35; } to { opacity: 1; } }
 @media (max-width: 720px) { .body { flex-direction: column; } .rail { width: 100%; flex-direction: row; flex-wrap: wrap; } .conn { margin-top: 0; border: 0; } }
+
+/* ---- m2-3 管理面三视图（权限 / 维度治理 / 任务与审计） ---- */
+.head-act { display: flex; gap: 8px; align-items: center; }
+.csv-box { width: 100%; border: 1px solid var(--rule); border-radius: 8px; padding: 8px 10px; font-family: var(--mono); font-size: 12px; margin-top: 8px; box-sizing: border-box; }
+.diff-box { background: var(--paper-3); border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 240px; overflow: auto; margin-top: 10px; }
+.pane { background: var(--paper-2); border: 1px solid var(--rule); border-radius: var(--r-lg); padding: 14px 18px; }
+.lane-h { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.lane-h h3 { margin: 0; font-size: 14px; }
+.fn-row { display: grid; grid-template-columns: 120px 1fr 72px; gap: 10px; align-items: center; padding: 4px 0; }
+.fn-bar { background: var(--paper-3); border-radius: 999px; height: 8px; overflow: hidden; }
+.fn-bar .fb-ok { display: block; height: 100%; background: var(--moss); border-radius: 999px; }
+.confirm { background: var(--seal-w); border: 1px solid var(--seal); border-radius: var(--r-lg); padding: 14px 18px; margin-top: 14px; }
+.confirm b { font-size: 13.5px; color: var(--seal); }
+.cf-act { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
+.btn.sm { padding: 4px 10px; font-size: 12.5px; }
+.btn.danger-btn { background: var(--danger, #b3261e); border-color: var(--danger, #b3261e); color: #fff; font-weight: 600; }
+.val-item { display: inline-flex; gap: 6px; align-items: center; margin-right: 8px; }

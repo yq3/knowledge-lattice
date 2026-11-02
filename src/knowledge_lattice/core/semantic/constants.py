@@ -1,0 +1,87 @@
+"""语义层常量：实体类型 / 关系类型白名单（design §5.8 L834-847 白名单表逐行）。
+
+**三处一致**（TC-SYNC-09）：本常量 + `sem_rel_types` 迁移种子 +
+`trg_sem_rel_check` 触发器——新增关系类型 = schema 变更走迁移（三方同步改）。
+"""
+
+from __future__ import annotations
+
+# 实体类型九值（design §4 sem_entities.type CHECK 同源）
+SEM_ENTITY_TYPES = frozenset({
+    "concept", "system", "scenario", "template", "template_field",
+    "report", "report_item", "table", "column",
+})
+
+# 任意型端点通配（§5.8 refers_to：concept / system → 任意实体——种子与触发器
+# 以 '*' 表达，触发器对 '*' 放行）
+DST_TYPE_ANY = "*"
+
+# 关系类型白名单（rel_type, src_type, dst_type)——§5.8 白名单表十二行（十种
+# rel_type：derived_from 两端点行、refers_to concept/system 两行）
+SEM_REL_TYPES: tuple[tuple[str, str, str], ...] = (
+    ("uses", "scenario", "template"),
+    ("has_field", "template", "template_field"),
+    ("backed_by", "template", "table"),
+    ("maps_to", "template_field", "column"),
+    ("has_item", "report", "report_item"),
+    ("child_of", "report_item", "report_item"),
+    ("derived_from", "report_item", "template_field"),
+    ("derived_from", "report_item", "column"),
+    ("has_column", "table", "column"),
+    ("refers_to", "concept", DST_TYPE_ANY),
+    ("refers_to", "system", DST_TYPE_ANY),
+    ("related_to", "concept", "concept"),
+)
+
+# 十种关系类型名（计数校验用）
+SEM_REL_TYPE_NAMES = frozenset(r for r, _, _ in SEM_REL_TYPES)
+
+
+def rel_type_allowed(rel_type: str, src_type: str, dst_type: str) -> bool:
+    """白名单判定（与 trg_sem_rel_check 同款语义——'*' 任意型放行）。
+
+    同步编排的关系预校验用（冲突记因不写入——TC-SYNC-04）；触发器为库内
+    最后防线（T-S5）。
+    """
+    return any(
+        rel == rel_type and st == src_type and (dt == DST_TYPE_ANY or dt == dst_type)
+        for rel, st, dt in SEM_REL_TYPES
+    )
+
+
+# 引用关系类型：metadata 适配器的引用面来源（backed_by→table / maps_to→column）
+REFERENCE_REL_TYPES = ("backed_by", "maps_to")
+
+# 本仓适配器名集合（m2s-3 起五源齐全：template_center / metadata〔m2s-1〕+
+# scenario_config / report_center / yaml〔m2s-3〕）
+SYNC_ADAPTERS = ("template_center", "metadata", "scenario_config",
+                 "report_center", "yaml")
+
+# YAML 纯人工实体仅允许 concept/system（design §5.8 YAML 规范/合并规则表第 3 行）
+PURE_YAML_ENTITY_TYPES = frozenset({"concept", "system"})
+
+# YAML 仓目录 → 允许的实体类型域（concepts/=纯人工；其余为覆盖层目录）
+YAML_DIR_TYPE_DOMAINS: dict[str, frozenset[str]] = {
+    "concepts": frozenset({"concept", "system"}),
+    "templates": frozenset({"template", "template_field"}),
+    "report_items": frozenset({"report", "report_item"}),
+    "scenarios": frozenset({"scenario"}),
+}
+
+# ---- 实体召回路（design §5.10——m2s-6/M2-S3） ----
+
+# 召回展开关系集：低扇出白名单——**不含 uses**（高扇出防召回发散，TC-TAG-04）
+ENTITY_RECALL_RELS: tuple[str, ...] = (
+    "refers_to", "has_field", "maps_to", "related_to",
+)
+ENTITY_RECALL_MAX_SEEDS = 20       # 调用方种子上限（§5.10 第 1 点 entities ≤20）
+ENTITY_RECALL_MAX_ENTITIES = 50    # 展开后实体集合 E 上限（§5.10 第 2 点）
+
+# ---- restricted 持权（T-S9 持权路径——m2s-6） ----
+
+# membership role 值：普通成员 + semantic:restricted（极少数敏感实体可见权——
+# §6.3 权限口径③；org_admin 不默认兼任——最小面）
+SEM_RESTRICTED_ROLE = "sem_restricted"
+
+# 持权访问 restricted 实体的审计事件（权限事件——A-16 口径持权面）
+EVENT_SEMANTIC_RESTRICTED_ACCESS = "semantic.restricted_access"

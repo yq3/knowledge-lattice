@@ -16,7 +16,8 @@
   精确扫描起步——G-6）+ visible_chunk_ids / rids_without_vector（ACL 双断言源
   与 vector_pending 判定）——**M1-1 实装**，检索配方双后端等价（design §8 M1.1）；
   render_vec_recall_select 供向量列 `<=>` 断言与实验起步；
-- **Semantic**：协议种子签名见 store/backend.py（M2-S1 实装）。
+- **Semantic**：M2-S1 实装——sync 分批 upsert / missing·retired 推进 / run 记录 /
+  build 读写（L0 导出占位归 m2s-2），与 sqlite 同语义同消息源。
 
 连接模型：持有单个 psycopg Connection（autocommit——显式 BEGIN/COMMIT 由写路径
 自管）；池化形态经 connection.connect_pool + ThreadLocal 代理随 M1 服务化落地。
@@ -27,6 +28,8 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Iterator, Sequence
+from datetime import UTC, datetime
+from pathlib import Path
 
 import psycopg
 
@@ -203,11 +206,131 @@ class PgBackend:
         for r in rows:
             r["dims"] = dims.get(r["doc_id"], {})
 
-    def recall_by_entities(self, entity_ids, plan: AclPlan, *, top_k: int = 30) -> list[dict]:
-        raise NotImplementedError("实体召回路随 M2-S3（D23 §5.10）")
+    def recall_by_entities(
+        self, entity_ids, plan: AclPlan, *, top_k: int = 30,
+        seed_ids=None,
+    ) -> list[dict]:
+        """实体召回路（M2-S3/m2s-6——design §5.10；与 sqlite 同语义）：得分
+        Σhits×（种子 1.0 / 扩展 0.5）+ rank（1 起名次协议）+ matched_entities
+        （STRING_AGG 拆分回 int 列表）。seed_ids 缺省 = 全部按种子 1.0。"""
+        from knowledge_lattice.store.postgres.acl_render import (
+            render_entity_recall_select,
+        )
+
+        ids = list(dict.fromkeys(entity_ids))
+        if not ids:
+            return []
+        seeds = list(dict.fromkeys(seed_ids)) if seed_ids is not None else ids
+        sql, params = render_entity_recall_select(plan, ids, seeds, top_k=top_k)
+        cursor = self._conn.execute(sql, params)
+        cols = [d[0] for d in cursor.description]
+        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+        self._attach_dims(rows)
+        for rank, row in enumerate(rows, start=1):
+            row["rank"] = rank
+            row["matched_entities"] = [
+                int(x) for x in str(row.get("matched_entities") or "").split(",")
+                if x != ""]
+        return rows
+
+    def sem_fuzzy_replace(
+        self, org_id: str, term_rows: Sequence[dict], del_rows: Sequence[dict],
+    ) -> int:
+        """模糊索引整替（m2s-6——与 sqlite 同语义：先删后插单事务；embedding
+        pgvector 文本形态收口本方言侧 format_vector；del_rows 的 term_idx →
+        新插入 id 内部映射〔RETURNING 回填〕）。"""
+        from knowledge_lattice.store.postgres.vec import format_vector
+
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute("DELETE FROM sem_fuzzy_dels WHERE org_id = %(org)s",
+                         {"org": org_id})
+            conn.execute("DELETE FROM sem_fuzzy_terms WHERE org_id = %(org)s",
+                         {"org": org_id})
+            written = 0
+            for r in term_rows:
+                vec = r.get("embedding")
+                cur = conn.execute(
+                    "INSERT INTO sem_fuzzy_terms(org_id, entity_id, kind,"
+                    " text_norm, term_len, pinyin, embed_model, embedding)"
+                    " VALUES (%(org)s, %(ent)s, %(kind)s, %(norm)s, %(len)s,"
+                    " %(pin)s, %(model)s, %(vec)s::vector)"
+                    " RETURNING id",
+                    {"org": org_id, "ent": r["entity_id"], "kind": r["kind"],
+                     "norm": r["text_norm"], "len": r["term_len"],
+                     "pin": r.get("pinyin") or "", "model": r.get("embed_model"),
+                     "vec": format_vector(vec) if vec is not None else None},
+                )
+                r["id"] = cur.fetchone()[0]
+                written += 1
+            for d in del_rows:
+                conn.execute(
+                    "INSERT INTO sem_fuzzy_dels(org_id, del_key, term_id)"
+                    " VALUES (%(org)s, %(key)s, %(term)s) ON CONFLICT DO NOTHING",
+                    {"org": org_id, "key": d["del_key"],
+                     "term": term_rows[d["term_idx"]]["id"]},
+                )
+            conn.execute("COMMIT")
+            return written
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+    def sem_fuzzy_terms_all(self, org_id: str) -> list[dict]:
+        """org 内全部模糊索引行（与 sqlite 同形——向量层另走 vec_search）。"""
+        rows = self._conn.execute(
+            "SELECT id, entity_id, kind, text_norm, term_len, pinyin,"
+            " embed_model FROM sem_fuzzy_terms WHERE org_id = %(org)s"
+            " ORDER BY id",
+            {"org": org_id},
+        ).fetchall()
+        cols = ("id", "entity_id", "kind", "text_norm", "term_len", "pinyin",
+                "embed_model")
+        return [dict(zip(cols, r)) for r in rows]
+
+    def sem_fuzzy_vec_search(
+        self, org_id: str, query_vec, *, embed_model: str,
+        top_k: int = 3, min_sim: float = 0.75,
+    ) -> list[dict]:
+        """模糊向量近邻（与 sqlite 同语义——`<=>` 余弦距离精确扫描、
+        sim = 1 - 距离；term 级行，实体去重与 min_sim 过滤在消费面）。"""
+        from knowledge_lattice.store.postgres.vec import format_vector
+
+        rows = self._conn.execute(
+            "SELECT entity_id, text_norm, kind,"
+            " 1 - (embedding <=> %(qv)s::vector) AS sim"
+            " FROM sem_fuzzy_terms"
+            " WHERE org_id = %(org)s AND embed_model = %(model)s"
+            "   AND embedding IS NOT NULL"
+            " ORDER BY embedding <=> %(qv)s::vector"
+            " LIMIT %(lim)s",
+            {"qv": format_vector(query_vec), "org": org_id,
+             "model": embed_model, "lim": max(top_k * 4, top_k)},
+        ).fetchall()
+        return [{"entity_id": r[0], "text_norm": r[1], "kind": r[2],
+                 "sim": float(r[3])} for r in rows]
+
+    def sem_fuzzy_index_stats(self, org_id: str) -> dict:
+        """模糊索引对账数据源（m2s-6 R2/P2-1——与 sqlite 同语义）。"""
+        row = self._conn.execute(
+            "SELECT count(*),"
+            " count(embedding) FROM sem_fuzzy_terms WHERE org_id = %(org)s",
+            {"org": org_id}).fetchone()
+        return {"terms": row[0] or 0, "vec_embedded": row[1] or 0}
+
+    def sem_update_build_stats(self, org_id: str, build_id: int,
+                               stats_json: str) -> bool:
+        """build 行 stats_json 原地更新（m2s-6 R2/P2-1——与 sqlite 同语义）。"""
+        cur = self._conn.execute(
+            "UPDATE sem_builds SET stats_json = %(stats)s"
+            " WHERE org_id = %(org)s AND id = %(bid)s",
+            {"stats": stats_json, "org": org_id, "bid": build_id})
+        return cur.rowcount > 0
 
     def expand_relations(self, org_id: str, seed_ids, rels, *, depth: int = 1) -> dict:
-        raise NotImplementedError("语义关系递归展开随 M2-S1（#42 拍板3）")
+        """薄适配实现见 Semantic 域（P3-3/R2——NotImplementedError 占位已删）。"""
+        return _expand_relations_thin(self, org_id, seed_ids, rels, depth=depth)
 
     # ============ Ingest 域（chunks+状态同事务 / 嵌入回写——MVCC 普通事务） ============
 
@@ -216,26 +339,51 @@ class PgBackend:
         " heading_path, page_no, sheet_name, bbox_json, keywords, llm_keywords, tags"
     )
 
-    def insert(self, doc_id: str, version: int, chunks: list[dict]) -> None:
+    def insert(
+        self, doc_id: str, version: int, chunks: list[dict], *,
+        sem_tags: dict | None = None,
+    ) -> None:
         """chunks + 阶段状态 + 首次上传 D20 切换——同一事务（BEGIN … COMMIT）。
 
         幂等（TC-ING-07）与 pending_dims 解析防护（P3-7：逐值命中校验，不符
-        raise → 整事务回滚）与 SqliteBackend 逐条同源。
-        """
+        raise → 整事务回滚）与 SqliteBackend 逐条同源。M2.1 并发面收口：事务内
+        pending 存活复核（pending_status='failed' → raise，防取消窗口复活——
+        FOR UPDATE 行锁与 set_doc_pending_failed 串行化，sqlite 同构）。
+
+        sem_tags（M2-S3/m2s-5 同事务打标——TC-TAG-01；与 sqlite 同语义：
+        seq 经 INSERT … RETURNING rid 收集映射，标签行随块同事务写入）。"""
         conn = self._conn
         conn.execute("BEGIN")
         try:
+            pending_row = conn.execute(
+                "SELECT pending_status FROM documents"
+                " WHERE id = %(doc)s AND pending_version = %(v)s FOR UPDATE",
+                {"doc": doc_id, "v": version},
+            ).fetchone()
+            if pending_row is not None and pending_row[0] == "failed":
+                conn.execute("ROLLBACK")
+                raise VersionConflictError(
+                    f"insert rejected: doc={doc_id!r} v{version} pending 已 failed"
+                    "（取消/并发失败先落账——版本亡故不复活，P0-2.3/TC-TASK-03）"
+                )
             conn.execute(
                 "DELETE FROM chunks WHERE doc_id = %(doc)s AND version = %(v)s",
                 {"doc": doc_id, "v": version},
             )
+            # 幂等重跑的标签同批清（与块行先删后插同步——防同版本重跑双写 tag）
+            conn.execute(
+                "DELETE FROM sem_chunk_entities WHERE doc_id = %(doc)s"
+                " AND version = %(v)s",
+                {"doc": doc_id, "v": version},
+            )
+            rid_by_seq: dict[int, int] = {}
             for ch in chunks:
-                conn.execute(
+                cur = conn.execute(
                     f"INSERT INTO chunks({self._CHUNK_COLS}) VALUES"
                     " (%(id)s, %(doc_id)s, %(seq)s, %(version)s, %(content)s,"
                     " %(title_seg)s, %(content_seg)s, %(token_count)s, %(heading_path)s,"
                     " %(page_no)s, %(sheet_name)s, %(bbox_json)s, %(keywords)s,"
-                    " %(llm_keywords)s, %(tags)s)",
+                    " %(llm_keywords)s, %(tags)s) RETURNING rid",
                     {
                         "id": ch["id"],
                         "doc_id": doc_id,
@@ -254,6 +402,26 @@ class PgBackend:
                         "tags": ch.get("tags", ""),
                     },
                 )
+                rid_by_seq[ch["seq"]] = cur.fetchone()[0]
+            if sem_tags and sem_tags.get("rows"):
+                org_row = conn.execute(
+                    "SELECT org_id FROM documents WHERE id = %(doc)s", {"doc": doc_id}
+                ).fetchone()
+                org_id = org_row[0] if org_row else None
+                if org_id:
+                    for seq, entity_id, hits in sem_tags["rows"]:
+                        rid = rid_by_seq.get(seq)
+                        if rid is None:
+                            continue
+                        conn.execute(
+                            "INSERT INTO sem_chunk_entities(org_id, chunk_rid,"
+                            " doc_id, version, entity_id, hits, dict_rev)"
+                            " VALUES(%(org)s, %(rid)s, %(doc)s, %(v)s, %(eid)s,"
+                            " %(hits)s, %(rev)s)",
+                            {"org": org_id, "rid": rid, "doc": doc_id,
+                             "v": version, "eid": entity_id, "hits": hits,
+                             "rev": sem_tags["dict_rev"]},
+                        )
             conn.execute(
                 "UPDATE documents SET pending_status = 'searchable_lexical',"
                 " updated_at = CURRENT_TIMESTAMP"
@@ -410,10 +578,16 @@ class PgBackend:
                 {"doc": doc_id, "old": old_version},
             )
             conn.execute(
-                "UPDATE chunks SET tombstone = 1,"
+                "UPDATE chunks SET tombstone = 1, tombstoned_at = CURRENT_TIMESTAMP,"
                 " title_seg = '', content_seg = '', keywords = '',"
                 " llm_keywords = '', tags = ''"
                 " WHERE doc_id = %(doc)s AND version = %(old)s",
+                {"doc": doc_id, "old": old_version},
+            )
+            # M2-S3/m2s-5 同事务 untag（T-S10①）：旧版本块语义标随切换清除
+            conn.execute(
+                "DELETE FROM sem_chunk_entities WHERE doc_id = %(doc)s"
+                " AND version = %(old)s",
                 {"doc": doc_id, "old": old_version},
             )
             cur = conn.execute(
@@ -457,44 +631,86 @@ class PgBackend:
         self,
         *,
         doc_id: str,
-        pending_version: int,
         content_hash: str,
         mime_type: str,
         raw_object_key: str,
         pending_dims_json: str | None,
-    ) -> None:
-        """覆盖上传开新 pending 版本（写入级防并发——同 sqlite 口径）。"""
-        cur = self._conn.execute(
-            "UPDATE documents SET"
-            " pending_version = %(v)s, pending_status = 'parsing', pending_error = NULL,"
-            " pending_dims_json = %(dims)s, content_hash = %(hash)s, mime_type = %(mime)s,"
-            " raw_object_key = %(obj)s, updated_at = CURRENT_TIMESTAMP"
-            " WHERE id = %(doc)s"
-            "   AND (pending_version IS NULL OR pending_status = 'failed')",
-            {
-                "doc": doc_id, "v": pending_version, "dims": pending_dims_json,
-                "hash": content_hash, "mime": mime_type, "obj": raw_object_key,
-            },
-        )
-        if cur.rowcount == 0:
-            raise VersionConflictError(
-                f"overwrite rejected: doc={doc_id!r} 已有进行中 pending 版本"
-                "（同一时刻只有一个 pending——P0-2.3/T7）"
-            )
+        pending_version: int | None = None,
+        audit: tuple[str, str] | None = None,
+    ) -> int:
+        """覆盖上传开新 pending 版本（写入级防并发——同 sqlite 口径）。
 
-    def set_doc_pending_failed(self, doc_id: str, version: int, error: str) -> None:
-        """pending 版本失败：failed + pending_error + 立即物理删块——同一事务。"""
+        pending_version=None = 事务内自算 max(历史)+1（P3-N5——读写同一事务，
+        MVCC 下并发窗口由 WHERE 零行兜底）；返回实际版本号。audit 同事务。
+        """
         conn = self._conn
         conn.execute("BEGIN")
         try:
-            conn.execute(
+            if pending_version is None:
+                pending_version = self._max_document_version_locked(conn, doc_id) + 1
+            cur = conn.execute(
+                "UPDATE documents SET"
+                " pending_version = %(v)s, pending_status = 'parsing', pending_error = NULL,"
+                " pending_dims_json = %(dims)s, content_hash = %(hash)s, mime_type = %(mime)s,"
+                " raw_object_key = %(obj)s, updated_at = CURRENT_TIMESTAMP"
+                " WHERE id = %(doc)s"
+                "   AND (pending_version IS NULL OR pending_status = 'failed')",
+                {
+                    "doc": doc_id, "v": pending_version, "dims": pending_dims_json,
+                    "hash": content_hash, "mime": mime_type, "obj": raw_object_key,
+                },
+            )
+            if cur.rowcount == 0:
+                raise VersionConflictError(
+                    f"overwrite rejected: doc={doc_id!r} 已有进行中 pending 版本"
+                    "（同一时刻只有一个 pending——P0-2.3/T7）"
+                )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+            return pending_version
+        except BaseException:
+            self._rollback()
+            raise
+
+    def _max_document_version_locked(self, conn, doc_id: str) -> int:
+        row = conn.execute(
+            "SELECT MAX(m) FROM ("
+            "  SELECT active_version AS m FROM documents WHERE id = %(doc)s"
+            "  UNION ALL SELECT pending_version FROM documents WHERE id = %(doc)s"
+            "  UNION ALL SELECT MAX(version) FROM chunks WHERE doc_id = %(doc)s)"
+            " AS v(m)",
+            {"doc": doc_id},
+        ).fetchone()
+        return row[0] or 0
+
+    def set_doc_pending_failed(self, doc_id: str, version: int, error: str) -> None:
+        """pending 版本失败：failed + pending_error + 立即物理删块——同一事务。
+
+        P1-1 守卫（M2.1 R2，与 sqlite 同构）：UPDATE 零行（版本已被切换收编/
+        清空/取代——调用方事务外 stale read）时不删块直接提交返回，防取消×切换
+        竞态删掉在用版本全部 chunks。
+        """
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
                 "UPDATE documents SET pending_status = 'failed', pending_error = %(err)s,"
                 " updated_at = CURRENT_TIMESTAMP"
                 " WHERE id = %(doc)s AND pending_version = %(v)s",
                 {"err": error, "doc": doc_id, "v": version},
             )
+            if cur.rowcount == 0:
+                conn.execute("COMMIT")
+                return
             conn.execute(
                 "DELETE FROM chunks WHERE doc_id = %(doc)s AND version = %(v)s",
+                {"doc": doc_id, "v": version},
+            )
+            # M2-S3/m2s-5 同事务 untag：失败版本物理删块的语义标随删（T8+T-S10）
+            conn.execute(
+                "DELETE FROM sem_chunk_entities WHERE doc_id = %(doc)s"
+                " AND version = %(v)s",
                 {"doc": doc_id, "v": version},
             )
             conn.execute("COMMIT")
@@ -505,8 +721,10 @@ class PgBackend:
                 pass
             raise
 
-    def delete_document(self, doc_id: str) -> None:
-        """删除文档（同事务：非终态任务取消 → 级联删文档——TC-VER-07/T19①）。"""
+    def delete_document(
+        self, doc_id: str, audit: tuple[str, str] | None = None
+    ) -> None:
+        """删除文档（同事务：任务取消 → 级联删 → outbox 治理事件——M2.4 收口）。"""
         conn = self._conn
         conn.execute("BEGIN")
         try:
@@ -517,12 +735,17 @@ class PgBackend:
                 {"doc": doc_id},
             )
             conn.execute("DELETE FROM documents WHERE id = %(doc)s", {"doc": doc_id})
+            # M2-S3/m2s-5：sem_chunk_entities 随删清挂此事务位（untag——全版本；
+            # T-S10②/design §4 设计说明②的纪律清理挂接点，m2-2 已留位）
+            conn.execute(
+                "DELETE FROM sem_chunk_entities WHERE doc_id = %(doc)s",
+                {"doc": doc_id},
+            )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
             conn.execute("COMMIT")
         except BaseException:
-            try:
-                conn.execute("ROLLBACK")
-            except psycopg.Error:
-                pass
+            self._rollback()
             raise
 
     def get_document_dims(self, doc_id: str) -> dict[str, list[str]]:
@@ -538,8 +761,11 @@ class PgBackend:
             dims.setdefault(key, []).append(value)
         return dims
 
-    def set_document_dims(self, doc_id: str, dims: dict[str, list[str]]) -> None:
-        """按 key 全量替换文档维度行（PATCH 落点——与 sqlite 同构）。"""
+    def set_document_dims(
+        self, doc_id: str, dims: dict[str, list[str]],
+        audit: tuple[str, str] | None = None,
+    ) -> None:
+        """按 key 全量替换文档维度行（PATCH 落点——与 sqlite 同构；audit 同事务）。"""
         conn = self._conn
         conn.execute("BEGIN")
         try:
@@ -566,12 +792,11 @@ class PgBackend:
                             f"document dims resolution failed: ({dim_key!r}, {value!r})"
                             "（维度/取值不存在？）——事务回滚"
                         )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
             conn.execute("COMMIT")
         except BaseException:
-            try:
-                conn.execute("ROLLBACK")
-            except psycopg.Error:
-                pass
+            self._rollback()
             raise
 
     def get_chunk(self, chunk_id: str) -> dict | None:
@@ -963,29 +1188,76 @@ class PgBackend:
 
     # ============ Admin 域（任务状态机 / 文档状态 / 指纹 / 只读维度取值） ============
 
-    def create_task(self, doc_id: str | None, *, task_type: str = "ingest") -> str:
-        task_id = f"tsk_{uuid.uuid4()}"
+    def create_task(
+        self, doc_id: str | None, *, task_type: str = "ingest",
+        target_version: int | None = None, task_id: str | None = None,
+        payload: str | None = None,
+        audit: tuple[str, str] | None = None,
+    ) -> str:
+        """target_version（0005/M2.1 R2 边界裁定 B(a)）：ingest 任务的目标文档
+        版本——取消与崩溃耗尽清扫按该版本落 pending failed（P2-3）；NULL=无版本
+        任务。task_id：预生成 id 显式携带（治理 outbox 事件同源关联——M2.4）。
+        payload（0006/M2-S1）：任务参数 JSON（semantic_sync {org, adapter}）。
+        audit（m2s-2，G-16 收口）：(event_type, payload_json) 与任务行同一事务
+        （BEGIN…COMMIT——与 sqlite 同语义）。"""
+        task_id = task_id or f"tsk_{uuid.uuid4()}"
+        if audit is not None:
+            conn = self._conn
+            conn.execute("BEGIN")
+            try:
+                conn.execute(
+                    "INSERT INTO tasks(id, doc_id, type, status, target_version,"
+                    " payload) VALUES(%(id)s, %(doc)s, %(type)s, 'pending',"
+                    " %(tv)s, %(payload)s)",
+                    {"id": task_id, "doc": doc_id, "type": task_type,
+                     "tv": target_version, "payload": payload},
+                )
+                conn.execute(
+                    "INSERT INTO audit_outbox(id, event_type, payload_json)"
+                    " VALUES(%(id)s, %(t)s, %(p)s)",
+                    {"id": f"aud_{uuid.uuid4()}", "t": audit[0], "p": audit[1]},
+                )
+                conn.execute("COMMIT")
+            except BaseException:
+                self._rollback()
+                raise
+            return task_id
         self._conn.execute(
-            "INSERT INTO tasks(id, doc_id, type, status)"
-            " VALUES(%(id)s, %(doc)s, %(type)s, 'pending')",
-            {"id": task_id, "doc": doc_id, "type": task_type},
+            "INSERT INTO tasks(id, doc_id, type, status, target_version, payload)"
+            " VALUES(%(id)s, %(doc)s, %(type)s, 'pending', %(tv)s, %(payload)s)",
+            {"id": task_id, "doc": doc_id, "type": task_type, "tv": target_version,
+             "payload": payload},
         )
         return task_id
 
     def get_task(self, task_id: str) -> dict | None:
         row = self._conn.execute(
-            "SELECT id, doc_id, type, status, attempts, error, created_at, updated_at"
+            "SELECT id, doc_id, type, status, attempts, error, target_version,"
+            " lease_owner, lease_until, heartbeat_at, created_at, updated_at, payload"
             " FROM tasks WHERE id = %(id)s",
             {"id": task_id},
         ).fetchone()
         if row is None:
             return None
-        cols = ("id", "doc_id", "type", "status", "attempts", "error", "created_at", "updated_at")
+        cols = (
+            "id", "doc_id", "type", "status", "attempts", "error", "target_version",
+            "lease_owner", "lease_until", "heartbeat_at", "created_at", "updated_at",
+            "payload",
+        )
         return dict(zip(cols, row))
+
+    def pending_task_exists(self, task_type: str, payload: str) -> bool:
+        """同型同参 pending 任务在队判定（G-19 兜底投递去重——与 sqlite 同构）。"""
+        return bool(self._conn.execute(
+            "SELECT 1 FROM tasks WHERE type = %(t)s AND payload = %(p)s"
+            " AND status = 'pending' LIMIT 1",
+            {"t": task_type, "p": payload},
+        ).fetchone())
 
     def list_tasks(self, org_id: str, *, doc_id: str | None = None) -> list[dict]:
         sql = (
             "SELECT t.id, t.doc_id, t.type, t.status, t.attempts, t.error,"
+            " t.target_version, t.lease_owner, t.lease_until, t.heartbeat_at,"
             " t.created_at, t.updated_at FROM tasks t"
             " JOIN documents d ON d.id = t.doc_id"
             " WHERE d.org_id = %(org)s"
@@ -994,28 +1266,230 @@ class PgBackend:
         if doc_id is not None:
             sql += " AND t.doc_id = %(doc)s"
             params["doc"] = doc_id
-        sql += " ORDER BY t.created_at DESC"
+        # 次级排序键 seq——created_at 秒级并列下的**单调** tiebreak（m2-6 B②：
+        # 原 id 次级键为 uuid4 随机非单调——0010 迁移的 tasks.seq IDENTITY 列
+        # = 插入序，认领/清单序恒等于投递序；sqlite 侧对偶为 rowid）
+        sql += " ORDER BY t.created_at DESC, t.seq DESC"
         rows = self._conn.execute(sql, params).fetchall()
-        cols = ("id", "doc_id", "type", "status", "attempts", "error", "created_at", "updated_at")
+        cols = (
+            "id", "doc_id", "type", "status", "attempts", "error", "target_version",
+            "lease_owner", "lease_until", "heartbeat_at", "created_at", "updated_at",
+        )
         return [dict(zip(cols, r)) for r in rows]
 
     def update_task(
         self, task_id: str, *, status: str | None = None, error: str | None = None
     ) -> None:
-        """状态机推进：pending→leased→running→done|failed（§5.3）；attempts 随 running 递增。"""
+        """状态机推进：pending→leased→running→done|failed（§5.3）。
+
+        attempts 随 claim_next_task 认领递增（M2.1 口径——认领后即崩也计数）。
+        P2-1 守卫（M2.1 R2）：done 仅非终态可入——已终态零行生效（sqlite 同构）。
+        """
         if status == "running":
+            # P2-3/R2：running 写入限非终态（取消不复活——sqlite 同构）
             self._conn.execute(
-                "UPDATE tasks SET status = %(s)s, attempts = attempts + 1,"
+                "UPDATE tasks SET status = %(s)s,"
                 " heartbeat_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP"
-                " WHERE id = %(id)s",
+                " WHERE id = %(id)s AND status IN ('pending','leased','running')",
                 {"s": status, "id": task_id},
             )
+        elif status == "done":
+            self._conn.execute(
+                "UPDATE tasks SET status = 'done', error = NULL,"
+                " updated_at = CURRENT_TIMESTAMP"
+                " WHERE id = %(id)s AND status IN ('pending','leased','running')",
+                {"id": task_id},
+            )
         elif error is not None or status is not None:
+            # P3-R4-1：failed 写入不覆盖取消终态（µs 窗口守卫——sqlite 同构）
             self._conn.execute(
                 "UPDATE tasks SET status = COALESCE(%(s)s, status), error = %(err)s,"
-                " updated_at = CURRENT_TIMESTAMP WHERE id = %(id)s",
-                {"s": status, "err": error, "id": task_id},
+                " updated_at = CURRENT_TIMESTAMP WHERE id = %(id)s"
+                "   AND NOT (status = 'failed' AND error LIKE %(pattern)s)",
+                {"s": status, "err": error, "id": task_id,
+                 "pattern": "cancelled:%"},
             )
+
+    # ---- 任务队列（租约·心跳·认领——M2.1 worker 框架，design §5.3） ----
+
+    def fail_exhausted_tasks(
+        self, *, max_attempts: int, now: str | None = None
+    ) -> list[dict]:
+        """崩溃耗尽清扫（P2-2，M2.1 R2——与 sqlite 同构）：过期且 attempts ≥ max
+        的 leased/running → failed + error 原因；返回被清扫行供文档侧收尾。"""
+        from knowledge_lattice.store.taskclock import utc_now_ts, TS_FMT
+
+        now_ts = now or utc_now_ts()
+        # P3-N7 节流（与 sqlite 同构）：常态零行时先读后写——不进 UPDATE 事务
+        probe = self._conn.execute(
+            "SELECT 1 FROM tasks WHERE status IN ('leased','running')"
+            "   AND attempts >= %(max)s"
+            "   AND lease_until IS NOT NULL AND lease_until <= %(now)s LIMIT 1",
+            {"max": max_attempts, "now": now_ts},
+        ).fetchone()
+        if probe is None:
+            return []
+        rows = self._conn.execute(
+            "UPDATE tasks SET status = 'failed', lease_owner = NULL, lease_until = NULL,"
+            " error = 'attempt limit exceeded (lease expired after ' || attempts"
+            "   || ' attempts — worker crash?)', updated_at = %(now)s"
+            " WHERE status IN ('leased','running') AND attempts >= %(max)s"
+            "   AND lease_until IS NOT NULL AND lease_until <= %(now)s"
+            " RETURNING id, doc_id, type, status, attempts, error, target_version",
+            {"max": max_attempts, "now": now_ts},
+        ).fetchall()
+        cols = ("id", "doc_id", "type", "status", "attempts", "error", "target_version")
+        return [dict(zip(cols, r)) for r in rows]
+
+    def claim_next_task(
+        self,
+        worker_id: str,
+        *,
+        lease_s: float,
+        task_types: Sequence[str] = ("ingest", "maintenance"),
+        max_attempts: int = 3,
+        now: str | None = None,
+        created_before: str | None = None,
+    ) -> dict | None:
+        """原子认领（FOR UPDATE SKIP LOCKED——两执行器并发认领同一候选行时不
+        互等不重叠，恰好一人得手；与 sqlite 单语句 UPDATE 子查询重估同语义）。
+        created_before（P2-7）：仅认领 created_at <= 该时点的任务（陈旧任务口径，
+        sqlite 同构——见 sqlite 侧 docstring）。"""
+        from knowledge_lattice.store.taskclock import add_seconds, utc_now_ts
+
+        now_ts = now or utc_now_ts()
+        until = add_seconds(now_ts, lease_s)
+        age_filter = " AND created_at <= %(cb)s" if created_before is not None else ""
+        params: dict[str, object] = {
+            "w": worker_id, "now": now_ts, "until": until, "max": max_attempts,
+            "types": list(task_types),
+        }
+        if created_before is not None:
+            params["cb"] = created_before
+        rows = self._conn.execute(
+            "WITH candidate AS ("
+            "  SELECT id FROM tasks"
+            "  WHERE type = ANY(%(types)s) AND attempts < %(max)s" + age_filter +
+            "    AND (status = 'pending'"
+            "         OR (status IN ('leased','running')"
+            "             AND lease_until IS NOT NULL AND lease_until <= %(now)s))"
+            "  ORDER BY CASE WHEN type = 'semantic_retag' THEN 1 ELSE 0 END,"
+            "    created_at, seq LIMIT 1 FOR UPDATE SKIP LOCKED)"
+            " UPDATE tasks t SET status = 'leased', attempts = attempts + 1,"
+            " lease_owner = %(w)s,"
+            " lease_until = %(until)s, heartbeat_at = %(now)s, updated_at = %(now)s"
+            " FROM candidate c WHERE t.id = c.id"
+            " RETURNING t.id, t.doc_id, t.type, t.status, t.attempts, t.error,"
+            " t.target_version, t.lease_owner, t.lease_until, t.heartbeat_at,"
+            " t.created_at, t.updated_at",
+            params,
+        ).fetchall()
+        if not rows:
+            return None
+        cols = (
+            "id", "doc_id", "type", "status", "attempts", "error", "target_version",
+            "lease_owner", "lease_until", "heartbeat_at", "created_at", "updated_at",
+        )
+        return dict(zip(cols, rows[0]))
+
+    def heartbeat_task(
+        self, task_id: str, worker_id: str, *, lease_s: float, now: str | None = None
+    ) -> bool:
+        from knowledge_lattice.store.taskclock import add_seconds, utc_now_ts
+
+        now_ts = now or utc_now_ts()
+        cur = self._conn.execute(
+            "UPDATE tasks SET heartbeat_at = %(now)s, lease_until = %(until)s,"
+            " updated_at = %(now)s"
+            " WHERE id = %(id)s AND lease_owner = %(w)s"
+            "   AND status IN ('leased','running')",
+            {"now": now_ts, "until": add_seconds(now_ts, lease_s), "id": task_id, "w": worker_id},
+        )
+        return cur.rowcount == 1
+
+    def cancel_task(
+        self, task_id: str, *, reason: str, now: str | None = None,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        now_ts = now or utc_now_ts()
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'failed', error = %(reason)s, lease_owner = NULL,"
+                " lease_until = NULL, updated_at = %(now)s"
+                " WHERE id = %(id)s AND status IN ('pending','leased','running')",
+                {"reason": reason, "now": now_ts, "id": task_id},
+            )
+            cancelled = cur.rowcount > 0
+            if cancelled and audit is not None:
+                self._outbox_insert(conn, *audit)  # 取消生效才记（TC-OPS-01）
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        if not cancelled:
+            return None  # 已终态（幂等不复活——TC-TASK-03）
+        return self.get_task(task_id)
+
+    def delete_expired_memberships(self, *, now: str | None = None) -> int:
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        cur = self._conn.execute(
+            "DELETE FROM user_org_memberships"
+            " WHERE expires_at IS NOT NULL AND expires_at <= %(now)s",
+            {"now": now or utc_now_ts()},
+        )
+        return cur.rowcount  # trg_membership_delete_cleanup 等价触发器级联清授权
+
+    def delete_aged_tombstones(self, *, before_ts: str) -> int:
+        """90 天物理清理（含同事务 untag：tombstone 块语义标随删——m2s-5；
+        与 sqlite 同构）。"""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "DELETE FROM sem_chunk_entities WHERE chunk_rid IN ("
+                "  SELECT rid FROM chunks WHERE tombstone = 1"
+                "   AND tombstoned_at IS NOT NULL AND tombstoned_at <= %(before)s)",
+                {"before": before_ts},
+            )
+            cur = conn.execute(
+                "DELETE FROM chunks WHERE tombstone = 1 AND tombstoned_at IS NOT NULL"
+                " AND tombstoned_at <= %(before)s",
+                {"before": before_ts},
+            )
+            removed = cur.rowcount
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return removed  # chunk_vectors FK CASCADE；FTS 列 GENERATED 随行消失
+
+    def trim_finished_tasks(
+        self, *, keep_days: int, keep_count: int, task_type: str = "maintenance",
+        now: str | None = None,
+    ) -> int:
+        from knowledge_lattice.store.taskclock import add_seconds, utc_now_ts
+
+        now_ts = now or utc_now_ts()
+        cutoff = add_seconds(now_ts, -keep_days * 86400)
+        terminal = "type = %(ty)s AND status IN ('done','failed')"
+        cur = self._conn.execute(
+            f"DELETE FROM tasks WHERE {terminal} AND updated_at < %(cutoff)s",
+            {"ty": task_type, "cutoff": cutoff},
+        )
+        removed = cur.rowcount
+        cur = self._conn.execute(
+            f"DELETE FROM tasks WHERE {terminal} AND id NOT IN ("
+            f"  SELECT id FROM tasks WHERE {terminal}"
+            f"  ORDER BY updated_at DESC LIMIT %(keep)s)",
+            {"ty": task_type, "keep": max(keep_count, 0)},
+        )
+        removed += cur.rowcount
+        return removed
 
     def get_document(self, doc_id: str) -> dict | None:
         row = self._conn.execute(
@@ -1050,25 +1524,39 @@ class PgBackend:
         owner_user_id: str,
         raw_object_key: str,
         pending_dims_json: str | None,
+        audit: tuple[str, str] | None = None,
     ) -> None:
-        """首次上传的文档行（pending_version=1、pending_status='parsing'——§5.3 阶段编排）。"""
-        self._conn.execute(
-            "INSERT INTO documents(id, org_id, dataset_id, title, source_uri, content_hash,"
-            " mime_type, parser, active_version, pending_version, pending_status,"
-            " pending_dims_json, owner_user_id, raw_object_key)"
-            " VALUES(%(id)s, %(org)s, %(ds)s, %(title)s, %(src)s, %(hash)s, %(mime)s,"
-            " %(parser)s, 0, 1, 'parsing', %(dims)s, %(owner)s, %(obj)s)",
-            {
-                "id": doc_id, "org": org_id, "ds": dataset_id, "title": title, "src": source_uri,
-                "hash": content_hash, "mime": mime_type, "parser": parser, "dims": pending_dims_json,
-                "owner": owner_user_id, "obj": raw_object_key,
-            },
-        )
+        """首次上传的文档行（audit 同事务——M2.4 m2-2，sqlite 同构）。"""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "INSERT INTO documents(id, org_id, dataset_id, title, source_uri, content_hash,"
+                " mime_type, parser, active_version, pending_version, pending_status,"
+                " pending_dims_json, owner_user_id, raw_object_key)"
+                " VALUES(%(id)s, %(org)s, %(ds)s, %(title)s, %(src)s, %(hash)s, %(mime)s,"
+                " %(parser)s, 0, 1, 'parsing', %(dims)s, %(owner)s, %(obj)s)",
+                {
+                    "id": doc_id, "org": org_id, "ds": dataset_id, "title": title,
+                    "src": source_uri, "hash": content_hash, "mime": mime_type,
+                    "parser": parser, "dims": pending_dims_json,
+                    "owner": owner_user_id, "obj": raw_object_key,
+                },
+            )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
 
     def set_doc_pending_status(self, doc_id: str, version: int, status: str) -> None:
+        # M2.1 并发面收口：failed 是 pending 版本的吸收态（P0-2.3 版本亡故）——
+        # 取消/失败先行落账后，在途执行器的状态推进零行生效（防复活，sqlite 同构）
         self._conn.execute(
             "UPDATE documents SET pending_status = %(s)s, updated_at = CURRENT_TIMESTAMP"
-            " WHERE id = %(doc)s AND pending_version = %(v)s",
+            " WHERE id = %(doc)s AND pending_version = %(v)s"
+            "   AND (pending_status IS NULL OR pending_status != 'failed')",
             {"s": status, "doc": doc_id, "v": version},
         )
 
@@ -1112,7 +1600,7 @@ class PgBackend:
         out: list[dict] = []
         for dim_id, key, name, required, enabled in dims:
             values = self._conn.execute(
-                "SELECT value, label FROM dimension_values"
+                "SELECT id, value, label FROM dimension_values"
                 " WHERE dimension_id = %(d)s AND status = 'active'"
                 " ORDER BY sort_order, value",
                 {"d": dim_id},
@@ -1124,7 +1612,7 @@ class PgBackend:
                     "name": name,
                     "required": bool(required),
                     "enabled": bool(enabled),
-                    "values": [{"value": v, "label": l} for v, l in values],
+                    "values": [{"id": i, "value": v, "label": l} for i, v, l in values],
                 }
             )
         return out
@@ -1154,6 +1642,72 @@ class PgBackend:
             return None
         return {"is_system_admin": bool(row[0]), "disabled_at": row[1]}
 
+    def upsert_user_jit(
+        self, *, user_id: str, username: str, display_name: str | None,
+        audit: tuple[str, str] | None = None, _depth: int = 0,
+    ) -> dict:
+        """SSO 首次登录 JIT 建档（D16——TC-AUTH-03；与 sqlite 实现同构）：
+        ON CONFLICT (id) DO NOTHING 原子建档；INSERT 与 outbox 写同一事务
+        （P3-5）；username 独立 UNIQUE 冲突回读定性、消息不回显占用者（P3-7）；
+        并发兜底重查受 _depth 上限保护（P3-12）。"""
+        from psycopg import errors as pg_errors
+
+        if _depth >= 3:  # P3-12：并发兜底递归上限（理论不可达）
+            raise RuntimeError(
+                "upsert_user_jit 并发兜底重查超限（理论不可达——疑似 schema 漂移）"
+            )
+        existing = self._conn.execute(
+            "SELECT username, is_system_admin, disabled_at FROM users WHERE id = %(id)s",
+            {"id": user_id},
+        ).fetchone()
+        if existing is not None:
+            return {
+                "id": user_id, "username": existing[0],
+                "is_system_admin": bool(existing[1]),
+                "disabled_at": existing[2], "created": False,
+            }
+        try:
+            self._conn.execute("BEGIN")
+            inserted = self._conn.execute(
+                "INSERT INTO users(id, username, display_name)"
+                " VALUES (%(i)s, %(u)s, %(d)s)"
+                " ON CONFLICT (id) DO NOTHING RETURNING id",
+                {"i": user_id, "u": username, "d": display_name},
+            ).fetchone()
+            if inserted is None:
+                # 并发窗口：同 id 已被并发登录建档 → 复用（不重复写审计）
+                self._conn.execute("COMMIT")
+                return self.upsert_user_jit(
+                    user_id=user_id, username=username, display_name=display_name,
+                    audit=None, _depth=_depth + 1,  # 复用方不写 audit（并发方已写）
+                )
+            if audit is not None:
+                # m2-4 followup ④（m2-5）：outbox UniqueViolation 不得被下方
+                # except 误报「username 占用」（错误谎称）——转专用错误如实
+                # 上抛；建档随 BaseException 分支回滚（同生共死——P3-5 不变）
+                try:
+                    self._outbox_insert(self._conn, *audit)
+                except pg_errors.UniqueViolation as exc:
+                    raise RuntimeError(
+                        f"audit outbox 写入完整性错误（{exc}）——JIT 建档"
+                        "已一并回滚（同生共死，P3-5）"
+                    ) from exc
+            self._conn.execute("COMMIT")
+        except pg_errors.UniqueViolation as exc:
+            # username 被其他 id 占用（id 冲突已被 ON CONFLICT 豁免）
+            self._rollback()
+            raise ValueError(
+                f"JIT 建档冲突：username {username!r} 已被其他账号占用"
+                "（fail-closed，不回显占用者）"
+            ) from exc
+        except BaseException:
+            self._rollback()
+            raise
+        return {
+            "id": user_id, "username": username, "is_system_admin": False,
+            "disabled_at": None, "created": True,
+        }
+
     # ============ 上传凭证（M1-3 三步式——与 sqlite 实现同构，仅参数标记方言差异） ============
 
     _UPLOAD_COLS = (
@@ -1174,20 +1728,31 @@ class PgBackend:
         sha256: str,
         content_type: str,
         expires_at: str,
+        audit: tuple[str, str] | None = None,
     ) -> None:
-        self._conn.execute(
-            "INSERT INTO uploads(id, org_id, user_id, service_id, filename, size,"
-            " sha256, content_type, status, expires_at)"
-            " VALUES(%(id)s, %(org)s, %(uid)s, %(svc)s, %(fn)s, %(size)s, %(sha)s,"
-            " %(ct)s, 'issued', %(exp)s)",
-            {
-                "id": upload_id, "org": org_id, "uid": user_id, "svc": service_id,
-                "fn": filename, "size": size, "sha": sha256, "ct": content_type,
-                "exp": expires_at,
-            },
-        )
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "INSERT INTO uploads(id, org_id, user_id, service_id, filename, size,"
+                " sha256, content_type, status, expires_at)"
+                " VALUES(%(id)s, %(org)s, %(uid)s, %(svc)s, %(fn)s, %(size)s, %(sha)s,"
+                " %(ct)s, 'issued', %(exp)s)",
+                {
+                    "id": upload_id, "org": org_id, "uid": user_id, "svc": service_id,
+                    "fn": filename, "size": size, "sha": sha256, "ct": content_type,
+                    "exp": expires_at,
+                },
+            )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
 
     def get_upload_credential(self, upload_id: str) -> dict | None:
+        from knowledge_lattice.store.taskclock import TS_FMT  # noqa: E402 —— R2 P3-2 常量单源
         row = self._conn.execute(
             "SELECT id, org_id, user_id, service_id, filename, size, sha256, content_type,"
             " status, object_key, doc_id, task_id, expires_at, created_at, updated_at"
@@ -1201,7 +1766,7 @@ class PgBackend:
         # UTC `YYYY-MM-DD HH:MM:SS` 字符串（连接工厂 SET TIME ZONE 'UTC'，无漂移）
         for idx in (12, 13, 14):
             if row[idx] is not None:
-                row[idx] = row[idx].strftime("%Y-%m-%d %H:%M:%S")
+                row[idx] = row[idx].strftime(TS_FMT)
         return dict(zip(self._UPLOAD_COLS, row))
 
     def mark_upload_uploaded(self, upload_id: str, *, object_key: str) -> bool:
@@ -1213,14 +1778,27 @@ class PgBackend:
         )
         return cur.rowcount > 0
 
-    def mark_upload_consumed(self, upload_id: str, *, doc_id: str, task_id: str) -> bool:
-        cur = self._conn.execute(
-            "UPDATE uploads SET status='consumed', doc_id=%(doc)s, task_id=%(task)s,"
-            " updated_at=CURRENT_TIMESTAMP"
-            " WHERE id=%(id)s AND status='uploaded'",
-            {"id": upload_id, "doc": doc_id, "task": task_id},
-        )
-        return cur.rowcount > 0
+    def mark_upload_consumed(
+        self, upload_id: str, *, doc_id: str, task_id: str,
+        audit: tuple[str, str] | None = None,
+    ) -> bool:
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE uploads SET status='consumed', doc_id=%(doc)s, task_id=%(task)s,"
+                " updated_at=CURRENT_TIMESTAMP"
+                " WHERE id=%(id)s AND status='uploaded'",
+                {"id": upload_id, "doc": doc_id, "task": task_id},
+            )
+            consumed = cur.rowcount > 0
+            if consumed and audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return consumed
 
     def list_expired_upload_credentials(self, now: str) -> list[dict]:
         rows = self._conn.execute(
@@ -1246,19 +1824,2344 @@ class PgBackend:
         """审计月分区滚动（方言差异在包内吸收——SQLite 月库文件 / PG 按月分区表）。"""
         return ensure_month_partition(self._conn, when)  # type: ignore[arg-type]
 
-    # ============ Semantic 域种子签名（P3-17——实现随 M2-S1 经 semantic/ 迁移落库） ============
+    # ---- 备份快照（D 组——NFR-10 / TC-OPS-05；pg_dump 属部署工具链不违 D2） ----
 
-    def upsert_entities_batch(self, org_id: str, rows: list[dict]) -> int:
-        raise NotImplementedError("semantic 同步分批 upsert 随 M2-S1（D23/§5.8）")
+    def backup_snapshot(
+        self, backup_dir, objects_dir=None, *, when=None, dsn: str | None = None,
+    ) -> dict:
+        """pg_dump -Fc 快照（+ objects tar）——dsn 缺省 env LATTICE_PG_DSN、
+        schema 缺省 current_schema()（单 schema 部署口径）。"""
+        import os as _os
+
+        from .backup import snapshot as _snapshot
+
+        if dsn is None:
+            dsn = _os.environ.get("LATTICE_PG_DSN")
+        if not dsn:
+            params = self._conn.info.get_dsn_parameters()
+            dsn = (
+                f"postgresql://{params.get('user', 'postgres')}"
+                f"@{params.get('host', 'localhost')}:{params.get('port', 5432)}"
+                f"/{params.get('dbname', 'postgres')}"
+            )
+        schema = self._conn.execute("SELECT current_schema()").fetchone()[0]
+        return _snapshot(
+            dsn, Path(backup_dir),
+            Path(objects_dir) if objects_dir is not None else None,
+            schema=schema, when=when,
+        )
+
+    def trim_shipped_outbox(self, *, before_ts: str) -> int:
+        """已搬运 outbox 行保留期清理（R2 P3-1——sqlite 同构，只删已搬运行）。"""
+        cur = self._conn.execute(
+            "DELETE FROM audit_outbox"
+            " WHERE shipped_at IS NOT NULL AND shipped_at < %(before)s",
+            {"before": before_ts},
+        )
+        return cur.rowcount
+
+    # ============ Semantic 域（M2-S1——design §4/§5.8；与 sqlite 同语义，
+    #              消息/行为等价、SQL 为 PG 方言渲染） ============
+
+    _SEM_IN_CHUNK = 500  # ANY(%(keys)s) 数组分片上限（同 sqlite IN 分片口径）
+
+    def upsert_entities_batch(self, org_id: str, rows: Sequence[dict]) -> dict:
+        """同步实体分批 upsert——单批单事务（与 SqliteBackend 逐条同源：只写事实列、
+        parent_id 三级解析〔批内 id 映射 / 批间缓存 / 库内回查——跨批父行 P2-1〕、
+        updated 只计事实列变更——T-S1/T-S3；row.source 缺省 'sync'——yaml 纯人工
+        实体 'curated'〔m2s-3〕；名称变更后刷新 FTS 文本行——C.3）。"""
+        conn = self._conn
+        existing = self._sem_read_existing(
+            org_id, [(r["type"], r["key"]) for r in rows]
+        )
+        inserted = updated = 0
+        touched: list[int] = []
+        conn.execute("BEGIN")
+        try:
+            id_map = {k: v[0] for k, v in existing.items()}
+            parent_cache: dict[tuple[str, str], int | None] = {}
+            for row in rows:
+                key = (row["type"], row["key"])
+                parent_id = self._sem_parent_id(
+                    org_id, row.get("parent_key"), id_map, parent_cache
+                )
+                row_source = row.get("source") or "sync"
+                if key in existing:
+                    _, old_name, old_attrs, old_parent, old_status = existing[key]
+                    if (old_name != row["name"]
+                            or old_attrs != row["attrs_json"]
+                            or old_parent != parent_id
+                            or old_status != "active"):
+                        updated += 1
+                    conn.execute(
+                        "UPDATE sem_entities SET name = %(name)s,"
+                        " attrs_json = %(attrs)s, parent_id = %(parent)s,"
+                        " source_system = %(srcsys)s, status = 'active',"
+                        " synced_at = %(ts)s, updated_at = CURRENT_TIMESTAMP"
+                        " WHERE org_id = %(org)s AND type = %(type)s AND key = %(key)s",
+                        {"name": row["name"], "attrs": row["attrs_json"],
+                         "parent": parent_id, "srcsys": row["source_system"],
+                         "ts": row["synced_at"], "org": org_id,
+                         "type": row["type"], "key": row["key"]},
+                    )
+                    if old_name != row["name"]:
+                        touched.append(id_map[key])
+                else:
+                    new_id = conn.execute(
+                        "INSERT INTO sem_entities(org_id, type, key, name, parent_id,"
+                        " attrs_json, source, source_system, status, synced_at)"
+                        " VALUES(%(org)s, %(type)s, %(key)s, %(name)s, %(parent)s,"
+                        " %(attrs)s, %(source)s, %(srcsys)s, 'active', %(ts)s)"
+                        " RETURNING id",
+                        {"org": org_id, "type": row["type"], "key": row["key"],
+                         "name": row["name"], "parent": parent_id,
+                         "attrs": row["attrs_json"], "source": row_source,
+                         "srcsys": row["source_system"], "ts": row["synced_at"]},
+                    ).fetchone()[0]
+                    id_map[key] = new_id
+                    touched.append(new_id)
+                    inserted += 1
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        if touched:
+            self.sem_refresh_search_texts(org_id, touched)
+        return {"inserted": inserted, "updated": updated}
+
+    def _sem_parent_id(self, org_id, parent_key, id_map: dict, parent_cache: dict):
+        """parent_key "type:key" → id（P2-1 三级解析，与 sqlite 同语义）：批内
+        id_map → 批间缓存 → 库内回查（跨批已提交父行）；悬挂父缓存 None。"""
+        if not parent_key or ":" not in parent_key:
+            return None
+        ptype, _, pkey = parent_key.partition(":")
+        pk = (ptype, pkey)
+        if pk in id_map:
+            return id_map[pk]
+        if pk not in parent_cache:
+            row = self._conn.execute(
+                "SELECT id FROM sem_entities"
+                " WHERE org_id = %(org)s AND type = %(type)s AND key = %(key)s",
+                {"org": org_id, "type": pk[0], "key": pk[1]},
+            ).fetchone()
+            parent_cache[pk] = row[0] if row else None
+        return parent_cache[pk]
+
+    def _sem_read_existing(self, org_id: str, keys) -> dict:
+        by_type: dict[str, list[str]] = {}
+        for t, k in keys:
+            by_type.setdefault(t, []).append(k)
+        out: dict[tuple[str, str], tuple] = {}
+        for t, ks in by_type.items():
+            for chunk in _sem_chunks(ks, self._SEM_IN_CHUNK):
+                rows = self._conn.execute(
+                    "SELECT id, key, name, attrs_json, parent_id, status"
+                    " FROM sem_entities WHERE org_id = %(org)s AND type = %(type)s"
+                    "   AND key = ANY(%(keys)s)",
+                    {"org": org_id, "type": t, "keys": chunk},
+                ).fetchall()
+                for r in rows:
+                    out[(t, r[1])] = tuple(r[i] for i in (0, 2, 3, 4, 5))
+        return out
+
+    def resolve_entity_ids(
+        self, org_id: str, keys: Sequence[tuple[str, str]]
+    ) -> dict[tuple[str, str], int]:
+        by_type: dict[str, list[str]] = {}
+        for t, k in keys:
+            by_type.setdefault(t, []).append(k)
+        out: dict[tuple[str, str], int] = {}
+        for t, ks in by_type.items():
+            for chunk in _sem_chunks(ks, self._SEM_IN_CHUNK):
+                rows = self._conn.execute(
+                    "SELECT id, key FROM sem_entities"
+                    " WHERE org_id = %(org)s AND type = %(type)s"
+                    "   AND key = ANY(%(keys)s)",
+                    {"org": org_id, "type": t, "keys": chunk},
+                ).fetchall()
+                for r in rows:
+                    out[(t, r[1])] = r[0]
+        return out
+
+    def sem_active_source_keys(
+        self, org_id: str, source_system: str
+    ) -> set[tuple[str, str]]:
+        """删除比例保护基数（m2s-3 起 per-source_system 收口——与 sqlite 同口径，
+        yaml 纯人工实体 source='curated' 同入基数面）。"""
+        rows = self._conn.execute(
+            "SELECT type, key FROM sem_entities"
+            " WHERE org_id = %(org)s AND source_system = %(srcsys)s"
+            "   AND status = 'active'",
+            {"org": org_id, "srcsys": source_system},
+        ).fetchall()
+        return {(r[0], r[1]) for r in rows}
+
+    def sem_source_fill_stats(self, org_id: str, source_system: str) -> dict:
+        row = self._conn.execute(
+            "SELECT count(*), coalesce(sum("
+            "  CASE WHEN (attrs_json::jsonb -> 'dims') IS NOT NULL THEN 1 ELSE 0 END"
+            "), 0) FROM sem_entities"
+            " WHERE org_id = %(org)s"
+            "   AND source_system = %(srcsys)s AND status = 'active'",
+            {"org": org_id, "srcsys": source_system},
+        ).fetchone()
+        return {"total": row[0], "filled": row[1]}
+
+    def sem_entity_states(self, org_id: str, entity_ids: Sequence[int]) -> dict[int, dict]:
+        """批量实体态（status/source——G-15 端点过滤与合并冲突判定共用）。"""
+        out: dict[int, dict] = {}
+        for chunk in _sem_chunks(list(entity_ids), self._SEM_IN_CHUNK):
+            rows = self._conn.execute(
+                "SELECT id, status, source FROM sem_entities"
+                " WHERE org_id = %(org)s AND id = ANY(%(ids)s)",
+                {"org": org_id, "ids": chunk},
+            ).fetchall()
+            for r in rows:
+                out[r[0]] = {"status": r[1], "source": r[2]}
+        return out
+
+    def sem_entities_by_ids(self, org_id: str, entity_ids: Sequence[int]) -> list[dict]:
+        """批量实体行（O-2 expand_relations seed 节点信息面）。"""
+        out: list[dict] = []
+        for chunk in _sem_chunks(list(entity_ids), self._SEM_IN_CHUNK):
+            out.extend(
+                self._sem_entity_row(r) for r in self._conn.execute(
+                    "SELECT id, org_id, type, key, name, parent_id, attrs_json,"
+                    " curated_json, source, source_system, status, sensitivity,"
+                    " synced_at, curated_rev FROM sem_entities"
+                    " WHERE org_id = %(org)s AND id = ANY(%(ids)s) ORDER BY id",
+                    {"org": org_id, "ids": chunk},
+                )
+            )
+        return out
+
+    def mark_entities_missing(self, org_id: str, entity_ids: Sequence[int]) -> int:
+        if not entity_ids:
+            return 0
+        n = 0
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            for chunk in _sem_chunks(list(entity_ids), self._SEM_IN_CHUNK):
+                cur = conn.execute(
+                    "UPDATE sem_entities SET status = 'missing',"
+                    " updated_at = CURRENT_TIMESTAMP"
+                    " WHERE org_id = %(org)s AND status = 'active'"
+                    "   AND id = ANY(%(ids)s)",
+                    {"org": org_id, "ids": chunk},
+                )
+                n += cur.rowcount
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return n
+
+    def upsert_relations_batch(self, org_id: str, rows: Sequence[dict]) -> dict:
+        """关系分批 upsert（单事务；端点不可变由 trg_sem_rel_noupdate 保证）。
+        row.source/source_system（m2s-3）+ G-15 端点状态过滤（CASE 守卫——
+        与 sqlite 同语义：指向非 active 端点的关系不置回 active）。"""
+        conn = self._conn
+        marks: dict[tuple, str] = {}
+        conn.execute("BEGIN")
+        try:
+            for row in rows:
+                k = (row["src_id"], row["rel_type"], row["dst_id"])
+                old = conn.execute(
+                    "SELECT attrs_json, status FROM sem_relations"
+                    " WHERE org_id = %(org)s AND src_id = %(src)s"
+                    "   AND rel_type = %(rel)s AND dst_id = %(dst)s",
+                    {"org": org_id, "src": k[0], "rel": k[1], "dst": k[2]},
+                ).fetchone()
+                if old is None:
+                    conn.execute(
+                        "INSERT INTO sem_relations(org_id, src_id, rel_type, dst_id,"
+                        " attrs_json, source, source_system, status, synced_at)"
+                        " VALUES(%(org)s, %(src)s, %(rel)s, %(dst)s, %(attrs)s,"
+                        " %(source)s, %(srcsys)s,"
+                        " CASE WHEN EXISTS(SELECT 1 FROM sem_entities s"
+                        "   WHERE s.id = %(src)s AND s.org_id = %(org)s"
+                        "     AND s.status = 'active')"
+                        "  AND EXISTS(SELECT 1 FROM sem_entities d"
+                        "   WHERE d.id = %(dst)s AND d.org_id = %(org)s"
+                        "     AND d.status = 'active')"
+                        " THEN 'active' ELSE 'missing' END, %(ts)s)",
+                        {"org": org_id, "src": k[0], "rel": k[1], "dst": k[2],
+                         "attrs": row["attrs_json"],
+                         "source": row.get("source") or "sync",
+                         "srcsys": row.get("source_system"), "ts": row["synced_at"]},
+                    )
+                    marks[k] = "i"
+                else:
+                    if old[0] != row["attrs_json"] or old[1] != "active":
+                        marks[k] = "u"
+                    else:
+                        marks[k] = "s"
+                    conn.execute(
+                        "UPDATE sem_relations SET attrs_json = %(attrs)s,"
+                        " status = CASE WHEN"
+                        "   EXISTS(SELECT 1 FROM sem_entities s"
+                        "     WHERE s.id = %(src)s AND s.org_id = %(org)s"
+                        "     AND s.status = 'active')"
+                        "   AND EXISTS(SELECT 1 FROM sem_entities d"
+                        "     WHERE d.id = %(dst)s AND d.org_id = %(org)s"
+                        "     AND d.status = 'active')"
+                        " THEN 'active' ELSE status END,"
+                        " synced_at = %(ts)s"
+                        " WHERE org_id = %(org)s AND src_id = %(src)s"
+                        "   AND rel_type = %(rel)s AND dst_id = %(dst)s",
+                        {"attrs": row["attrs_json"], "ts": row["synced_at"],
+                         "org": org_id, "src": k[0], "rel": k[1], "dst": k[2]},
+                    )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return {
+            "inserted": sum(1 for v in marks.values() if v == "i"),
+            "updated": sum(1 for v in marks.values() if v == "u"),
+        }
+
+    def sem_active_source_relation_keys(
+        self, org_id: str, source_system: str
+    ) -> set[tuple[int, str, int]]:
+        """本源 active 关系键集（G-15 关系级消失检测——与 sqlite 同口径）。"""
+        return {
+            (r[0], r[1], r[2]) for r in self._conn.execute(
+                "SELECT src_id, rel_type, dst_id FROM sem_relations"
+                " WHERE org_id = %(org)s AND source_system = %(srcsys)s"
+                "   AND status = 'active'",
+                {"org": org_id, "srcsys": source_system},
+            )
+        }
+
+    def sem_mark_relations_missing(
+        self, org_id: str, keys: Sequence[tuple[int, str, int]]
+    ) -> int:
+        """快照消失的关系 → missing（G-15——synced_at 保留为宽限起算锚）。"""
+        n = 0
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            for src_id, rel, dst_id in keys:
+                cur = conn.execute(
+                    "UPDATE sem_relations SET status = 'missing'"
+                    " WHERE org_id = %(org)s AND src_id = %(src)s"
+                    "   AND rel_type = %(rel)s AND dst_id = %(dst)s"
+                    "   AND status = 'active'",
+                    {"org": org_id, "src": src_id, "rel": rel, "dst": dst_id},
+                )
+                n += cur.rowcount
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return n
+
+    def sem_relations_lookup(
+        self, org_id: str, keys: Sequence[tuple[int, str, int]]
+    ) -> dict[tuple[int, str, int], dict]:
+        """关系行批查（合并规则表「与同步关系重复」判定面——yaml_merge）。"""
+        out: dict[tuple[int, str, int], dict] = {}
+        for src_id, rel, dst_id in keys:
+            row = self._conn.execute(
+                "SELECT source, status FROM sem_relations"
+                " WHERE org_id = %(org)s AND src_id = %(src)s"
+                "   AND rel_type = %(rel)s AND dst_id = %(dst)s",
+                {"org": org_id, "src": src_id, "rel": rel, "dst": dst_id},
+            ).fetchone()
+            if row is not None:
+                out[(src_id, rel, dst_id)] = {"source": row[0], "status": row[1]}
+        return out
+
+    def rebuild_sync_aliases(self, org_id: str, rows: Sequence[dict]) -> int:
+        """别名三 kind 重建（单事务先删后插——manual/abbr 原样，TC-SYNC-05）；
+        重建后刷新 FTS 文本行（C.3）。"""
+        conn = self._conn
+        ids = self.resolve_entity_ids(
+            org_id, [(r["type"], r["key"]) for r in rows]
+        )
+        inserted = 0
+        conn.execute("BEGIN")
+        try:
+            for row in rows:
+                eid = ids.get((row["type"], row["key"]))
+                if eid is None:
+                    continue
+                conn.execute(
+                    "DELETE FROM sem_aliases WHERE org_id = %(org)s"
+                    " AND entity_id = %(eid)s AND kind IN ('name', 'code', 'sync')",
+                    {"org": org_id, "eid": eid},
+                )
+                for alias, alias_norm, kind in row["aliases"]:
+                    conn.execute(
+                        "INSERT INTO sem_aliases(org_id, entity_id, alias, alias_norm,"
+                        " kind) VALUES(%(org)s, %(eid)s, %(alias)s, %(norm)s, %(kind)s)",
+                        {"org": org_id, "eid": eid, "alias": alias,
+                         "norm": alias_norm, "kind": kind},
+                    )
+                    inserted += 1
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        if ids:
+            self.sem_refresh_search_texts(org_id, sorted(ids.values()))
+        return inserted
 
     def advance_status(self, org_id: str, *, missing_before: str) -> dict:
-        raise NotImplementedError("semantic missing/retired 推进随 M2-S1（T-S4）")
+        """missing 宽限期推进（超期 → retired + 关系一并 retired——T-S4；与
+        sqlite 同语义同计数口径；G-15 关系级 missing 同口推进——
+        relations_retired_standalone）。推进口径（P3-8）：org 全量推进、不按
+        source_system 收口（多适配器共享同一时间窗——本段接受口径）。"""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            retired_ids = [
+                r[0] for r in conn.execute(
+                    "SELECT id FROM sem_entities"
+                    " WHERE org_id = %(org)s AND status = 'missing'"
+                    "   AND synced_at < %(before)s",
+                    {"org": org_id, "before": missing_before},
+                ).fetchall()
+            ]
+            relations_retired = 0
+            for chunk in _sem_chunks(retired_ids, self._SEM_IN_CHUNK):
+                conn.execute(
+                    "UPDATE sem_entities SET status = 'retired',"
+                    " updated_at = CURRENT_TIMESTAMP"
+                    " WHERE org_id = %(org)s AND id = ANY(%(ids)s)",
+                    {"org": org_id, "ids": chunk},
+                )
+                cur = conn.execute(
+                    # 级联覆盖 active + missing（G-15——与 sqlite 同口径）
+                    "UPDATE sem_relations SET status = 'retired'"
+                    " WHERE org_id = %(org)s AND status IN ('active', 'missing')"
+                    "   AND (src_id = ANY(%(ids)s) OR dst_id = ANY(%(ids)s))",
+                    {"org": org_id, "ids": chunk},
+                )
+                relations_retired += cur.rowcount
+            relations_retired_standalone = conn.execute(
+                "UPDATE sem_relations SET status = 'retired'"
+                " WHERE org_id = %(org)s AND status = 'missing'"
+                "   AND synced_at < %(before)s",
+                {"org": org_id, "before": missing_before},
+            ).rowcount
+            missing_now = conn.execute(
+                "SELECT count(*) FROM sem_entities"
+                " WHERE org_id = %(org)s AND status = 'missing'",
+                {"org": org_id},
+            ).fetchone()[0]
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return {
+            "missing": missing_now,
+            "retired": len(retired_ids),
+            "relations_retired": relations_retired,
+            "relations_retired_standalone": relations_retired_standalone,
+        }
+
+    def sem_start_run(self, org_id: str, adapter: str, *, now: str) -> int:
+        new_id = self._conn.execute(
+            "INSERT INTO sem_sync_runs(org_id, adapter, started_at, status)"
+            " VALUES(%(org)s, %(adapter)s, %(now)s, 'running') RETURNING id",
+            {"org": org_id, "adapter": adapter, "now": now},
+        ).fetchone()[0]
+        return new_id
+
+    def sem_finish_run(
+        self, org_id: str, run_id: int, *, status: str, stats_json: str,
+        error: str | None = None, now: str | None = None,
+    ) -> None:
+        self._conn.execute(
+            "UPDATE sem_sync_runs SET status = %(status)s, stats_json = %(stats)s,"
+            " error = %(error)s, finished_at = COALESCE(%(now)s, CURRENT_TIMESTAMP)"
+            " WHERE id = %(rid)s AND org_id = %(org)s",
+            {"status": status, "stats": stats_json, "error": error,
+             "now": now, "rid": run_id, "org": org_id},
+        )
+
+    def sem_list_sync_runs(
+        self, org_id: str, *, limit: int = 50,
+        adapter: str | None = None, status: str | None = None,
+    ) -> list[dict]:
+        cols = ("id", "org_id", "adapter", "started_at", "finished_at",
+                "status", "stats_json", "error")
+        sql = ("SELECT id, org_id, adapter, started_at, finished_at, status,"
+               " stats_json, error FROM sem_sync_runs WHERE org_id = %(org)s")
+        params: dict[str, object] = {"org": org_id}
+        if adapter is not None:
+            sql += " AND adapter = %(adapter)s"
+            params["adapter"] = adapter
+        if status is not None:
+            sql += " AND status = %(status)s"
+            params["status"] = status
+        sql += " ORDER BY id DESC LIMIT %(limit)s"
+        params["limit"] = limit
+        rows = self._conn.execute(sql, params).fetchall()
+        return [_sem_run_dict(cols, r) for r in rows]
+
+    def sem_list_builds(
+        self, org_id: str, *, limit: int = 200, status: str | None = None,
+    ) -> list[dict]:
+        cols = ("id", "org_id", "dict_rev", "yaml_rev", "sync_run_id",
+                "status", "stats_json", "created_at")
+        sql = ("SELECT id, org_id, dict_rev, yaml_rev, sync_run_id, status,"
+               " stats_json, created_at FROM sem_builds WHERE org_id = %(org)s")
+        params: dict[str, object] = {"org": org_id}
+        if status is not None:
+            sql += " AND status = %(status)s"
+            params["status"] = status
+        sql += " ORDER BY id DESC LIMIT %(limit)s"
+        params["limit"] = limit
+        rows = self._conn.execute(sql, params).fetchall()
+        return [_sem_run_dict(cols, r) for r in rows]
+
+    def sem_get_build(self, org_id: str, build_id: int) -> dict | None:
+        row = self._conn.execute(
+            "SELECT id, org_id, dict_rev, yaml_rev, sync_run_id, status, stats_json,"
+            " created_at FROM sem_builds WHERE org_id = %(org)s AND id = %(bid)s",
+            {"org": org_id, "bid": build_id},
+        ).fetchone()
+        if row is None:
+            return None
+        cols = ("id", "org_id", "dict_rev", "yaml_rev", "sync_run_id",
+                "status", "stats_json", "created_at")
+        return _sem_run_dict(cols, row)
+
+    def sem_current_build(self, org_id: str) -> dict | None:
+        """当前构建 = 最新 ready 行（G-18/m2s-3：按 (activated_at, id) DESC——
+        与 sqlite 同口径；rev 回退重激活的行顶置 activated_at 成 current）。"""
+        row = self._conn.execute(
+            "SELECT id, org_id, dict_rev, yaml_rev, sync_run_id, status, stats_json,"
+            " created_at, activated_at FROM sem_builds WHERE org_id = %(org)s"
+            " AND status = 'ready'"
+            " ORDER BY activated_at DESC NULLS LAST, id DESC LIMIT 1",
+            {"org": org_id},
+        ).fetchone()
+        if row is None:
+            return None
+        cols = ("id", "org_id", "dict_rev", "yaml_rev", "sync_run_id",
+                "status", "stats_json", "created_at", "activated_at")
+        return _sem_run_dict(cols, row)
+
+    def sem_active_snapshot(self, org_id: str) -> dict:
+        """构建输入快照（§5.8 第 1 步——与 sqlite 同结构同稳定序；实体含
+        curated_json/curated_rev——G-17/m2s-3：YAML 改 definition 必触发重建；
+        source_system 随实体携带——m2s-4 构建报告缺源警告面）。"""
+        entities = [
+            {"id": r[0], "type": r[1], "key": r[2], "name": r[3],
+             "parent_id": r[4], "attrs_json": r[5], "sensitivity": r[6],
+             "curated_json": r[7] or "{}", "curated_rev": r[8],
+             "source_system": r[9]}
+            for r in self._conn.execute(
+                "SELECT id, type, key, name, parent_id, attrs_json, sensitivity,"
+                " curated_json, curated_rev, source_system"
+                " FROM sem_entities WHERE org_id = %(org)s AND status = 'active'"
+                " ORDER BY id", {"org": org_id},
+            )
+        ]
+        aliases = [
+            {"entity_id": r[0], "alias": r[1], "alias_norm": r[2], "kind": r[3],
+             "match_mode": r[4], "weight": r[5]}
+            for r in self._conn.execute(
+                "SELECT a.entity_id, a.alias, a.alias_norm, a.kind, a.match_mode,"
+                " a.weight FROM sem_aliases a"
+                " JOIN sem_entities e ON e.id = a.entity_id"
+                " WHERE a.org_id = %(org)s AND e.status = 'active'"
+                " ORDER BY a.entity_id, a.alias_norm", {"org": org_id},
+            )
+        ]
+        relations = [
+            {"src_id": r[0], "rel_type": r[1], "dst_id": r[2],
+             "attrs_json": r[3], "source": r[4]}
+            for r in self._conn.execute(
+                "SELECT src_id, rel_type, dst_id, attrs_json, source"
+                " FROM sem_relations WHERE org_id = %(org)s AND status = 'active'"
+                " ORDER BY src_id, rel_type, dst_id", {"org": org_id},
+            )
+        ]
+        return {"entities": entities, "aliases": aliases, "relations": relations}
+
+    def sem_insert_build(
+        self, org_id: str, dict_rev: str, stats_json: str, *,
+        yaml_rev: str | None = None, sync_run_id: int | None = None,
+    ) -> tuple[int, bool]:
+        """building 行 upsert（O-1/m2s-3 条件 upsert——``DO UPDATE … WHERE
+        status != 'ready'``：同 rev 行已 ready 不重断 building，返回
+        ``(existing_id, True)``；正常路径 ``(id, False)``——与 sqlite 同语义）。"""
+        row = self._conn.execute(
+            "INSERT INTO sem_builds(org_id, dict_rev, yaml_rev, sync_run_id,"
+            " status, stats_json) VALUES(%(org)s, %(rev)s, %(yaml)s, %(run)s,"
+            " 'building', %(stats)s)"
+            " ON CONFLICT(org_id, dict_rev) DO UPDATE SET"
+            "   status = 'building', stats_json = EXCLUDED.stats_json,"
+            "   yaml_rev = EXCLUDED.yaml_rev, sync_run_id = EXCLUDED.sync_run_id,"
+            "   activated_at = NULL"
+            " WHERE sem_builds.status != 'ready'"
+            " RETURNING id",
+            {"org": org_id, "rev": dict_rev, "yaml": yaml_rev,
+             "run": sync_run_id, "stats": stats_json},
+        ).fetchone()
+        if row is not None:
+            return row[0], False
+        existing = self._conn.execute(
+            "SELECT id FROM sem_builds WHERE org_id = %(org)s AND dict_rev = %(rev)s",
+            {"org": org_id, "rev": dict_rev},
+        ).fetchone()
+        return existing[0], True
+
+    def sem_reactivate_build(
+        self, org_id: str, build_id: int, stats_json: str, *,
+        audit: tuple[str, str] | None = None,
+        snapshot_json: str | None = None,
+    ) -> bool:
+        """G-18 rev 回退重激活：ready 行顶置 activated_at（取 max(现在, 本 org
+        既有最大 + 1s)——严格递增防同秒并列；+ready 事件同事务）；仅
+        status='ready' 行生效——与 sqlite 同语义。snapshot_json（m2s-5/G-21
+        方案 A）：快照附表同事务 upsert（幂等；0008 前存量行此时补齐）。"""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE sem_builds SET activated_at = GREATEST(CURRENT_TIMESTAMP,"
+                "  (SELECT MAX(b.activated_at) + interval '1 second'"
+                "     FROM sem_builds b WHERE b.org_id = %(org)s)),"
+                " stats_json = %(stats)s"
+                " WHERE org_id = %(org)s AND id = %(bid)s AND status = 'ready'",
+                {"stats": stats_json, "org": org_id, "bid": build_id},
+            )
+            effective = cur.rowcount == 1
+            if effective and audit is not None:
+                conn.execute(
+                    "INSERT INTO audit_outbox(id, event_type, payload_json)"
+                    " VALUES(%(id)s, %(t)s, %(p)s)",
+                    {"id": f"aud_{uuid.uuid4()}", "t": audit[0], "p": audit[1]},
+                )
+            if effective and snapshot_json is not None:
+                conn.execute(
+                    "INSERT INTO sem_build_snapshots(build_id, org_id,"
+                    " snapshot_json) VALUES(%(bid)s, %(org)s, %(snap)s)"
+                    " ON CONFLICT(build_id) DO UPDATE SET snapshot_json"
+                    " = EXCLUDED.snapshot_json",
+                    {"bid": build_id, "org": org_id, "snap": snapshot_json},
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return effective
+
+    def sem_switch_build_ready(
+        self, org_id: str, build_id: int, stats_json: str, *,
+        audit: tuple[str, str] | None = None,
+        snapshot_json: str | None = None,
+    ) -> bool:
+        """原子切换 + ready 事件同一事务（P3-5/R2——audit 仅真生效写；并发输者
+        rowcount=0 返回 False 零事件，P2-2；P3-4/R2：activated_at 严格递增
+        GREATEST(now, 本 org 最大+1s)——与重激活同款，防同秒窗口 current 滞留；
+        与 sqlite 同语义）。snapshot_json（m2s-5/G-21 方案 A）：快照附表与切换
+        同一事务——ready 可见时快照必已在位。"""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE sem_builds SET status = 'ready', stats_json = %(stats)s,"
+                " activated_at = GREATEST(CURRENT_TIMESTAMP,"
+                "  (SELECT MAX(b.activated_at) + interval '1 second'"
+                "     FROM sem_builds b WHERE b.org_id = %(org)s))"
+                " WHERE org_id = %(org)s AND id = %(bid)s AND status = 'building'",
+                {"stats": stats_json, "org": org_id, "bid": build_id},
+            )
+            effective = cur.rowcount == 1
+            if effective and audit is not None:
+                conn.execute(
+                    "INSERT INTO audit_outbox(id, event_type, payload_json)"
+                    " VALUES(%(id)s, %(t)s, %(p)s)",
+                    {"id": f"aud_{uuid.uuid4()}", "t": audit[0], "p": audit[1]},
+                )
+            if effective and snapshot_json is not None:
+                conn.execute(
+                    "INSERT INTO sem_build_snapshots(build_id, org_id,"
+                    " snapshot_json) VALUES(%(bid)s, %(org)s, %(snap)s)"
+                    " ON CONFLICT(build_id) DO UPDATE SET snapshot_json"
+                    " = EXCLUDED.snapshot_json",
+                    {"bid": build_id, "org": org_id, "snap": snapshot_json},
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return effective
+
+    def sem_fail_build(
+        self, org_id: str, build_id: int, stats_json: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> bool:
+        """失败收尾 + failed 事件同一事务；仅真生效返回 True（P2-2/R2——
+        已终态行幂等零生效，不写脏 failed 审计）。"""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE sem_builds SET status = 'failed', stats_json = %(stats)s"
+                " WHERE org_id = %(org)s AND id = %(bid)s AND status = 'building'",
+                {"stats": stats_json, "org": org_id, "bid": build_id},
+            )
+            effective = cur.rowcount == 1
+            if effective and audit is not None:
+                conn.execute(
+                    "INSERT INTO audit_outbox(id, event_type, payload_json)"
+                    " VALUES(%(id)s, %(t)s, %(p)s)",
+                    {"id": f"aud_{uuid.uuid4()}", "t": audit[0], "p": audit[1]},
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return effective
 
     def save_build(self, org_id: str, dict_rev: str, stats_json: str) -> int:
-        raise NotImplementedError("semantic 构建产物登记随 M2-S1（§5.8）")
+        new_id = self._conn.execute(
+            "INSERT INTO sem_builds(org_id, dict_rev, stats_json, status)"
+            " VALUES(%(org)s, %(rev)s, %(stats)s, 'building') RETURNING id",
+            {"org": org_id, "rev": dict_rev, "stats": stats_json},
+        ).fetchone()[0]
+        return new_id
+
+    # ---- m2s-5：G-21 方案 A 快照附表 + 打标/retag/对账（与 sqlite 同语义） ----
+
+    def sem_save_build_snapshot(
+        self, org_id: str, build_id: int, snapshot_json: str,
+    ) -> None:
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "INSERT INTO sem_build_snapshots(build_id, org_id, snapshot_json)"
+                " VALUES(%(bid)s, %(org)s, %(snap)s)"
+                " ON CONFLICT(build_id) DO UPDATE SET snapshot_json"
+                " = EXCLUDED.snapshot_json",
+                {"bid": build_id, "org": org_id, "snap": snapshot_json},
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+
+    def sem_load_build_snapshot(
+        self, org_id: str, build_id: int,
+    ) -> str | None:
+        row = self._conn.execute(
+            "SELECT snapshot_json FROM sem_build_snapshots"
+            " WHERE org_id = %(org)s AND build_id = %(bid)s",
+            {"org": org_id, "bid": build_id},
+        ).fetchone()
+        return row[0] if row else None
+
+    def sem_retag_candidates(
+        self, org_id: str, dict_rev: str, *, limit: int, after_rid: int = 0,
+    ) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT c.rid, c.content, c.doc_id, c.version FROM chunks c"
+            " JOIN documents d ON d.id = c.doc_id"
+            " WHERE d.org_id = %(org)s AND c.tombstone = 0"
+            "   AND c.version = d.active_version AND c.rid > %(after)s"
+            "   AND COALESCE((SELECT MAX(ce.dict_rev) FROM sem_chunk_entities ce"
+            "                 WHERE ce.chunk_rid = c.rid), '') <> %(rev)s"
+            " ORDER BY c.rid LIMIT %(lim)s",
+            {"org": org_id, "rev": dict_rev, "lim": limit, "after": after_rid},
+        ).fetchall()
+        return [{"rid": r[0], "content": r[1], "doc_id": r[2], "version": r[3]}
+                for r in rows]
+
+    def sem_replace_chunk_tags(
+        self, org_id: str, rows: Sequence[dict], *,
+        clear: Sequence[dict] | None = None,
+    ) -> int:
+        """块级标签整替（同事务；与 sqlite 同语义——P1/R2：clear 集先 DELETE
+        再插命中行、rows 空也进事务、(chunk_rid, doc_id, version) 三元组收窄）。"""
+        clear_rows = list(clear) if clear is not None else list(rows)
+        if not clear_rows and not rows:
+            return 0
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            for chunk in _sem_chunks(clear_rows, 200):
+                conds = " OR ".join(
+                    f"(chunk_rid = %(c{i})s AND doc_id = %(d{i})s"
+                    f" AND version = %(v{i})s)"
+                    for i in range(len(chunk)))
+                params: dict[str, object] = {"org": org_id}
+                for i, r in enumerate(chunk):
+                    params[f"c{i}"] = r["chunk_rid"]
+                    params[f"d{i}"] = r["doc_id"]
+                    params[f"v{i}"] = r["version"]
+                conn.execute(
+                    f"DELETE FROM sem_chunk_entities WHERE org_id = %(org)s"
+                    f" AND ({conds})", params)
+            for r in rows:
+                conn.execute(
+                    "INSERT INTO sem_chunk_entities(org_id, chunk_rid, doc_id,"
+                    " version, entity_id, hits, dict_rev)"
+                    " SELECT %(org)s, %(rid)s, %(doc)s, %(v)s, %(eid)s, %(hits)s,"
+                    " %(rev)s"
+                    " WHERE EXISTS (SELECT 1 FROM sem_entities e"
+                    "   WHERE e.id = %(eid)s AND e.org_id = %(org)s"
+                    "   AND e.status = 'active')",
+                    {"org": org_id, "rid": r["chunk_rid"], "doc": r["doc_id"],
+                     "v": r["version"], "eid": r["entity_id"], "hits": r["hits"],
+                     "rev": r["dict_rev"]},
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return len(rows)
+
+    def sem_reconcile_chunk_tags(self) -> list[dict]:
+        """打标对账（与 sqlite 同语义——P2-1/R2：存活谓词含 pending、三元组
+        收窄防误判）：悬挂/实体亡行清理 + dict_rev 落后计数。"""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            stale_by_org = dict(conn.execute(
+                "SELECT ce.org_id, COUNT(*) FROM sem_chunk_entities ce"
+                " WHERE NOT EXISTS ("
+                "   SELECT 1 FROM chunks c JOIN documents d ON d.id = c.doc_id"
+                "   WHERE c.rid = ce.chunk_rid AND c.doc_id = ce.doc_id"
+                "     AND c.version = ce.version AND c.tombstone = 0"
+                "     AND (c.version = d.active_version"
+                "          OR c.version = d.pending_version))"
+                " GROUP BY ce.org_id",
+            ).fetchall())
+            conn.execute(
+                "DELETE FROM sem_chunk_entities WHERE NOT EXISTS ("
+                "  SELECT 1 FROM chunks c JOIN documents d ON d.id = c.doc_id"
+                "  WHERE c.rid = sem_chunk_entities.chunk_rid"
+                "    AND c.doc_id = sem_chunk_entities.doc_id"
+                "    AND c.version = sem_chunk_entities.version"
+                "    AND c.tombstone = 0"
+                "    AND (c.version = d.active_version"
+                "         OR c.version = d.pending_version))",
+            )
+            retired_by_org = dict(conn.execute(
+                "SELECT ce.org_id, COUNT(*) FROM sem_chunk_entities ce"
+                " JOIN sem_entities e ON e.id = ce.entity_id"
+                " WHERE e.status != 'active' GROUP BY ce.org_id",
+            ).fetchall())
+            conn.execute(
+                "DELETE FROM sem_chunk_entities WHERE entity_id IN ("
+                "  SELECT id FROM sem_entities WHERE status != 'active')",
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        lagging: dict[str, int] = {}
+        untagged: dict[str, int] = {}
+        for org, rev in conn.execute(
+            "SELECT b.org_id, b.dict_rev FROM sem_builds b"
+            " WHERE b.status = 'ready' AND b.activated_at = ("
+            "   SELECT MAX(b2.activated_at) FROM sem_builds b2"
+            "   WHERE b2.org_id = b.org_id AND b2.status = 'ready')",
+        ).fetchall():
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT ce.chunk_rid) FROM sem_chunk_entities ce"
+                " WHERE ce.org_id = %(org)s AND ce.dict_rev <> %(rev)s"
+                "   AND EXISTS ("
+                "     SELECT 1 FROM chunks c JOIN documents d ON d.id = c.doc_id"
+                "     WHERE c.rid = ce.chunk_rid AND c.doc_id = ce.doc_id"
+                "       AND c.version = ce.version AND c.tombstone = 0"
+                "       AND (c.version = d.active_version"
+                "            OR c.version = d.pending_version))",
+                {"org": org, "rev": rev},
+            ).fetchone()
+            lagging[org] = row[0] if row else 0
+            row2 = conn.execute(
+                "SELECT COUNT(*) FROM chunks c"
+                " JOIN documents d ON d.id = c.doc_id"
+                " WHERE d.org_id = %(org)s AND c.tombstone = 0"
+                "   AND (c.version = d.active_version"
+                "        OR c.version = d.pending_version)"
+                "   AND NOT EXISTS (SELECT 1 FROM sem_chunk_entities ce"
+                "     WHERE ce.chunk_rid = c.rid AND ce.doc_id = c.doc_id"
+                "       AND ce.version = c.version)",
+                {"org": org},
+            ).fetchone()
+            untagged[org] = row2[0] if row2 else 0
+        orgs = {**{o: 0 for o in stale_by_org}, **{o: 0 for o in retired_by_org},
+                **{o: 0 for o in lagging}, **{o: 0 for o in untagged}}
+        return [
+            {"org_id": org,
+             "stale_chunks_removed": stale_by_org.get(org, 0),
+             "retired_entities_removed": retired_by_org.get(org, 0),
+             "lagging_chunks": lagging.get(org, 0),
+             "untagged_chunks": untagged.get(org, 0)}
+            for org in sorted(orgs)
+        ]
+
+    def sem_last_retag_done_at(self, org_id: str) -> str | None:
+        """该 org 最近一次 done 的 semantic_retag 任务时点（对账投递节流锚——
+        与 sqlite 同语义）。"""
+        row = self._conn.execute(
+            "SELECT to_char(updated_at, 'YYYY-MM-DD HH24:MI:SS') FROM tasks"
+            " WHERE type = 'semantic_retag' AND status = 'done'"
+            "   AND (payload LIKE %(p1)s OR payload LIKE %(p2)s)"
+            " ORDER BY updated_at DESC LIMIT 1",
+            {"p1": f'%"org":"{org_id}"%',
+             "p2": f'%"org": "{org_id}"%'},   # json.dumps 紧凑/默认两形态
+        ).fetchone()
+        return row[0] if row else None
 
     def load_build(self, org_id: str, dict_rev: str) -> dict | None:
-        raise NotImplementedError("semantic 构建产物读取随 M2-S1（§5.8）")
+        row = self._conn.execute(
+            "SELECT id, org_id, dict_rev, yaml_rev, sync_run_id, status, stats_json,"
+            " created_at FROM sem_builds WHERE org_id = %(org)s AND dict_rev = %(rev)s",
+            {"org": org_id, "rev": dict_rev},
+        ).fetchone()
+        if row is None:
+            return None
+        cols = ("id", "org_id", "dict_rev", "yaml_rev", "sync_run_id",
+                "status", "stats_json", "created_at")
+        return _sem_run_dict(cols, row)
 
     def export_l0(self, org_id: str) -> str:
-        raise NotImplementedError("semantic L0 导出随 M2-S1（§6.3）")
+        """L0 术语片段导出——构建产物落地归 m2s-2（本段空串占位）。"""
+        return ""
+
+    # ---- m2s-3：YAML curated 合并面 + FTS 索引面（与 sqlite 同语义） ----
+
+    def sem_write_curated_batch(self, org_id: str, rows: Sequence[dict]) -> int:
+        """curated_json 批写（规则表第 1 行）；P3-3/R2：sensitivity 直写（合并侧
+        已按 YAML 当前值解析——含显式 normal；与 sqlite 同口径）。"""
+        if not rows:
+            return 0
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            for row in rows:
+                conn.execute(
+                    "UPDATE sem_entities SET curated_json = %(curated)s,"
+                    " curated_rev = %(rev)s,"
+                    " sensitivity = COALESCE(%(sensitivity)s, 'normal'),"
+                    " updated_at = CURRENT_TIMESTAMP"
+                    " WHERE org_id = %(org)s AND type = %(type)s AND key = %(key)s"
+                    "   AND status = 'active'",
+                    {"curated": row["curated_json"], "rev": row["curated_rev"],
+                     "sensitivity": row.get("sensitivity"),
+                     "org": org_id, "type": row["type"], "key": row["key"]},
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return len(rows)
+
+    def sem_replace_manual_aliases(self, org_id: str, rows: Sequence[dict]) -> int:
+        """manual/abbr 别名整替（先删后插，只动这两类——T-S1/TC-SYNC-05）。"""
+        if not rows:
+            return 0
+        conn = self._conn
+        ids = self.resolve_entity_ids(
+            org_id, [(r["type"], r["key"]) for r in rows]
+        )
+        inserted = 0
+        touched: list[int] = []
+        conn.execute("BEGIN")
+        try:
+            for row in rows:
+                eid = ids.get((row["type"], row["key"]))
+                if eid is None:
+                    continue
+                conn.execute(
+                    "DELETE FROM sem_aliases WHERE org_id = %(org)s"
+                    " AND entity_id = %(eid)s AND kind IN ('manual', 'abbr')",
+                    {"org": org_id, "eid": eid},
+                )
+                for alias, alias_norm, kind, match_mode in row["aliases"]:
+                    # P3-2/R2：UNIQUE 冲突残余竞态兜底（ON CONFLICT DO NOTHING）。
+                    # B4②/m2s-4：inserted 只计真插入行（rowcount=0 = 冲突跳过）
+                    cur = conn.execute(
+                        "INSERT INTO sem_aliases(org_id, entity_id, alias,"
+                        " alias_norm, kind, match_mode)"
+                        " VALUES(%(org)s, %(eid)s, %(alias)s, %(norm)s,"
+                        " %(kind)s, %(mode)s) ON CONFLICT DO NOTHING",
+                        {"org": org_id, "eid": eid, "alias": alias,
+                         "norm": alias_norm, "kind": kind, "mode": match_mode},
+                    )
+                    inserted += max(cur.rowcount, 0)
+                touched.append(eid)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        if touched:
+            self.sem_refresh_search_texts(org_id, touched)
+        return inserted
+
+    def sem_clear_stale_curated(
+        self, org_id: str, keep_entity_ids: Sequence[int]
+    ) -> int:
+        """YAML 删除覆盖项（规则表第 8 行）——与 sqlite 同语义（source='sync'
+        且 curated_rev 非空、不在 keep 集 → 清 curated + 删 manual/abbr）。"""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            stale = [
+                r[0] for r in conn.execute(
+                    "SELECT id FROM sem_entities WHERE org_id = %(org)s"
+                    " AND source = 'sync' AND status != 'retired'"
+                    " AND curated_rev IS NOT NULL"
+                    + (" AND id != ALL(%(keep)s)" if keep_entity_ids else ""),
+                    {"org": org_id, "keep": list(keep_entity_ids)},
+                ).fetchall()
+            ]
+            for chunk in _sem_chunks(stale, self._SEM_IN_CHUNK):
+                conn.execute(
+                    "UPDATE sem_entities SET curated_json = '{}',"
+                    " curated_rev = NULL, updated_at = CURRENT_TIMESTAMP"
+                    " WHERE org_id = %(org)s AND id = ANY(%(ids)s)",
+                    {"org": org_id, "ids": chunk},
+                )
+                conn.execute(
+                    "DELETE FROM sem_aliases WHERE org_id = %(org)s"
+                    " AND entity_id = ANY(%(ids)s) AND kind IN ('manual', 'abbr')",
+                    {"org": org_id, "ids": chunk},
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        if stale:
+            self.sem_refresh_search_texts(org_id, stale)
+        return len(stale)
+
+    def sem_refresh_search_texts(self, org_id: str, entity_ids: Sequence[int]) -> None:
+        """实体 FTS 文本行重建（名称 + 别名分词拼接——tsvector GENERATED 自动
+        随行更新，无需 sqlite 的外容 delete 命令）。"""
+        from knowledge_lattice.adapters.tokenizer import word_tokens
+
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            for chunk in _sem_chunks(list(entity_ids), self._SEM_IN_CHUNK):
+                if not chunk:
+                    continue
+                conn.execute(
+                    "DELETE FROM sem_search_texts WHERE org_id = %(org)s"
+                    " AND entity_id = ANY(%(ids)s)",
+                    {"org": org_id, "ids": chunk},
+                )
+                rows = conn.execute(
+                    "SELECT e.id, e.name FROM sem_entities e"
+                    " WHERE e.org_id = %(org)s AND e.id = ANY(%(ids)s)"
+                    "   AND e.status = 'active'",
+                    {"org": org_id, "ids": chunk},
+                ).fetchall()
+                for eid, name in rows:
+                    aliases = conn.execute(
+                        "SELECT alias FROM sem_aliases WHERE org_id = %(org)s"
+                        " AND entity_id = %(eid)s",
+                        {"org": org_id, "eid": eid},
+                    ).fetchall()
+                    texts = [name] + [a[0] for a in aliases]
+                    seg = " ".join(tok for t in texts for tok in word_tokens(t))
+                    if not seg:
+                        continue
+                    conn.execute(
+                        "INSERT INTO sem_search_texts(org_id, entity_id, seg_text)"
+                        " VALUES(%(org)s, %(eid)s, %(seg)s)",
+                        {"org": org_id, "eid": eid, "seg": seg},
+                    )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+
+    def sem_restricted_column_keys(self, org_id: str, table_id: int) -> set[str]:
+        """C.5：表下 restricted 列键集（describe_table 主路径列级过滤面）。"""
+        return {
+            r[0] for r in self._conn.execute(
+                "SELECT c.key FROM sem_relations r"
+                " JOIN sem_entities c ON c.id = r.dst_id"
+                " WHERE r.org_id = %(org)s AND r.src_id = %(tid)s"
+                "   AND r.rel_type = 'has_column' AND r.status = 'active'"
+                "   AND c.status = 'active' AND c.sensitivity = 'restricted'",
+                {"org": org_id, "tid": table_id},
+            )
+        }
+
+    # ---- m2s-2 首批语义工具读取面（与 sqlite 同语义——参数风格 %(name)s） ----
+
+    _SEM_ENTITY_COLS = ("id", "org_id", "type", "key", "name", "parent_id",
+                        "attrs_json", "curated_json", "source", "source_system",
+                        "status", "sensitivity", "synced_at", "curated_rev")
+
+    def _sem_entity_row(self, row) -> dict:
+        return dict(zip(self._SEM_ENTITY_COLS, row))
+
+    def sem_entity_by_id(self, org_id: str, entity_id: int) -> dict | None:
+        row = self._conn.execute(
+            "SELECT id, org_id, type, key, name, parent_id, attrs_json,"
+            " curated_json, source, source_system, status, sensitivity,"
+            " synced_at, curated_rev FROM sem_entities"
+            " WHERE org_id = %(org)s AND id = %(eid)s",
+            {"org": org_id, "eid": entity_id},
+        ).fetchone()
+        return self._sem_entity_row(row) if row is not None else None
+
+    def sem_entity_by_key(self, org_id: str, type_: str, key: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT id, org_id, type, key, name, parent_id, attrs_json,"
+            " curated_json, source, source_system, status, sensitivity,"
+            " synced_at, curated_rev FROM sem_entities"
+            " WHERE org_id = %(org)s AND type = %(type)s AND key = %(key)s",
+            {"org": org_id, "type": type_, "key": key},
+        ).fetchone()
+        return self._sem_entity_row(row) if row is not None else None
+
+    def sem_entity_aliases(
+        self, org_id: str, entity_ids: Sequence[int]
+    ) -> list[dict]:
+        out: list[dict] = []
+        for chunk in _sem_chunks(list(entity_ids), self._SEM_IN_CHUNK):
+            if not chunk:
+                continue
+            rows = self._conn.execute(
+                "SELECT entity_id, alias, alias_norm, kind, match_mode, weight"
+                " FROM sem_aliases WHERE org_id = %(org)s"
+                "   AND entity_id = ANY(%(ids)s)"
+                " ORDER BY entity_id, alias_norm",
+                {"org": org_id, "ids": chunk},
+            ).fetchall()
+            out.extend(
+                {"entity_id": r[0], "alias": r[1], "alias_norm": r[2],
+                 "kind": r[3], "match_mode": r[4], "weight": r[5]}
+                for r in rows
+            )
+        return out
+
+    def sem_expand_graph(
+        self, org_id: str, root_id: int, *,
+        outgoing: Sequence[str], incoming: Sequence[str],
+        depth: int, fanout_limit: int, node_limit: int,
+        include_restricted: bool = False,
+    ) -> dict:
+        """BFS 逐层批量展开（递归 CTE 的等价 SQL——与 sqlite 同策略同语义：
+        visited 防环 / fanout 每节点截断 / node_limit 总量截断 / restricted 与
+        非 active 端点不出现（include_restricted=True 持权放行——m2s-6/T-S9）；
+        P3-2/R2：edges 去重且端点恒 ∈ {root} ∪ nodes）。"""
+        sens_pred = (" AND e.sensitivity = 'normal'" if not include_restricted
+                     else "")
+        nodes: dict[int, dict] = {}
+        edges: list[dict] = []
+        seen_edges: set[tuple[int, str, int]] = set()
+        truncated = False
+        visited = {root_id}
+        frontier = [root_id]
+        for _level in range(1, depth + 1):
+            if not frontier:
+                break
+            next_frontier: list[int] = []
+            for node in frontier:
+                for rels, forward in ((outgoing, True), (incoming, False)):
+                    if not rels:
+                        continue
+                    anchor = "r.src_id" if forward else "r.dst_id"
+                    other = "r.dst_id" if forward else "r.src_id"
+                    rows = self._conn.execute(
+                        "SELECT r.src_id, r.rel_type, r.dst_id, r.source,"
+                        " e.id, e.type, e.key, e.name"
+                        " FROM sem_relations r JOIN sem_entities e"
+                        f"   ON e.id = {other}"
+                        " WHERE r.org_id = %(org)s AND r.status = 'active'"
+                        "   AND e.status = 'active'"
+                        f"{sens_pred}"
+                        f"   AND {anchor} = %(node)s"
+                        "   AND r.rel_type = ANY(%(rels)s)"
+                        f" ORDER BY r.rel_type, {other}",
+                        {"org": org_id, "node": node, "rels": list(rels)},
+                    ).fetchall()
+                    fan = 0
+                    for src, rel, dst, rel_source, oid, otype, okey, oname in rows:
+                        if fan >= fanout_limit:
+                            truncated = True
+                            break
+                        edge_key = (src, rel, dst)
+                        if edge_key in seen_edges:
+                            continue  # P3-2/R2：同关系行双向只计一次
+                        if oid not in visited and len(nodes) >= node_limit:
+                            # P3-2/R2：节点截断后不产悬挂边
+                            truncated = True
+                            continue
+                        fan += 1
+                        seen_edges.add(edge_key)
+                        edges.append({"src": src, "rel": rel, "dst": dst,
+                                      "source": rel_source})
+                        if oid not in visited:
+                            visited.add(oid)
+                            nodes[oid] = {"id": oid, "type": otype, "key": okey,
+                                          "name": oname, "depth": _level}
+                            next_frontier.append(oid)
+            frontier = next_frontier
+        return {"nodes": list(nodes.values()), "edges": edges, "truncated": truncated}
+
+    def sem_search_entities(
+        self, org_id: str, q_norm: str, q_raw: str, *,
+        types: Sequence[str] | None, top_k: int,
+        q_pinyin: str | None = None,
+    ) -> list[dict]:
+        """四层（与 sqlite 同语义——m2s-6 起拼音层）：alias 精确 1.0 > 前缀
+        0.8 > 拼音完全匹配 0.7（TC-SEM-05 S3——q_pinyin 由 core 侧计算，
+        None=跳层）> FTS 模糊 0.5（C.3/m2s-3：tsvector @@ to_tsquery over
+        sem_search_texts——评分差异与 sqlite bm25 按 G-6 口径登记不追平）；
+        向量层在 core 并（embedder 注入——SQL 经 sem_fuzzy_vec_search）。
+        LIKE 前缀统一 LOWER + ESCAPE（pg LIKE 默认大小写敏感——显式 LOWER 拉平）。
+        P2-1/R2：score 常量显式 ::float8——PG 裸字面量为 NUMERIC（psycopg 归
+        Decimal），与 sqlite float 类型漂移会致 FastMCP 出参字符串化。"""
+        esc_norm = _like_escape(q_norm)
+        type_filter = ""
+        params: dict[str, object] = {"org": org_id}
+        if types:
+            type_filter = " AND e.type = ANY(%(types)s)"
+            params["types"] = list(types)
+        base = (
+            " FROM sem_aliases a JOIN sem_entities e ON e.id = a.entity_id"
+            " WHERE a.org_id = %(org)s AND e.status = 'active'"
+            " AND e.sensitivity = 'normal'" + type_filter
+        )
+        sql = (
+            "SELECT * FROM ("
+            "  SELECT e.id, e.type, e.key, e.name, e.attrs_json, e.curated_json,"
+            "         CAST(1.0 AS double precision) AS score,"
+            "         'alias-exact' AS via" + base
+            + "   AND a.alias_norm = %(q_exact)s"
+            "  UNION ALL"
+            "  SELECT e.id, e.type, e.key, e.name, e.attrs_json, e.curated_json,"
+            "         CAST(0.8 AS double precision) AS score,"
+            "         'alias-prefix' AS via" + base
+            + "   AND a.alias_norm LIKE %(q_prefix)s ESCAPE '\\'"
+        )
+        if q_pinyin:
+            sql += (
+                "  UNION ALL"
+                "  SELECT e.id, e.type, e.key, e.name, e.attrs_json,"
+                "         e.curated_json,"
+                "         CAST(0.7 AS double precision) AS score,"
+                "         'pinyin' AS via"
+                "   FROM sem_fuzzy_terms f JOIN sem_entities e"
+                "     ON e.id = f.entity_id"
+                "  WHERE f.org_id = %(org)s AND f.pinyin = %(q_pinyin)s"
+                "   AND f.pinyin != '' AND e.status = 'active'"
+                "   AND e.sensitivity = 'normal'" + type_filter
+            )
+        sql += ") ORDER BY score DESC, id ASC LIMIT %(lim)s"
+        query_params = dict(params)
+        query_params.update({
+            "q_exact": q_norm, "q_prefix": f"{esc_norm}%",
+            "lim": max(top_k * 3, top_k),
+        })
+        if q_pinyin:
+            query_params["q_pinyin"] = q_pinyin
+        rows = self._conn.execute(sql, query_params).fetchall()
+        cols = ("id", "type", "key", "name", "attrs_json", "curated_json",
+                "score", "via")
+        out = [dict(zip(cols, r)) for r in rows]
+        fts_rows = self._sem_fts_layer(
+            org_id, q_norm, top_k=top_k, type_filter=type_filter, params=params)
+        if fts_rows:
+            out.extend(fts_rows)
+        return out
+
+    def _sem_fts_layer(self, org_id: str, q_norm: str, *, top_k: int,
+                       type_filter: str, params: dict) -> list[dict] | None:
+        """FTS 第三层（C.3）：查询分词 → ' & ' AND to_tsquery('simple')——贴近
+        子串包含语义；无 token（纯符号）返回 None 跳层；ts_rank 排序（G-6 登记）。"""
+        from knowledge_lattice.adapters.tokenizer import word_tokens
+
+        tokens = word_tokens(q_norm)
+        if not tokens:
+            return None
+        tsquery = " & ".join(
+            t.replace("\\", "\\\\").replace("'", "''").replace(":", "\\:")
+            for t in tokens)
+        sql = (
+            "SELECT e.id, e.type, e.key, e.name, e.attrs_json, e.curated_json,"
+            " CAST(0.5 AS double precision) AS score, 'fts' AS via,"
+            " ts_rank(t.tsv, q.query) AS rank"
+            " FROM sem_search_texts t"
+            " JOIN sem_entities e ON e.id = t.entity_id,"
+            " to_tsquery('simple', %(tsq)s) AS q(query)"
+            " WHERE t.org_id = %(org)s AND t.tsv @@ q.query"
+            " AND e.org_id = %(org)s AND e.status = 'active'"
+            " AND e.sensitivity = 'normal'" + type_filter +
+            " ORDER BY rank DESC, e.id ASC LIMIT %(lim)s"
+        )
+        query_params = dict(params)
+        query_params.update({"tsq": tsquery, "lim": top_k})
+        rows = self._conn.execute(sql, query_params).fetchall()
+        cols = ("id", "type", "key", "name", "attrs_json", "curated_json",
+                "score", "via", "rank")
+        out = [dict(zip(cols, r)) for r in rows]
+        for r in out:
+            if not isinstance(r["score"], float):
+                r["score"] = float(r["score"])
+            if not isinstance(r["rank"], float):
+                r["rank"] = float(r["rank"])
+        return out
+
+    def sem_table_columns(self, org_id: str, table_id: int) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT c.key, c.name FROM sem_relations r"
+            " JOIN sem_entities c ON c.id = r.dst_id"
+            " WHERE r.org_id = %(org)s AND r.src_id = %(tid)s"
+            "   AND r.rel_type = 'has_column' AND r.status = 'active'"
+            "   AND c.status = 'active' AND c.sensitivity = 'normal'"
+            " ORDER BY c.key",
+            {"org": org_id, "tid": table_id},
+        ).fetchall()
+        return [{"key": r[0], "name": r[1]} for r in rows]
+
+    # ============ Audit 域扩展（M2.4 m2-2：同事务接入 + 搬运/封存/保留） ============
+
+    def _rollback(self) -> None:
+        """事务回滚（连接可能已断——失败不得覆盖原始异常）。"""
+        try:
+            self._conn.execute("ROLLBACK")
+        except psycopg.Error:
+            pass
+
+    def _outbox_insert(self, conn, event_type: str, payload_json: str) -> None:
+        """outbox 行插入（**参与调用方事务**——TC-OPS-01 崩溃注入锚点）。"""
+        conn.execute(
+            "INSERT INTO audit_outbox(id, event_type, payload_json)"
+            " VALUES(%(id)s, %(t)s, %(p)s)",
+            {"id": f"aud_{uuid.uuid4()}", "t": event_type, "p": payload_json},
+        )
+
+    def ship_outbox(self, *, now: str | None = None, batch: int = 500) -> dict:
+        """搬运 outbox → audit_events 分区表（按事件原时刻 created_at 路由）+
+        回填 shipped_at——**同库单事务**（BEGIN…COMMIT：插入+回填原子，
+        sqlite 跨文件两步形态的方言对照，接口语义一致：不丢不重）。"""
+        from knowledge_lattice.store.taskclock import TS_FMT  # noqa: E402 —— R2 P3-2 常量单源
+        from knowledge_lattice.store.audit_chain import (
+            compute_row_hash,
+            month_of,
+            outbox_row_to_event,
+        )
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        from .audit import ensure_month_partition, last_row_hash, month_bounds
+
+        now_ts = now or utc_now_ts()
+        cols = ("id", "event_type", "payload_json", "created_at")
+        total = 0
+        while True:
+            conn = self._conn
+            conn.execute("BEGIN")
+            try:
+                rows = conn.execute(
+                    "SELECT id, event_type, payload_json, created_at FROM audit_outbox"
+                    " WHERE shipped_at IS NULL ORDER BY created_at, id LIMIT %(n)s",
+                    {"n": batch},
+                ).fetchall()
+                if not rows:
+                    conn.execute("COMMIT")
+                    break
+                by_month: dict[str, list[dict]] = {}
+                for r in rows:
+                    rec = dict(zip(cols, r))
+                    # 时间列归一化：TIMESTAMP → 'YYYY-MM-DD HH:MM:SS'（UTC——连接工厂钉死）
+                    rec["created_at"] = rec["created_at"].strftime(TS_FMT)
+                    by_month.setdefault(month_of(rec["created_at"]), []).append(rec)
+                for month, recs in by_month.items():
+                    ensure_month_partition(
+                        conn, datetime(int(month[:4]), int(month[4:6]), 1, tzinfo=UTC)
+                    )
+                    prev = last_row_hash(conn, month)
+                    if prev is None and not _month_has_rows(conn, month):
+                        prev = self._chain_start_hash(conn, month)
+                    for rec in recs:
+                        event = outbox_row_to_event(rec)
+                        event["prev_hash"] = prev
+                        event["row_hash"] = compute_row_hash(event, prev)
+                        conn.execute(
+                            "INSERT INTO audit_events(id, org_id, actor, action,"
+                            " target_type, target_id, outcome, request_id, detail_json,"
+                            " prev_hash, row_hash, created_at)"
+                            " VALUES(%(id)s, %(org_id)s, %(actor)s, %(action)s,"
+                            " %(target_type)s, %(target_id)s, %(outcome)s, %(request_id)s,"
+                            " %(detail_json)s, %(prev_hash)s, %(row_hash)s, %(created_at)s)"
+                            " ON CONFLICT (id, created_at) DO NOTHING",
+                            event,
+                        )
+                        prev = event["row_hash"]
+                self._mark_shipped(conn, [r[0] for r in rows], now_ts)
+                conn.execute("COMMIT")
+            except BaseException:
+                self._rollback()
+                raise
+            total += len(rows)
+            if len(rows) < batch:
+                break
+        return {"shipped": total}
+
+    def _chain_start_hash(self, conn, month: str) -> str | None:
+        """月首条 prev = 上月末哈希（向前找最近有行分区——FR-6，跨空月延续）。"""
+        from knowledge_lattice.store.audit_chain import prev_month
+
+        from .audit import last_row_hash
+
+        m = prev_month(month)
+        for _ in range(120):
+            h = last_row_hash(conn, m)
+            if h is not None:
+                return h
+            m = prev_month(m)
+        return None
+
+    def _mark_shipped(self, conn, ids: Sequence[str], now: str) -> None:
+        """outbox 回填 shipped_at（同事务步——崩溃注入锚点）。"""
+        conn.execute(
+            "UPDATE audit_outbox SET shipped_at = %(now)s"
+            " WHERE id = ANY(%(ids)s) AND shipped_at IS NULL",
+            {"now": now, "ids": list(ids)},
+        )
+
+    def read_monthly_events(self, *, when: str) -> list[dict]:
+        """读指定时点所在月的 audit_events（分区范围查询——m2-3 B2：**链遍历
+        序**〔walk_chain 按链重排与逐行哈希验证——G-13 对冲，读序不依赖 seq〕；
+        B5：语义列 detail_json 兜底。破链 raise AuditChainError——fail-closed）。"""
+        from knowledge_lattice.store.taskclock import TS_FMT  # noqa: E402 —— R2 P3-2 常量单源
+        from knowledge_lattice.store.audit_chain import (
+            backfill_semantic_cols,
+            walk_chain,
+        )
+
+        from .audit import month_bounds
+
+        month = when[:4] + when[5:7]
+        start, end = month_bounds(month)
+        rows = self._conn.execute(
+            "SELECT id, org_id, actor, action, target_type, target_id, outcome,"
+            " request_id, detail_json, prev_hash, row_hash, created_at"
+            " FROM audit_events WHERE created_at >= %(s)s AND created_at < %(e)s",
+            {"s": start, "e": end},
+        ).fetchall()  # 读序无关（B2——walk_chain 按链重排）
+        cols = (
+            "id", "org_id", "actor", "action", "target_type", "target_id", "outcome",
+            "request_id", "detail_json", "prev_hash", "row_hash", "created_at",
+        )
+        events = []
+        for r in rows:
+            d = dict(zip(cols, r))
+            if d.get("created_at") is not None:
+                d["created_at"] = d["created_at"].strftime(TS_FMT)
+            events.append(d)
+        return [backfill_semantic_cols(e) for e in walk_chain(events)]
+
+    def seal_audit_months(self, *, now: str | None = None) -> dict:
+        """封存过月分区：sealed 触发器（拦 INSERT/UPDATE/DELETE——owner 亦拦）+
+        记 audit_month_seals（month/last_hash/rows/sealed_at）；仍有未搬运行的
+        月份跳过（防「先封存后搬运」写入已封存分区死锁）。"""
+        from knowledge_lattice.store.audit_chain import month_of
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        from .audit import seal_month_partition
+
+        now_ts = now or utc_now_ts()
+        from .audit import SEALS_TABLE_DDL
+
+        self._conn.execute(SEALS_TABLE_DDL)  # 幂等——封存记录表（首封前 ensure）
+        cur_month = month_of(now_ts)
+        already_sealed = {
+            r[0]
+            for r in self._conn.execute(
+                "SELECT month FROM audit_month_seals"
+            ).fetchall()
+        }
+        months = [
+            r[0]
+            for r in self._conn.execute(
+                "SELECT substring(c.relname from 'audit_events_([0-9]{6})$')"
+                " FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
+                " WHERE c.relispartition AND n.nspname = current_schema()"
+                "   AND c.relname LIKE 'audit_events_%'"
+                " ORDER BY 1"
+            ).fetchall()
+            if r[0] and r[0] < cur_month and r[0] not in already_sealed
+        ]
+        sealed: list[str] = []
+        skipped: list[str] = []
+        for month in months:
+            upper = _month_upper(month)
+            pending = self._conn.execute(
+                "SELECT count(*) FROM audit_outbox"
+                " WHERE shipped_at IS NULL AND created_at < %(end)s",
+                {"end": upper},
+            ).fetchone()[0]
+            if pending:
+                skipped.append(month)
+                continue
+            seal_month_partition(self._conn, month)
+            sealed.append(month)
+        return {"sealed": sealed, "skipped_pending": skipped}
+
+    def prune_audit_months(
+        self, *, keep_months: int, now: str | None = None
+    ) -> dict:
+        """保留期分区删除（DROP 分区表——整文件删除的 PG 等价，TC-OPS-02③）。"""
+        from knowledge_lattice.store.audit_chain import month_of, month_shift
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        from .audit import SEALS_TABLE_DDL, partition_name
+
+        self._conn.execute(SEALS_TABLE_DDL)  # 幂等——prune 清封存记录前 ensure
+        now_ts = now or utc_now_ts()
+        cutoff = month_shift(month_of(now_ts), -keep_months)
+        months = [
+            r[0]
+            for r in self._conn.execute(
+                "SELECT substring(c.relname from 'audit_events_([0-9]{6})$')"
+                " FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
+                " WHERE c.relispartition AND n.nspname = current_schema()"
+                "   AND c.relname LIKE 'audit_events_%'"
+                " ORDER BY 1"
+            ).fetchall()
+            if r[0] and r[0] < cutoff
+        ]
+        for month in months:
+            self._conn.execute(f'DROP TABLE IF EXISTS "{partition_name(month)}"')
+            self._conn.execute(
+                "DELETE FROM audit_month_seals WHERE month = %(m)s", {"m": month}
+            )
+        return {"pruned": months}
+
+    # ---- 删库 RESTRICT（C 组——T19 半句收口，sqlite 同构） ----
+
+    # ============ 维度治理 + 授权写路径 + 覆盖率（m2-3——TC-OPS-06/07/08/EMB-06） ============
+
+    def _value_row(self, org_id: str, dim_id: str, value_id: str):
+        return self._conn.execute(
+            "SELECT v.status FROM dimension_values v"
+            " JOIN dimensions d ON d.id = v.dimension_id"
+            " WHERE v.id = %(vid)s AND d.id = %(dim)s AND d.org_id = %(org)s",
+            {"vid": value_id, "dim": dim_id, "org": org_id},
+        ).fetchone()
+
+    def dimension_value_impact(
+        self, org_id: str, dim_id: str, value_id: str, *,
+        treating_active: bool = False,
+    ) -> dict | None:
+        """取值停用影响面预估（TC-OPS-07① dry_run 数据源）——只读。
+        locked_docs/treating_active 口径见 sqlite 版 docstring（R2 边界3/m2-6 A4）。"""
+        if self._value_row(org_id, dim_id, value_id) is None:
+            return None
+        docs = self._conn.execute(
+            "SELECT count(DISTINCT dd.doc_id) FROM document_dimensions dd"
+            " WHERE dd.value_id = %(vid)s",
+            {"vid": value_id},
+        ).fetchone()[0]
+        grants, users = self._conn.execute(
+            "SELECT count(*), count(DISTINCT user_id)"
+            " FROM user_dimension_grants WHERE value_id = %(vid)s",
+            {"vid": value_id},
+        ).fetchone()
+        value_filter = (
+            "v.status != 'active' AND v.id != %(vid)s" if treating_active
+            else "v.status != 'active' OR v.id = %(vid)s"
+        )
+        locked = self._conn.execute(
+            "SELECT count(DISTINCT dd.doc_id) FROM document_dimensions dd"
+            " JOIN dimension_values v ON v.id = dd.value_id"
+            " JOIN dimensions d ON d.id = v.dimension_id AND d.org_id = %(org)s"
+            f" WHERE d.status != 'active' OR ({value_filter})",
+            {"org": org_id, "vid": value_id},
+        ).fetchone()[0]
+        return {"docs": docs, "grants": grants, "users": users, "locked_docs": locked}
+
+    def disable_dimension_value(
+        self, org_id: str, dim_id: str, value_id: str, *,
+        dry_run: bool = False,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """取值停用（TC-OPS-07①）：dry_run 只预估；生效=status→disabled
+        （幂等零新审计）+ T3 联动 + audit 同事务。"""
+        impact = self.dimension_value_impact(org_id, dim_id, value_id)
+        if impact is None:
+            return None
+        if dry_run:
+            return {**impact, "applied": False}
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE dimension_values SET status = 'disabled'"
+                " WHERE id = %(vid)s AND status = 'active'",
+                {"vid": value_id},
+            )
+            if cur.rowcount and audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return {**impact, "applied": True}
+
+    def dimension_retire_impact(self, org_id: str, dim_id: str) -> dict | None:
+        """维度退役影响面预估（TC-OPS-07② 二次确认数据源）——只读。"""
+        row = self._conn.execute(
+            "SELECT status FROM dimensions WHERE id = %(dim)s AND org_id = %(org)s",
+            {"dim": dim_id, "org": org_id},
+        ).fetchone()
+        if row is None:
+            return None
+        docs = self._conn.execute(
+            "SELECT count(DISTINCT dd.doc_id) FROM document_dimensions dd"
+            " WHERE dd.dimension_id = %(dim)s",
+            {"dim": dim_id},
+        ).fetchone()[0]
+        grants, values = self._conn.execute(
+            "SELECT (SELECT count(*) FROM user_dimension_grants"
+            "         WHERE dimension_id = %(dim)s),"
+            "       (SELECT count(*) FROM dimension_values"
+            "         WHERE dimension_id = %(dim)s AND status = 'active')",
+            {"dim": dim_id},
+        ).fetchone()
+        return {"docs": docs, "grants": grants, "values": values}
+
+    def get_dimension_status(self, org_id: str, dim_id: str) -> str | None:
+        """维度生命周期状态（退役端点幂等 409 判据）。"""
+        row = self._conn.execute(
+            "SELECT status FROM dimensions WHERE id = %(dim)s AND org_id = %(org)s",
+            {"dim": dim_id, "org": org_id},
+        ).fetchone()
+        return row[0] if row else None
+
+    def retire_dimension(
+        self, org_id: str, dim_id: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """维度退役（T20 半句——唯一放宽路径必有审计）：status→retired
+        （幂等零新审计）；audit 同事务。"""
+        impact = self.dimension_retire_impact(org_id, dim_id)
+        if impact is None:
+            return None
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE dimensions SET status = 'retired', updated_at ="
+                " CURRENT_TIMESTAMP WHERE id = %(dim)s AND org_id = %(org)s"
+                " AND status = 'active'",
+                {"dim": dim_id, "org": org_id},
+            )
+            if cur.rowcount and audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return impact
+
+    def replace_local_grants(
+        self, org_id: str, user_id: str,
+        rows: Sequence[tuple[str, str, str | None]], *,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        """用户 local 授权全量替换（TC-OPS-08——sync 行不动；幂等目标全量态；
+        expires_at 经 normalize_expires_at 归一——m2-6 B③ 直调面收口）。"""
+        from knowledge_lattice.store.taskclock import normalize_expires_at
+
+        conn = self._conn
+        resolved: list[tuple[str, str, str | None]] = []
+        for dim_key, value, expires_at in rows:
+            r = conn.execute(
+                "SELECT d.id, v.id FROM dimensions d"
+                " JOIN dimension_values v ON v.dimension_id = d.id"
+                " WHERE d.org_id = %(org)s AND d.key = %(k)s AND v.value = %(v)s",
+                {"org": org_id, "k": dim_key, "v": value},
+            ).fetchone()
+            if r is None:
+                raise KeyError(
+                    f"grant target not found in org: {dim_key!r}={value!r}"
+                )
+            resolved.append((r[0], r[1], normalize_expires_at(expires_at)))
+        conn.execute("BEGIN")
+        try:
+            removed = conn.execute(
+                "DELETE FROM user_dimension_grants"
+                " WHERE user_id = %(uid)s AND source = 'local'"
+                "   AND dimension_id IN (SELECT id FROM dimensions"
+                "                        WHERE org_id = %(org)s)",
+                {"uid": user_id, "org": org_id},
+            ).rowcount
+            inserted = 0
+            for dim_db, val_db, expires_at in resolved:
+                conn.execute(
+                    "INSERT INTO user_dimension_grants(user_id, dimension_id,"
+                    " value_id, source, expires_at) VALUES(%(u)s, %(d)s, %(v)s,"
+                    " 'local', %(e)s)",
+                    {"u": user_id, "d": dim_db, "v": val_db, "e": expires_at},
+                )
+                inserted += 1
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return {"removed": removed, "inserted": inserted}
+
+    def list_grants_for_export(self, org_id: str) -> list[dict]:
+        """组织全部授权行（CSV 导出 / 差异计算数据源——含 sync 标注）。
+
+        R3 P2-1：expires_at 双方言统一返回**库格式字符串**（pg TIMESTAMP 在
+        store 单点归一——diff/export/审计面同源比较，datetime 形态不外泄到
+        api 层；created_at 归一先例同款）。"""
+        from knowledge_lattice.store.taskclock import TS_FMT  # noqa: E402 —— R2 P3-2 常量单源
+        rows = self._conn.execute(
+            "SELECT u.username, g.user_id, d.key, v.value, g.expires_at, g.source"
+            " FROM user_dimension_grants g"
+            " JOIN dimensions d ON d.id = g.dimension_id AND d.org_id = %(org)s"
+            " JOIN dimension_values v ON v.id = g.value_id"
+            " JOIN users u ON u.id = g.user_id"
+            " ORDER BY u.username, d.key, v.value",
+            {"org": org_id},
+        ).fetchall()
+        out = []
+        for r in rows:
+            expires = r[4]
+            if expires is not None and not isinstance(expires, str):
+                expires = expires.strftime(TS_FMT)  # TIMESTAMP→str
+            out.append({
+                "username": r[0], "user_id": r[1], "dim_key": r[2],
+                "value": r[3], "expires_at": expires, "source": r[5],
+            })
+        return out
+
+    def find_user_by_username(self, username: str) -> dict | None:
+        """username → 用户行（CSV 导入解析）。"""
+        row = self._conn.execute(
+            "SELECT id, username, is_system_admin, disabled_at FROM users"
+            " WHERE username = %(u)s",
+            {"u": username},
+        ).fetchone()
+        if row is None:
+            return None
+        return {"id": row[0], "username": row[1], "is_system_admin": row[2],
+                "disabled_at": row[3]}
+
+    # ---- 成员关系写路径（m2-6 A3） ----
+
+    def add_membership(
+        self, org_id: str, user_id: str, *,
+        role: str = "member", expires_at: str | None = None,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        """新建成员关系（语义见 backend.py 协议——与 audit 同事务）。"""
+        from psycopg import errors as pg_errors
+
+        from knowledge_lattice.store.backend import MembershipExistsError
+        from knowledge_lattice.store.taskclock import normalize_expires_at
+
+        if self._conn.execute(
+            "SELECT 1 FROM users WHERE id = %(u)s", {"u": user_id}
+        ).fetchone() is None:
+            raise KeyError(f"user not found: {user_id!r}")
+        expires_norm = normalize_expires_at(expires_at)
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "INSERT INTO user_org_memberships(user_id, org_id, role, expires_at)"
+                " VALUES(%(uid)s, %(org)s, %(role)s, %(exp)s)",
+                {"uid": user_id, "org": org_id, "role": role, "exp": expires_norm},
+            )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except pg_errors.UniqueViolation as exc:
+            self._rollback()
+            raise MembershipExistsError(
+                f"membership exists: user={user_id!r} org={org_id!r}"
+                "（含过期行——恢复走 DELETE 后重加 + PUT grants 补授权，T23）"
+            ) from exc
+        except BaseException:
+            self._rollback()
+            raise
+        return {"user_id": user_id, "role": role, "expires_at": expires_norm}
+
+    def update_membership(
+        self, org_id: str, user_id: str, *,
+        role: str | None = None, expires_at: object = ...,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """成员关系更新（语义见 backend.py 协议——R2 P3-3：过期判定与最后
+        管理员守卫全部移入**同一事务**，比较均在 SQL 侧〔datetime 不出库〕；
+        expires_at Ellipsis 哨兵=不变 / None=改永不过期 / 字符串=归一写入）。"""
+        from knowledge_lattice.store.backend import (
+            MembershipExpiredError,
+            MembershipLastAdminError,
+        )
+        from knowledge_lattice.store.taskclock import normalize_expires_at
+
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            # R3 P3-1：事务级咨询锁串行化同组织的守卫判定（只锁目标行时
+            # T1 锁 A/T2 锁 B 互不冲突，READ COMMITTED 下双方 count=2 均放行
+            # → 0 admin；曾试「全 admin 行 FOR UPDATE」——并发 UPDATE 提交后
+            # 等待方 EPQ 重评抛 tuple concurrently updated，咨询锁无此竞态。
+            # hashtext 键冲突=跨组织偶发串行化，无害）
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%(org)s))", {"org": org_id}
+            )
+            row = conn.execute(
+                "SELECT role,"
+                " (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) AS valid,"
+                " to_char(expires_at, 'YYYY-MM-DD HH24:MI:SS')"
+                " FROM user_org_memberships WHERE user_id = %(uid)s"
+                " AND org_id = %(org)s FOR UPDATE",
+                {"uid": user_id, "org": org_id},
+            ).fetchone()
+            if row is None:
+                conn.execute("COMMIT")
+                return None
+            old_role, valid, old_expires = row
+            if not valid:
+                conn.execute("COMMIT")
+                raise MembershipExpiredError(
+                    f"membership expired: user={user_id!r} org={org_id!r}"
+                    "——T23 续期禁令：删行重加（DELETE → POST → PUT grants）"
+                )
+            new_role = role if role is not None else old_role
+            if expires_at is ...:
+                new_expires = old_expires
+            else:
+                new_expires = normalize_expires_at(expires_at)  # None→永久
+            if old_role == "org_admin":
+                # 操作后身份是否终结（归一化字符串与 SQL CURRENT_TIMESTAMP
+                # 同格式——SQL 侧比较，datetime 不出库）
+                still_admin = conn.execute(
+                    "SELECT %(role)s = 'org_admin' AND (%(exp)s::timestamp IS NULL"
+                    " OR %(exp)s::timestamp > CURRENT_TIMESTAMP)",
+                    {"role": new_role, "exp": new_expires},
+                ).fetchone()[0]
+                if not still_admin and self._count_active_admins(conn, org_id) <= 1:
+                    conn.execute("COMMIT")
+                    raise MembershipLastAdminError(
+                        f"组织 {org_id!r} 最后一名 active org_admin 不得自锁"
+                        "（降级/停用被拒——先指定继任管理员）"
+                    )
+            conn.execute(
+                "UPDATE user_org_memberships SET role = %(role)s,"
+                " expires_at = %(exp)s::timestamp"
+                " WHERE user_id = %(uid)s AND org_id = %(org)s",
+                {"role": new_role, "exp": new_expires,
+                 "uid": user_id, "org": org_id},
+            )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return {"user_id": user_id, "role": new_role, "expires_at": new_expires}
+
+    def delete_membership(
+        self, org_id: str, user_id: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> bool:
+        """删除成员关系（trg_membership_delete_cleanup 级联清授权——T23 不
+        破坏；最后管理员守卫同事务——R2 P3-3，行锁 FOR UPDATE）。"""
+        from knowledge_lattice.store.backend import MembershipLastAdminError
+
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            # R3 P3-1：事务级咨询锁（与 update 同款——同组织守卫判定串行化）
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%(org)s))", {"org": org_id}
+            )
+            row = conn.execute(
+                "SELECT role, (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)"
+                " FROM user_org_memberships WHERE user_id = %(uid)s"
+                " AND org_id = %(org)s FOR UPDATE",
+                {"uid": user_id, "org": org_id},
+            ).fetchone()
+            if row is None:
+                conn.execute("COMMIT")
+                return False
+            if row[0] == "org_admin" and row[1] \
+                    and self._count_active_admins(conn, org_id) <= 1:
+                conn.execute("COMMIT")
+                raise MembershipLastAdminError(
+                    f"组织 {org_id!r} 最后一名 active org_admin 不得自锁"
+                    "（移出被拒——先指定继任管理员）"
+                )
+            cur = conn.execute(
+                "DELETE FROM user_org_memberships"
+                " WHERE user_id = %(uid)s AND org_id = %(org)s",
+                {"uid": user_id, "org": org_id},
+            )
+            deleted = cur.rowcount > 0
+            if deleted and audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return deleted
+
+    @staticmethod
+    def _count_active_admins(conn, org_id: str) -> int:
+        """事务内 active org_admin 计数（守卫数据源——R2 P3-3）。"""
+        return conn.execute(
+            "SELECT count(*) FROM user_org_memberships"
+            " WHERE org_id = %(org)s AND role = 'org_admin'"
+            "   AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)",
+            {"org": org_id},
+        ).fetchone()[0]
+
+    def count_active_org_admins(self, org_id: str) -> int:
+        """本组织 active org_admin 数（A3 唯一管理员守卫）。"""
+        return self._conn.execute(
+            "SELECT count(*) FROM user_org_memberships"
+            " WHERE org_id = %(org)s AND role = 'org_admin'"
+            "   AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)",
+            {"org": org_id},
+        ).fetchone()[0]
+
+    # ---- 维度取值写路径（m2-6 A4） ----
+
+    def create_dimension_value(
+        self, org_id: str, dim_id: str, value: str, *,
+        label: str | None = None,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """新增维度取值（语义见 backend.py 协议——label 展示名 R2 P3-4）。"""
+        from psycopg import errors as pg_errors
+
+        from knowledge_lattice.store.backend import DimensionValueExistsError
+
+        dim = self._conn.execute(
+            "SELECT status FROM dimensions WHERE id = %(dim)s AND org_id = %(org)s",
+            {"dim": dim_id, "org": org_id},
+        ).fetchone()
+        if dim is None:
+            return None
+        if dim[0] == "retired":
+            raise ValueError(
+                f"dimension retired: {dim_id!r}——退役维度不再扩值（T20）"
+            )
+        value_id = f"val:{dim_id}:{value}"
+        display = label if label is not None else value
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "INSERT INTO dimension_values(id, dimension_id, value, label)"
+                " VALUES(%(id)s, %(dim)s, %(value)s, %(label)s)",
+                {"id": value_id, "dim": dim_id, "value": value,
+                 "label": display},
+            )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except pg_errors.IntegrityError as exc:
+            self._rollback()
+            raise DimensionValueExistsError(
+                f"value exists in dimension: {value!r}"
+            ) from exc
+        except BaseException:
+            self._rollback()
+            raise
+        return {"value_id": value_id, "value": value, "label": display,
+                "status": "active"}
+
+    def enable_dimension_value(
+        self, org_id: str, dim_id: str, value_id: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """取值重新启用（D19 恢复路径——语义见 backend.py 协议；retired 维度
+        409 与 create 对称〔R2 P3-4〕、applied 按 rowcount）。"""
+        impact = self.dimension_value_impact(
+            org_id, dim_id, value_id, treating_active=True
+        )
+        if impact is None:
+            return None
+        dim_status = self._conn.execute(
+            "SELECT status FROM dimensions WHERE id = %(dim)s AND org_id = %(org)s",
+            {"dim": dim_id, "org": org_id},
+        ).fetchone()[0]
+        if dim_status == "retired":
+            raise ValueError(
+                f"dimension retired: {dim_id!r}——退役维度取值不启用（重建"
+                "维度是唯一路径，T20 对称）"
+            )
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE dimension_values SET status = 'active'"
+                " WHERE id = %(vid)s AND status = 'disabled'",
+                {"vid": value_id},
+            )
+            applied = cur.rowcount > 0
+            if applied and audit is not None:
+                self._outbox_insert(conn, *audit)  # 幂等：已 active 零新审计
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return {**impact, "applied": applied}
+
+    def embedding_coverage(self, org_id: str | None, embed_model: str) -> list[dict]:
+        """各知识库嵌入覆盖率（TC-EMB-06 只读面板——RUNBOOK §1 闭合口径；
+        org_id=None=全库——R2 P2-2 全库覆盖率门数据源；
+        P1-1/R3：org-scoped 外层动态 ds 过滤——只列本组织 datasets）。"""
+        org_filter = " AND d.org_id = %(org)s" if org_id is not None else ""
+        ds_filter = " WHERE ds.org_id = %(org)s" if org_id is not None else ""
+        rows = self._conn.execute(
+            "SELECT ds.id, ds.name,"
+            " (SELECT count(*) FROM chunks c"
+            "   JOIN documents d ON d.id = c.doc_id AND d.active_version = c.version"
+            f"   WHERE d.dataset_id = ds.id AND c.tombstone = 0{org_filter}),"
+            " (SELECT count(*) FROM chunks c"
+            "   JOIN documents d ON d.id = c.doc_id AND d.active_version = c.version"
+            "   JOIN chunk_vectors cv ON cv.rid = c.rid AND cv.embed_model = %(model)s"
+            f"   WHERE d.dataset_id = ds.id AND c.tombstone = 0{org_filter})"
+            f" FROM datasets ds{ds_filter} ORDER BY ds.id",
+            {"org": org_id, "model": embed_model},
+        ).fetchall()
+        return [
+            {"dataset_id": r[0], "dataset_name": r[1], "total": r[2], "done": r[3]}
+            for r in rows
+        ]
+
+    def read_pending_outbox_events(self) -> list[dict]:
+        """未搬运 outbox 行（审计分级查询当月未落库部分）。"""
+        from knowledge_lattice.store.taskclock import TS_FMT  # noqa: E402 —— R2 P3-2 常量单源
+        rows = self._conn.execute(
+            "SELECT id, event_type, payload_json, created_at FROM audit_outbox"
+            " WHERE shipped_at IS NULL ORDER BY created_at, id"
+        ).fetchall()
+        cols = ("id", "event_type", "payload_json", "created_at")
+        out = []
+        for r in rows:
+            d = dict(zip(cols, r))
+            if d.get("created_at") is not None:
+                d["created_at"] = d["created_at"].strftime(TS_FMT)
+            out.append(d)
+        return out
+
+    # ---- reembed 蓝绿执行体（m2-6 A1——TC-EMB-06 执行面；R2 P2-2：org_id=None
+    #      = 全库——N-1 裁定选 a） ----
+
+    def pending_reembed_batch(
+        self, org_id: str | None, embed_model: str, *, limit: int = 64,
+    ) -> list[dict]:
+        """reembed 扫描认领 + 钉签（TC-EMB-06 ①——docstring 见 backend.py 协议；
+        org_id=None 时无组织过滤〔全库〕）。"""
+        org_filter = " AND d.org_id = %(org)s" if org_id is not None else ""
+        rows = self._conn.execute(
+            "UPDATE chunks SET embed_model = %(label)s"
+            " WHERE rid IN ("
+            "   SELECT c.rid FROM chunks c"
+            "   JOIN documents d ON d.id = c.doc_id"
+            f"   WHERE c.tombstone = 0{org_filter}"
+            "     AND NOT EXISTS (SELECT 1 FROM chunk_vectors cv"
+            "       WHERE cv.rid = c.rid AND cv.embed_model = %(label)s)"
+            "   ORDER BY c.rid LIMIT %(limit)s)"
+            " RETURNING rid, content",
+            {"org": org_id, "label": embed_model, "limit": limit},
+        ).fetchall()
+        return [{"rid": r[0], "content": r[1]} for r in rows]
+
+    def repin_chunk_labels(self, org_id: str | None, embed_model: str) -> int:
+        """切换后状态标签对齐（TC-EMB-06 ③——迟到旧标签回写谓词不匹配根除；
+        org_id=None=全库）。"""
+        org_filter = " AND org_id = %(org)s" if org_id is not None else ""
+        cur = self._conn.execute(
+            "UPDATE chunks SET embed_model = %(label)s"
+            " WHERE embed_model != %(label)s AND doc_id IN (SELECT id FROM documents"
+            f"   WHERE 1=1{org_filter})",
+            {"org": org_id, "label": embed_model},
+        )
+        return cur.rowcount
+
+    def delete_vectors_by_label(self, org_id: str | None, keep_model: str) -> int:
+        """旧标签延后清理（TC-EMB-06 ④——全库单标签一致；org_id=None=全库）。"""
+        org_filter = " AND d.org_id = %(org)s" if org_id is not None else ""
+        cur = self._conn.execute(
+            "DELETE FROM chunk_vectors WHERE embed_model != %(keep)s AND rid IN ("
+            "  SELECT c.rid FROM chunks c"
+            f"  JOIN documents d ON d.id = c.doc_id WHERE 1=1{org_filter})",
+            {"org": org_id, "keep": keep_model},
+        )
+        return cur.rowcount
+
+    def invalidate_quality_cache(self, org_id: str | None) -> int:
+        """quality 检测缓存失效（TC-EMB-06 ④——detected_at_scale 置 NULL 使
+        recompute 候选= 全量；org_id=None=全库）。"""
+        org_filter = " AND org_id = %(org)s" if org_id is not None else ""
+        cur = self._conn.execute(
+            "UPDATE chunks SET detected_at_scale = NULL"
+            f" WHERE tombstone = 0 AND doc_id IN (SELECT id FROM documents"
+            f"   WHERE 1=1{org_filter})",
+            {"org": org_id},
+        )
+        return cur.rowcount
+
+    def list_org_ids(self) -> list[str]:
+        """全部组织 id（reembed 全库联动逐组织遍历面）。"""
+        return [
+            r[0] for r in self._conn.execute(
+                "SELECT id FROM orgs ORDER BY id"
+            ).fetchall()
+        ]
+
+    def list_all_orgs(self) -> list[dict]:
+        """全部组织 {id, name}（GET /api/orgs sysadmin 面——m2-5 A1）。"""
+        return [
+            {"org_id": r[0], "name": r[1]}
+            for r in self._conn.execute(
+                "SELECT id, name FROM orgs ORDER BY id"
+            ).fetchall()
+        ]
+
+    def list_orgs_for_user(self, user_id: str) -> list[dict]:
+        """用户 membership 组织行（GET /api/orgs 普通用户面——m2-5 A1；
+        含过期行如实返回，过滤语义归权限计算）。"""
+        return [
+            {"org_id": r[0], "name": r[1], "role": r[2], "expires_at": r[3]}
+            for r in self._conn.execute(
+                "SELECT m.org_id, o.name, m.role, m.expires_at"
+                " FROM user_org_memberships m JOIN orgs o ON o.id = m.org_id"
+                " WHERE m.user_id = %(u)s ORDER BY m.org_id", {"u": user_id},
+            ).fetchall()
+        ]
+
+    def create_org(
+        self, *, org_id: str, name: str,
+        org_admin_user_id: str | None = None,
+        audit: tuple[str, str] | None = None,
+    ) -> None:
+        """建组织（sysadmin 专属——与 sqlite 实现同构；m2-5 A1）：组织 +
+        可选首任 org_admin membership 同一事务（org_admin 不存在 KeyError
+        → 404 组织零残留；重复 OrgExistsError → 409；审计同事务）。"""
+        from knowledge_lattice.store.backend import OrgExistsError
+        from psycopg import errors as pg_errors
+
+        try:
+            self._conn.execute("BEGIN")
+            dup = self._conn.execute(
+                "SELECT 1 FROM orgs WHERE id = %(i)s", {"i": org_id}
+            ).fetchone()
+            if dup is not None:
+                raise OrgExistsError(f"组织已存在: {org_id!r}（组织不可删只能停用）")
+            self._conn.execute(
+                "INSERT INTO orgs(id, name) VALUES (%(i)s, %(n)s)",
+                {"i": org_id, "n": name},
+            )
+            if org_admin_user_id is not None:
+                user = self._conn.execute(
+                    "SELECT 1 FROM users WHERE id = %(u)s",
+                    {"u": org_admin_user_id},
+                ).fetchone()
+                if user is None:
+                    raise KeyError(org_admin_user_id)  # 404——不建账号（D16）
+                self._conn.execute(
+                    "INSERT INTO user_org_memberships(user_id, org_id, role)"
+                    " VALUES (%(u)s, %(o)s, 'org_admin')",
+                    {"u": org_admin_user_id, "o": org_id},
+                )
+            if audit is not None:
+                self._outbox_insert(self._conn, *audit)
+            self._conn.execute("COMMIT")
+        except pg_errors.UniqueViolation as exc:
+            # R2/P3-8c：并发窗口（预查通过后、INSERT 前对手已提交同 id）撞
+            # orgs_pkey/orgs_id UNIQUE——映射 OrgExistsError（API 409），
+            # 不裸露 IntegrityError 500
+            self._rollback()
+            raise OrgExistsError(
+                f"组织已存在: {org_id!r}（并发建组织窗口——组织不可删只能停用）"
+            ) from exc
+        except BaseException:
+            self._rollback()
+            raise
+
+    def read_org_audit(
+        self, org_id: str, *, action: str | None = None, limit: int = 100,
+        now: str | None = None,
+    ) -> list[dict]:
+        """组织审计事件读取（m2-6 B④ 下沉——语义见 backend.py 协议；B5 注记
+        同协议——读回行 row_hash 不自洽勿复算链）。"""
+        from knowledge_lattice.store.audit_chain import outbox_row_to_event
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        monthly = self.read_monthly_events(when=now or utc_now_ts())
+        monthly_ids = {r.get("id") for r in monthly}
+        rows: list[dict] = list(monthly)
+        for outbox_row in self.read_pending_outbox_events():
+            event = outbox_row_to_event(outbox_row)
+            if event.get("id") in monthly_ids:
+                continue  # 月库优先去重（崩溃窗同事件不重复）
+            rows.append(event)
+        rows = [r for r in rows if r.get("org_id") == org_id]
+        if action:
+            rows = [r for r in rows if (r.get("action") or "").startswith(action)]
+        rows.sort(key=lambda r: (r.get("created_at") or "", r.get("id") or ""))
+        return list(reversed(rows[-limit:]))  # 最近在前（面板序）
+
+    def read_last_maintenance_stats(self) -> dict | None:
+        """最近 maintenance.run 的 stats（B4——outbox 优先、月库兜底；P3-1/R2：
+        月库兜底取链序**最后一条**；P3-12/R2：事件名常量）。"""
+        import json as _json
+
+        from knowledge_lattice.domain.audit_events import EVENT_MAINTENANCE_RUN
+
+        row = self._conn.execute(
+            "SELECT payload_json FROM audit_outbox"
+            " WHERE event_type = %(evt)s"
+            " ORDER BY created_at DESC, id DESC LIMIT 1",
+            {"evt": EVENT_MAINTENANCE_RUN},
+        ).fetchone()
+        if row is not None:
+            try:
+                return _json.loads(row[0]).get("stats")
+            except (ValueError, AttributeError):
+                return None
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        for event in reversed(self.read_monthly_events(when=utc_now_ts())):
+            if event.get("action") == EVENT_MAINTENANCE_RUN and event.get("detail_json"):
+                try:
+                    return _json.loads(event["detail_json"]).get("stats")
+                except (ValueError, AttributeError):
+                    return None
+        return None
+
+    def delete_dataset(
+        self, org_id: str, dataset_id: str,
+        audit: tuple[str, str] | None = None,
+    ) -> None:
+        from knowledge_lattice.store.backend import DatasetNotEmptyError
+
+        row = self._conn.execute(
+            "SELECT org_id, (SELECT count(*) FROM documents WHERE dataset_id = %(ds)s)"
+            " FROM datasets WHERE id = %(ds)s",
+            {"ds": dataset_id},
+        ).fetchone()
+        if row is None or row[0] != org_id:
+            raise KeyError(f"dataset not found in org: {dataset_id!r}")
+        if row[1]:
+            raise DatasetNotEmptyError(
+                f"dataset {dataset_id!r} 仍有 {row[1]} 篇文档——先删文档再删库"
+                "（RESTRICT，T19/TC-OPS-04②）"
+            )
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "DELETE FROM datasets WHERE id = %(ds)s AND org_id = %(org)s",
+                {"ds": dataset_id, "org": org_id},
+            )
+            if cur.rowcount == 0:
+                conn.execute("COMMIT")
+                raise KeyError(f"dataset not found in org: {dataset_id!r}")
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+
+
+def _month_upper(month: str) -> str:
+    """月排他上界（次月首日 0 点——'YYYY-MM-DD HH:MM:SS'）。"""
+    from knowledge_lattice.store.audit_chain import month_shift
+
+    nxt = month_shift(month, 1)
+    return f"{nxt[:4]}-{nxt[4:6]}-01 00:00:00"
+
+
+def _like_escape(text: str) -> str:
+    """LIKE 通配转义（%/_/\——配合 ESCAPE '\\' 子句与 sqlite 同语义）。"""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _expand_relations_thin(backend, org_id, seed_ids, rels, *, depth: int) -> dict:
+    """expand_relations 薄适配共用体（与 sqlite 同实现）：
+    逐 seed 调 sem_expand_graph（rels 双向）后归并去重；truncated 任一命中即真。
+
+    O-2/m2s-3：**nodes 含 seed 本身**（design §5.9 walk CTE depth=0 行——
+    种子即第 0 层；M2-S3 实体召回消费方契约）。**seed 过滤责任在消费方
+    （P3-13）**：seed 行按 id 原样注入（未滤 status/sensitivity）——design
+    §5.9 walk 最终 SELECT 的 active/restricted 过滤归消费面。"""
+    merged_nodes: dict[int, dict] = {}
+    merged_edges: set[tuple[int, str, int]] = set()
+    edge_rows: dict[tuple[int, str, int], dict] = {}
+    truncated = False
+    rel_list = list(rels)
+    seed_rows = backend.sem_entities_by_ids(org_id, list(seed_ids))
+    for row in seed_rows:
+        merged_nodes[row["id"]] = {
+            "id": row["id"], "type": row["type"], "key": row["key"],
+            "name": row["name"], "depth": 0,
+        }
+    for seed in seed_ids:
+        graph = backend.sem_expand_graph(
+            org_id, seed, outgoing=rel_list, incoming=rel_list,
+            depth=depth, fanout_limit=50, node_limit=200,
+        )
+        truncated = truncated or graph["truncated"]
+        for node in graph["nodes"]:
+            merged_nodes.setdefault(node["id"], node)
+        for edge in graph["edges"]:
+            key = (edge["src"], edge["rel"], edge["dst"])
+            if key not in merged_edges:
+                merged_edges.add(key)
+                edge_rows[key] = edge
+    return {
+        "nodes": list(merged_nodes.values()),
+        "edges": list(edge_rows.values()),
+        "truncated": truncated,
+    }
+
+
+def _month_has_rows(conn, month: str) -> bool:
+    """指定月（'YYYYMM'）分区是否已有 audit_events 行。"""
+    from knowledge_lattice.store.postgres.audit import month_bounds
+
+    start, end = month_bounds(month)
+    return (
+        conn.execute(
+            "SELECT 1 FROM audit_events WHERE created_at >= %(s)s AND created_at < %(e)s"
+            " LIMIT 1",
+            {"s": start, "e": end},
+        ).fetchone()
+        is not None
+    )
+
+
+def _sem_chunks(seq, n: int):
+    """序列定长分片（ANY(%(keys)s) 数组上限治理——语义域批量读写共用）。"""
+    for i in range(0, len(seq), n):
+        yield seq[i : i + n]
+
+
+def _sem_run_dict(cols, row) -> dict:
+    """语义行 → dict（stats_json 解析为 dict——REST 查询端点直出）。"""
+    d = dict(zip(cols, row))
+    try:
+        d["stats_json"] = json.loads(d["stats_json"] or "{}")
+    except (TypeError, ValueError):
+        d["stats_json"] = {}
+    return d
+
+

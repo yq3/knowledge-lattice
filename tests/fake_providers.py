@@ -56,6 +56,19 @@ class FakeEmbedder:
     def model_label(self) -> str:
         return f"{self.model_name}:{self.dim}"
 
+    def with_model(self, model_name: str, dim: int) -> "FakeEmbedder":
+        """reembed 迁移外呼实例（m2-6——保留 fail/delay/drift 注入面）。"""
+        return FakeEmbedder(
+            dim=dim, fail=self.fail, delay_s=self.delay_s,
+            drift=self.drift, drift_cos=self.drift_cos,
+            model_name=model_name, return_dim=self.return_dim,
+        )
+
+    def apply_model(self, model_name: str, dim: int) -> None:
+        """蓝绿切换点（m2-6——实例属性可变，标签源即时生效）。"""
+        self.model_name = model_name
+        self.dim = dim
+
     def _vector(self, text: str) -> list[float]:
         seed = hashlib.sha256(text.encode("utf-8")).digest()
         rng = random.Random(seed)
@@ -107,6 +120,21 @@ class FixedVecEmbedder:
     def model_label(self) -> str:
         return f"{self.model_name}:{len(self.vector)}"
 
+    def with_model(self, model_name: str, dim: int) -> "FixedVecEmbedder":
+        """reembed 迁移外呼实例（m2-6——dim 变化时向量截断/补零保持可构造）。"""
+        vec = list(self.vector)
+        if dim < len(vec):
+            vec = vec[:dim]
+        elif dim > len(vec):
+            vec = vec + [0.0] * (dim - len(vec))
+        return FixedVecEmbedder(vec, model_name=model_name)
+
+    def apply_model(self, model_name: str, dim: int) -> None:
+        """蓝绿切换点（m2-6）。"""
+        self.model_name = model_name
+        if dim != len(self.vector):
+            self.vector = (self.vector + [0.0] * dim)[:dim]
+
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         return [list(self.vector) for _ in texts]
 
@@ -127,6 +155,15 @@ class TokenBagEmbedder:
     @property
     def model_label(self) -> str:
         return f"{self.model_name}:{self.dim}"
+
+    def with_model(self, model_name: str, dim: int) -> "TokenBagEmbedder":
+        """reembed 迁移外呼实例（m2-6）。"""
+        return TokenBagEmbedder(dim=dim, model_name=model_name)
+
+    def apply_model(self, model_name: str, dim: int) -> None:
+        """蓝绿切换点（m2-6）。"""
+        self.model_name = model_name
+        self.dim = dim
 
     def _token_vec(self, token: str) -> list[float]:
         seed = hashlib.sha256(("tokbag:" + token).encode("utf-8")).digest()

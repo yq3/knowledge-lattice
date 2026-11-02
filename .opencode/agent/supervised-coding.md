@@ -2,7 +2,7 @@
 name: Supervised-Coding
 description: 编排 Coder/Tester/Committer 实现需求，直到双验证通过后交付。下达开发任务时使用
 mode: primary
-model: zhipuai-coding-plan/glm-5.3-flash
+model: zhipuai-coding-plan/glm-5.3
 reasoningEffort: max
 permission:
   task:

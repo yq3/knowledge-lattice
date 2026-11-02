@@ -77,7 +77,7 @@ updatedAt: 2026-10-25T13:04:00+0800-10-25T12:10:00+0800-10-25T12:01:00+0800-10-2
 - [ ] **移交 M1-4/下段（P3-新-2）**：rerank「部分响应缺项」用例（部分 index 有效部分越界 → 断言缺项 -inf 垫底 + final_score==0.0）
 - [ ] **移交 M1-4**：P3-11 PG to_tsquery 负向用例（畸形参数 + 语法错误降级评估）；P3-12 空 query 早返回口径（行为未改、待定口径后落）；P3-13 耗时日志四段对齐（embed 单段拆分——NFR-8 标定前）；Tester R1 观察项多 token 黄金集覆盖；halfvec/表达式索引评估（G-6②，随 TC-PERF）；TC-FTS-04 REST 面断言补验（**硬条件：不补则 TC-FTS-04 视为未完全验收**）；P3-新-2（若未提前清）
 - [ ] **移交部署前（P3-14）**：config env 覆盖缺口（LATTICE_RERANK_TRUNCATE_TOKENS / LATTICE_RECALL_WINDOW / breaker_* / rerank·enhance base-key-model——部署态降级开关与配置切换）
-- [ ] **移交（跨段，环境依赖）**：rerank 真实网关联调（公司内网网关不可达——R1 按 none 档验收 TC-EMB-05；CohereCompatReranker 已就位，环境可用时按实际响应核对 model/字段并补联调用例）
+- [x] **移交（跨段，环境依赖）**：rerank 真实网关联调（公司内网网关不可达——R1 按 none 档验收 TC-EMB-05；CohereCompatReranker 已就位，环境可用时按实际响应核对 model/字段并补联调用例）（✅ 已清偿：来源 task-knowledge-lattice-m2-5〔2026-11-02〕——开发态经百炼 gte-rerank-v2 实测联调：DashScope 原生契约与 Cohere 不同→按 G-7 口径新增 DashScopeReranker provider 入仓〔parameters.top_n 实测生效〕+live 探测脚本 benchmarks/rerank_dashscope_live.py〔网络依赖不进门禁〕；公司内网 Cohere 网关维持部署期联调）
 - [x] **交付 docs 回写批（P3-新-5）——✅ 2026-10-25T11:53 已落笔（supervised-coding 执笔，工作区未 commit）：①requirements.md 联动升 v0.9.2（正文无变更注记）；②TC-ACL-08 前置句改「注入召回面放宽」（v1.6.2 注记）+ TEST-CASES 依据区 requirements 引用同步 v0.9.2。待 coder 小 commit 纳入：**：①requirements.md 联动升 v0.9.2（design 已 v0.9.2，两文档版本统一纪律；正文无变更）；②TC-ACL-08「前置」句「mock ACL 编译器漏生成维度条件」改为「召回面放宽注入」消除与口径登记行的字面冲突
 - [ ] **M1-4 NFR-8 标定时评估（Tester R2 观察 1）**：P2-2 信号量语义（约束「活跃请求」非「在飞调用」，超时窗口瞬时并发可超上限）——若需严格在飞上限改 `add_done_callback` release
 

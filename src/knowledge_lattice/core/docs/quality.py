@@ -114,6 +114,21 @@ class NoopKeywordGenerator:
 # ============ 服务 ============
 
 
+def build_quality_service(backend, settings: Settings) -> QualityService:
+    """quality 服务装配工厂（M2.1 R2 / Committer R1 P2-5——app 与 worker 共用）。
+
+    LLM 兜底 client 按 settings.quality_llm 选择（none=Noop 显式降级、
+    openai=内部网关 chat completions）——此前 worker 侧硬编码 Noop 与 app 装配
+    分叉，subprocess 部署下 LATTICE_QUALITY_LLM=openai 永不生效。"""
+    from knowledge_lattice.adapters.enhancer import OpenAICompatKeywordGenerator
+
+    client = (
+        NoopKeywordGenerator() if settings.quality_llm == "none"
+        else OpenAICompatKeywordGenerator(settings)
+    )
+    return QualityService(backend, settings, keyword_client=client)
+
+
 class QualityService:
     """区分度检测 / LLM 兜底 / 批量重算 / 报告（ACL 过滤）/ 人工补标。"""
 
@@ -127,6 +142,11 @@ class QualityService:
         self._backend = backend
         self._settings = settings
         self._keywords = keyword_client or NoopKeywordGenerator()
+
+    def apply_settings(self, settings: Settings) -> None:
+        """运行时 settings 替换（m2-6 reembed 蓝绿切换点——检测/重算的向量
+        标签源（settings.embed_model_label）与阈值随新模型切换）。"""
+        self._settings = settings
 
     # ---- 检测路径（入库单块——SQL 暴力扫描） ----
 
@@ -435,6 +455,15 @@ class QualityService:
         # 数据——实测见 report-m1-5.md §4；抽样档候选小、窗口可忽略）
         for i, rid in enumerate(kept):
             cand_mat[i] = np.frombuffer(cand_packed.pop(rid), dtype=np.float32)
+        # P3-7（m2-5 hardening）：候选 non-finite（NaN/inf）行剔除——其均值无
+        # 意义（无法判定不误报），且 NaN 与池块矩阵乘会传染 sims 污染全行
+        finite_rows = np.isfinite(cand_mat).all(axis=1)
+        if not finite_rows.all():
+            keep_idx = np.nonzero(finite_rows)[0]
+            cand_mat = cand_mat[keep_idx]
+            kept = [kept[i] for i in keep_idx]
+        if not kept:
+            return {}
         norms = np.linalg.norm(cand_mat, axis=1, keepdims=True)
         cand_mat /= np.clip(norms, 1e-12, None)  # P3-2：原地除——免临时副本减半峰值
         cand_pos = {rid: i for i, rid in enumerate(kept)}
@@ -448,15 +477,27 @@ class QualityService:
         for block_rids, block_mat in self._pool_blocks(np, org_id, label, pblock, dim):
             for cstart in range(0, len(kept), sim_rows):  # sims 分块（内存上界）
                 sims = cand_mat[cstart : cstart + sim_rows] @ block_mat.T
-                for j, rid in enumerate(block_rids):  # 自身排除（rid 定位——与流序无关）
+                for j, rid in enumerate(block_rids):  # 自身排除（rid 定位——与流序无关；
+                    # P3-7：哨兵 -2.0 与填充同档——余弦下界 -1 不可达，有效列
+                    # 判定 >-1.5 统一排除填充与自身）
                     ci = cand_pos.get(rid)
                     if ci is not None and cstart <= ci < cstart + sim_rows:
-                        sims[ci - cstart, j] = np.float32(-1.0)
+                        sims[ci - cstart, j] = np.float32(-2.0)
                 merged = np.concatenate([topk[cstart : cstart + sim_rows], sims], axis=1)
                 topk[cstart : cstart + sim_rows] = np.partition(
                     merged, merged.shape[1] - k, axis=1
                 )[:, -k:]
-        return {rid: float(topk[i].mean()) for i, rid in enumerate(kept)}
+        # P3-7（m2-5 hardening）：均值只对有效近邻列（> -1.5——排除填充 -2.0
+        # 与自身排除 -1.0）。两遍流是两次独立查询：第一遍 pool_n 定 k、第二遍
+        # 实际行数可能更少（并发删除/清理窗口）——填充列残留进 mean 会把拥挤
+        # 均值稀释成漏标；有效列口径下正常路径（近邻数 ≥ k）均值逐位不变。
+        out: dict[int, float] = {}
+        for i, rid in enumerate(kept):
+            row = topk[i]
+            valid = row > np.float32(-1.5)
+            if valid.any():
+                out[rid] = float(row[valid].mean())
+        return out
 
     def _pool_blocks(self, np, org_id: str, label: str, block_n: int, dim: int):
         """池流 → (rid 列表, 归一化 float32 块) 生成器（块用即弃——峰值 = 单块）。
@@ -481,6 +522,16 @@ class QualityService:
         mat = np.empty((len(rids), dim), dtype=np.float32)
         for i, row in enumerate(packed):
             mat[i] = np.frombuffer(row, dtype=np.float32)
+        # P3-7（m2-5 hardening）：non-finite 池行剔除——NaN/inf 行与任意候选
+        # 的 sims 均 NaN（矩阵乘传染），会把有效近邻挤出 top-k 或令均值 NaN
+        # （拥挤块静默漏标）；异常行不参与近邻计算（无法判定不误报）
+        finite = np.isfinite(mat).all(axis=1)
+        if not finite.all():
+            idx = np.nonzero(finite)[0]
+            mat = mat[idx]
+            rids = [rids[i] for i in idx]
+            if not rids:
+                return rids, mat
         norms = np.linalg.norm(mat, axis=1, keepdims=True)
         return rids, mat / np.clip(norms, 1e-12, None)
 

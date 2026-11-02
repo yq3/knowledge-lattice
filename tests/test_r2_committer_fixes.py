@@ -133,7 +133,8 @@ def test_p2_3_write_embeddings_accepts_floats(ingest_env) -> None:
 
 @pytest.fixture()
 def prod_client(tmp_path):
-    settings = Settings(environment="prod", data_dir=tmp_path, probe_interval_s=0)
+    settings = Settings(environment="prod", data_dir=tmp_path, probe_interval_s=0,
+                         worker_mode="inline")
     app = create_app(settings, run_startup_probe=False)
     with TestClient(app) as client:
         yield client, settings
@@ -201,7 +202,8 @@ def test_p2_6_probe_in_thread_via_gate(tmp_path) -> None:
     """
     import asyncio
 
-    settings = Settings(environment="test", data_dir=tmp_path, probe_interval_s=0)
+    settings = Settings(environment="test", data_dir=tmp_path, probe_interval_s=0,
+                         worker_mode="inline")
     slow = FakeEmbedder(dim=2560, delay_s=0.3)
     gate = EmbeddingGate()
     app = create_app(settings, embedder=slow, gate=gate, run_startup_probe=True)

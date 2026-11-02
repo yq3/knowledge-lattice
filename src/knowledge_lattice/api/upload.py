@@ -49,12 +49,36 @@ def get_service(request: Request):
 
 
 def get_auth(request: Request) -> AuthContext:
-    """Bearer 认证依赖（401 → 401；无头 → 401）。"""
+    """Bearer 认证依赖（无头/验签失败 → 401；可信路径另有 403 越界·冒充 /
+    429 限流 / 400 org 缺失——R2 P3-10 docstring 口径）。
+
+    m2-4 M2.2：①SSO/委托 token——service.sso 验签器注入（authenticate 内
+    优先）；②X-On-Behalf-Of 头在场 → 可信子系统三约束路径（服务凭证 +
+    在场证据 + 白名单——TC-AUTH-05/T13，拒绝含 refused 审计）。
+    """
     header = request.headers.get("authorization")
     if not header or not header.lower().startswith("bearer "):
         raise AuthError("missing Bearer token")
     service = get_service(request)
-    return authenticate(service.backend, service.settings, header[7:].strip())
+    on_behalf_of = request.headers.get("x-on-behalf-of")
+    if on_behalf_of is not None or request.headers.get("x-user-assertion") is not None:
+        # 可信子系统形态（服务凭证在 Authorization、声明用户在 X-On-Behalf-Of；
+        # org 上下文由 X-Org-Id 头承载——服务 token 无 org claim，约束③）
+        from knowledge_lattice.domain.auth import authenticate_trusted
+
+        return authenticate_trusted(
+            service.backend,
+            service_token=header[7:].strip(),
+            on_behalf_of=on_behalf_of,
+            user_assertion=request.headers.get("x-user-assertion"),
+            org=request.headers.get("x-org-id"),
+            sso=getattr(service, "sso", None),
+            registry=getattr(service, "trusted", None),
+        )
+    return authenticate(
+        service.backend, service.settings, header[7:].strip(),
+        sso=getattr(service, "sso", None),
+    )
 
 
 def org_scoped(request: Request, org: str, auth: AuthContext) -> str:
@@ -195,11 +219,10 @@ async def upload_document(
 
     pending_version = service.backend.get_document(new_doc_id)["pending_version"]
 
-    def _run() -> None:  # 后台执行摄取（任务级失败已落 failed+error——不冒泡响应）
-        try:
-            service.ingest.run_task(task_id)
-        except Exception:  # noqa: BLE001
-            logger.exception("background ingest failed: %s", task_id)
+    def _run() -> None:  # 投递 worker（M2.1：inline 同步认领 / subprocess 唤醒字节；
+        #             任务级失败已落 failed+error——不冒泡响应）
+        if service.worker is not None:
+            service.worker.kick()
 
     background.add_task(_run)
     return JSONResponse(

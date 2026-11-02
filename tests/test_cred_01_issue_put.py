@@ -278,6 +278,7 @@ def test_cred_02_put_global_cap_independent_413(tmp_path) -> None:
     settings = Settings(
         environment="test", data_dir=tmp_path, embed_dim=8,
         probe_interval_s=0, upload_max_bytes=64,  # 全局上限注入为 64 字节
+        worker_mode="inline",
     )
     app = create_app(
         settings, embedder=FakeEmbedder(dim=8), gate=EmbeddingGate(), run_startup_probe=False
