@@ -6,9 +6,10 @@
 > export LATTICE_PG_DSN=postgresql://postgres:lattice@localhost:5432/lattice
 > uv run pytest tests/test_az_matrix_m25.py tests/test_orgs_admin.py -v --tb=no
 > ```
-> **结果：24 passed / 0 failed / 0 skipped**——`tests/test_az_matrix_m25.py`
-> 9 用例 × 双后端（sqlite+pg）= 18；`tests/test_orgs_admin.py` 6 用例（sqlite；
-> app_env 系——TC-AZ-04② 载体端点行为面）。**REST-PG 残项（P3-18）补齐载体**
+> **结果（R2 复跑）：29 passed / 0 failed / 0 skipped**——`tests/test_az_matrix_m25.py`
+> 9 用例 × 双后端（sqlite+pg）= 18；`tests/test_orgs_admin.py` 11 用例
+> （sqlite 臂 6〔app_env 系〕+ pg store 级 1 + org_admin 必填 1 + 空值
+> 参数化 3——R2/P3-8 边界组）。**REST-PG 残项（P3-18）补齐载体**
 > = test_az_matrix_m25.py 的 `[pg]` 臂（9 用例全实跑，M1 时 REST 面 sqlite-only
 > 的越权矩阵在 pg 后端复现）。
 
@@ -19,13 +20,24 @@ org:ops**（独立 dataset/维度/文档/语义实体——m2-6 R3 P1-1「全库
 消费面行集边界须独立多组织验证」教训的落实）+ 语义三组织 ready 构建 +
 `create_app` REST 壳（pg 臂经 `backend=` 注入——m2-6 B⑧ 基建）。
 
-`SCAN_ENDPOINTS` 表驱动扫描 **35 端点**（u_gl → org:tax 全部 403）：
+`SCAN_ENDPOINTS` 表驱动扫描 **37 端点**（u_gl → org:tax 的 org 路径 35 条
+全部 403 + `/api/search`、`/api/uploads` 两条无 org 路径 403——R2/P2-3 补
+`POST /dimensions/{dim}/values`〔values CRUD 的 POST——任务书 A1 点名项〕
+与 `POST /semantic/yaml/webhook`〔无签名 **401** 先行——服务身份入口，
+签名校验先于业务语义〕）。
+
+**未扫项及原因**（共享守卫/独立身份防线——Tester P2① 论证 + R1 Committer
+裁定保留注记）：`POST /orgs/{org}/documents`（multipart 上传——与已扫
+documents 面同一 org_scoped 守卫 + 上传时点维度写权限校验）、
+`PATCH/GET /api/quality-flags`（resolve_request_org 成员校验与 /api/search
+同款守卫）、`PUT /api/uploads/{id}`（凭证 sub+org+服务身份三要素绑定独立
+防线——T11 专项覆盖）。实现用户面路由 ~43 条中已扫 37 + 未扫注记 6。
 
 | 面 | 端点（tail 于 /api/orgs/org:tax 下） |
 |---|---|
-| 管理面 §6.2 | dimensions / datasets（GET）/ datasets DELETE / values PATCH / retire / grants PUT·export·import / reindex / embedding-coverage / audit / stats / members POST·PATCH·DELETE |
+| 管理面 §6.2 | dimensions / datasets（GET）/ datasets DELETE / values PATCH·**POST（R2 补）** / retire / grants PUT·export·import / reindex / embedding-coverage / audit / stats / members POST·PATCH·DELETE |
 | 文档/任务/质量 | documents GET·PATCH·DELETE / documents/{id}/quality / tasks GET·{id}·cancel |
-| 语义端点全集 | sync / sync-runs / builds POST·GET·{id}·{id}/report / annotate / l0 / entities?q= / entities/{id} / tables/{key}/describe |
+| 语义端点 | sync / sync-runs / builds POST·GET·{id}·{id}/report / annotate / l0 / entities?q= / entities/{id} / tables/{key}/describe / **yaml webhook（R2 补——401 无签名）** |
 | 无 org 路径 | /api/search（X-Org-Id）/ /api/uploads（X-Org-Id） |
 
 ## 二、逐用例收口
@@ -35,7 +47,7 @@ org:ops**（独立 dataset/维度/文档/语义实体——m2-6 R3 P1-1「全库
 | **TC-OPS-09** u_gl 全端点扫描 | `test_tc_ops09_u_gl_scan_org_tax_all_denied`（35 端点表驱动） | ✅ | ✅ | 全部 403（成员校验先行——org_id 第一条件） |
 | TC-OPS-09 无 org 路径 | `test_tc_ops09_u_gl_search_and_uploads_denied` | ✅ | ✅ | resolve_org → membership 403（无隐式默认） |
 | TC-OPS-09 语义隔离对照（T-S7 面） | `test_tc_ops09_u_gl_mcp_semantic_tools_isolated` | ✅ | ✅ | org:gl 面只见本组织实体/l0 片段（同名 key 三组织隔离） |
-| **T15** 他组织资源 id（org:gl 路径 + org:tax id） | `test_t15_cross_org_resource_ids_404_in_own_org` | ✅ | ✅ | dimension/value/document id → **404**（存在性敏感）；grants 端点固定 **400**（防孤儿授权——实现固定口径，实质=不返回他组织资源） |
+| **T15** 他组织资源 id（org:gl 路径 + org:tax id） | `test_t15_cross_org_resource_ids_404_in_own_org` | ✅ | ✅ | **R2/P2-4**：dimension/value id 改用**真实路由**（PATCH values/{val}→404 / POST retire→404〔无 confirm 无副作用〕/ POST values→404——design 无 GET 单维度/GET 单取值端点，该历史缺口按裁定①a 登记 backlog）；document id 三例 R1 已真实；grants **400 为 T15 延伸面**（m2-3 既有「同组织非成员目标」防孤儿授权语义——R1 Committer 裁定非跨组织口径、不改 TEST-CASES/A-2） |
 | T15 明确越权固定 | `test_t15_cross_org_path_denied_fixed` | ✅ | ✅ | org:tax 路径 → 403 |
 | **TC-AZ-04①** sysadmin 仅管理权 | `test_tc_az04_sysadmin_cross_org_denied_then_manage_only` | ✅ | ✅ | 跨组织检索/语义读 403；GET /api/orgs 管理面照常（sysadmin=全部组织） |
 | **TC-AZ-04②** 建组织指定 org_admin | `tests/test_orgs_admin.py::test_create_org_with_org_admin_tc_az04`（+5 辅助用例） | ✅ | —（app_env 系） | **实现缺口补齐**：design §6.2 L1121 `GET/POST /api/orgs` 端点本段实装（此前未实现——新组织首任 org_admin 无法经 API 建立：members POST 要求操作者已是本组织 org_admin、sysadmin 无成员关系 403 死锁）；建组织+指定 org_admin+审计同事务，新 admin 随即 POST members 201（死锁解除端到端） |

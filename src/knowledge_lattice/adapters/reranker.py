@@ -126,7 +126,10 @@ class DashScopeReranker:
             "input": {"query": query, "documents": list(documents)},
         }
         if top_n is not None:
-            body["top_n"] = top_n
+            # R2/P3-7：top_n 在 **parameters** 下（实测探测 2026-11-02：
+            # parameters.top_n=2 → 恰 2 条；顶层放置不被识别、服务端
+            # 静默返回全量）
+            body["parameters"] = {"top_n": top_n}
         resp = self._client.post("/services/rerank/text-rerank/text-rerank",
                                  json=body)
         resp.raise_for_status()

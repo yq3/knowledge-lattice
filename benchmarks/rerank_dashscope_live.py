@@ -11,9 +11,10 @@ DashScopeReranker provider 契约（离线 MockTransport 用例已锁请求/响�
   1. 基本契约：请求 input.{query,documents}/响应 output.results
      [{index,relevance_score}]——与 provider 实现逐字段一致；
   2. 排序语义：相关文档 relevance_score 显著高于无关文档且 index 回映正确；
-  3. top_n 截断：服务端尊重 top_n；
-  4. 错误形态：错误模型名 404（invalid_parameter/model_not_found 家族）——
-     provider 原样 raise（HTTPStatusError）由调用方降级的契约核对；
+  3. top_n：**parameters 放置**（R2/P3-7 实测探测 2026-11-02——顶层放置
+     不被识别、服务端静默返回全量；parameters.top_n 生效恰截断）；
+  4. 错误形态：错误模型名 400 InvalidParameter "Model not exist."（非 404）
+     ——provider 原样 raise HTTPStatusError（调用方降级契约核对）；
   5. 中文 query + 混排文档（项目语料形态）。
 
 用法：uv run python benchmarks/rerank_dashscope_live.py
@@ -76,15 +77,15 @@ def main() -> int:
         scores[3] > scores[0] and scores[1] > scores[2] > 0
     )
 
-    # ---- 2. top_n 形态（联调实测：百炼 gte-rerank-v2 **忽略 top_n**——传 2 返回
-    #      全量 4 条，与 Cohere 契约不同。消费面零影响论证：retrieve._run_rerank
-    #      传 top_n=len(documents)=全量且按 relevance_score 排序取 top——全量
-    #      返回合法；provider 照传参数（未来网关支持时自然生效） ----
+    # ---- 2. top_n 形态（R2/P3-7：**parameters 放置**——实测探测 2026-11-02
+    #      顶层 top_n 不被识别〔传 2 返回全量 4〕、parameters.top_n 生效恰截断；
+    #      provider 已按 parameters 形态修正，此处对真实网关复核） ----
     ranked2 = rr.rerank(query, documents, top_n=2)
     out["top_n_observed"] = {
         "requested": 2, "returned": len(ranked2),
         "server_respects_top_n": len(ranked2) == 2,
-        "consumer_impact": "零影响（retrieve 消费面全量请求+按分取 top）",
+        "placement": "parameters.top_n（R2 修正——顶层放置不被识别）",
+        "consumer_impact": "retrieve 消费面全量请求+按分取 top——截断与否均正确",
     }
 
     # 排序语义以分数单调性判定（top1 是模型判断——不预设具体文档号）
@@ -121,7 +122,7 @@ def main() -> int:
           and out.get("index_reflection_ok"))
     print("\n联调结论："
           + ("契约一致——DashScopeReranker provider 与真实网关匹配"
-             "（top_n 忽略为已记录差异、消费面零影响）" if ok
+             "（top_n parameters 放置生效——R2 修正后契约完整）" if ok
              else "存在形态差异——见 JSON 工件"))
     return 0 if ok else 1
 

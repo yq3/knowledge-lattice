@@ -170,12 +170,12 @@ async function doSearch() {
 
 /* ---------- 权限视图（m2-3：grants 管理 / CSV 导入导出 / expires_at） ---------- */
 
-const accessState = { rows: [], members: [], picked: {}, expires: {}, fresh: new Set(), existing: {} };
-// fresh：用户本轮显式（重）选中的 key 集——新选行预填全局输入框值；
+const accessState = { rows: [], members: [], picked: {}, expires: {}, existing: {} };
 // expires：**逐行独立** expires_at 输入值（B① m2-5——每行 input.chip-exp
 // 的唯一真值源；渲染时初始化为库内既有值，未编辑保存即沿用——R3 P2-2 语义
 // 由「初始值=库内值」自然成立）；existing：当前成员库内既有 expires 映射
-// （chip 徽标 + 行内输入框初始值）。
+// （chip 徽标 + 行内输入框初始值）。R2/P3-10：旧 fresh 集合（m2-6 全局
+// 输入框真值源语义）已随逐行编辑废止移除。
 
 async function loadGrants() {
   if (!state.token || !state.org) return;
@@ -224,7 +224,6 @@ function renderGrantChips(preserve = false) {
   if (!preserve) {
     accessState.picked = { ...accessState.existing };
     accessState.expires = { ...accessState.existing };  // 行内初始值=库内值（未编辑即沿用）
-    accessState.fresh.clear();
   }
   state.dims.forEach((dim) => {
     const g = document.createElement("div");
@@ -251,12 +250,10 @@ function renderGrantChips(preserve = false) {
         if (key in accessState.picked) {
           delete accessState.picked[key];
           delete accessState.expires[key];
-          accessState.fresh.delete(key);
           const rowInput = g.querySelector(`input.chip-exp[data-key="${CSS.escape(key)}"]`);
           if (rowInput) rowInput.remove();
         } else {
           accessState.picked[key] = "";
-          accessState.fresh.add(key);
           // 新选行预填：全局输入框值优先（显式意图），否则库内既有值
           accessState.expires[key] = $("#gExpires").value.trim() || existing || "";
           chip.after(_rowExpiresInput(key));
@@ -567,7 +564,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("langchange", () => {
     renderDimChips(); // chips 内的动态文案随语言重渲染
     renderGovernanceDims(); // 治理视图按钮文案
-    // m2-6 B①：语言切换保留已选/输入状态（preserve 重渲染——不清 picked/fresh）
+    // m2-6 B①：语言切换保留已选/输入状态（preserve 重渲染——不清 picked/expires）
     if (state.view === "access" && accessState.members.length) renderGrantChips(true);
   });
 

@@ -36,7 +36,8 @@
    精确扫描延迟（维度线性）；代价面=本黄金集零、更大语料待标定。开放形态
    走 env 配置（现有 `LATTICE_EMBED_MODEL/LATTICE_EMBED_DIM` 已承载——零代码），
    **无需新 D 编号**（D12 既有「模型经配置」口径内）。
-3. 口径申报：黄金集小（28 query）——「零损失」结论的置信区间有限；首次真实
+3. 口径申报：黄金集小（**28 query——分辨率约 3.57pp〔1/28〕**，「零损失」
+   严格口径为「**本集分辨率内未观测到损失**」）；首次真实
    语料大规模部署时以 TC-EVAL-02（M3 完整黄金集）复标。
 
 ## ② G-8 指纹阈值（真实响应抖动分布——M1-5 校准建议 3 步的真实版）
@@ -63,9 +64,9 @@
 |---|---|
 | 基本契约 | ✅ 请求 `input.{query,documents}` 嵌套 + 端点 `/api/v1/services/rerank/text-rerank/text-rerank`；响应 `output.results[{index,relevance_score}]`——与 `DashScopeReranker` provider（离线 MockTransport 用例锁定的映射）逐字段一致 |
 | 排序语义 | ✅ 中文 query 下相关文档（留抵主题 0.18~0.19）> 英文无关（0.10）> 无关（0.006）；分数降序 + index 回映 {0,1,2,3} 全对 |
-| **top_n 形态差异** | ⚠️ **百炼忽略 `top_n` 参数**（传 2 返回全量 4 条——与 Cohere 契约不同）。消费面零影响论证：`retrieve._run_rerank` 请求 `top_n=len(documents)`=全量且按 `relevance_score` 排序取 top——全量返回合法；provider 照传参数（未来网关支持时自然生效），**无需代码改动** |
+| **top_n 放置（R2/P3-7 已修）** | R1 实测「传 2 返回全量」根因=**顶层放置不被识别**——DashScope 的 top_n 在 `parameters` 下（探测 2026-11-02：`parameters.top_n=2` → 恰 2 条）。provider 已按 `parameters` 形态修正 + MockTransport 用例锁定 + live 复跑确认（respected=True）；消费面 `retrieve._run_rerank` 全量请求按分取 top——截断与否均正确 |
 | 错误形态 | ✅ 错误模型名 → **400 InvalidParameter "Model not exist."**（非 404）；provider 原样 raise HTTPStatusError → 调用方 rerank_skipped 降级契约成立（离线用例已锁） |
-| 延迟 | 基本契约轮 ~470ms（4 文档；rerank_timeout_s=1.0 硬上限内） |
+| 延迟 | 基本契约轮（4 文档）：R1 轮工件 **196.6ms** / R2 轮（parameters 修正后复跑）工件 **360.3ms**——网关 RTT 跨轮波动约 1.8×（均在 rerank_timeout_s=1.0 硬上限内；以 JSON 工件为准——R2/P3-2 修正：R1 报告正文 ~470ms 为口头估计，撤回） |
 
 **配置切换验收口径实证**（任务书 A7②）：供应商切换仅经 `LATTICE_RERANKER` +
 `LATTICE_RERANK_API_BASE/API_KEY/MODEL`（+TRUNCATE_TOKENS）env——`.env.example`

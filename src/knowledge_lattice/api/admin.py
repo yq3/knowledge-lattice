@@ -1,4 +1,6 @@
-"""管理端点（design §6.2——M0a 最小集 + M2.4 m2-2 删库收口 + **M2.3 m2-3 管理面**）：
+"""管理端点（design §6.2——M0a 最小集 + M2.4 m2-2 删库收口 + **M2.3 m2-3 管理面**
++ **m2-5 A1：GET/POST /api/orgs**〔组织列表——sysadmin 全部/本人 membership；
+  建组织 sysadmin 专属+首任 org_admin 必填+审计同事务——TC-AZ-04② 载体〕）：
 
 - POST /api/dev/token（`dev_token_router`）：签发开发 JWT——**仅 dev/test 配置注册
   路由，生产 404**（TC-AUTH-01④）；只能给自己签或系统管理员签发（403 语义）；
@@ -107,7 +109,10 @@ async def issue_dev_token(
 class OrgCreateRequest(BaseModel):
     id: str
     name: str
-    org_admin: str | None = None  # 首任 org_admin（建组织即挂 membership——新组织开通唯一路径）
+    # org_admin **必填**（R2/P3-8b）：无首任管理者的组织不可恢复——members
+    # POST 要求本组织 org_admin、sysadmin 无成员关系会 403，形成无人可管
+    # 的死组织；显式拒绝缺省而非静默建出。
+    org_admin: str
 
 
 @router.get("/api/orgs")
@@ -126,36 +131,46 @@ async def create_org(
     auth: AuthContext = Depends(get_auth),
 ) -> dict:
     """建组织（**系统管理员专属**——design §6.2；m2-5 A1 实装，TC-AZ-04②
-    载体）。可选 ``org_admin`` 指定首任 org_admin（建组织即挂 membership——
-    members POST 要求操作者已是本组织 org_admin、sysadmin 无成员关系，不在此
-    开通则新组织无人可管）；用户不存在 404 组织零残留（D16 不建账号）；
-    重复组织 409（组织不可删只能停用——P1-1）；审计同事务。"""
+    载体）。``org_admin`` 指定首任 org_admin（**必填**——建组织即挂
+    membership：members POST 要求操作者已是本组织 org_admin、sysadmin 无
+    成员关系，不在此开通则新组织无人可管）；id/name 非空非纯空白；用户
+    不存在 404 组织零残留（D16 不建账号）；重复组织 409（含并发窗口——
+    store 撞 UNIQUE 映射 OrgExistsError；组织不可删只能停用——P1-1）；
+    审计同事务。"""
     if not auth.is_system_admin:
         raise HTTPException(status_code=403, detail="系统管理员专属操作（design §6.2）")
+    org_id = body.id.strip()
+    name = body.name.strip()
+    org_admin = body.org_admin.strip()
+    if not org_id or not name or not org_admin:
+        raise HTTPException(
+            status_code=400,
+            detail="id/name/org_admin 均不得为空或纯空白（R2/P3-8a）",
+        )
     service = get_service(request)
     from knowledge_lattice.domain.audit_events import EVENT_ORG_CREATED
 
     try:
         service.backend.create_org(
-            org_id=body.id, name=body.name,
-            org_admin_user_id=body.org_admin,
+            org_id=org_id, name=name,
+            org_admin_user_id=org_admin,
             audit=(
                 EVENT_ORG_CREATED,
                 json.dumps({
-                    "org_id": body.id, "name": body.name,
-                    "org_admin": body.org_admin, "actor": auth.user_id,
+                    "org_id": org_id, "name": name,
+                    "org_admin": org_admin, "actor": auth.user_id,
                 }, ensure_ascii=False),
             ),
         )
     except KeyError as exc:
         raise HTTPException(
             status_code=404,
-            detail=f"用户不存在: {body.org_admin!r}（管理员不建账号——建档走"
+            detail=f"用户不存在: {org_admin!r}（管理员不建账号——建档走"
             " SSO JIT，D16）",
         ) from exc
     except OrgExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"org_id": body.id, "name": body.name, "org_admin": body.org_admin}
+    return {"org_id": org_id, "name": name, "org_admin": org_admin}
 
 
 @router.get("/api/orgs/{org}/dimensions")

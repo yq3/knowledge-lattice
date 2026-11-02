@@ -45,7 +45,9 @@ def _make(settings, handler):
 def test_dashscope_request_shape_and_response_mapping() -> None:
     """请求体嵌套 input.{query,documents} + 端点路径 /services/rerank/
     text-rerank/text-rerank；响应 output.results[{index,relevance_score}]
-    映射为 RankedDocument（与百炼实测探测形态逐字段一致——A7①联调结论）。"""
+    映射为 RankedDocument（与百炼实测探测形态逐字段一致——A7①联调结论；
+    R2/P3-7：top_n 放置在 **parameters** 下〔顶层放置不被识别——实测探测
+    2026-11-02：parameters.top_n=2 → 恰 2 条返回〕）。"""
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -72,7 +74,8 @@ def test_dashscope_request_shape_and_response_mapping() -> None:
     assert captured["body"]["model"] == "gte-rerank-v2"
     assert captured["body"]["input"] == {
         "query": "增值税 申报", "documents": ["甲", "乙", "丙"]}
-    assert captured["body"]["top_n"] == 2
+    assert captured["body"]["parameters"] == {"top_n": 2}, \
+        "top_n 须在 parameters 下（R2/P3-7 实测——顶层放置不被识别）"
 
 
 def test_dashscope_top_n_omitted_when_none() -> None:

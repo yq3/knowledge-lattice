@@ -146,7 +146,8 @@ def test_vec_layer_success_no_audit_no_degrade(sem_env) -> None:
 
     ok = FakeEmbedder(dim=8, model_name="fake-embed")
     breaker = CircuitBreaker(failures=3, cooldown_s=60.0)
-    breaker.record_failure()  # 预置 1 次失败——成功后不累积
+    breaker.record_failure()  # 预置 1 次失败——成功后复位断言（R2/P3-11b）
+    assert breaker._streak == 1
     out = search_entities(
         sem_env.backend, ORG, "进项税额抵扣", top_k=5,
         settings=sem_env.settings, embedder=ok,
@@ -154,6 +155,7 @@ def test_vec_layer_success_no_audit_no_degrade(sem_env) -> None:
     )
     assert out["entities"]
     assert _events(sem_env.db, "search.degraded") == []
+    assert breaker._streak == 0, "record_success 须复位连续失败计数"
 
 
 # ============ ④ annotator 模糊内存面：懒构建 + 去 dict() 复制 ============
@@ -273,31 +275,98 @@ def test_annotate_vec_top_consumed(sem_env) -> None:
         f"vec_top=1 每片段截断生效——硬编码根除（got {per_span1}）"
 
 
-def test_annotate_text_passes_settings_vec_top(sem_env) -> None:
+def test_annotate_text_passes_settings_vec_top(sem_env, monkeypatch) -> None:
     """annotate_text 编排面：settings.semantic_fuzzy_vec_top 传入 annotate
-    （env LATTICE_SEM_FUZZY_VEC_TOP 端到端消费链闭合）。"""
+    （env LATTICE_SEM_FUZZY_VEC_TOP 端到端消费链闭合）。R2/P3-11a：改经
+    monkeypatch 捕获 annotate 实参（随机向量下候选计数断言恒真——修复）。"""
     import dataclasses
 
+    from knowledge_lattice.core.semantic import annotator as ann_mod
     from knowledge_lattice.core.semantic.annotator import (
         annotate_text, clear_annotator_cache,
     )
 
     clear_annotator_cache()
     settings = dataclasses.replace(sem_env.settings, semantic_fuzzy_vec_top=1)
-    eids_seen: list[int] = []
 
-    def embed_batch(texts):
-        return [[0.05] * 8 for _ in texts]
+    captured: dict = {}
+    orig = ann_mod.Annotator.annotate
 
-    orig_lookup_holder: dict = {}
-    # 经 monkeypatch 不可行（闭包内部），改经 backend 侧计数——vec 层每片段
-    # 最多回 1 实体由 annotate 侧截断保证；此处断言编排面传参生效：
-    # semantic_fuzzy_vec_top=1 时 candidates 的 vec 面 ≤1/片段
+    def spy(self, text, **kw):
+        captured.update(kw)
+        return orig(self, text, **kw)
+
+    monkeypatch.setattr(ann_mod.Annotator, "annotate", spy)
     out = annotate_text(
         sem_env.backend, settings, ORG, "关联票据整备",
-        fuzzy=True, embed_batch=embed_batch,
+        fuzzy=True, embed_batch=lambda texts: [[0.05] * 8 for _ in texts],
     )
-    vec_cands = [c for c in out["candidates"] if c.get("fuzzy_layer") == "vec"]
-    # fake 8 维随机向量对 2 实体库的 sim 大概率 <0.75 阈值 → 0~1 条均合法；
-    # 断言上界=1（vec_top=1 生效；>1 即硬编码 3 残留）
-    assert len(vec_cands) <= 1, f"settings.semantic_fuzzy_vec_top=1 须贯穿（got {len(vec_cands)}）"
+    assert "dict_rev" in out
+    assert captured.get("vec_top") == 1, (
+        f"settings.semantic_fuzzy_vec_top=1 须贯穿 annotate（got "
+        f"vec_top={captured.get('vec_top')}——硬编码 3 残留）")
+
+    # 对照：缺省 settings（vec_top=3）下传 3
+    captured.clear()
+    annotate_text(
+        sem_env.backend, sem_env.settings, ORG, "关联票据整备",
+        fuzzy=True, embed_batch=lambda texts: [[0.05] * 8 for _ in texts],
+    )
+    assert captured.get("vec_top") == 3
+
+
+# ============ R2/P3-6：懒构建并发时序（哨兵赋值 + 单次构建锁） ============
+
+
+def test_annotator_fuzzy_lazy_build_thread_safe(backend, tmp_path, monkeypatch) -> None:
+    """R2 P3-6：并发首建窗口——多线程同时首次 fuzzy=True：
+    ① 构建只发生一次（无锁重复构建浪费 ~3.75s/次）；
+    ② 任一时刻观察到 fuzzy_terms 非 None 时索引必已就绪（哨兵语义——
+    修复前 terms 先赋值，并发请求可见「terms 就绪、索引仍空」→ fuzzy
+    候选静默缺失）。"""
+    import threading
+
+    from knowledge_lattice.config import Settings
+    from knowledge_lattice.core.semantic import annotator as ann_mod
+    from knowledge_lattice.core.semantic.annotator import Annotator
+    from knowledge_lattice.core.semantic.sync import run_sync
+    from fake_semantic import FakeSourceAdapter
+
+    seed_org(backend, ORG)
+    settings = Settings(environment="test", data_dir=tmp_path, embed_dim=8,
+                        embed_model="fake-embed")
+    b = backend.make_backend()
+    recs = _snapshot_fixture()
+    run_sync(b, ORG, FakeSourceAdapter("tc", recs), settings=settings,
+             snapshot=list(recs), now=NOW)
+    snapshot = b.sem_active_snapshot(ORG)
+
+    calls = {"n": 0}
+    orig = ann_mod.build_fuzzy_terms
+
+    def slow_build(*a, **kw):
+        calls["n"] += 1
+        time.sleep(0.15)          # 放大首建窗口
+        return orig(*a, **kw)
+
+    monkeypatch.setattr(ann_mod, "build_fuzzy_terms", slow_build)
+    ann = Annotator(snapshot)
+
+    barrier = threading.Barrier(8)
+    anomalies: list[str] = []
+
+    def worker():
+        barrier.wait()
+        # 观察哨兵语义：terms 就绪时索引必须同时就绪（修复前可见中间态）
+        if ann.fuzzy_terms is not None and not ann._fuzzy_pinyin:
+            anomalies.append("terms-ready-index-empty")
+        ann.annotate("进项抵扣的办法", fuzzy=True)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert calls["n"] == 1, f"并发首建只构建一次（got {calls['n']}——无锁重复构建）"
+    assert anomalies == [], f"哨兵语义破坏（{anomalies}）"
+    assert ann.fuzzy_terms and ann._fuzzy_pinyin, "终态完整"

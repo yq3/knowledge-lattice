@@ -90,14 +90,19 @@ def build_env(tmp: Path):
                            rel_type="has_column",
                            dst=("column", f"ods.big.col_{j:03d}"))
             for j in range(FANOUT_COLS)]
-    rels += [RelationRecord(src=("template", "TPL_X"),
-                            rel_type="used_by",
-                            dst=("scenario", f"SC.{k:02d}"))
+    # uses 方向按白名单 ("uses","scenario","template")——src=scenario
+    # dst=template（R2/P2-1 修正：R1 版 used_by 不在白名单）
+    rels += [RelationRecord(src=("scenario", f"SC.{k:02d}"),
+                            rel_type="uses",
+                            dst=("template", "TPL_X"))
              for k in range(FANOUT_SCENARIOS)]
 
     t0 = time.perf_counter()
-    run_sync(backend, ORG, FakeSourceAdapter("tc", recs), settings=settings,
-             snapshot=list(recs), now=NOW)
+    # R2/P2-1：rels 混入 records 序列传入（EntityRecord|RelationRecord 混合
+    # ——run_sync snapshot 契约；R1 版只传 recs，关系从未入图——零边图）
+    records = recs + rels
+    run_sync(backend, ORG, FakeSourceAdapter("tc", records), settings=settings,
+             snapshot=list(records), now=NOW)
     t_sync = time.perf_counter() - t0
     clear_annotator_cache()
     t0 = time.perf_counter()
@@ -176,11 +181,39 @@ def main() -> int:
         "steady_p99_ms": round(_pct(xs, 0.99), 3),
     }
 
-    # ---- get_entity depth=2（高扇出锚点：ods.big 表 / TPL_X 模板） ----
+    # ---- get_entity depth=2（高扇出锚点——R2/P2-1：真实边图上的展开） ----
+    # 表根：has_column 出向 300 列、fanout_limit=200 截断（truncated=True）
     table_id = backend.sem_entity_by_key(ORG, "table", "ods.big")["id"]
     tpl_id = backend.sem_entity_by_key(ORG, "template", "TPL_X")["id"]
+
+    # 图形态断言（P2-1 修法要求——R1 版零边图空展开的证据失效根除）
+    shape: dict = {}
+    graph = get_entity(backend, ORG, entity_id=table_id,
+                       expand=["has_column"], depth=2, fanout_limit=200)
+    shape["table_fanout"] = {
+        "nodes": len(graph["nodes"]), "edges": len(graph["edges"]),
+        "truncated": graph["truncated"],
+    }
+    assert graph["truncated"] is True, "300 列 @fanout_limit=200 须截断"
+    assert 195 <= len(graph["nodes"]) <= 202, \
+        f"表根展开 nodes≈fanout_limit+root（got {len(graph['nodes'])}）"
+    assert len(graph["edges"]) >= 190, "截断后仍有大量 has_column 边"
+
+    graph_tpl = get_entity(backend, ORG, entity_id=tpl_id,
+                           expand=["uses<"], depth=2, fanout_limit=200)
+    shape["tpl_fanout"] = {
+        "nodes": len(graph_tpl["nodes"]), "edges": len(graph_tpl["edges"]),
+        "truncated": graph_tpl["truncated"],
+    }
+    assert len(graph_tpl["nodes"]) >= FANOUT_SCENARIOS, \
+        (f"模板根 uses< 入向须见 {FANOUT_SCENARIOS} 场景"
+         f"（got {len(graph_tpl['nodes'])}——R1 零边图回归守卫）")
+    assert len(graph_tpl["edges"]) >= FANOUT_SCENARIOS
+    assert graph_tpl["truncated"] is False, "10 场景不触 fanout_limit"
+    out["graph_shape"] = shape
+
     for tag, eid, expand in (("table_fanout", table_id, ["has_column"]),
-                             ("tpl_fanout", tpl_id, ["uses"])):
+                             ("tpl_fanout", tpl_id, ["uses<"])):
         xs = []
         for _ in range(SAMPLES):
             t0 = time.perf_counter()

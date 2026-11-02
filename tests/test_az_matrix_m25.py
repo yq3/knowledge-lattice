@@ -142,9 +142,15 @@ def _hdr(env, uid: str) -> dict:
 
 # ============ TC-OPS-09：u_gl 对 org:tax 全端点扫描（全部拒绝或空集） ============
 
-# 扫描面 = api/ 路由全集（admin/documents/quality/search/semantic/tasks/upload）
-# ——M2 新增端点全覆盖。资源 id 用 org:tax 真实 id（d_cn 等）与假 id 混合：
-# 权限校验先行（403 在存在性检查前——不泄露存在性）。
+# 扫描面 = api/ 路由全集的管理面+语义+文档/任务面（R2/P2-3 补 values POST
+# 与 yaml webhook）。**未扫项及原因**（共享守卫/独立身份防线——Tester P2①
+# 论证 + Committer 裁定保留注记）：POST /orgs/{org}/documents（multipart
+# 上传——org_scoped+上传时点维度写权限校验，与已扫 documents 面同一
+# org_scoped 守卫）、PATCH/GET /api/quality-flags（resolve_request_org
+# 成员校验 403 与 /api/search 同款守卫）、PUT /api/uploads/{id}（凭证
+# sub+org+服务身份三要素绑定独立防线——T11 专项覆盖）。
+# 资源 id 用 org:tax 真实 id（d_cn 等）与假 id 混合：权限校验先行
+#（403 在存在性检查前——不泄露存在性）。
 _SCAN_TEMPLATE = "/api/orgs/{org}"
 SCAN_ENDPOINTS: list[tuple[str, str, dict | None, int]] = [
     # ---- 管理面（§6.2） ----
@@ -153,6 +159,8 @@ SCAN_ENDPOINTS: list[tuple[str, str, dict | None, int]] = [
     ("delete", "/datasets/ds:vat_lib", None, 403),
     ("patch", "/dimensions/999/values/999", {"status": "disabled"}, 403),
     ("post", "/dimensions/999/retire", None, 403),
+    # values CRUD 的 POST（m2-6 A4——任务书 A1 点名项，R2/P2-3 补扫）
+    ("post", "/dimensions/999/values", {"value": "X", "label": "x"}, 403),
     ("put", "/members/u_full/grants", {"grants": []}, 403),
     ("get", "/grants/export", None, 403),
     ("post", "/grants/import", "username,dim_key,value\n", 403),
@@ -171,7 +179,9 @@ SCAN_ENDPOINTS: list[tuple[str, str, dict | None, int]] = [
     ("get", "/tasks", None, 403),
     ("get", "/tasks/task:x", None, 403),
     ("post", "/tasks/task:x/cancel", None, 403),
-    # ---- 语义端点全集（sync/builds/sync-runs/entities/describe/l0/report/annotate） ----
+    # ---- 语义端点（sync/builds/sync-runs/entities/describe/l0/report/
+    #      annotate + yaml webhook〔R2/P2-3 补——无签名 401 先行于一切
+    #      业务语义，服务身份入口非成员端点〕） ----
     ("post", "/semantic/sync/tc", None, 403),
     ("get", "/semantic/sync-runs", None, 403),
     ("post", "/semantic/builds", None, 403),
@@ -183,13 +193,16 @@ SCAN_ENDPOINTS: list[tuple[str, str, dict | None, int]] = [
     ("get", "/semantic/entities?q=%E8%BF%9B%E9%A1%B9", None, 403),
     ("get", "/semantic/entities/1", None, 403),
     ("get", "/semantic/tables/ods.v/describe", None, 403),
+    ("post", "/semantic/yaml/webhook", {}, 401),
 ]
 
 
 def test_tc_ops09_u_gl_scan_org_tax_all_denied(az_env) -> None:
-    """TC-OPS-09 主面：u_gl（仅 org:gl）对 org:tax 的**全端点**扫描——
-    管理面 §6.2 全集 + 语义端点全集 + 文档/任务面：全部 403（成员关系校验
-    先行——org_id 第一条件；绝不返回他组织资源内容/行集）。"""
+    """TC-OPS-09 主面：u_gl（仅 org:gl）对 org:tax 的端点扫描——管理面
+    §6.2 + 语义端点 + 文档/任务面共 35 条 org 路径全部 403（成员关系校验
+    先行——org_id 第一条件；绝不返回他组织资源内容/行集）。**覆盖口径**
+    （R2/P2-3）：非实现全集——未扫 6 条及共享守卫论证见 SCAN_ENDPOINTS
+    注释与 benchmarks/report-m2-5-matrix.md。"""
     client = az_env["client"]
     headers = _hdr(az_env, "u_gl")
     for method, tail, body, expected in SCAN_ENDPOINTS:
@@ -221,10 +234,10 @@ def test_tc_ops09_u_gl_search_and_uploads_denied(az_env) -> None:
     assert r2.status_code == 403
 
 
-def test_tc_ops09_u_gl_mcp_semantic_tools_isolated(az_env) -> None:
-    """TC-OPS-09 语义隔离对照（T-S7 面）：u_gl 持 org:gl 上下文检索语义
-    实体——只见 org:gl 实体，org:tax/org:ops 实体零出现（REST entities
-    端点载体；同名 key 实体按组织隔离）。"""
+def test_tc_ops09_semantic_entities_isolated_rest(az_env) -> None:
+    """TC-OPS-09 语义隔离对照（T-S7 面，REST entities/l0 端点载体——R2
+    名实修正：非 MCP 工具面）：u_gl 持 org:gl 上下文检索语义实体——只见
+    org:gl 实体，org:tax/org:ops 实体零出现（同名 key 实体按组织隔离）。"""
     client = az_env["client"]
     headers = {**_hdr(az_env, "u_gl"), "X-Org-Id": ORG_GL}
     r = client.get(f"/api/orgs/{ORG_GL}/semantic/entities",
@@ -246,30 +259,42 @@ def test_tc_ops09_u_gl_mcp_semantic_tools_isolated(az_env) -> None:
 
 
 def test_t15_cross_org_resource_ids_404_in_own_org(az_env) -> None:
-    """T15：u_gl 以**自己组织**（org:gl）路径查 org:tax 的资源 id——
+    """T15：u_gl 以**自己组织**（org:gl）路径调 org:tax 的资源 id——
     dimension id / value id / document id：404（存在性敏感——org:gl 内无此
-    id，资源内容零泄露；绝不返回他组织资源）。"""
-    db = az_env["db"]
+    id，资源内容零泄露；绝不返回他组织资源）。
+
+    R2/P2-4：dimension/value id 断言改用**真实路由**（design §6.2 无 GET
+    单维度/GET 单取值端点——该历史缺口按裁定①a 登记 backlog 不实装；R1 版
+    用不存在的 GET values 路由，404 实为 MCP mount 兜底——伪绿）：PATCH
+    values/{val}（admin.py 真实路径）/ POST retire（无 confirm 只做 impact
+    查询、无副作用）/ POST values（create_dimension_value 真实路径）。
+    """
     tax_dim = dim_id_for(ORG, "region")
     tax_val = val_id_for(ORG, "region", "CN")
     client = az_env["client"]
     headers = _hdr(az_env, "u_gl")   # u_gl 是 org:gl org_admin——操作权限过
 
     cases = [
-        ("get", f"/api/orgs/{ORG_GL}/dimensions/{tax_dim}/values/{tax_val}"),
-        ("get", f"/api/orgs/{ORG_GL}/documents/d_cn"),
-        ("delete", f"/api/orgs/{ORG_GL}/documents/d_cn"),
-        ("post", f"/api/orgs/{ORG_GL}/documents/d_cn/reindex"),
+        ("patch", f"/api/orgs/{ORG_GL}/dimensions/{tax_dim}/values/{tax_val}",
+         {"status": "disabled"}),
+        ("post", f"/api/orgs/{ORG_GL}/dimensions/{tax_dim}/retire", None),
+        ("post", f"/api/orgs/{ORG_GL}/dimensions/{tax_dim}/values",
+         {"value": "NEW", "label": "新值"}),
+        ("get", f"/api/orgs/{ORG_GL}/documents/d_cn", None),
+        ("delete", f"/api/orgs/{ORG_GL}/documents/d_cn", None),
+        ("post", f"/api/orgs/{ORG_GL}/documents/d_cn/reindex", None),
     ]
-    for method, path in cases:
-        r = getattr(client, method)(path, headers=headers)
+    for method, path, body in cases:
+        kwargs = {"json": body} if body is not None else {}
+        r = getattr(client, method)(path, headers=headers, **kwargs)
         assert r.status_code == 404, (
             f"{method.upper()} {path}：org:tax 资源 id 在 org:gl 须 404"
             f"（got {r.status_code}——{r.text[:100]}）")
 
-    # grants 端点（按端点固定）：u_full（org:tax 成员、非 org:gl）→ 400
-    # （防孤儿授权——实现固定口径；不返回任何他组织资源内容，符合 T15
-    # 「绝不返回他组织资源」实质约束）
+    # grants 端点（**T15 延伸面**——非 T15 的 403/404 二分规则内；R1
+    # Committer 裁定：org:gl 路径 + org:tax 用户 = m2-3 既有「目标用户在
+    # 本组织无有效成员关系 → 400 防孤儿授权」语义，非跨组织资源口径；
+    # 400 不含他组织资源内容，实质约束满足）
     r = client.put(f"/api/orgs/{ORG_GL}/members/u_full/grants",
                    headers=headers, json={"grants": []})
     assert r.status_code == 400, "他组织用户 grants 端点固定 400（防孤儿授权）"
@@ -314,11 +339,7 @@ def test_tc_az04_temp_grant_full_construction(az_env) -> None:
     ③ 生效期内检索 d_cn 可见、成员关系与授权行均带 expires_at、审计留痕
     （members/grants 两事件）；④ 造数过期后（成员关系到期）即刻不可见
     （权限计算过滤过期、不等清理——与 T1 同构）。"""
-    import sqlite3 as _sq
-
     from helpers import seed_user
-
-    from conftest import _pg_db  # noqa: F401 —— 造数口径同 conftest（见下）
 
     db = az_env["db"]
     client = az_env["client"]
@@ -400,12 +421,28 @@ def test_three_org_rowset_boundaries(az_env) -> None:
 
     r = client.get(f"/api/orgs/{ORG_OPS}/stats", headers=ops)
     assert r.status_code == 200
+    assert "maintenance" in r.json()  # maintenance 计数面板键在位（值随任务族运行态）
     dims = [d["key"] for d in client.get(
         f"/api/orgs/{ORG_OPS}/dimensions", headers=ops).json()["dimensions"]]
     assert dims == ["region"], f"org:ops 只有自己的 region 维度（got {dims}）"
     dss = [d["id"] for d in client.get(
         f"/api/orgs/{ORG_OPS}/datasets", headers=ops).json()["datasets"]]
     assert dss == ["ds:ops_lib"]
+
+    # 审计行集（R2/P3-11c 补断言）：org:ops admin 查本组织审计——事件
+    # org_id 全为本组织（read_org_audit 的 org 第一谓词）
+    r = client.get(f"/api/orgs/{ORG_OPS}/audit", headers=ops)
+    assert r.status_code == 200
+    events = r.json().get("events") or r.json().get("items") or []
+    orgs_seen = {json.loads(e["payload_json"]).get("org_id")
+                 for e in events if e.get("payload_json")}
+    assert orgs_seen <= {ORG_OPS, None}, \
+        f"org:ops 审计面不得出现他组织事件（org_id 集 {orgs_seen}）"
+
+    # grants export 行集：org:ops 只含本组织授权（u_full 的 org:tax 授权不出现）
+    export = client.get(f"/api/orgs/{ORG_OPS}/grants/export",
+                        headers=ops).text
+    assert "u_full" not in export, "org:ops grants 导出不得含 org:tax 用户授权"
 
     # org:tax admin 对照（互不出现对方资源）
     tax = _hdr(az_env, "admin_tax")

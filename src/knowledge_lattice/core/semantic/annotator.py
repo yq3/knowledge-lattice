@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 import unicodedata
 from collections import defaultdict
@@ -204,20 +205,34 @@ class Annotator:
 
         # G-24④（m2-5）：**懒构建**——pypinyin 全量计算是万级词典的秒级固定
         # 开销，fuzzy=False（缺省 annotate/search 主路径）不支付；首次
-        # fuzzy=True 识别时构建一次（同实例不重建）。
+        # fuzzy=True 识别时构建一次（同实例不重建）。R2/P3-6：构建锁 +
+        # 哨兵赋值序——fuzzy_terms **最后**赋值（观察者见 terms 非 None 时
+        # 索引必已就绪，消除并发首建窗口的候选静默缺失）+ 无锁重复构建。
         self.fuzzy_terms: list[dict] | None = None
         self.fuzzy_stats: dict = {}
         self._fuzzy_pinyin: dict[str, list[dict]] = {}
         self._fuzzy_dels: dict[str, list[dict]] = {}
+        self._fuzzy_lock = threading.Lock()
         self._fuzzy_match = fuzzy_layers_for_fragment
 
     def _ensure_fuzzy_built(self) -> None:
-        """模糊面懒构建（G-24④——一次构建；索引供 _fuzzy_match 只读直用）。"""
+        """模糊面懒构建（G-24④——一次构建；R2/P3-6 锁防并发重复）。
+
+        赋值序（哨兵语义）：本地构建 → 赋 _fuzzy_pinyin/_fuzzy_dels →
+        **最后**赋 fuzzy_terms（None=未就绪的完成哨兵——并发请求要么见
+        全空（自行抢锁构建）、要么见全就绪，无中间态）。
+        """
         if self.fuzzy_terms is not None:
             return
-        term_rows, _del_rows, self.fuzzy_stats = build_fuzzy_terms(
+        with self._fuzzy_lock:
+            if self.fuzzy_terms is not None:  # 双重检查——竞争者已构建完成
+                return
+            pinyin, dels, stats, term_rows = self._build_fuzzy_locked()
+
+    def _build_fuzzy_locked(self) -> tuple[dict, dict, dict, list[dict]]:
+        """持锁构建（一次性本地结果 → 按哨兵序发布）。"""
+        term_rows, _del_rows, stats = build_fuzzy_terms(
             self.snapshot, None, embed_model_label="")
-        self.fuzzy_terms = term_rows
         pinyin: dict[str, list[dict]] = defaultdict(list)
         dels: dict[str, list[dict]] = defaultdict(list)
         for idx, t in enumerate(term_rows):
@@ -228,8 +243,11 @@ class Annotator:
 
                 for key in del_keys(t["text_norm"]):
                     dels[key].append({"idx": idx})
+        self.fuzzy_stats = stats
         self._fuzzy_pinyin = pinyin
         self._fuzzy_dels = dels
+        self.fuzzy_terms = term_rows   # 哨兵最后赋值
+        return pinyin, dels, stats, term_rows
 
     # ---- 主入口 ----
 

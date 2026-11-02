@@ -3955,6 +3955,7 @@ class PgBackend:
         可选首任 org_admin membership 同一事务（org_admin 不存在 KeyError
         → 404 组织零残留；重复 OrgExistsError → 409；审计同事务）。"""
         from knowledge_lattice.store.backend import OrgExistsError
+        from psycopg import errors as pg_errors
 
         try:
             self._conn.execute("BEGIN")
@@ -3982,6 +3983,14 @@ class PgBackend:
             if audit is not None:
                 self._outbox_insert(self._conn, *audit)
             self._conn.execute("COMMIT")
+        except pg_errors.UniqueViolation as exc:
+            # R2/P3-8c：并发窗口（预查通过后、INSERT 前对手已提交同 id）撞
+            # orgs_pkey/orgs_id UNIQUE——映射 OrgExistsError（API 409），
+            # 不裸露 IntegrityError 500
+            self._rollback()
+            raise OrgExistsError(
+                f"组织已存在: {org_id!r}（并发建组织窗口——组织不可删只能停用）"
+            ) from exc
         except BaseException:
             self._rollback()
             raise

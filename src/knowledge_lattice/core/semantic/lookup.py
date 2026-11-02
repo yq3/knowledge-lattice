@@ -15,7 +15,6 @@ import json
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeoutError
 
 from knowledge_lattice.config import Settings
 from knowledge_lattice.core.semantic.constants import SEM_ENTITY_TYPES
@@ -88,7 +87,8 @@ def _embed_query_bounded(
                 breaker.record_success()
             return vector
         raise ValueError("search_entities vec embed returned empty vector")
-    except (FutureTimeoutError, Exception) as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 —— FutureTimeoutError 亦属 Exception
+        # （R2/P3-5：显式列举冗余已清理——两者处置同路：计失败+审计+层跳过）
         if breaker is not None:
             breaker.record_failure()
         _audit_sem_vec_degraded(backend, org_id, user_id, "embed_unreachable")

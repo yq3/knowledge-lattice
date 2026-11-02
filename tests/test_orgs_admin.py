@@ -71,7 +71,7 @@ def test_create_org_denies_non_sysadmin(orgs_env) -> None:
     """非系统管理员（含 org_admin）建组织 403。"""
     r = orgs_env["client"].post(
         "/api/orgs", headers=_hdr(orgs_env, "u_gl"),
-        json={"id": "org:new", "name": "新组织"},
+        json={"id": "org:new", "name": "新组织", "org_admin": "u_gl"},
     )
     assert r.status_code == 403
 
@@ -142,6 +142,86 @@ def test_create_org_duplicate_409(orgs_env) -> None:
     """重复建组织 409。"""
     r = orgs_env["client"].post(
         "/api/orgs", headers=_hdr(orgs_env, "sysadmin"),
-        json={"id": ORG, "name": "重复"},
+        json={"id": ORG, "name": "重复", "org_admin": "u_full"},
     )
     assert r.status_code == 409
+
+
+# ============ R2/P3-8：create_org 边界（死组织拒绝 + 空值 + pg 竞态 409） ============
+
+
+def test_create_org_requires_org_admin(orgs_env) -> None:
+    """org_admin 缺省 → 拒绝（422/400）：无首任管理者的组织不可恢复——
+    members POST 要求本组织 org_admin、sysadmin 无成员关系，形成死组织
+    （Committer P3-8b——显式拒绝而非静默建出无人可管的组织）。"""
+    r = orgs_env["client"].post(
+        "/api/orgs", headers=_hdr(orgs_env, "sysadmin"),
+        json={"id": "org:orphan", "name": "无主"},
+    )
+    assert r.status_code in (400, 422), (
+        f"org_admin 缺省须拒绝（got {r.status_code}——死组织风险）")
+    n = orgs_env["conn"].execute(
+        "SELECT count(*) FROM orgs WHERE id = ?", ("org:orphan",)
+    ).fetchone()[0]
+    assert n == 0
+
+
+@pytest.mark.parametrize("body_patch", [
+    {"id": ""},          # id 空
+    {"name": ""},       # name 空
+    {"id": "   "},      # id 纯空白
+])
+def test_create_org_rejects_blank_id_name(orgs_env, body_patch) -> None:
+    """id/name 空值/纯空白 → 422/400（P3-8a）。"""
+    body = {"id": "org:x", "name": "正常", "org_admin": "u_full"}
+    body.update(body_patch)
+    r = orgs_env["client"].post(
+        "/api/orgs", headers=_hdr(orgs_env, "sysadmin"), json=body)
+    assert r.status_code in (400, 422), f"{body_patch} 须拒绝（got {r.status_code}）"
+
+
+def test_store_create_org_concurrent_duplicate_pg(pg_db) -> None:
+    """R2/P3-8c（pg store 级）：并发窗口下 INSERT 撞 UNIQUE → OrgExistsError
+    （→API 409）而非裸 IntegrityError 500。预查 + BEGIN 的竞态面用直插
+    对手行模拟（预查通过后、INSERT 前对手已提交——等效时序）。"""
+    from knowledge_lattice.store.backend import OrgExistsError
+    from knowledge_lattice.store.postgres.backend import PgBackend
+    from helpers import seed_user
+
+    seed_user(pg_db, "u_seed")
+    backend = PgBackend(pg_db.raw)
+    backend.create_org(org_id="org:race", name="竞态",
+                       org_admin_user_id="u_seed")
+
+    # 模拟「预查时不存在、INSERT 时已存在」的并发窗口：删除预查路径不可行，
+    # 直接二次 create（预查命中 dup 分支）+ 借 monkeypatch 越过预查撞真
+    # UNIQUE——两形态都收敛为 OrgExistsError
+    import pytest as _pytest
+
+    with _pytest.raises(OrgExistsError):
+        backend.create_org(org_id="org:race", name="再建")
+
+    # 越过预查（模拟并发窗口）：手工裸 INSERT 同 id 撞 UNIQUE 由 pg 实现
+    # 捕获映射为 OrgExistsError（修复前裸 UniqueViolation 上抛 500 面）
+    real_execute = pg_db.raw.execute
+
+    def execute_no_select(sql, params=()):
+        if sql.strip().upper().startswith("SELECT"):
+            from psycopg import sql as _sql  # noqa: F401
+            class _FakeRow(list):
+                def fetchone(self):
+                    return None   # 预查恒「不存在」
+            return _FakeRow()
+        return real_execute(sql, params)
+
+    pg_db.raw.execute = execute_no_select
+    try:
+        with _pytest.raises(OrgExistsError):
+            backend.create_org(org_id="org:race", name="并发窗")
+    finally:
+        pg_db.raw.execute = real_execute
+    # 组织零残留（回滚干净）
+    n = pg_db.execute(
+        "SELECT count(*) FROM orgs WHERE id = ?", ("org:race",)
+    ).fetchone()[0]
+    assert n == 1, "既有组织保持 1 行（竞态失败零副作用）"
