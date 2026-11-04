@@ -1,595 +1,476 @@
-/* 静态页壳行为（无构建链——原生 fetch；UI 永远是薄壳，API 契约先行）。 */
+/* app.js —— 应用框架（ui-1）：状态 / 渲染循环 / 顶栏与侧栏 / 组织与身份切换 /
+ * 连接设置 / 语言切换接线。视图实现见 views/*.js（VIEWS 注册表 + actions/INPUTS 扩展）。
+ * 脚本协同（经典脚本，无模块）：i18n.js → api.js → 本文件 → views/*.js；
+ * boot 在 DOMContentLoaded 才执行（晚于全部 script 注册）。
+ */
 "use strict";
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-const CFG_KEY = "lattice.cfg";
-const state = { token: "", org: "", view: "upload", dims: [], picked: {}, docId: null, taskId: null };
+/* ---------- 全局状态 ---------- */
+const state = {
+  view: "docs",
+  sub: { access: "grants" },
+  /* 元数据缓存（组织/身份切换与语言切换时复用，不重取） */
+  orgs: [],            // GET /api/orgs（activeToken 视角）——含 role（普通用户面）
+  usernames: [],       // grants/export 首列（org_admin 可得）——身份菜单候选
+  dims: [],            // GET dimensions（active 维度）
+  datasets: [],
+  /* 文档视图 */
+  docs: { available: null, probed: false, loadError: null, list: [], session: [] }, // be-①：available null=未探/true/false；session=本会话上传缓存
+  ds: "all", selDoc: null, drawer: null, dsAsk: null, delAsk: null,
+  newDs: { name: "", desc: "" },
+  up: { ds: "", picked: {}, file: "", fileObj: null },
+  editDims: false, editPicked: {}, quality: null, qualDraft: {},
+  /* 检索视图 */
+  q: "", qDs: "", autoEnt: false, lastSearch: null, searching: false,
+  /* 权限视图（access 平移） */
+  g: { member: "", rows: [], picked: {}, expires: {}, existing: {}, prefill: "", csv: "", diff: null, diffMsg: "" },
+  dimNewOpen: false, dimNew: { key: "", name: "", required: false },
+  valAsk: null, valNew: { v: "", l: "" }, govAsk: null, disabledVals: [],
+  /* 运维视图（ops 平移） */
+  ops: { tasks: null, coverage: null, audit: null, stats: null, reembedDoc: "", reembedModel: "" },
+  loading: {},
+};
 
-/* ---------- 配置 ---------- */
-function loadCfg() {
+/* 渲染周期内标记（防轮询/异步回写触发的不必要重渲） */
+let lastViewKey = "";
+let booted = false;
+
+const VIEWS = {};   // views/*.js 注册：VIEWS.docs = { render, onEnter }
+const INPUTS = {};  // views/*.js 注册：INPUTS.q = (v) => { … }
+
+function toast(html) {
+  const el = document.createElement("div");
+  el.className = "toast";
+  el.innerHTML = html;
+  $("#toasts").appendChild(el);
+  setTimeout(() => { el.classList.add("out"); setTimeout(() => el.remove(), 320); }, 4200);
+}
+function closeMenus() { document.querySelectorAll(".menu.open").forEach((x) => x.classList.remove("open")); }
+
+/* 动作侧错误 toast（403 已由 api.js 统一 toast——此处不重复） */
+function errToast(e) {
+  if (e && e.status === 403) return;
+  toast((e && e.status ? e.status + " · " : "") + esc(String((e && e.message) || e || "")));
+}
+
+/* ---------- 共享片段（视图复用） ---------- */
+
+const ICONS = {
+  docs: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/>',
+  access: '<path d="M12 3 5 6v5c0 4.4 3 8.3 7 9.5 4-1.2 7-5.1 7-9.5V6z"/><path d="m9.2 12 2 2 3.8-3.8"/>',
+  ops: '<path d="M3 12h4l3-7 4 14 3-7h4"/>',
+};
+const ic = (k) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[k]}</svg>`;
+const CARET = `<svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>`;
+
+const AV_COLOR = ["#2970FF", "#7A5AF8", "#EE46BC", "#0E9384", "#F79009", "#16B364", "#6172F3"];
+function avatar(uid, size) {
+  const h = String(uid).split("").reduce((a, c) => a + c.charCodeAt(0), 0);
+  const s = size ? `;width:${size}px;height:${size}px;font-size:${Math.round(size * .45)}px` : "";
+  return `<span class="avatar" style="background:${AV_COLOR[h % AV_COLOR.length]}${s}">${esc(String(uid).slice(0, 1).toUpperCase())}</span>`;
+}
+
+const STAGES = ["uploaded", "parsing", "chunked", "searchable_lexical", "searchable_full"];
+function stLabel(st) { const key = "st." + st; const s = t(key); return s === key ? st : s; }
+function stPill(st) {
+  const cls = { searchable_full: "ok", done: "ok", searchable_lexical: "run", chunked: "run", parsing: "run", running: "run", leased: "run",
+    uploaded: "idle", pending: "idle", failed: "bad", degraded: "bad" }[st] || "idle";
+  return `<span class="pill ${cls}">${esc(stLabel(st))}</span>`;
+}
+function stagesHTML(st) {
+  const idx = STAGES.indexOf(st);
+  return `<div class="stages">${STAGES.map((s, i) => `<i class="${i <= idx ? "done" : ""} ${i === idx + 1 ? "cur" : ""}"></i>`).join("")}</div>
+  <div class="stage-labels">${STAGES.map((s) => `<span>${esc(stLabel(s))}</span>`).join("")}</div>`;
+}
+
+function dimIdx(key) { return Math.max(0, state.dims.findIndex((d) => d.key === key)) % 4; }
+function valLabel(key, value) {
+  const d = state.dims.find((x) => x.key === key);
+  const v = d && (d.values || []).find((x) => x.value === value);
+  return v && v.label ? v.label : value;
+}
+function dimChipsHTML(dims, { showEmpty = false } = {}) {
+  const parts = [];
+  for (const d of state.dims) {
+    const vals = (dims && dims[d.key]) || [];
+    if (!vals.length) {
+      if (showEmpty) parts.push(`<span class="chip empty" title="${esc(d.name)} · ${esc(d.key)}">${esc(d.name)} · ${esc(t("common.emptyVal"))}</span>`);
+      continue;
+    }
+    vals.forEach((v) => parts.push(`<span class="chip d${dimIdx(d.key)}" title="${esc(d.name)} · ${esc(d.key)}=${esc(v)}">${esc(valLabel(d.key, v))}</span>`));
+  }
+  return `<span class="chips">${parts.join("")}</span>`;
+}
+function dsName(id) { const d = state.datasets.find((x) => x.id === id); return d ? d.name : id; }
+
+/* 引号形态 CSV 单行解析（access 平移——值含逗号不错位） */
+function parseCsvLine(line) {
+  return (String(line).match(/("([^"]|"")*"|[^,]*)(,|$)/g) || [])
+    .slice(0, 4)
+    .map((c) => c.replace(/,$/, "").replace(/^"(.*)"$/, "$1").replace(/""/g, '"'));
+}
+
+/* ---------- 身份与角色（展示口径——服务端仍是权限唯一权威） ---------- */
+
+function roleOf(orgId) {
+  const o = state.orgs.find((x) => x.org_id === orgId);
+  return o && o.role ? o.role : null;
+}
+function roleLabel(orgId) {
+  const r = roleOf(orgId);
+  if (r === "org_admin") return t("role.org_admin");
+  if (r === "member") return t("role.member");
+  return t("role.none");
+}
+function isAdmin() { return roleOf(cfg.org) === "org_admin"; }
+function lensUser() { return cfg.lensUserId || cfg.baseUserId || "?"; }
+
+function connGate() {
+  return `<div class="empty"><h3>${esc(t("conn.need.title"))}</h3><p>${t("conn.need.body")}</p>
+  <div style="margin-top:16px"><button class="btn" data-act="openConn">${esc(t("conn.need.btn"))}</button></div></div>`;
+}
+function loadingHTML(key) {
+  return `<div class="loading">${esc(t("common.loading", { what: t("nav." + key) }))}</div>`;
+}
+
+/* ---------- 元数据装载 ---------- */
+
+async function loadUsernames() {
   try {
-    const cfg = JSON.parse(localStorage.getItem(CFG_KEY) || "{}");
-    state.token = cfg.token || "";
-    state.org = cfg.org || "";
-  } catch (e) { /* ignore */ }
-  $("#cfgToken").value = state.token;
-  $("#cfgOrg").value = state.org;
-}
-function saveCfg() {
-  state.token = $("#cfgToken").value.trim();
-  state.org = $("#cfgOrg").value.trim();
-  localStorage.setItem(CFG_KEY, JSON.stringify({ token: state.token, org: state.org }));
-  loadMeta(); // 重连后刷新知识库/维度
-}
-
-function api(path, opts) {
-  const headers = Object.assign(
-    { Authorization: "Bearer " + (state.token || "") },
-    state.org ? { "X-Org-Id": state.org } : {},
-    (opts && opts.headers) || {}
-  );
-  return fetch(path, Object.assign({}, opts, { headers }));
-}
-
-/* ---------- 元数据（datasets / dimensions——上传表单与检索过滤） ---------- */
-async function loadMeta() {
-  if (!state.token || !state.org) return;
-  try {
-    const [dsRes, dimRes] = await Promise.all([
-      api(`/api/orgs/${encodeURIComponent(state.org)}/datasets`).then((r) => r.json()),
-      api(`/api/orgs/${encodeURIComponent(state.org)}/dimensions`).then((r) => r.json()),
-    ]);
-    const dsSel = $("#upDataset");
-    dsSel.innerHTML = "";
-    (dsRes.datasets || []).forEach((d) => {
-      const o = document.createElement("option");
-      o.value = d.id; o.textContent = `${d.name} (${d.id})`;
-      dsSel.appendChild(o);
-    });
-    const qDs = $("#qDataset");
-    qDs.innerHTML = "";
-    const all = document.createElement("option");
-    all.value = ""; all.setAttribute("data-i18n", "search.all"); all.textContent = t("search.all");
-    qDs.appendChild(all);
-    (dsRes.datasets || []).forEach((d) => {
-      const o = document.createElement("option");
-      o.value = d.id; o.textContent = `${d.name} (${d.id})`;
-      qDs.appendChild(o);
-    });
-    state.dims = dimRes.dimensions || [];
-    renderDimChips();
+    const text = await exportGrants(cfg.org);
+    const lines = text.trim().split(/\r?\n/);
+    state.usernames = [...new Set(lines.slice(1).filter((l) => l.trim()).map((l) => parseCsvLine(l)[0]))].sort();
   } catch (e) {
-    console.warn("loadMeta failed", e);
+    state.usernames = []; // 非 org_admin（或未连接）——菜单退化为「自己 + 手动输入」
   }
 }
 
-function renderDimChips() {
-  const box = $("#upDims");
-  box.innerHTML = "";
-  state.dims.forEach((dim) => {
-    const g = document.createElement("div");
-    g.className = "dim-group";
-    const label = document.createElement("div");
-    label.className = "dim-label";
-    label.textContent = `${dim.name} (${dim.key})${dim.required ? " · " + t("upload.required") : ""}`;
-    g.appendChild(label);
-    (dim.values || []).forEach((v) => {
-      const chip = document.createElement("button");
-      chip.type = "button";
-      chip.className = "chip" + (isPicked(dim.key, v.value) ? " on" : "");
-      chip.textContent = `${v.label} (${v.value})`;
-      chip.onclick = () => togglePick(dim.key, v.value, chip);
-      g.appendChild(chip);
-    });
-    box.appendChild(g);
-  });
-}
-function isPicked(key, value) { return (state.picked[key] || []).includes(value); }
-function togglePick(key, value, chip) {
-  const list = state.picked[key] || [];
-  const i = list.indexOf(value);
-  if (i >= 0) list.splice(i, 1); else list.push(value);
-  state.picked[key] = list;
-  chip.classList.toggle("on", i < 0);
-}
-
-/* ---------- 上传 ---------- */
-async function upload() {
-  const file = $("#upFile").files[0];
-  if (!file) { $("#upMsg").textContent = t("upload.file.required"); return; }
-  const fd = new FormData();
-  fd.append("file", file);
-  fd.append("dataset", $("#upDataset").value);
-  fd.append("dims", JSON.stringify(state.picked));
-  $("#upMsg").textContent = "…";
-  const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/documents`, { method: "POST", body: fd });
-  const body = await resp.json().catch(() => ({}));
-  if (!resp.ok) {
-    $("#upMsg").textContent = `${resp.status}: ${body.error || resp.statusText}`;
-    return;
-  }
-  state.docId = body.doc_id; state.taskId = body.task_id;
-  $("#upMsg").textContent = t("upload.ok");
-  $("#upStatus").hidden = false;
-  refreshStatus();
-}
-
-async function refreshStatus() {
-  if (!state.docId) return;
-  const [docRes, taskRes] = await Promise.all([
-    api(`/api/orgs/${encodeURIComponent(state.org)}/documents/${state.docId}`),
-    api(`/api/orgs/${encodeURIComponent(state.org)}/tasks/${state.taskId}`),
+async function loadMeta() {
+  if (!connected()) return;
+  const [orgsRes, dsRes, dimRes] = await Promise.all([
+    listOrgs().catch(() => ({ orgs: [] })),
+    listDatasets(cfg.org).catch(() => ({ datasets: [] })),
+    listDimensions(cfg.org).catch(() => ({ dimensions: [] })),
   ]);
-  const doc = await docRes.json().catch(() => ({}));
-  const task = await taskRes.json().catch(() => ({}));
-  const kv = $("#upStatusKv");
-  kv.innerHTML = [
-    [t("status.doc"), esc(state.docId)],
-    [t("status.active"), `v${doc.active_version ?? "-"} · ${esc(doc.active_status ?? "-")}${doc.active_error ? " · " + esc(doc.active_error) : ""}`],
-    [t("status.pending"), doc.pending_version ? `v${doc.pending_version} · ${esc(doc.pending_status)}` : "—"],
-    [t("status.task"), `${esc(task.status ?? "-")}(${t("status.attempts")} ${task.attempts ?? 0})${task.error ? " · " + esc(task.error) : ""}`],
-  ].map(([k, v]) => `<dt>${k}</dt><dd class="mono">${v}</dd>`).join("");
+  state.orgs = orgsRes.orgs || [];
+  state.datasets = dsRes.datasets || [];
+  state.dims = dimRes.dimensions || [];
+  await loadUsernames();
 }
 
-/* ---------- 检索 ---------- */
-async function doSearch() {
-  const q = $("#qInput").value.trim();
-  if (!q) return;
-  const payload = { query: q, top_k: 8 };
-  if ($("#qDataset").value) payload.datasets = [$("#qDataset").value];
-  const resp = await api("/api/search", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (resp.status === 403) {
-    $("#hitsTable").hidden = true; $("#hitsEmpty").hidden = false;
-    $("#searchMsg").textContent = t("search.denied");
-    return;
-  }
-  const body = await resp.json().catch(() => ({ results: [] }));
-  const rows = body.results || [];
-  $("#searchMsg").textContent = `${rows.length} ${t("search.results")}` +
-    ((body.notice && body.notice.degraded && body.notice.degraded.length)
-      ? ` · ${t("search.degraded")}: ${body.notice.degraded.join(",")}` : "");
-  $("#hitsTable").hidden = rows.length === 0;
-  $("#hitsEmpty").hidden = rows.length > 0;
-  $("#hitsBody").innerHTML = rows.map((r) => `<tr>
-      <td>${r.rank}</td>
-      <td class="mono tiny">${esc(r.chunk_id)}</td>
-      <td><b>${esc(r.title ?? r.doc_id)}</b><div class="tiny muted mono">${esc(r.doc_id)}</div></td>
-      <td class="tiny">${esc(r.sheet_name ?? r.page_no ?? "—")}</td>
-      <td class="mono">${r.score}</td>
-      <td class="tiny">${esc(Object.entries(r.dims || {}).map(([k, v]) => k + "=" + v.join("/")).join(" ") || "—")}</td>
-      <td class="tiny mono">${esc(r.source ?? "—")}</td>
-    </tr>`).join("");
+/* 组织/身份切换后：可见性相关缓存全重置（检索结果/文档列表/授权编辑/运维面板） */
+function resetOrgState() {
+  state.docs = { available: null, probed: false, loadError: null, list: [], session: [] };
+  state.ds = "all"; state.selDoc = null; state.drawer = null; state.dsAsk = null; state.delAsk = null;
+  state.newDs = { name: "", desc: "" };
+  state.up = { ds: "", picked: {}, file: "", fileObj: null };
+  state.editDims = false; state.editPicked = {}; state.quality = null; state.qualDraft = {};
+  state.q = ""; state.qDs = ""; state.autoEnt = false; state.lastSearch = null; state.searching = false;
+  state.g = { member: "", rows: [], picked: {}, expires: {}, existing: {}, prefill: "", csv: "", diff: null, diffMsg: "" };
+  state.dimNewOpen = false; state.dimNew = { key: "", name: "", required: false };
+  state.valAsk = null; state.valNew = { v: "", l: "" }; state.govAsk = null; state.disabledVals = [];
+  state.ops = { tasks: null, coverage: null, audit: null, stats: null, reembedDoc: "", reembedModel: "" };
 }
 
-/* ---------- 权限视图（m2-3：grants 管理 / CSV 导入导出 / expires_at） ---------- */
-
-const accessState = { rows: [], members: [], picked: {}, expires: {}, existing: {} };
-// expires：**逐行独立** expires_at 输入值（B① m2-5——每行 input.chip-exp
-// 的唯一真值源；渲染时初始化为库内既有值，未编辑保存即沿用——R3 P2-2 语义
-// 由「初始值=库内值」自然成立）；existing：当前成员库内既有 expires 映射
-// （chip 徽标 + 行内输入框初始值）。R2/P3-10：旧 fresh 集合（m2-6 全局
-// 输入框真值源语义）已随逐行编辑废止移除。
-
-async function loadGrants() {
-  if (!state.token || !state.org) return;
-  const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/grants/export`);
-  if (!resp.ok) { $("#gMsg").textContent = `${resp.status}`; return; }
-  const lines = (await resp.text()).trim().split(/\r?\n/);
-  accessState.rows = lines.length > 1
-    ? lines.slice(1).map((l) => {
-        // P3-14/R2：引号形态 CSV 单行解析（值含逗号不错位——split(",") 弃用）
-        const cols = l.match(/("([^"]|"")*"|[^,]*)(,|$)/g)
-          .slice(0, 4)
-          .map((c) => c.replace(/,$/, "").replace(/^"(.*)"$/, "$1").replace(/""/g, '"'));
-        return { username: cols[0], dimKey: cols[1], value: cols[2],
-                 expiresAt: cols[3] || "" };
-      })
-    : [];
-  accessState.members = [...new Set(accessState.rows.map((r) => r.username))].sort();
-  const sel = $("#gMember");
-  sel.innerHTML = "";
-  if (!accessState.members.length) {
-    const o = document.createElement("option");
-    o.setAttribute("data-i18n", "access.member.none");
-    o.textContent = t("access.member.none");
-    sel.appendChild(o);
-    $("#gChips").innerHTML = `<span class="muted">${t("access.member.none")}</span>`;
-    return;
-  }
-  accessState.members.forEach((m) => {
-    const o = document.createElement("option");
-    o.value = m; o.textContent = m;
-    sel.appendChild(o);
-  });
-  renderGrantChips();
-}
-
-function renderGrantChips(preserve = false) {
-  // preserve=true（langchange 重渲染）：保留 picked/expires/输入框——语言切换
-  // 不清用户已选状态（m2-6 B①）；缺省（成员切换/装载）重置为装载态
-  const member = $("#gMember").value;
-  const box = $("#gChips");
-  box.innerHTML = "";
-  const mine = accessState.rows.filter((r) => r.username === member);
-  // 既有 expires 映射（chip 徽标 + 行内输入框初始值——m2-6 B①/m2-5 逐行编辑）
-  accessState.existing = {};
-  mine.forEach((r) => { accessState.existing[`${r.dimKey}=${r.value}`] = r.expiresAt; });
-  if (!preserve) {
-    accessState.picked = { ...accessState.existing };
-    accessState.expires = { ...accessState.existing };  // 行内初始值=库内值（未编辑即沿用）
-  }
-  state.dims.forEach((dim) => {
-    const g = document.createElement("div");
-    g.className = "dim-group";
-    const label = document.createElement("div");
-    label.className = "dim-label";
-    label.textContent = `${dim.name} (${dim.key})`;
-    g.appendChild(label);
-    (dim.values || []).forEach((v) => {
-      const key = `${dim.key}=${v.value}`;
-      const on = key in accessState.picked;
-      const chip = document.createElement("button");
-      chip.type = "button";
-      chip.className = "chip" + (on ? " on" : "");
-      chip.textContent = `${v.label} (${v.value})`;
-      // 显示既有值：选中且库内带 expires → title + 徽标样式（不占布局）
-      const existing = accessState.existing[key];
-      if (on && existing) {
-        chip.title = `${t("access.expires.existing")}: ${existing}`;
-        chip.classList.add("has-exp");
-        chip.dataset.expires = existing;
-      }
-      chip.onclick = () => {
-        if (key in accessState.picked) {
-          delete accessState.picked[key];
-          delete accessState.expires[key];
-          const rowInput = g.querySelector(`input.chip-exp[data-key="${CSS.escape(key)}"]`);
-          if (rowInput) rowInput.remove();
-        } else {
-          accessState.picked[key] = "";
-          // 新选行预填：全局输入框值优先（显式意图），否则库内既有值
-          accessState.expires[key] = $("#gExpires").value.trim() || existing || "";
-          chip.after(_rowExpiresInput(key));
-        }
-        chip.classList.toggle("on", key in accessState.picked);
-      };
-      g.appendChild(chip);
-      if (on) g.appendChild(_rowExpiresInput(key));  // 选中态行内输入框（B①）
-    });
-    box.appendChild(g);
-  });
-}
-
-// B①（m2-5）：选中行的独立 expires_at 输入框——每行一个（互不影响）；
-// 值读写 accessState.expires[key]（唯一真值源）
-function _rowExpiresInput(key) {
-  const input = document.createElement("input");
-  input.type = "text";
-  input.className = "chip-exp";
-  input.dataset.key = key;
-  input.setAttribute("data-i18n-ph", "access.expires.row.ph");
-  input.placeholder = t("access.expires.row.ph");
-  input.value = accessState.expires[key] || "";
-  input.oninput = () => { accessState.expires[key] = input.value.trim(); };
-  return input;
-}
-
-async function saveGrants() {
-  const member = $("#gMember").value;
-  if (!member) return;
-  // B①（m2-5）：逐行独立 expires——每行取自身输入框值（accessState.expires，
-  // 渲染时初始化为库内值——未编辑的既有 key 沿用库内 expires，R3 P2-2 语义
-  // 由初始值承载；空=永久）。全局 #gExpires 仅作新选行预填源。
-  const grants = Object.keys(accessState.picked).map((k) => {
-    const [dimKey, value] = k.split("=");
-    const expires = accessState.expires[k] ?? accessState.existing[k] ?? "";
-    return { dim_key: dimKey, value, expires_at: expires || null };
-  });
-  const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/members/${encodeURIComponent(member)}/grants`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ grants }),
-  });
-  const body = await resp.json().catch(() => ({}));
-  if (!resp.ok) { $("#gMsg").textContent = `${resp.status}: ${body.detail || body.error || ""}`; return; }
-  $("#gMsg").textContent = t("access.saved", body);
-  loadGrants();
-}
-
-function downloadCsv(text) {
-  const blob = new Blob([text], { type: "text/csv" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `grants-${state.org}.csv`;
-  a.click();
-  URL.revokeObjectURL(a.href);
-}
-
-async function importCsv(dryRun) {
-  const text = $("#csvText").value.trim();
-  if (!text) return;
-  const resp = await api(
-    `/api/orgs/${encodeURIComponent(state.org)}/grants/import${dryRun ? "?dry_run=1" : ""}`,
-    { method: "POST", body: text }
-  );
-  const body = await resp.json().catch(() => ({}));
-  if (!resp.ok) { $("#csvMsg").textContent = `${resp.status}: ${body.detail || body.error || ""}`; return; }
-  if (dryRun) {
-    const d = body.diff;
-    $("#csvDiff").hidden = false;
-    $("#csvDiff").textContent = JSON.stringify(d, null, 2);
-    $("#csvMsg").textContent = `+${d.added.length} / -${d.removed.length} / ~${d.changed.length} / rejected ${body.rejected.length}`;
-    return;
-  }
-  $("#csvDiff").hidden = true;
-  $("#csvMsg").textContent = t("access.csv.applied", {
-    users: body.applied_users, rejected: body.rejected.length,
-  });
-  loadGrants();
-}
-
-/* ---------- 维度治理视图（m2-3：停用 dry_run / 退役二次确认） ---------- */
-
-const dimsState = { pending: null }; // {action: 'disable'|'retire', dim, value}
-
-async function loadGovernanceDims() {
+async function reloadAfterIdentityChange() {
   await loadMeta();
-  renderGovernanceDims();
+  const view = VIEWS[state.view];
+  if (view && view.onEnter) { try { await view.onEnter(); } catch (e) { /* 已 toast */ } }
+  render();
 }
 
-function renderGovernanceDims() {
-  const body = $("#dimsBody");
-  body.innerHTML = "";
-  const dims = state.dims || [];
-  $("#dimsTable").hidden = dims.length === 0;
-  $("#dimsEmpty").hidden = dims.length > 0;
-  dims.forEach((dim) => {
-    const tr = document.createElement("tr");
-    const vals = (dim.values || []).map((v) => {
-      const chip = document.createElement("span");
-      chip.className = "chip d";
-      chip.textContent = `${v.label} (${v.value})`;
-      const btn = document.createElement("button");
-      btn.className = "btn ghost sm";
-      btn.textContent = t("dims.disable");
-      btn.onclick = () => askDisableValue(dim, v);
-      const wrap = document.createElement("span");
-      wrap.className = "val-item";
-      wrap.appendChild(chip); wrap.appendChild(btn);
-      return wrap;
-    });
-    const retireBtn = document.createElement("button");
-    retireBtn.className = "btn ghost sm";
-    retireBtn.textContent = t("dims.retire");
-    retireBtn.onclick = () => askRetireDim(dim);
-    const cells = [
-      `<td><b>${esc(dim.name)}</b><div class="tiny muted mono">${esc(dim.key)}</div></td>`,
-      `<td>${dim.required ? t("upload.required") : "—"}</td>`,
-    ];
-    tr.innerHTML = cells.join("");
-    const tdVals = document.createElement("td");
-    vals.forEach((v) => tdVals.appendChild(v));
-    tr.appendChild(tdVals);
-    const tdAct = document.createElement("td");
-    tdAct.appendChild(retireBtn);
-    tr.appendChild(tdAct);
-    body.appendChild(tr);
-  });
+/* 组织切换 = reissue({org})（本人身份进新组织）+ 元数据与视图数据重载 */
+async function switchOrg(orgId) {
+  if (!orgId || orgId === cfg.org) return;
+  if (!cfg.baseToken) { toast(esc(t("org.switch.needBase"))); openConn(); return; }
+  closeMenus();
+  try {
+    await reissue({ org: orgId });
+  } catch (e) { return; } // 403 代签 / 404 生产无 dev 端点——toast 已给降级口径
+  cfg.lensUserId = cfg.baseUserId;
+  saveCfg();
+  resetOrgState();
+  toast(t("org.switched", { org: esc(cfg.org), user: esc(lensUser()) }));
+  await reloadAfterIdentityChange();
 }
 
-async function askDisableValue(dim, v) {
-  // dry_run 影响面 → 二次确认
-  const resp = await api(
-    `/api/orgs/${encodeURIComponent(state.org)}/dimensions/${encodeURIComponent(dim.id)}` +
-    `/values/${encodeURIComponent(v.id)}`,
-    { method: "PATCH", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: "disabled", dry_run: true }) }
-  );
-  const body = await resp.json().catch(() => ({}));
-  if (!resp.ok) { alert(`${resp.status}: ${body.detail || ""}`); return; }
-  const imp = body.impact;
-  showConfirm(
-    t("dims.disable.ask", { value: v.value }),
-    `${t("dims.impact.docs")}: ${imp.docs} · ${t("dims.impact.grants")}: ${imp.grants}` +
-      ` · ${t("dims.impact.users")}: ${imp.users} · ${t("dims.impact.locked")}: ${imp.locked_docs}`,
-    { action: "disable", dim, v }
-  );
+/* 身份切换 = reissue({userId, org})；userId 空 = 回本人 */
+async function switchLens(userId) {
+  if (!cfg.baseToken) { toast(esc(t("org.switch.needBase"))); openConn(); return; }
+  closeMenus();
+  try {
+    await reissue({ userId: userId || undefined, org: cfg.org });
+  } catch (e) { return; }
+  resetOrgState();
+  toast(t("lens.switched", { user: esc(lensUser()), org: esc(cfg.org) }));
+  await reloadAfterIdentityChange();
 }
 
-async function askRetireDim(dim) {
-  const resp = await api(
-    `/api/orgs/${encodeURIComponent(state.org)}/dimensions/${encodeURIComponent(dim.id)}/retire`,
-    { method: "POST" }
-  );
-  const body = await resp.json().catch(() => ({}));
-  if (!resp.ok) { alert(`${resp.status}: ${body.detail || ""}`); return; }
-  const imp = body.impact;
-  showConfirm(
-    t("dims.retire.ask", { key: dim.key }),
-    `${t("dims.impact.docs")}: ${imp.docs} · ${t("dims.impact.grants")}: ${imp.grants} · ${t("dims.impact.values")}: ${imp.values}`,
-    { action: "retire", dim }
-  );
+/* ---------- 侧栏与顶栏渲染 ---------- */
+
+function orgName(orgId) { const o = state.orgs.find((x) => x.org_id === orgId); return o ? o.name : orgId; }
+
+function renderRail() {
+  /* 组织 picker（GET /api/orgs 菜单） */
+  $("#orgPicker").innerHTML = connected() ? `
+    <button class="picker-btn" data-act="menu" data-m="org" aria-haspopup="true">
+      <span class="pk-main"><span class="pk-t">${esc(orgName(cfg.org))}</span><span class="pk-s mono">${esc(cfg.org)}</span></span><span class="caret">${CARET}</span>
+    </button>
+    <div class="menu" id="menu-org">
+      <div class="tiny muted" style="padding:6px 10px 4px;font-weight:500">${esc(t("org.menuTitle"))}</div>
+      ${state.orgs.map((x) => `<button class="menu-item ${x.org_id === cfg.org ? "on" : ""}" data-act="org" data-id="${esc(x.org_id)}">
+        <span>${esc(x.name)}<span class="mono tiny muted" style="display:block;font-weight:400">${esc(x.org_id)}</span></span>
+        <small>${esc(roleLabel(x.org_id))}${x.expires_at ? ` · ${esc(short(x.expires_at))}` : ""}</small></button>`).join("")}
+      <div class="menu-note">${t("org.menuNote")}</div>
+    </div>` : `
+    <button class="picker-btn" data-act="openConn"><span class="pk-main"><span class="pk-t">${esc(t("rail.offline"))}</span></span><span class="caret">${CARET}</span></button>`;
+
+  /* 身份 picker（export 用户名 ∪ 自己 + 手动输入兜底——无 GET members 端点，m3-1 #13） */
+  const lu = lensUser();
+  $("#lensPicker").innerHTML = connected() ? `
+    <button class="picker-btn" data-act="menu" data-m="lens" aria-haspopup="true">
+      ${avatar(lu)}<span class="pk-main"><span class="pk-t">${esc(lu)}</span><span class="pk-s">${esc(roleLabel(cfg.org))}</span></span><span class="caret">${CARET}</span>
+    </button>
+    <div class="menu" id="menu-lens">
+      <div class="tiny muted" style="padding:6px 10px 4px;font-weight:500">${esc(t("lens.menuTitle"))}</div>
+      <button class="menu-item ${lu === cfg.baseUserId ? "on" : ""}" data-act="lens" data-id="">${avatar(cfg.baseUserId || "?", 24)}<span>${esc(cfg.baseUserId || "?")}</span><small>${esc(t("lens.self"))}</small></button>
+      ${state.usernames.filter((u) => u && u !== cfg.baseUserId).map((u) =>
+        `<button class="menu-item ${u === lu ? "on" : ""}" data-act="lens" data-id="${esc(u)}">${avatar(u, 24)}<span>${esc(u)}</span><small>${esc(t("role.member"))}</small></button>`).join("")}
+      <div class="menu-item" style="display:grid;grid-template-columns:1fr auto;gap:6px;align-items:center">
+        <input class="inp" id="lensManualInput" placeholder="${esc(t("lens.manual.ph"))}" style="height:28px;font-size:12.5px">
+        <button class="btn sm" data-act="lensGo" title="${esc(t("lens.go"))}">→</button>
+      </div>
+      <div class="menu-note">${t("lens.note")}</div>
+    </div>` : "";
+
+  /* 导航四项（带计数） */
+  const docsN = state.docs.available ? state.docs.list.length : state.docs.session.length;
+  const runN = (state.ops.tasks || []).filter((x) => ["pending", "leased", "running"].includes(x.status)).length;
+  const groups = [
+    [t("nav.group.knowledge"), [
+      ["docs", t("nav.docs"), String(docsN || "")],
+      ["search", t("nav.search"), ""],
+    ]],
+    [t("nav.group.admin"), [
+      ["access", t("nav.access"), state.dims.length ? t("nav.accessCount", { n: state.dims.length }) : ""],
+    ]],
+    [t("nav.group.ops"), [
+      ["ops", t("nav.ops"), runN ? t("nav.opsCount", { n: runN }) : ""],
+    ]],
+  ];
+  $("#nav").innerHTML = groups.map(([g, items]) => `<div class="nav-group">${esc(g)}</div>` + items.map(([k, name, c]) =>
+    `<button class="nav-item ${state.view === k ? "on" : ""}" data-act="view" data-v="${k}"><span class="ni-k">${ic(k)}</span><span>${esc(name)}</span><span class="ni-c">${esc(c)}</span></button>`).join("")).join("");
+
+  $("#railFoot").innerHTML = connected()
+    ? `<div class="rf-h"><i></i>${esc(t("rail.connected", { org: cfg.org }))}</div>${t("rail.note")}`
+    : `<div class="rf-h" style="color:var(--danger)"><i style="background:var(--danger);box-shadow:0 0 0 3px var(--danger-w)"></i>${esc(t("rail.offline"))}</div>${t("rail.note")}`;
 }
 
-function showConfirm(title, detail, pending) {
-  dimsState.pending = pending;
-  $("#dimsConfirmTitle").textContent = title;
-  $("#dimsConfirmBody").textContent = detail;
-  $("#dimsConfirm").hidden = false;
-}
+/* ---------- 主渲染循环 ---------- */
 
-async function runConfirmed() {
-  const p = dimsState.pending;
-  if (!p) return;
-  let resp;
-  if (p.action === "disable") {
-    resp = await api(
-      `/api/orgs/${encodeURIComponent(state.org)}/dimensions/${encodeURIComponent(p.dim.id)}` +
-      `/values/${encodeURIComponent(p.v.id)}`,
-      { method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "disabled" }) }
-    );
-  } else {
-    resp = await api(
-      `/api/orgs/${encodeURIComponent(state.org)}/dimensions/${encodeURIComponent(p.dim.id)}/retire?confirm=1`,
-      { method: "POST" }
-    );
+function render() {
+  const a = document.activeElement;
+  const key = a && a.dataset && a.dataset.in;
+  const sel = key && "selectionStart" in a ? [a.selectionStart, a.selectionEnd] : null;
+  renderRail();
+  const vk = state.view + "/" + (state.view === "access" ? state.sub.access : "");
+  const view = VIEWS[state.view];
+  const body = view ? view.render() : "";
+  $("#main").innerHTML = `<section class="${vk !== lastViewKey ? "view" : ""}">${body}</section>`;
+  lastViewKey = vk;
+  if (key) {
+    const el = document.querySelector(`[data-in="${key}"]`);
+    if (el && el.type !== "checkbox" && el.tagName !== "SELECT") {
+      el.focus();
+      if (sel) { try { el.setSelectionRange(sel[0], sel[1]); } catch (_) { /* number 等 input 不支持 */ } }
+    }
   }
-  $("#dimsConfirm").hidden = true;
-  dimsState.pending = null;
-  if (!resp.ok) {
-    const body = await resp.json().catch(() => ({}));
-    alert(`${resp.status}: ${body.detail || ""}`);
+}
+
+/* ---------- 连接设置 ---------- */
+
+function openConn() {
+  const m = $("#menu-conn");
+  if (m) m.classList.add("open");
+  refreshConnStatus();
+}
+function refreshConnStatus() {
+  const el = $("#connStatus");
+  if (!el) return;
+  if (!connected()) { el.textContent = t("settings.status.offline"); return; }
+  el.textContent = t("settings.status.on", { user: lensUser(), org: cfg.org, role: roleLabel(cfg.org) });
+}
+
+/* ---------- 动作基表（views/*.js 经 Object.assign 扩展） ---------- */
+
+const actions = {
+  menu(el) {
+    const mn = $("#menu-" + el.dataset.m);
+    const open = mn.classList.contains("open");
+    closeMenus();
+    if (!open) mn.classList.add("open");
+    if (el.dataset.m === "conn") refreshConnStatus();
+    return false;
+  },
+  mcpMenu() {
+    const mn = $("#menu-mcp");
+    const open = mn.classList.contains("open");
+    closeMenus();
+    if (!open) mn.classList.add("open");
+    return false;
+  },
+  connMenu() {
+    const mn = $("#menu-conn");
+    const open = mn.classList.contains("open");
+    closeMenus();
+    if (!open) { mn.classList.add("open"); refreshConnStatus(); }
+    return false;
+  },
+  openConn() { openConn(); return false; },
+  apiDocs() { window.open("/docs", "_blank"); return false; },
+
+  view(el) {
+    const v = el.dataset.v;
+    state.view = v;
+    render();
+    const view = VIEWS[v];
+    if (view && view.onEnter) view.onEnter().then(() => render()).catch(() => { /* 已 toast */ });
+    return false;
+  },
+  sub(el) { state.sub[el.dataset.s] = el.dataset.v; render(); return false; },
+
+  org(el) { switchOrg(el.dataset.id); return false; },
+  lens(el) { switchLens(el.dataset.id); return false; },
+  lensGo() {
+    const inp = $("#lensManualInput");
+    const v = inp ? inp.value.trim() : "";
+    if (!v) { toast(esc(t("lens.manual.empty"))); return false; }
+    switchLens(v);
+    return false;
+  },
+
+  /* 连接：模式 A——基 token 重签（dev） */
+  async connReissue() {
+    const baseToken = $("#connBaseToken").value.trim();
+    const org = $("#connOrg").value.trim();
+    const lens = $("#connLens").value.trim();
+    if (!baseToken || !org) { toast(esc(t("settings.needBase"))); return false; }
+    cfg.baseToken = baseToken;
+    cfg.baseUserId = (decodeJwt(baseToken) || {}).sub || "";
+    try {
+      const data = await reissue({ org, userId: lens || undefined });
+      if (!cfg.baseUserId) cfg.baseUserId = data.user_id || "";
+      saveCfg();
+    } catch (e) { refreshConnStatus(); return false; }
+    resetOrgState();
+    await reloadAfterIdentityChange();
+    refreshConnStatus();
+    toast(t("settings.connected", { user: esc(lensUser()), org: esc(cfg.org) }));
+    return false;
+  },
+  /* 连接：模式 B——直接使用已签 token（生产可用） */
+  async connUseSigned() {
+    const token = $("#connToken").value.trim();
+    if (!token) { toast(esc(t("settings.needToken"))); return false; }
+    const claims = decodeJwt(token) || {};
+    const org = $("#connOrg").value.trim() || claims.org || "";
+    if (!org) { toast(esc(t("settings.needOrg"))); return false; }
+    cfg.baseToken = token;
+    cfg.activeToken = token;
+    cfg.org = org;
+    cfg.baseUserId = claims.sub || "";
+    cfg.lensUserId = claims.sub || "";
+    saveCfg();
+    resetOrgState();
+    await reloadAfterIdentityChange();
+    refreshConnStatus();
+    toast(t("settings.connected", { user: esc(lensUser()), org: esc(cfg.org) }));
+    return false;
+  },
+  connDisconnect() {
+    cfg.baseToken = ""; cfg.activeToken = ""; cfg.org = ""; cfg.lensUserId = ""; cfg.baseUserId = "";
+    saveCfg();
+    resetOrgState();
+    state.orgs = []; state.usernames = []; state.dims = []; state.datasets = [];
+    render();
+    refreshConnStatus();
+    toast(esc(t("settings.disconnected")));
+    openConn();
+    return false;
+  },
+};
+
+/* ---------- 事件委托 ---------- */
+
+document.addEventListener("click", (ev) => {
+  const el = ev.target.closest("[data-act]");
+  if (!el) {
+    if (!ev.target.closest(".menu") && !ev.target.closest(".picker")) closeMenus();
+    return;
   }
-  loadGovernanceDims();
+  if (el.disabled) return;
+  if (!el.closest(".menu") && el.dataset.act !== "mcpMenu" && el.dataset.act !== "menu" && el.dataset.act !== "connMenu") closeMenus();
+  const fn = actions[el.dataset.act];
+  if (!fn) return;
+  const out = fn(el);
+  if (out && typeof out.then === "function") return; // async 动作自管渲染
+  if (out !== false) render();
+});
+
+function onInput(ev) {
+  const el = ev.target;
+  const k = el.dataset && el.dataset.in;
+  if (!k || ev.isComposing) return;
+  const fn = INPUTS[k];
+  if (!fn) return;
+  const v = el.type === "checkbox" ? el.checked : el.value;
+  if (fn(v, el) !== false) render();
 }
+document.addEventListener("input", (ev) => { if (ev.target.type !== "checkbox" && ev.target.tagName !== "SELECT") onInput(ev); });
+document.addEventListener("change", (ev) => { if (ev.target.type === "checkbox" || ev.target.tagName === "SELECT") onInput(ev); });
+document.addEventListener("compositionend", onInput);
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter" && ev.target.id === "qInput" && !ev.isComposing) {
+    const fn = actions.doSearch;
+    if (fn) { const out = fn(ev.target); if (out && typeof out.then === "function") return; if (out !== false) render(); }
+  }
+  if (ev.key === "Enter" && ev.target.id === "lensManualInput" && !ev.isComposing) { actions.lensGo(); }
+  if (ev.key === "Escape") closeMenus();
+});
 
-/* ---------- 任务与审计视图（m2-3：取消 / 重嵌入 / 覆盖率 / 审计 / stats） ---------- */
+/* ---------- boot（DOMContentLoaded——晚于全部 views/*.js 注册） ---------- */
 
-async function loadOps() {
-  if (!state.token || !state.org) return; // 未连接早退（防 404 噪音）
-  await Promise.all([loadTasks(), loadCoverage(), loadAudit(), loadStats()]);
-}
+function boot() {
+  loadCfg();
+  if (!cfg.baseUserId && cfg.baseToken) cfg.baseUserId = (decodeJwt(cfg.baseToken) || {}).sub || "";
+  if (!cfg.lensUserId && cfg.activeToken) cfg.lensUserId = (decodeJwt(cfg.activeToken) || {}).sub || "";
 
-async function loadTasks() {
-  const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/tasks`);
-  const body = await resp.json().catch(() => ({ tasks: [] }));
-  const tasks = body.tasks || [];
-  $("#tasksTable").hidden = tasks.length === 0;
-  $("#tasksBody").innerHTML = tasks.map((task) => `<tr>
-      <td class="mono tiny">${esc(task.task_id)}</td>
-      <td class="tiny">${esc(task.type)}</td>
-      <td class="mono tiny">${esc(task.doc_id ?? "—")}</td>
-      <td class="tiny">${esc(task.status)}${(task.error || "").startsWith("cancelled:") ? ` · ${t("ops.cancelled")}` : ""}</td>
-      <td class="tiny muted">${esc(task.error || "")}</td>
-      <td>${["pending", "leased", "running"].includes(task.status)
-        ? `<button class="btn ghost sm" data-cancel="${esc(task.task_id)}">${t("ops.cancel")}</button>` : ""}</td>
-    </tr>`).join("");
-  $("#tasksBody").querySelectorAll("[data-cancel]").forEach((b) => {
-    b.onclick = async () => {
-      await api(`/api/orgs/${encodeURIComponent(state.org)}/tasks/${b.dataset.cancel}/cancel`, { method: "POST" });
-      loadTasks();
-    };
-  });
-}
-
-async function loadCoverage() {
-  const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/embedding-coverage`);
-  if (!resp.ok) { $("#covKv").innerHTML = `<dd>${resp.status}</dd>`; return; }
-  const body = await resp.json();
-  const pct = body.totals.total ? Math.round((body.totals.done / body.totals.total) * 1000) / 10 : 100;
-  const reembed = body.reembed
-    ? `${body.reembed.status} · ${body.reembed.done}/${body.reembed.total}`
-    : "—";
-  $("#covKv").innerHTML = [
-    [t("ops.cover.model"), `<span class="mono">${esc(body.embed_model)}</span>`],
-    [t("ops.cover.dim"), esc(body.dim)],
-    [t("ops.cover.ratio"), `${body.totals.done}/${body.totals.total} (${pct}%)`],
-    [t("ops.cover.progress"), esc(reembed)],
-  ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
-  $("#covBars").innerHTML = (body.coverage || []).map((c) => {
-    const p = c.total ? Math.round((c.done / c.total) * 100) : 100;
-    return `<div class="fn-row">
-      <span class="tiny">${esc(c.dataset_name)}</span>
-      <div class="fn-bar"><span class="fb-ok" style="width:${p}%"></span></div>
-      <span class="tiny mono">${c.done}/${c.total}</span>
-    </div>`;
-  }).join("");
-}
-
-async function enqueueReembed() {
-  const docId = $("#reembedDoc").value.trim();
-  if (!docId) return;
-  const model = $("#reembedModel").value.trim();
-  const q = model ? `?embed_model=${encodeURIComponent(model)}` : "";
-  const resp = await api(
-    `/api/orgs/${encodeURIComponent(state.org)}/documents/${encodeURIComponent(docId)}/reindex${q}`,
-    { method: "POST" }
-  );
-  const body = await resp.json().catch(() => ({}));
-  if (!resp.ok) { $("#reembedMsg").textContent = `${resp.status}: ${body.detail || ""}`; return; }
-  $("#reembedMsg").textContent = t("ops.reembed.ok", { type: body.type, task: body.task_id });
-  loadTasks(); loadCoverage();
-}
-
-async function loadAudit() {
-  const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/audit?limit=50`);
-  if (!resp.ok) { $("#auditEmpty").hidden = false; return; }
-  const body = await resp.json();
-  $("#auditScope").textContent = body.scope === "full" ? "" : t("ops.audit.metadata");
-  const events = body.events || [];
-  $("#auditTable").hidden = events.length === 0;
-  $("#auditEmpty").hidden = events.length > 0;
-  $("#auditBody").innerHTML = events.map((e) => `<tr>
-      <td class="mono tiny">${esc(e.created_at ?? "")}</td>
-      <td class="tiny">${esc(e.actor ?? "")}</td>
-      <td class="tiny mono">${esc(e.action ?? "")}</td>
-      <td class="tiny muted">${esc(e.detail_json ? String(e.detail_json).slice(0, 160) : "—")}</td>
-    </tr>`).join("");
-}
-
-async function loadStats() {
-  const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/stats`);
-  if (!resp.ok) { $("#statsKv").innerHTML = ""; return; }
-  const body = await resp.json();
-  const m = body.maintenance || {};
-  $("#statsKv").innerHTML = Object.entries(m).map(([k, v]) =>
-    `<dt class="mono tiny">${esc(k)}</dt><dd class="tiny">${esc(typeof v === "object" ? JSON.stringify(v) : String(v))}</dd>`
-  ).join("");
-}
-
-/* ---------- 视图切换 / 语言切换 / 装配 ---------- */
-function switchView(view) {
-  state.view = view;
-  document.querySelectorAll(".nav-item").forEach((b) => b.classList.toggle("on", b.dataset.view === view));
-  document.querySelectorAll(".view").forEach((v) => (v.hidden = v.id !== "view-" + view));
-  if (view === "access") loadGrants();
-  if (view === "dims") loadGovernanceDims();
-  if (view === "ops") loadOps();
-}
-
-document.addEventListener("DOMContentLoaded", () => {
-  // 语言初始化：默认中文 + localStorage 持久化（TC-UI-01）
-  setLang(currentLang());
+  setLang(currentLang()); // 初始化 <html lang>/<title>/静态文案 + 触发 langchange（boot 前无害）
   document.querySelectorAll("#langSwitch button").forEach((b) => {
-    b.addEventListener("click", () => setLang(b.dataset.lang));
+    b.classList.toggle("on", b.dataset.lang === currentLang());
+    b.addEventListener("click", () => {
+      setLang(b.dataset.lang);
+      document.querySelectorAll("#langSwitch button").forEach((x) => x.classList.toggle("on", x.dataset.lang === currentLang()));
+    });
   });
   document.addEventListener("langchange", () => {
-    renderDimChips(); // chips 内的动态文案随语言重渲染
-    renderGovernanceDims(); // 治理视图按钮文案
-    // m2-6 B①：语言切换保留已选/输入状态（preserve 重渲染——不清 picked/expires）
-    if (state.view === "access" && accessState.members.length) renderGrantChips(true);
+    refreshConnStatus();
+    if (booted) render(); // 全视图重渲染——缓存数据复用，仅文案换
   });
 
-  loadCfg();
-  document.querySelectorAll(".nav-item").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.view)));
-  $("#cfgSave").addEventListener("click", saveCfg);
-  $("#upSubmit").addEventListener("click", upload);
-  $("#upRefresh").addEventListener("click", refreshStatus);
-  $("#qGo").addEventListener("click", doSearch);
-  $("#qInput").addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !ev.isComposing) doSearch(); });
-  // 管理面三视图（m2-3）
-  $("#gMember").addEventListener("change", renderGrantChips);
-  $("#gSave").addEventListener("click", saveGrants);
-  $("#grantsExport").addEventListener("click", async () => {
-    const resp = await api(`/api/orgs/${encodeURIComponent(state.org)}/grants/export`);
-    if (resp.ok) downloadCsv(await resp.text());
-  });
-  $("#csvDryRun").addEventListener("click", () => importCsv(true));
-  $("#csvApply").addEventListener("click", () => importCsv(false));
-  $("#dimsRefresh").addEventListener("click", loadGovernanceDims);
-  $("#dimsConfirmOk").addEventListener("click", runConfirmed);
-  $("#dimsConfirmCancel").addEventListener("click", () => {
-    $("#dimsConfirm").hidden = true; dimsState.pending = null;
-  });
-  $("#opsRefresh").addEventListener("click", loadOps);
-  $("#reembedGo").addEventListener("click", enqueueReembed);
-  if (state.token && state.org) loadMeta();
-});
+  render();
+  booted = true;
+  if (connected()) {
+    loadMeta().then(() => render()).catch(() => render());
+    const view = VIEWS[state.view];
+    if (view && view.onEnter) view.onEnter().then(() => render()).catch(() => { /* 已 toast */ });
+  } else {
+    openConn();
+  }
+}
+document.addEventListener("DOMContentLoaded", boot);
