@@ -12,7 +12,7 @@ const esc = (s) =>
 /* ---------- 全局状态 ---------- */
 const state = {
   view: "docs",
-  sub: { access: "grants" },
+  sub: { access: "grants", sem: "entities" },
   /* 元数据缓存（组织/身份切换与语言切换时复用，不重取） */
   orgs: [],            // GET /api/orgs（activeToken 视角）——含 role（普通用户面）
   usernames: [],       // grants/export 首列（org_admin 可得）——身份菜单候选
@@ -26,10 +26,25 @@ const state = {
   editDims: false, editPicked: {}, quality: null, qualDraft: {},
   /* 检索视图 */
   q: "", qDs: "", autoEnt: false, lastSearch: null, searching: false,
-  /* 权限视图（access 平移） */
-  g: { member: "", rows: [], picked: {}, expires: {}, existing: {}, prefill: "", csv: "", diff: null, diffMsg: "" },
+  /* 权限视图（ui-2：授权格矩阵 + 成员子标签 + 可见性占位） */
+  g: { member: "", rows: [], picked: {}, expires: {}, existing: {}, prefill: "", csv: "", diff: null, diffMsg: "", detail: null, saving: "" },
+  mem: { addOpen: false, form: { uid: "", role: "member", expires: "" }, ask: null, expAsk: null, expVal: "", roleSel: null, roleVal: "member" },
   dimNewOpen: false, dimNew: { key: "", name: "", required: false },
   valAsk: null, valNew: { v: "", l: "" }, govAsk: null, disabledVals: [],
+  /* 语义视图（ui-2）：probe null=未探 / "ok" / "noperm" / "notbuilt" */
+  sem: {
+    probe: null, dictRev: null,
+    q: "", entSel: "", searching: false, results: null,
+    detail: null, detailId: null, detail404: false, detailLoading: false, depth: 1, relAll: false,
+    describe: null,
+    annText: "", fuzzy: false, annResult: null, annBusy: false, annError: "",
+    admin: null,               // null=未探 / true / false（semantic:admin≈org_admin）
+    syncRuns: null, syncRunsErr: null, syncFilter: "", syncBusy: "",
+    builds: null, buildsErr: null, buildReportId: null, buildReportData: null,
+    l0: null, l0Err: null,
+  },
+  /* 组织视图（ui-2） */
+  orgView: { list: null, askOrg: null, newOpen: false, form: { id: "", name: "", admin: "" } },
   /* 运维视图（ops 平移） */
   ops: { tasks: null, coverage: null, audit: null, stats: null, reembedDoc: "", reembedModel: "" },
   loading: {},
@@ -63,7 +78,9 @@ const ICONS = {
   docs: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/>',
   search: '<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/>',
   access: '<path d="M12 3 5 6v5c0 4.4 3 8.3 7 9.5 4-1.2 7-5.1 7-9.5V6z"/><path d="m9.2 12 2 2 3.8-3.8"/>',
+  semantic: '<circle cx="6" cy="6" r="2.4"/><circle cx="18" cy="8" r="2.4"/><circle cx="9" cy="18" r="2.4"/><path d="M8.2 7 15.7 7.6M7 8.2l1.4 7.5M16.6 10 10.8 16.3"/>',
   ops: '<path d="M3 12h4l3-7 4 14 3-7h4"/>',
+  orgs: '<path d="M3 21h18M5 21V5a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v16M14 9h4a1 1 0 0 1 1 1v11"/><path d="M8 8h3M8 12h3M8 16h3M17 13h.01M17 17h.01"/>',
 };
 const ic = (k) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[k]}</svg>`;
 const CARET = `<svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>`;
@@ -171,9 +188,21 @@ function resetOrgState() {
   state.up = { ds: "", picked: {}, file: "", fileObj: null };
   state.editDims = false; state.editPicked = {}; state.quality = null; state.qualDraft = {};
   state.q = ""; state.qDs = ""; state.autoEnt = false; state.lastSearch = null; state.searching = false;
-  state.g = { member: "", rows: [], picked: {}, expires: {}, existing: {}, prefill: "", csv: "", diff: null, diffMsg: "" };
+  state.g = { member: "", rows: [], picked: {}, expires: {}, existing: {}, prefill: "", csv: "", diff: null, diffMsg: "", detail: null, saving: "" };
+  state.mem = { addOpen: false, form: { uid: "", role: "member", expires: "" }, ask: null, expAsk: null, expVal: "", roleSel: null, roleVal: "member" };
   state.dimNewOpen = false; state.dimNew = { key: "", name: "", required: false };
   state.valAsk = null; state.valNew = { v: "", l: "" }; state.govAsk = null; state.disabledVals = [];
+  state.sem = {
+    probe: null, dictRev: null,
+    q: "", entSel: "", searching: false, results: null,
+    detail: null, detailId: null, detail404: false, detailLoading: false, depth: 1, relAll: false,
+    describe: null,
+    annText: "", fuzzy: false, annResult: null, annBusy: false, annError: "",
+    admin: null, syncRuns: null, syncRunsErr: null, syncFilter: "", syncBusy: "",
+    builds: null, buildsErr: null, buildReportId: null, buildReportData: null,
+    l0: null, l0Err: null,
+  };
+  state.orgView = { list: null, askOrg: null, newOpen: false, form: { id: "", name: "", admin: "" } };
   state.ops = { tasks: null, coverage: null, audit: null, stats: null, reembedDoc: "", reembedModel: "" };
 }
 
@@ -248,11 +277,12 @@ function renderRail() {
       <div class="menu-note">${t("lens.note")}</div>
     </div>` : "";
 
-  /* 导航四项（带计数） */
+  /* 导航（带计数）——知识组语义第一项（ui-2），运维组含组织 */
   const docsN = state.docs.available ? state.docs.list.length : state.docs.session.length;
   const runN = (state.ops.tasks || []).filter((x) => ["pending", "leased", "running"].includes(x.status)).length;
   const groups = [
     [t("nav.group.knowledge"), [
+      ["semantic", t("nav.semantic"), state.sem.dictRev ? "rev " + state.sem.dictRev : ""],
       ["docs", t("nav.docs"), String(docsN || "")],
       ["search", t("nav.search"), ""],
     ]],
@@ -261,6 +291,7 @@ function renderRail() {
     ]],
     [t("nav.group.ops"), [
       ["ops", t("nav.ops"), runN ? t("nav.opsCount", { n: runN }) : ""],
+      ["orgs", t("nav.orgs"), state.orgs.length ? t("nav.orgsCount", { n: state.orgs.length }) : ""],
     ]],
   ];
   $("#nav").innerHTML = groups.map(([g, items]) => `<div class="nav-group">${esc(g)}</div>` + items.map(([k, name, c]) =>
@@ -278,7 +309,8 @@ function render() {
   const key = a && a.dataset && a.dataset.in;
   const sel = key && "selectionStart" in a ? [a.selectionStart, a.selectionEnd] : null;
   renderRail();
-  const vk = state.view + "/" + (state.view === "access" ? state.sub.access : "");
+  const vk = state.view + "/" + (state.view === "access" ? state.sub.access
+    : state.view === "semantic" ? state.sub.sem : "");
   const view = VIEWS[state.view];
   const body = view ? view.render() : "";
   $("#main").innerHTML = `<section class="${vk !== lastViewKey ? "view" : ""}">${body}</section>`;
@@ -370,6 +402,7 @@ const actions = {
     resetOrgState();
     await reloadAfterIdentityChange();
     refreshConnStatus();
+    closeMenus(); // 连接成功收起弹层——浮层不遮挡页面（否则 elementFromPoint 命中菜单）
     toast(t("settings.connected", { user: esc(lensUser()), org: esc(cfg.org) }));
     return false;
   },
@@ -389,6 +422,7 @@ const actions = {
     resetOrgState();
     await reloadAfterIdentityChange();
     refreshConnStatus();
+    closeMenus(); // 同上——成功即收起
     toast(t("settings.connected", { user: esc(lensUser()), org: esc(cfg.org) }));
     return false;
   },
@@ -437,6 +471,10 @@ document.addEventListener("compositionend", onInput);
 document.addEventListener("keydown", (ev) => {
   if (ev.key === "Enter" && ev.target.id === "qInput" && !ev.isComposing) {
     const fn = actions.doSearch;
+    if (fn) { const out = fn(ev.target); if (out && typeof out.then === "function") return; if (out !== false) render(); }
+  }
+  if (ev.key === "Enter" && ev.target.id === "semQInput" && !ev.isComposing) {
+    const fn = actions.semSearch;
     if (fn) { const out = fn(ev.target); if (out && typeof out.then === "function") return; if (out !== false) render(); }
   }
   if (ev.key === "Enter" && ev.target.id === "lensManualInput" && !ev.isComposing) { actions.lensGo(); }

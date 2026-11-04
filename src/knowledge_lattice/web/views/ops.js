@@ -136,24 +136,46 @@ function statsHTML() {
   </section>`;
 }
 
+/* ---------- 审计双泳道（原型 .lanes：查询类 vs 治理类——按 action 前缀分流） ----------
+ * 事件名实读（domain/audit_events.py + search 审计写点）：查询类 = search. 前缀
+ * （search.acl_intercept / search.degraded）与 semantic.restricted_access（读路径
+ * 权限事件）；治理类 = document./upload./task.cancel/dataset./org.created/
+ * grants.replace/dimension./member./maintenance.run/semantic.{sync,build,yaml_merge}/auth.。
+ * scope=metadata（系统管理员）时 detail_json 缺失——只显元数据行。 */
+const AUDIT_QUERY_PREFIXES = ["search.", "semantic.restricted_access"];
+
+function auditEventLane(action) {
+  const a = String(action || "");
+  return AUDIT_QUERY_PREFIXES.some((p) => a.startsWith(p)) ? "query" : "gov";
+}
+
+function auditEvHTML(e) {
+  const detail = e.detail_json != null ? String(e.detail_json) : null;
+  return `<div class="ev"><span class="ev-t">${esc(short(e.created_at))}</span><div>
+    <div class="ev-a">${esc(e.actor ?? "")} · ${esc(e.action ?? "")}</div>
+    ${detail ? `<div class="ev-d mono tiny" style="word-break:break-all">${esc(detail.slice(0, 240))}${detail.length > 240 ? "…" : ""}</div>` : ""}
+    <div class="ev-m">${e.outcome === "refused" ? `<span class="pill bad">refused</span>` : `<span class="pill ok">${esc(e.outcome || "accepted")}</span>`}</div>
+  </div></div>`;
+}
+
+function auditLaneHTML(title, note, events, emptyKey) {
+  return `<section><div class="lane-h"><h3>${esc(title)}</h3><span class="tiny muted">${esc(note)}</span></div>
+    ${events.length ? events.map(auditEvHTML).join("") : `<div class="tiny muted" style="padding:16px 0">${esc(t(emptyKey))}</div>`}
+  </section>`;
+}
+
 function auditHTML() {
   const a = state.ops.audit;
   if (!a) return "";
   if (a.error) return `<section class="pane" style="margin-top:20px"><div class="lane-h"><h3>${esc(t("ops.audit.title"))}</h3></div><div class="tiny muted">${esc(t("ops.audit.denied", { status: a.error }))}</div></section>`;
   const events = a.events || [];
-  return `<section class="pane" style="margin-top:20px">
-    <div class="lane-h"><h3>${esc(t("ops.audit.title"))}</h3>
-      <span class="tiny muted">${a.scope === "full" ? esc(t("ops.audit.full")) : esc(t("ops.audit.metadata"))}</span></div>
-    <table class="ledger">
-      <thead><tr><th>${esc(t("ops.audit.col.time"))}</th><th>${esc(t("ops.audit.col.actor"))}</th><th>${esc(t("ops.audit.col.action"))}</th><th>${esc(t("ops.audit.col.detail"))}</th></tr></thead>
-      <tbody>${events.length ? events.map((e) => `<tr>
-        <td class="mono tiny">${esc(short(e.created_at))}</td>
-        <td class="tiny">${esc(e.actor ?? "")}</td>
-        <td class="tiny mono">${esc(e.action ?? "")}</td>
-        <td class="tiny muted">${esc(e.detail_json != null ? String(e.detail_json).slice(0, 160) : "—")}</td>
-      </tr>`).join("") : `<tr><td colspan="4" class="tiny muted" style="padding:20px 16px">${esc(t("ops.audit.empty"))}</td></tr>`}</tbody>
-    </table>
-  </section>`;
+  const query = events.filter((e) => auditEventLane(e.action) === "query");
+  const gov = events.filter((e) => auditEventLane(e.action) === "gov");
+  return `<div class="lanes" style="margin-top:24px">
+    ${auditLaneHTML(t("ops.audit.queryLane"), t("ops.audit.queryNote"), query, "ops.audit.queryEmpty")}
+    ${auditLaneHTML(t("ops.audit.govLane"), t("ops.audit.govNote"), gov, "ops.audit.govEmpty")}
+  </div>
+  <div class="tiny muted" style="margin-top:12px">${t("ops.audit.foot", { org: esc(cfg.org) })}${a.scope === "full" ? "" : " · " + esc(t("ops.audit.metadata"))}</div>`;
 }
 
 /* ---------- 动作与输入 ---------- */

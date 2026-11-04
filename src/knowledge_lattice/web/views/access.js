@@ -1,13 +1,16 @@
-/* views/access.js —— 权限（ui-1 功能平移，逻辑等价自旧薄壳 app.js，新设计系统样式）：
- * - 授权子标签：loadGrants/renderGrantChips/_rowExpiresInput/saveGrants/downloadCsv/
- *   importCsv 平移——含 B① 逐行独立 expires 语义（每行 input 唯一真值源
- *   accessState.g.expires，初始值=库内值，未编辑保存即沿用）。
- * - 维度子标签：loadGovernanceDims/askDisableValue/askRetireDim/runConfirmed 平移
- *   ——取值停用 dry_run 影响面→确认 / 恢复（会话记忆已停用值）/ 取值新增（真实端点）/
- *   维度退役（影响面→确认）/ 新建维度（m3-1 contract-first，404 降级）。 */
+/* views/access.js —— 权限（ui-2 升级为原型 v0.6 全保真四子标签）：
+ * - 授权格（默认）：export CSV = local 授权真相源（行=成员 username，列=维度取值）；
+ *   点格 = 该成员全量 local 行 PUT 替换（expires 沿库内、新授权 null）；
+ *   B① 行级到期编辑保留在成员行「详细」抽屉（ui-1 chips 编辑器 + CSV 迁入）。
+ *   API 无维度 source 字段——不标 sync 只读格（export=local 口径，诚实差异）。
+ * - 成员子标签：真端点（POST/PATCH/DELETE members——m2-6 A3）；名单源 = export
+ *   用户名（无 GET members，m3-1 #13）；T23 约束（过期行 409 三步恢复 / 唯一
+ *   管理员自锁 / 级联清授权）由服务端守卫如实回显。
+ * - 维度子标签：ui-1 既有治理（停用/恢复/新增取值/退役/新建维度†）。
+ * - 可见性矩阵：占位空态（待 be-① 文档列表 + be-② explain——前端不演算 ACL，B5）。 */
 "use strict";
 
-/* ---------- 授权子标签（平移） ---------- */
+/* ---------- 授权数据装载（export CSV = local 真相源） ---------- */
 
 async function loadGrantsTable() {
   state.loading.grants = true;
@@ -22,10 +25,8 @@ async function loadGrantsTable() {
         })
       : [];
     state.usernames = [...new Set(state.g.rows.map((r) => r.username))].sort();
-    if (!state.g.member || !state.usernames.includes(state.g.member)) {
-      state.g.member = state.usernames[0] || "";
-    }
-    seedGrantEditor();
+    if (state.g.detail && !state.usernames.includes(state.g.detail)) state.g.detail = null;
+    if (state.g.detail) seedGrantEditor(state.g.detail);
   } catch (e) {
     state.g.rows = []; // 403 非 org_admin——提示在视图内展示（api.js 已 toast）
   } finally {
@@ -33,9 +34,21 @@ async function loadGrantsTable() {
   }
 }
 
-/* 既有 expires 映射（chip 徽标 + 行内输入框初始值）；缺省（成员切换/装载）重置为装载态 */
-function seedGrantEditor(preserve = false) {
-  const mine = state.g.rows.filter((r) => r.username === state.g.member);
+/* 授权格成员集（export 用户名升序）与格态判定（display-only 到期比较） */
+function latticeMembers() {
+  return [...new Set(state.g.rows.map((r) => r.username))].sort();
+}
+function grantRowsOf(username) {
+  return state.g.rows.filter((r) => r.username === username);
+}
+function nowUtcStr() {
+  return new Date().toISOString().slice(0, 19).replace("T", " ");
+}
+
+/* 既有 expires 映射 + ui-1 chips 编辑器种子（B①——抽屉内逐行 expires） */
+function seedGrantEditor(member, preserve = false) {
+  state.g.member = member;
+  const mine = grantRowsOf(member);
   state.g.existing = {};
   mine.forEach((r) => { state.g.existing[`${r.dimKey}=${r.value}`] = r.expiresAt; });
   if (!preserve) {
@@ -44,27 +57,68 @@ function seedGrantEditor(preserve = false) {
   }
 }
 
+/* ---------- 授权格子标签：格矩阵（原型 .lattice-wrap/.lattice/.cellbtn） ---------- */
+
 function grantsHTML() {
   const g = state.g;
-  if (state.loading.grants) return loadingHTML("access");
+  if (state.loading.grants && !g.rows.length) return loadingHTML("access");
   if (!isAdmin()) return `<div class="note amber">${t("access.grants.needAdmin")}</div>`;
   if (!g.rows.length) return `<div class="empty" style="margin:0"><h3>${esc(t("access.grants.empty.title"))}</h3><p>${t("access.grants.empty.body")}</p></div>`;
+  const members = latticeMembers();
+  const now = nowUtcStr();
+  const dims = state.dims.filter((d) => d.status !== "retired");
+  const valOf = (dim, value) => (dim.values || []).find((v) => v.value === value);
   return `
-  <div class="toolbar">
-    <label class="tiny muted">${esc(t("access.member"))}</label>
-    <select class="sel" data-in="gMember" style="min-width:200px">${g.rows.length
-      ? [...new Set(g.rows.map((r) => r.username))].sort().map((m) => `<option value="${esc(m)}" ${g.member === m ? "selected" : ""}>${esc(m)}</option>`).join("")
-      : `<option value="">${esc(t("access.grants.none"))}</option>`}</select>
-    <label class="tiny muted">${esc(t("access.expires.prefill"))}</label>
-    <input class="inp" data-in="gPrefill" style="width:220px" placeholder="${esc(t("access.expires.ph"))}" value="${esc(g.prefill)}">
-    <span class="tiny muted">${esc(t("access.expires.prefillNote"))}</span>
+  <div class="lattice-wrap"><table class="lattice">
+    <thead>
+      <tr><th></th>${dims.map((d) => `<th class="dg" colspan="${(d.values || []).length}">${esc(d.name)}${d.required ? `<span class="req">*</span>` : ""}</th>`).join("")}</tr>
+      <tr><th style="text-align:left;padding-left:14px">${esc(t("access.grants.memberCol"))}</th>${dims.map((d) => (d.values || []).map((v, i) => `<th class="vh ${i === 0 ? "dg" : ""}">${esc(v.label)}<span class="ck">${esc(v.value)}</span></th>`).join("")).join("")}</tr>
+    </thead>
+    <tbody>${members.map((u) => {
+      const mine = grantRowsOf(u);
+      const memberHasExp = mine.some((r) => r.expiresAt);
+      return `<tr><th><b style="font-weight:600">${esc(u)}</b>
+          ${memberHasExp ? `<span class="tiny muted"> · ${esc(t("access.grants.hasExpires"))}</span>` : ""}
+          <button class="link tiny" data-act="latDetail" data-u="${esc(u)}" title="${esc(t("access.grants.detailTip"))}">${g.detail === u ? esc(t("common.collapse")) : esc(t("access.grants.detail"))}</button></th>
+        ${dims.map((d) => (d.values || []).map((v, i) => {
+          const row = mine.find((r) => r.dimKey === d.key && r.value === v.value);
+          const on = !!row;
+          const expired = on && row.expiresAt && row.expiresAt <= now;
+          const title = `${u} · ${d.name}=${v.label}` + (row && row.expiresAt ? ` · ${expired ? t("access.grants.grantExpiredAt") : t("access.expires.existing")}: ${row.expiresAt}` : "");
+          return `<td class="${i === 0 ? "dg" : ""}"><button class="cellbtn ${on ? "on" : ""}" ${expired ? `style="opacity:.4;outline:1px dashed var(--danger);outline-offset:1px"` : ""}
+            data-act="latCell" data-u="${esc(u)}" data-k="${esc(d.key)}" data-v="${esc(v.value)}" data-dim="${esc(d.id)}"
+            title="${esc(title)}" aria-label="${esc(title)}" aria-pressed="${on}" ${g.saving ? "disabled" : ""}></button></td>`;
+        }).join("")).join("")}
+      </tr>${g.detail === u ? `<tr><td colspan="${dims.reduce((a, d) => a + (d.values || []).length, 0) + 1}" style="border-bottom:0;padding:0">${grantDetailHTML(u)}</td></tr>` : ""}`;
+    }).join("")}</tbody>
+  </table></div>
+  <div class="legend">
+    <span class="lg"><span class="cellbtn on"></span>${esc(t("access.grants.legend.on"))}</span>
+    <span class="lg"><span class="cellbtn"></span>${esc(t("access.grants.legend.off"))}</span>
+    <span class="lg"><span class="cellbtn on" style="opacity:.4;outline:1px dashed var(--danger);outline-offset:1px"></span>${esc(t("access.grants.legend.expired"))}</span>
+    <span class="lg">${t("access.grants.legend.note")}</span>
   </div>
-  ${state.dims.map((dim) => {
-    return `<div class="upload" style="margin-bottom:12px;padding:14px 18px;grid-template-columns:1fr">
+  <div class="note" style="margin-top:16px;max-width:88ch">
+    ${t("access.grants.footNote")}
+  </div>
+  ${state.dims.some((d) => d.status === "retired") ? `<div class="tiny muted" style="margin-top:8px">${t("access.grants.retiredNote", { dims: state.dims.filter((d) => d.status === "retired").map((d) => esc(d.name)).join(t("common.sep")) })}</div>` : ""}`;
+}
+
+/* B① 详细抽屉：ui-1 chips 编辑器（逐行 expires）+ CSV 导入导出迁入 */
+function grantDetailHTML(member) {
+  const g = state.g;
+  return `<div class="upload" style="margin:12px 0;border-radius:var(--r-lg)">
+    <div style="grid-column:1/-1;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
+      <b style="font-size:15px">${esc(t("access.grants.detailTitle", { user: member }))}</b>
+      <span class="tiny muted">${t("access.grants.detailNote")}</span></div>
+    <div class="u-row"><label>${esc(t("access.expires.prefill"))}</label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input class="inp" data-in="gPrefill" style="width:220px" placeholder="${esc(t("access.expires.ph"))}" value="${esc(g.prefill)}">
+        <span class="tiny muted">${esc(t("access.expires.prefillNote"))}</span></div></div>
+    ${state.dims.filter((d) => d.status !== "retired").map((dim) => `<div style="grid-column:1/-1">
       <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
         <b>${esc(dim.name)}</b><span class="tiny muted mono">${esc(dim.key)}</span>
-        ${dim.required ? `<span class="tag">${esc(t("common.required"))}</span>` : ""}
-      </div>
+        ${dim.required ? `<span class="tag">${esc(t("common.required"))}</span>` : ""}</div>
       <div class="chips" style="margin-top:8px">${(dim.values || []).map((v) => {
         const key = `${dim.key}=${v.value}`;
         const on = key in g.picked;
@@ -74,28 +128,104 @@ function grantsHTML() {
           ${on ? `<input class="chip-exp" data-in="gExp" data-id="${esc(key)}" placeholder="${esc(t("access.expires.rowPh"))}" value="${esc(g.expires[key] || "")}" title="${esc(t("access.expires.rowTitle"))}">` : ""}
         </span>`;
       }).join("")}</div>
-    </div>`;
-  }).join("")}
-  <div class="inline-act" style="margin-top:4px">
-    <button class="btn seal-btn" data-act="gSave">${esc(t("access.save"))}</button>
-    <span class="tiny muted">${esc(t("access.save.note"))}</span>
-  </div>
-  <section class="pane" style="margin-top:20px">
-    <div class="lane-h"><h3>${esc(t("access.csv.title"))}</h3><span class="tiny muted">${t("access.csv.hint")}</span></div>
-    <div class="inline-act" style="margin-bottom:8px">
+    </div>`).join("")}
+    <div class="u-foot">
+      <button class="btn seal-btn" data-act="gSave">${esc(t("access.save"))}</button>
+      <span class="tiny muted">${esc(t("access.save.note"))}</span>
+      <span style="flex:1"></span>
       <button class="btn ghost sm" data-act="gExport">${esc(t("access.export"))}</button>
     </div>
-    <textarea class="csv-box" data-in="gCsv" placeholder="username,dim_key,value,expires_at">${esc(g.csv)}</textarea>
-    <div class="inline-act" style="margin-top:8px">
+    <div class="lane-h" style="grid-column:1/-1;margin-top:4px"><h3>${esc(t("access.csv.title"))}</h3><span class="tiny muted">${t("access.csv.hint")}</span></div>
+    <textarea class="csv-box" data-in="gCsv" placeholder="username,dim_key,value,expires_at" style="grid-column:1/-1">${esc(g.csv)}</textarea>
+    <div class="inline-act" style="grid-column:1/-1">
       <button class="btn sm" data-act="gCsvDry">${esc(t("access.csv.dryrun"))}</button>
       <button class="btn seal-btn sm" data-act="gCsvApply">${esc(t("access.csv.apply"))}</button>
-      <span class="tiny muted" id="csvMsg">${esc(g.diffMsg || "")}</span>
+      <span class="tiny muted">${esc(g.diffMsg || "")}</span>
     </div>
-    ${g.diff ? `<pre class="diff-box">${esc(JSON.stringify(g.diff, null, 2))}</pre>` : ""}
-  </section>`;
+    ${g.diff ? `<pre class="diff-box" style="grid-column:1/-1">${esc(JSON.stringify(g.diff, null, 2))}</pre>` : ""}
+  </div>`;
 }
 
-/* ---------- 维度子标签（平移） ---------- */
+/* ---------- 成员子标签（真端点——m2-6 A3） ---------- */
+
+function membersHTML() {
+  if (state.loading.grants && !state.g.rows.length) return loadingHTML("access");
+  if (!isAdmin()) return `<div class="note amber">${t("access.grants.needAdmin")}</div>`;
+  const m = state.mem;
+  const roster = latticeMembers();
+  const now = nowUtcStr();
+  return `
+  <div style="margin-bottom:12px"><button class="btn ghost sm" data-act="memAddToggle">${m.addOpen ? esc(t("common.collapse")) : esc(t("access.mem.add"))}</button></div>
+  ${m.addOpen ? memAddHTML() : ""}
+  <table class="ledger">
+    <thead><tr><th>${esc(t("access.mem.col.member"))}</th><th>${esc(t("access.mem.col.role"))}</th><th>${esc(t("access.mem.col.membership"))}</th><th class="num">${esc(t("access.mem.col.grants"))}</th><th></th></tr></thead>
+    <tbody>${roster.length ? roster.map((u) => {
+      const mine = grantRowsOf(u);
+      const expRows = mine.filter((r) => r.expiresAt && r.expiresAt <= now).length;
+      const row = `<tr>
+        <td>${avatar(u)} <b class="t-title">${esc(u)}</b></td>
+        <td>${m.roleSel === u
+          ? `<div style="display:flex;gap:6px;align-items:center">
+              <select class="sel" data-in="memRoleSel" style="height:26px;width:130px">
+                <option value="member" ${m.roleVal === "member" ? "selected" : ""}>member</option>
+                <option value="org_admin" ${m.roleVal === "org_admin" ? "selected" : ""}>org_admin</option>
+              </select>
+              <button class="btn sm" data-act="memRoleOk" data-u="${esc(u)}">${esc(t("common.save"))}</button>
+              <button class="btn ghost sm" data-act="memRoleCancel">${esc(t("common.cancel"))}</button></div>`
+          : `<button class="btn ghost sm" data-act="memRoleAsk" data-u="${esc(u)}" title="PATCH /members/${esc(u)}">${esc(t("access.mem.changeRole"))}</button>`}</td>
+        <td>${m.expAsk === u
+          ? `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+              <input class="inp" data-in="memExpVal" placeholder="${esc(t("access.mem.expPh"))}" value="${esc(m.expVal)}" style="height:26px;width:200px">
+              <button class="btn sm" data-act="memExpOk" data-u="${esc(u)}">${esc(t("common.save"))}</button>
+              <button class="btn ghost sm" data-act="memExpCancel">${esc(t("common.cancel"))}</button>
+            </div>`
+          : `<button class="link tiny" data-act="memExpAsk" data-u="${esc(u)}" title="PATCH /members/${esc(u)} · ${esc(t("access.mem.expTip"))}">${esc(t("access.mem.changeExp"))}</button>`}</td>
+        <td class="num">${mine.length}${expRows ? ` <span class="tag amber" title="${esc(t("access.mem.expGrantsTip"))}">${expRows} ${esc(t("access.mem.expGrants"))}</span>` : ""}</td>
+        <td>${m.ask === u ? "" : `<button class="btn ghost sm" data-act="memAsk" data-u="${esc(u)}" style="color:var(--danger)">${esc(t("access.mem.remove"))}…</button>`}</td></tr>`;
+      if (m.ask !== u) return row;
+      return row + `<tr><td colspan="5" style="border-bottom:0"><div class="confirm">
+        <b>${t("access.mem.removeAsk", { user: esc(u) })}</b> ${t("access.mem.removeBody")}
+        <div class="cf-act"><button class="btn danger-btn sm" data-act="memDelOk" data-u="${esc(u)}">${esc(t("common.confirm"))}</button>
+        <button class="btn ghost sm" data-act="memCancel">${esc(t("common.cancel"))}</button>
+        <span class="tiny muted" style="align-self:center"><code>DELETE /api/orgs/${esc(cfg.org)}/members/${esc(u)}</code></span></div></div></td></tr>`;
+    }).join("") : `<tr><td colspan="5" class="tiny muted" style="padding:20px 16px">${esc(t("access.mem.empty"))}</td></tr>`}</tbody>
+  </table>
+  <div class="note" style="margin-top:16px;max-width:92ch">${t("access.mem.footNote")}</div>`;
+}
+
+function memAddHTML() {
+  const d = state.mem.form;
+  return `<div class="upload" style="margin-bottom:16px">
+    <div style="grid-column:1/-1"><b style="font-size:15px">${esc(t("access.mem.add"))}</b>
+      <span class="tiny muted">—— ${t("access.mem.addNote")}</span></div>
+    <div class="u-row"><label>user_id<span class="req">*</span></label>
+      <input class="inp" data-in="memNewUid" placeholder="${esc(t("access.mem.uidPh"))}" value="${esc(d.uid)}" style="font-family:var(--mono)"></div>
+    <div class="u-row"><label>${esc(t("access.mem.role"))}</label>
+      <select class="sel" data-in="memNewRole">
+        <option value="member" ${d.role === "member" ? "selected" : ""}>member · ${esc(t("role.member"))}</option>
+        <option value="org_admin" ${d.role === "org_admin" ? "selected" : ""}>org_admin · ${esc(t("role.org_admin"))}</option>
+      </select></div>
+    <div class="u-row"><label>${esc(t("access.mem.expires"))}<span class="tiny muted"> ${esc(t("common.optional"))}</span></label>
+      <input class="inp" data-in="memNewExp" placeholder="${esc(t("access.mem.expPh"))}" value="${esc(d.expires)}"></div>
+    <div class="u-foot">
+      <button class="btn seal-btn" data-act="memCreate" ${d.uid.trim() ? "" : "disabled"}>${esc(t("common.add"))}</button>
+      <button class="btn ghost" data-act="memAddToggle">${esc(t("common.cancel"))}</button>
+      <span class="tiny muted">${t("access.mem.addFoot")}</span>
+    </div></div>`;
+}
+
+/* ---------- 可见性矩阵占位（be-① / be-② 落地前不实装——B5） ---------- */
+
+function visHTML() {
+  return `<div class="empty">
+    <h3>${esc(t("access.vis.title"))}</h3>
+    <p>${t("access.vis.body")}</p>
+    <p style="margin-top:10px">${t("access.vis.body2")}</p>
+  </div>
+  <div class="note" style="max-width:88ch">${t("access.vis.note")}</div>`;
+}
+
+/* ---------- 维度子标签（ui-1 平移） ---------- */
 
 async function loadGovernanceDims() {
   state.loading.govDims = true;
@@ -116,23 +246,24 @@ function dimsHTML() {
   ${state.govAsk ? govConfirmHTML() : ""}
   <table class="ledger dims-ledger">
     <thead><tr><th>${esc(t("access.dims.col.dim"))}</th><th>${esc(t("access.dims.col.required"))}</th><th>${esc(t("access.dims.col.values"))}</th><th></th></tr></thead>
-    <tbody>${state.dims.map((dim) => `<tr>
+    <tbody>${state.dims.map((dim) => `<tr class="${dim.status === "retired" ? "retired" : ""}">
       <td><div class="t-title">${esc(dim.name)}</div><div class="t-sub mono">${esc(dim.key)}</div></td>
       <td>${dim.required ? esc(t("common.yes")) : `<span class="muted">${esc(t("common.no"))}</span>`}<div class="tiny muted">${esc(t("access.dims.reqNote"))}</div></td>
       <td><div class="vals" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
         ${(dim.values || []).map((v) => `<span style="display:inline-flex;gap:4px;align-items:center">
           <span class="chip d${dimIdx(dim.key)}" title="${esc(v.value)}">${esc(v.label)} <span class="ck">${esc(v.value)}</span></span>
-          ${canEdit ? `<button class="link tiny" data-act="valOff" data-dim="${esc(dim.id)}" data-id="${esc(v.id)}" data-v="${esc(v.value)}" title="${esc(t("access.dims.disable.hint"))}">${esc(t("access.dims.disable"))}</button>` : ""}
+          ${canEdit && dim.status !== "retired" ? `<button class="link tiny" data-act="valOff" data-dim="${esc(dim.id)}" data-id="${esc(v.id)}" data-v="${esc(v.value)}" title="${esc(t("access.dims.disable.hint"))}">${esc(t("access.dims.disable"))}</button>` : ""}
         </span>`).join("") || `<span class="tiny muted">—</span>`}
         ${(state.disabledVals || []).filter((x) => x.dimId === dim.id).map((x) => `<span style="display:inline-flex;gap:4px;align-items:center">
           <span class="chip v-off" title="${esc(x.value)} · ${esc(t("access.dims.disabledTip"))}">${esc(x.label || x.value)}</span>
           ${canEdit ? `<button class="link tiny" data-act="valOn" data-dim="${esc(dim.id)}" data-id="${esc(x.id)}" data-v="${esc(x.value)}" title="${esc(t("access.dims.enable.hint"))}">${esc(t("access.dims.enable"))}</button>` : ""}
         </span>`).join("")}
-        ${canEdit ? (state.valAsk === dim.id
+        ${canEdit && dim.status !== "retired" ? (state.valAsk === dim.id
           ? `<input class="inp" data-in="valKey" placeholder="value" style="height:26px;width:96px;font-family:var(--mono)" value="${esc(state.valNew.v)}"><input class="inp" data-in="valLabel" placeholder="${esc(t("access.dims.valLabelPh"))}" style="height:26px;width:96px" value="${esc(state.valNew.l)}"><button class="btn sm" data-act="valAdd" data-dim="${esc(dim.id)}" title="POST /dimensions/${esc(dim.id)}/values">${esc(t("common.add"))}</button>`
           : `<button class="vchip" data-act="valAsk" data-dim="${esc(dim.id)}" title="POST /dimensions/${esc(dim.id)}/values">＋ ${esc(t("access.dims.addValue"))}</button>`) : ""}
+        ${dim.status === "retired" ? `<span class="tiny muted">${esc(t("access.dims.retiredVal"))}</span>` : ""}
       </div></td>
-      <td>${canEdit ? `<button class="btn ghost sm" data-act="dimRetire" data-dim="${esc(dim.id)}" data-key="${esc(dim.key)}">${esc(t("access.dims.retire"))}</button>` : ""}</td>
+      <td>${dim.status === "active" && canEdit ? `<button class="btn ghost sm" data-act="dimRetire" data-dim="${esc(dim.id)}" data-key="${esc(dim.key)}">${esc(t("access.dims.retire"))}</button>` : dim.status === "retired" ? `<span class="pill idle">${esc(t("access.dims.retiredPill"))}</span>` : ""}</td>
     </tr>`).join("")}</tbody>
   </table>
   <div class="legend" style="margin-top:12px">
@@ -189,26 +320,29 @@ function govConfirmHTML() {
 function viewAccess() {
   if (!connected()) return connGate();
   const sub = state.sub.access;
+  const tabs = [
+    ["grants", t("access.tab.grants")],
+    ["dims", t("access.tab.dims")],
+    ["members", t("access.tab.members")],
+    ["vis", t("access.tab.vis")],
+  ];
   return `
   <header class="head"><h1>${esc(t("access.title"))}</h1>
     <p class="lede">${t("access.lede")}</p>
   </header>
-  <nav class="sub-tabs">
-    <button class="sub-tab ${sub === "grants" ? "on" : ""}" data-act="sub" data-s="access" data-v="grants">${esc(t("access.tab.grants"))}</button>
-    <button class="sub-tab ${sub === "dims" ? "on" : ""}" data-act="sub" data-s="access" data-v="dims">${esc(t("access.tab.dims"))}</button>
-  </nav>
-  ${!isAdmin() ? `<div class="note amber" style="margin-bottom:16px">${t("access.readonly", { user: esc(lensUser()) })}</div>` : ""}
-  ${sub === "grants" ? grantsHTML() : dimsHTML()}`;
+  <nav class="sub-tabs">${tabs.map(([k, l]) => `<button class="sub-tab ${sub === k ? "on" : ""}" data-act="sub" data-s="access" data-v="${k}">${esc(l)}</button>`).join("")}</nav>
+  ${!isAdmin() && sub !== "vis" ? `<div class="note amber" style="margin-bottom:16px">${t("access.readonly", { user: esc(lensUser()) })}</div>` : ""}
+  ${sub === "grants" ? grantsHTML() : sub === "dims" ? dimsHTML() : sub === "members" ? membersHTML() : visHTML()}`;
 }
 
 async function onEnterAccess() {
   if (!connected()) return;
-  if (state.sub.access === "grants") {
-    if (isAdmin() && !state.g.rows.length && !state.loading.grants) {
-      await loadGrantsTable();
-    }
-  } else if (!state.dims.length && !state.loading.govDims) {
-    await loadGovernanceDims();
+  const sub = state.sub.access;
+  if ((sub === "grants" || sub === "members") && isAdmin() && !state.g.rows.length && !state.loading.grants) {
+    await loadGrantsTable();
+  }
+  if (!state.dims.length && !state.loading.govDims) {
+    await loadGovernanceDims().catch(() => { /* 已 toast */ });
   }
 }
 
@@ -224,7 +358,49 @@ function downloadCsv(text) {
 }
 
 Object.assign(actions, {
-  /* ----- 授权格（平移） ----- */
+  /* ----- 授权格：点格 = 全量替换该成员 local 行 ----- */
+  async latCell(el) {
+    const u = el.dataset.u, k = el.dataset.k, v = el.dataset.v;
+    const mine = grantRowsOf(u);
+    const hit = mine.find((r) => r.dimKey === k && r.value === v);
+    // 目标集 = 现有 local 行集 ∪/− 被点格；expires 沿库内、新授权 null
+    const grants = (hit
+      ? mine.filter((r) => r !== hit)
+      : mine.concat([{ dimKey: k, value: v, expiresAt: "" }]))
+      .map((r) => ({ dim_key: r.dimKey, value: r.value, expires_at: r.expiresAt || null }));
+    state.g.saving = u + "|" + k + "=" + v;
+    render();
+    try {
+      const res = await putGrants(cfg.org, u, grants);
+      const set = grants.filter((x) => x.dim_key === k).map((x) => x.value);
+      toast(t("access.grants.put", {
+        user: esc(u), dim: esc(k), set: esc(set.join(t("common.sep"))) || "∅",
+        removed: res.removed, inserted: res.inserted,
+      }));
+    } catch (e) {
+      errToast(e);
+      state.g.saving = "";
+      return false;
+    }
+    await loadGrantsTable();
+    state.g.saving = "";
+    render();
+    const nb = document.querySelector(`[data-act="latCell"][data-u="${CSS.escape(u)}"][data-k="${CSS.escape(k)}"][data-v="${CSS.escape(v)}"]`);
+    if (nb) nb.classList.add("pop");
+    return false;
+  },
+  latDetail(el) {
+    const u = el.dataset.u;
+    if (state.g.detail === u) {
+      state.g.detail = null;
+    } else {
+      state.g.detail = u;
+      seedGrantEditor(u);
+      state.g.diff = null; state.g.diffMsg = "";
+    }
+  },
+
+  /* ----- 详细抽屉内 ui-1 chips 编辑器（B① 逐行 expires） ----- */
   gCell(el) {
     const key = el.dataset.k;
     if (key in state.g.picked) {
@@ -250,6 +426,7 @@ Object.assign(actions, {
       toast(t("access.saved", { removed: res.removed, inserted: res.inserted }));
     } catch (e) { errToast(e); return false; }
     await loadGrantsTable();
+    if (state.g.detail) seedGrantEditor(state.g.detail);
     render();
     return false;
   },
@@ -263,7 +440,102 @@ Object.assign(actions, {
   async gCsvDry() { return importCsvRun(true); },
   async gCsvApply() { return importCsvRun(false); },
 
-  /* ----- 维度治理（平移） ----- */
+  /* ----- 成员三方法（真端点——服务端守卫如实回显） ----- */
+  memAddToggle() {
+    state.mem.addOpen = !state.mem.addOpen;
+    state.mem.form = { uid: "", role: "member", expires: "" };
+  },
+  async memCreate() {
+    const d = state.mem.form;
+    const uid = d.uid.trim();
+    if (!uid) return false;
+    try {
+      const body = await addMember(cfg.org, {
+        user_id: uid, role: d.role, expires_at: d.expires.trim() || null,
+      });
+      toast(t("access.mem.added", { user: esc(body.user_id || uid), role: esc(body.role || d.role) }));
+    } catch (e) {
+      if (e.status === 404) toast(t("access.mem.add404", { user: esc(uid) }));
+      else if (e.status === 409) toast(t("access.mem.add409", { user: esc(uid) }));
+      else errToast(e);
+      return false;
+    }
+    state.mem.addOpen = false;
+    state.mem.form = { uid: "", role: "member", expires: "" };
+    await loadGrantsTable();
+    render();
+    return false;
+  },
+  memRoleAsk(el) {
+    state.mem.roleSel = el.dataset.u;
+    state.mem.roleVal = "member";
+    state.mem.ask = null;
+  },
+  memRoleCancel() { state.mem.roleSel = null; },
+  async memRoleOk(el) {
+    const u = el.dataset.u;
+    const role = state.mem.roleVal || "member";
+    try {
+      await patchMember(cfg.org, u, { role });
+      toast(t("access.mem.roleSet", { user: esc(u), role: esc(role) }));
+    } catch (e) {
+      if (e.status === 409) toast(t("access.mem.patch409", { user: esc(u) }));
+      else if (e.status === 404) toast(t("access.mem.patch404", { user: esc(u) }));
+      else errToast(e);
+      return false;
+    }
+    state.mem.roleSel = null;
+    await loadGrantsTable();
+    render();
+    return false;
+  },
+  memExpAsk(el) {
+    state.mem.expAsk = el.dataset.u;
+    state.mem.expVal = "";
+    state.mem.ask = null;
+  },
+  memExpCancel() { state.mem.expAsk = null; },
+  async memExpOk(el) {
+    const u = el.dataset.u;
+    const v = state.mem.expVal.trim();
+    // 键显式出现：空串输入 = expires_at null（改永久）；非空 = 设定时点
+    try {
+      await patchMember(cfg.org, u, { expires_at: v || null });
+      toast(t("access.mem.expSet", { user: esc(u), v: esc(v || "null") }));
+    } catch (e) {
+      if (e.status === 409) toast(t("access.mem.patch409", { user: esc(u) }));
+      else if (e.status === 404) toast(t("access.mem.patch404", { user: esc(u) }));
+      else errToast(e);
+      return false;
+    }
+    state.mem.expAsk = null;
+    render();
+    return false;
+  },
+  memAsk(el) { state.mem.ask = el.dataset.u; state.mem.expAsk = null; state.mem.roleSel = null; },
+  memCancel() { state.mem.ask = null; },
+  async memDelOk(el) {
+    const u = el.dataset.u;
+    let resp;
+    try {
+      resp = await deleteMember(cfg.org, u);
+    } catch (e) {
+      if (e && e.status === 409) toast(t("access.mem.del409", { user: esc(u) }));
+      else if (e && e.status === 404) toast(t("access.mem.patch404", { user: esc(u) }));
+      else errToast(e);
+      return false;
+    }
+    if (resp && resp.status === 409) { toast(t("access.mem.del409", { user: esc(u) })); return false; }
+    if (resp && resp.status === 404) { toast(t("access.mem.patch404", { user: esc(u) })); return false; }
+    toast(t("access.mem.deleted", { user: esc(u) }));
+    state.mem.ask = null;
+    if (state.g.detail === u) state.g.detail = null;
+    await loadGrantsTable();
+    render();
+    return false;
+  },
+
+  /* ----- 维度治理（ui-1 平移） ----- */
   dimNewToggle() { state.dimNewOpen = !state.dimNewOpen; },
   async dimCreate() {
     const d = state.dimNew;
@@ -378,16 +650,21 @@ async function importCsvRun(dryRun) {
     state.g.diffMsg = "";
     toast(t("access.csv.applied", { users: body.applied_users, rejected: (body.rejected || []).length }));
     await loadGrantsTable();
+    if (state.g.detail) seedGrantEditor(state.g.detail);
   }
   render();
   return false;
 }
 
 Object.assign(INPUTS, {
-  gMember: (v) => { state.g.member = v; seedGrantEditor(); },
   gPrefill: (v) => { state.g.prefill = v; },
   gExp: (v, el) => { state.g.expires[el.dataset.id] = v.trim(); return false; },
   gCsv: (v) => { state.g.csv = v; return false; },
+  memNewUid: (v) => { state.mem.form.uid = v; },
+  memNewRole: (v) => { state.mem.form.role = v; },
+  memNewExp: (v) => { state.mem.form.expires = v; },
+  memRoleSel: (v) => { state.mem.roleVal = v; return false; },
+  memExpVal: (v) => { state.mem.expVal = v; return false; },
   dimKey: (v) => { state.dimNew.key = v; },
   dimName: (v) => { state.dimNew.name = v; },
   dimReq: (v) => { state.dimNew.required = v; },
@@ -397,11 +674,11 @@ Object.assign(INPUTS, {
 
 VIEWS.access = { render: viewAccess, onEnter: onEnterAccess };
 
-/* 子标签切换也走懒装载（onEnter 只覆盖整视图进入——首切「授权」时补载） */
+/* 子标签切换也走懒装载（onEnter 只覆盖整视图进入——首切「授权/成员」时补载） */
 const _subBase = actions.sub;
 actions.sub = (el) => {
   _subBase(el);
-  if (el.dataset.s === "access" && el.dataset.v === "grants"
+  if (el.dataset.s === "access" && (el.dataset.v === "grants" || el.dataset.v === "members")
       && isAdmin() && !state.g.rows.length && !state.loading.grants) {
     loadGrantsTable().then(() => render()).catch(() => { /* 已 toast */ });
   }

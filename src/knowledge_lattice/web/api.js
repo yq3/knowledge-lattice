@@ -6,8 +6,8 @@
  *   401 → toast + 打开连接设置；403 → toast 服务端 detail；网络异常 → toast。
  * - reissue({org?, userId?})：用 baseToken POST /api/dev/token 重签（dev 形态组织/身份切换）；
  *   给他人代签须系统管理员基 token（403）；生产无 dev 端点（404 → 提示直接粘贴已签 token）。
- * - 领域函数：每端点一函数。三处 contract-first 降级（be-① 文档列表 / m3-1 建库建维度）
- *   各收口单函数并注释标记——后端实装后只改此处。
+ * - 领域函数：每端点一函数。四处 contract-first 降级（be-① 文档列表 / m3-1 建库
+ *   建维度与组织停用）各收口单函数并注释标记——后端实装后只改此处。
  * - pollTask：任务轮询（interval 1.5s / 终态停止 / 超时 120s）。
  */
 "use strict";
@@ -246,6 +246,75 @@ function audit(org, limit = 50) {
   return apiJson(`/api/orgs/${enc(org)}/audit?limit=${limit}`);
 }
 function stats(org) { return apiJson(`/api/orgs/${enc(org)}/stats`); }
+
+/* ---------- 业务语义（ui-2——§6.2 L1136-1143；契约字段实读 core/semantic） ---------- */
+
+function searchSemanticEntities(org, { q, types, top_k = 20 } = {}) {
+  const s = new URLSearchParams({ q, top_k: String(top_k) });
+  (types || []).forEach((tp) => s.append("types", tp));
+  return apiJson(`/api/orgs/${enc(org)}/semantic/entities?` + s.toString());
+}
+function getSemanticEntity(org, entityId, { expand, depth = 1, fanout_limit = 50, include } = {}) {
+  const s = new URLSearchParams({ depth: String(depth), fanout_limit: String(fanout_limit) });
+  (expand || []).forEach((x) => s.append("expand", x));
+  (include || ["curated", "attrs", "aliases"]).forEach((x) => s.append("include", x));
+  return apiJson(`/api/orgs/${enc(org)}/semantic/entities/${enc(entityId)}?` + s.toString());
+}
+function annotateText(org, body) {
+  return apiJson(`/api/orgs/${enc(org)}/semantic/annotate`, {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
+function getL0(org) { return apiJson(`/api/orgs/${enc(org)}/semantic/l0`); }
+function describeTable(org, tableKey, { columns } = {}) {
+  const s = new URLSearchParams();
+  (columns || []).forEach((c) => s.append("columns", c));
+  const qs = s.toString();
+  return apiJson(`/api/orgs/${enc(org)}/semantic/tables/${enc(tableKey)}/describe${qs ? "?" + qs : ""}`);
+}
+function listSyncRuns(org, { limit = 50, adapter, status } = {}) {
+  const s = new URLSearchParams({ limit: String(limit) });
+  if (adapter) s.set("adapter", adapter);
+  if (status) s.set("status", status);
+  return apiJson(`/api/orgs/${enc(org)}/semantic/sync-runs?` + s.toString());
+}
+function triggerSync(org, adapter) {
+  return apiJson(`/api/orgs/${enc(org)}/semantic/sync/${enc(adapter)}`, { method: "POST" });
+}
+function listBuilds(org, { limit = 50 } = {}) {
+  return apiJson(`/api/orgs/${enc(org)}/semantic/builds?limit=${limit}`);
+}
+function triggerBuild(org) {
+  return apiJson(`/api/orgs/${enc(org)}/semantic/builds`, { method: "POST" });
+}
+function buildReport(org, buildId) {
+  return apiJson(`/api/orgs/${enc(org)}/semantic/builds/${enc(buildId)}/report`);
+}
+
+/* ---------- 成员三方法（m2-6 A3——POST/PATCH/DELETE；无 GET members（m3-1 #13）） ---------- */
+
+function addMember(org, body) {
+  return apiJson(`/api/orgs/${enc(org)}/members`, { method: "POST", body: JSON.stringify(body) });
+}
+function patchMember(org, userId, body) {
+  return apiJson(`/api/orgs/${enc(org)}/members/${enc(userId)}`, {
+    method: "PATCH", body: JSON.stringify(body),
+  });
+}
+function deleteMember(org, userId) {
+  return apiFetch(`/api/orgs/${enc(org)}/members/${enc(userId)}`, { method: "DELETE" });
+}
+
+/* ---------- 组织管理（ui-2——POST /api/orgs 实装；PATCH 停用 m3-1 contract-first） ---------- */
+
+function createOrg(body) {
+  return apiJson("/api/orgs", { method: "POST", body: JSON.stringify(body) });
+}
+// m3-1 contract-first：PATCH /api/orgs/{org}（组织停用/恢复 #14）未实装——按自然契约
+// 先行实装（body {status: "active"|"disabled"}）；404/405 → 调用方降级提示「待 m3-1」。
+function setOrgStatus(org, status) {
+  return apiJson(`/api/orgs/${enc(org)}`, { method: "PATCH", body: JSON.stringify({ status }) });
+}
 
 /* ---------- 时间显示（沿原型：UTC 字符串切 MM-DD HH:mm） ---------- */
 function short(ts) { return ts ? String(ts).slice(5, 16) : "—"; }
