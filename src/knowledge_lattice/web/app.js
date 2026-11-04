@@ -22,8 +22,10 @@ const state = {
   docs: { available: null, probed: false, loadError: null, list: [], session: [] }, // be-①：available null=未探/true/false；session=本会话上传缓存
   ds: "all", selDoc: null, drawer: null, dsAsk: null, delAsk: null,
   newDs: { name: "", desc: "" },
-  up: { ds: "", picked: {}, file: "", fileObj: null },
+  up: { ds: "", picked: {}, file: "", fileObj: null, overwrite: null }, // overwrite={docId,title,active} = 覆盖上传锁定（ui-3 C2）
   editDims: false, editPicked: {}, quality: null, qualDraft: {},
+  /* 质检抽查面板（ui-3 C1——org_admin；GET /api/quality-flags/sample） */
+  qs: { flags: null, loading: false, seed: "ui3" },
   /* 检索视图 */
   q: "", qDs: "", autoEnt: false, lastSearch: null, searching: false,
   /* 权限视图（ui-2：授权格矩阵 + 成员子标签 + 可见性占位） */
@@ -39,14 +41,14 @@ const state = {
     describe: null,
     annText: "", fuzzy: false, annResult: null, annBusy: false, annError: "",
     admin: null,               // null=未探 / true / false（semantic:admin≈org_admin）
-    syncRuns: null, syncRunsErr: null, syncFilter: "", syncBusy: "",
+    syncRuns: null, syncRunsErr: null, syncFilter: "", syncBusy: "", syncRunsLimit: 50, // limit 递增 50→100→200（ui-3 条数与分页）
     builds: null, buildsErr: null, buildReportId: null, buildReportData: null,
     l0: null, l0Err: null,
   },
   /* 组织视图（ui-2） */
   orgView: { list: null, askOrg: null, newOpen: false, form: { id: "", name: "", admin: "" } },
-  /* 运维视图（ops 平移） */
-  ops: { tasks: null, coverage: null, audit: null, stats: null, reembedDoc: "", reembedModel: "" },
+  /* 运维视图（ops 平移；auditLimit 递增 50→100→200——ui-3 条数与分页） */
+  ops: { tasks: null, coverage: null, audit: null, auditLimit: 50, stats: null, reembedDoc: "", reembedModel: "" },
   loading: {},
 };
 
@@ -84,6 +86,14 @@ const ICONS = {
 };
 const ic = (k) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[k]}</svg>`;
 const CARET = `<svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>`;
+
+/* UTC 时间显示约定（ui-3）：列表位一律 short()（MM-DD HH:mm）+ title 悬停完整
+ * UTC 原文；时间列表头/pane 时间行在 i18n 值上标注 (UTC)。服务端时间串本身即
+ * UTC（SQLite CURRENT_TIMESTAMP 同款格式），short()/title 均为纯展示截取。 */
+function tsHTML(ts, cls) {
+  const raw = ts ? String(ts) : "";
+  return `<span class="${cls || ""}" title="${esc(raw ? raw + " UTC" : "")}">${esc(short(ts))}</span>`;
+}
 
 const AV_COLOR = ["#2970FF", "#7A5AF8", "#EE46BC", "#0E9384", "#F79009", "#16B364", "#6172F3"];
 function avatar(uid, size) {
@@ -185,8 +195,9 @@ function resetOrgState() {
   state.docs = { available: null, probed: false, loadError: null, list: [], session: [] };
   state.ds = "all"; state.selDoc = null; state.drawer = null; state.dsAsk = null; state.delAsk = null;
   state.newDs = { name: "", desc: "" };
-  state.up = { ds: "", picked: {}, file: "", fileObj: null };
+  state.up = { ds: "", picked: {}, file: "", fileObj: null, overwrite: null };
   state.editDims = false; state.editPicked = {}; state.quality = null; state.qualDraft = {};
+  state.qs = { flags: null, loading: false, seed: "ui3" };
   state.q = ""; state.qDs = ""; state.autoEnt = false; state.lastSearch = null; state.searching = false;
   state.g = { member: "", rows: [], picked: {}, expires: {}, existing: {}, prefill: "", csv: "", diff: null, diffMsg: "", detail: null, saving: "" };
   state.mem = { addOpen: false, form: { uid: "", role: "member", expires: "" }, ask: null, expAsk: null, expVal: "", roleSel: null, roleVal: "member" };
@@ -198,12 +209,12 @@ function resetOrgState() {
     detail: null, detailId: null, detail404: false, detailLoading: false, depth: 1, relAll: false,
     describe: null,
     annText: "", fuzzy: false, annResult: null, annBusy: false, annError: "",
-    admin: null, syncRuns: null, syncRunsErr: null, syncFilter: "", syncBusy: "",
+    admin: null, syncRuns: null, syncRunsErr: null, syncFilter: "", syncBusy: "", syncRunsLimit: 50,
     builds: null, buildsErr: null, buildReportId: null, buildReportData: null,
     l0: null, l0Err: null,
   };
   state.orgView = { list: null, askOrg: null, newOpen: false, form: { id: "", name: "", admin: "" } };
-  state.ops = { tasks: null, coverage: null, audit: null, stats: null, reembedDoc: "", reembedModel: "" };
+  state.ops = { tasks: null, coverage: null, audit: null, auditLimit: 50, stats: null, reembedDoc: "", reembedModel: "" };
 }
 
 async function reloadAfterIdentityChange() {
@@ -254,7 +265,7 @@ function renderRail() {
       <div class="tiny muted" style="padding:6px 10px 4px;font-weight:500">${esc(t("org.menuTitle"))}</div>
       ${state.orgs.map((x) => `<button class="menu-item ${x.org_id === cfg.org ? "on" : ""}" data-act="org" data-id="${esc(x.org_id)}">
         <span>${esc(x.name)}<span class="mono tiny muted" style="display:block;font-weight:400">${esc(x.org_id)}</span></span>
-        <small>${esc(roleLabel(x.org_id))}${x.expires_at ? ` · ${esc(short(x.expires_at))}` : ""}</small></button>`).join("")}
+        <small>${esc(roleLabel(x.org_id))}${x.expires_at ? ` · <span title="${esc(x.expires_at)} UTC">${esc(short(x.expires_at))}</span>` : ""}</small></button>`).join("")}
       <div class="menu-note">${t("org.menuNote")}</div>
     </div>` : `
     <button class="picker-btn" data-act="openConn"><span class="pk-main"><span class="pk-t">${esc(t("rail.offline"))}</span></span><span class="caret">${CARET}</span></button>`;

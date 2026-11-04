@@ -31,7 +31,9 @@ function viewOps() {
 
 async function onEnterOps() {
   if (!connected()) return;
-  state.loading.ops = true;
+  // 二次刷新不闪空（ui-3 加载态约定）：仅首装（tasks 尚无缓存）显示整视图 loading，
+  // 之后刷新保持既有表渲染，数据到后原位更新。
+  state.loading.ops = state.ops.tasks == null;
   render();
   await Promise.all([
     loadTasks(),
@@ -58,7 +60,7 @@ async function loadCoverage() {
 }
 
 async function loadAudit() {
-  try { state.ops.audit = await audit(cfg.org, 50); }
+  try { state.ops.audit = await audit(cfg.org, state.ops.auditLimit); }
   catch (e) { state.ops.audit = { error: e.status }; }
 }
 
@@ -80,12 +82,13 @@ function tasksHTML() {
       <td>${stPill(task.status)}${(task.error || "").startsWith("cancelled:") ? ` <span class="tag">${esc(t("ops.cancelled"))}</span>` : ""}</td>
       <td class="num">${esc(task.attempts ?? 0)}</td>
       <td class="tiny muted" title="${esc(task.error || "")}">${esc(task.error ? String(task.error).slice(0, 60) : "—")}</td>
-      <td class="mono tiny muted">${esc(short(task.updated_at))}</td>
+      <td class="mono tiny muted">${tsHTML(task.updated_at, "mono tiny muted")}</td>
       <td>${["pending", "leased", "running"].includes(task.status)
         ? `<button class="btn ghost sm" data-act="taskCancel" data-id="${esc(task.task_id)}" title="POST /tasks/${esc(task.task_id)}/cancel">${esc(t("ops.cancel"))}</button>`
         : `<span class="tiny muted">—</span>`}</td>
     </tr>`).join("") : `<tr><td colspan="8" class="tiny muted" style="padding:20px 16px">${esc(t("ops.tasks.empty"))}</td></tr>`}</tbody>
-  </table>`;
+  </table>
+  <div class="tbl-foot"><span class="tiny muted">${esc(t("ops.tasks.note"))}</span></div>`;
 }
 
 /* ---------- 嵌入覆盖率面板 ---------- */
@@ -151,9 +154,9 @@ function auditEventLane(action) {
 
 function auditEvHTML(e) {
   const detail = e.detail_json != null ? String(e.detail_json) : null;
-  return `<div class="ev"><span class="ev-t">${esc(short(e.created_at))}</span><div>
+  return `<div class="ev"><span class="ev-t">${tsHTML(e.created_at, "mono")}</span><div>
     <div class="ev-a">${esc(e.actor ?? "")} · ${esc(e.action ?? "")}</div>
-    ${detail ? `<div class="ev-d mono tiny" style="word-break:break-all">${esc(detail.slice(0, 240))}${detail.length > 240 ? "…" : ""}</div>` : ""}
+    ${detail ? `<div class="ev-d mono tiny" style="word-break:break-all" title="${esc(detail)}">${esc(detail.slice(0, 240))}${detail.length > 240 ? "…" : ""}</div>` : ""}
     <div class="ev-m">${e.outcome === "refused" ? `<span class="pill bad">refused</span>` : `<span class="pill ok">${esc(e.outcome || "accepted")}</span>`}</div>
   </div></div>`;
 }
@@ -175,7 +178,12 @@ function auditHTML() {
     ${auditLaneHTML(t("ops.audit.queryLane"), t("ops.audit.queryNote"), query, "ops.audit.queryEmpty")}
     ${auditLaneHTML(t("ops.audit.govLane"), t("ops.audit.govNote"), gov, "ops.audit.govEmpty")}
   </div>
-  <div class="tiny muted" style="margin-top:12px">${t("ops.audit.foot", { org: esc(cfg.org) })}${a.scope === "full" ? "" : " · " + esc(t("ops.audit.metadata"))}</div>`;
+  <div class="tbl-foot">
+    <span class="tiny muted">${t("ops.audit.foot", { org: esc(cfg.org) })}${a.scope === "full" ? "" : " · " + esc(t("ops.audit.metadata"))} · ${esc(t("common.recentN", { n: state.ops.auditLimit }))}</span>
+    ${state.ops.auditLimit < 200
+      ? `<button class="btn ghost sm" data-act="auditMore">${esc(t("common.loadMoreN", { a: state.ops.auditLimit, b: Math.min(state.ops.auditLimit * 2, 200) }))}</button>`
+      : `<span class="tiny muted">${esc(t("ops.audit.limitCap"))}</span>`}
+  </div>`;
 }
 
 /* ---------- 动作与输入 ---------- */
@@ -183,6 +191,14 @@ function auditHTML() {
 Object.assign(actions, {
   async opsRefresh() {
     await onEnterOps();
+    return false;
+  },
+  /* 审计「加载更多」（ui-3 条数与分页约定）：limit 阶梯 50→100→200，上限 200 停 */
+  async auditMore() {
+    if (state.ops.auditLimit >= 200) return false;
+    state.ops.auditLimit = Math.min(state.ops.auditLimit * 2, 200);
+    await loadAudit();
+    render();
     return false;
   },
   async taskCancel(el) {

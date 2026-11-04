@@ -43,7 +43,7 @@ function hitsHTML(r) {
       <div>
         <div class="h-text">${esc(h.snippet || "")}</div>
         <div class="h-meta">
-          <span class="h-src">${esc(h.title || h.doc_id)}</span>
+          <span class="h-src" title="${esc(h.title || h.doc_id)}">${esc(h.title || h.doc_id)}</span>
           ${h.page_no != null ? `<span>${esc(t("search.page"))} ${esc(h.page_no)}</span>` : ""}
           ${h.sheet_name ? `<span>${esc(h.sheet_name)}</span>` : ""}
           <span>${esc(h.dataset || h.dataset_id || "")}</span>

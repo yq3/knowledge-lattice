@@ -25,6 +25,8 @@ async function onEnterOrgs() {
 function viewOrgs() {
   if (!connected()) return connGate();
   const v = state.orgView;
+  // 首装无缓存（list 未取到且元数据也未带出组织）→ loading（防「无组织」空态误闪——ui-3）
+  if (v.list == null && !state.orgs.length) return loadingHTML("orgs");
   const orgs = v.list != null ? v.list : state.orgs;
   return `
   <header class="head"><h1>${esc(t("orgs.title"))}</h1>
@@ -41,7 +43,7 @@ function viewOrgs() {
         <td><div class="t-title">${esc(x.name)}</div><div class="t-sub mono">${esc(x.org_id)}</div></td>
         <td>${isCurrent ? `<span class="pill ok">${esc(t("orgs.current"))}</span>` : `<span class="tiny muted">${esc(t("orgs.listedOnly"))}</span>`}</td>
         <td>${x.role ? `<span class="pill ${x.role === "org_admin" ? "ok" : ""}">${esc(x.role)}</span>` : `<span class="tiny muted">—</span>`}</td>
-        <td class="tiny">${x.expires_at ? esc(short(x.expires_at)) : `<span class="tiny muted">${esc(t("orgs.permanent"))}</span>`}</td>
+        <td class="tiny">${x.expires_at ? tsHTML(x.expires_at, "mono tiny") : `<span class="tiny muted">${esc(t("orgs.permanent"))}</span>`}</td>
         <td><div style="display:flex;gap:6px;align-items:center">
           <button class="btn ghost sm" data-act="orgDisableAsk" data-id="${esc(x.org_id)}" data-name="${esc(x.name)}" title="${esc(t("orgs.disableTip"))}" style="color:var(--danger)">${esc(t("orgs.disable"))}…</button>
           <button class="btn ghost sm" data-act="orgEnable" data-id="${esc(x.org_id)}" data-name="${esc(x.name)}" title="${esc(t("orgs.enableTip"))}">${esc(t("orgs.enable"))}</button>

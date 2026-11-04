@@ -127,7 +127,7 @@ function entResultsHTML() {
       <td><span class="tdot" style="background:var(--t-${esc(e.type)})"></span> <b class="t-title">${esc(e.name || e.id)}</b></td>
       <td class="tiny">${esc(semTypeLabel(e.type))}</td>
       <td class="mono tiny">${esc(e.key || "")}</td>
-      <td class="tiny muted">${esc(e.brief || "—")}</td>
+      <td class="tiny muted"><span class="cut" style="max-width:260px" title="${esc(e.brief || "")}">${esc(e.brief || "—")}</span></td>
       <td class="num mono tiny">${esc(Number(e.score || 0).toFixed(2))}</td>
       <td><span class="tag">${esc(viaLabel(e.via))}</span></td>
     </tr>`).join("")}</tbody></table>`;
@@ -427,7 +427,7 @@ function syncHTML() {
         <td class="tiny">${t("sem.sync.yamlNote")}</td></tr>`;
       const r = latestOf(a);
       return `<tr><td class="mono">${a}<div class="tiny muted" style="font-weight:400">${esc(t("sem.sync.ad." + a))}</div></td>
-        <td>${r ? `<span class="mono tiny">${esc(short(r.started_at))}</span>` : `<span class="tiny muted">—</span>`}</td>
+        <td>${r ? tsHTML(r.started_at, "mono tiny") : `<span class="tiny muted">—</span>`}</td>
         <td>${r ? semPill(r.status) : `<span class="tiny muted">—</span>`}</td>
         <td class="tiny muted">${r ? esc(semRunStatsSummary(r.stats_json)) : ""}</td>
         <td><button class="btn ghost sm" data-act="semSync" data-a="${a}" ${admin && state.sem.syncBusy !== a ? "" : "disabled"} title="POST /semantic/sync/${a}">↻ ${esc(t("sem.sync.manual"))}</button></td>
@@ -443,23 +443,32 @@ function syncHTML() {
       ${SEM_ADAPTERS.map((a) => `<option value="${a}" ${state.sem.syncFilter === a ? "selected" : ""}>${a}</option>`).join("")}
     </select>
   </div>
-  ${state.sem.syncRunsErr ? `<div class="tiny muted">${esc(t("sem.sync.runsDenied", { status: state.sem.syncRunsErr }))}</div>` : `
+  ${state.sem.syncRunsErr ? `<div class="tiny muted">${esc(t("sem.sync.runsDenied", { status: state.sem.syncRunsErr }))}</div>`
+    : state.sem.syncRuns == null ? `<div class="loading">${esc(t("common.loading", { what: t("sem.sync.history") }))}</div>` : `
   <table class="ledger"><thead><tr><th>${esc(t("sem.run.col.time"))}</th><th>${esc(t("sem.run.col.adapter"))}</th><th>${esc(t("sem.run.col.status"))}</th><th>${esc(t("sem.run.col.stats"))}</th><th>${esc(t("sem.run.col.note"))}</th></tr></thead>
     <tbody>${runs.length ? runs.map((r) => `<tr>
-      <td class="mono tiny">${esc(short(r.started_at))}</td>
+      <td class="mono tiny">${tsHTML(r.started_at, "mono tiny")}</td>
       <td class="mono tiny">${esc(r.adapter)}</td>
       <td>${semPill(r.status)}</td>
       <td class="tiny muted">${esc(semRunStatsSummary(r.stats_json))}</td>
-      <td class="tiny muted">${esc(r.error ? String(r.error).slice(0, 80) : "—")}</td>
-    </tr>`).join("") : `<tr><td colspan="5" class="tiny muted" style="padding:16px">${esc(t("sem.sync.noRuns"))}</td></tr>`}</tbody></table>`}
+      <td class="tiny muted" title="${esc(r.error || "")}">${esc(r.error ? String(r.error).slice(0, 80) : "—")}</td>
+    </tr>`).join("") : `<tr><td colspan="5" class="tiny muted" style="padding:16px">${esc(t("sem.sync.noRuns"))}</td></tr>`}</tbody></table>
+  <div class="tbl-foot">
+    <span class="tiny muted">${esc(t("common.recentN", { n: state.sem.syncRunsLimit }))}</span>
+    ${state.sem.syncRunsLimit < 200
+      ? `<button class="btn ghost sm" data-act="semRunsMore">${esc(t("common.loadMoreN", { a: state.sem.syncRunsLimit, b: Math.min(state.sem.syncRunsLimit * 2, 200) }))}</button>`
+      : `<span class="tiny muted">${esc(t("ops.audit.limitCap"))}</span>`}
+  </div>`}
 
+  ${admin ? `
   <div class="sec-title">${esc(t("sem.build.title"))} <small>${esc(t("sem.build.titleSub"))}</small></div>
-  ${state.sem.buildsErr ? `<div class="tiny muted">${esc(t("sem.sync.runsDenied", { status: state.sem.buildsErr }))}</div>` : semBuildsHTML()}
+  ${state.sem.buildsErr ? `<div class="tiny muted">${esc(t("sem.sync.runsDenied", { status: state.sem.buildsErr }))}</div>`
+    : state.sem.builds == null ? `<div class="loading">${esc(t("common.loading", { what: t("sem.build.title") }))}</div>` : semBuildsHTML()}
   <div class="inline-act" style="margin-top:10px">
-    <button class="btn" data-act="semBuild" ${admin ? "" : "disabled"}>POST /semantic/builds</button>
+    <button class="btn" data-act="semBuild">POST /semantic/builds</button>
     <span class="tiny muted">${t("sem.build.triggerNote")}</span>
   </div>
-  ${state.sem.buildReportData ? semBuildReportHTML(state.sem.buildReportData) : ""}
+  ${state.sem.buildReportData ? semBuildReportHTML(state.sem.buildReportData) : ""}` : ""}
 
   <div class="sec-title">${esc(t("sem.l0.title"))} <small>GET /semantic/l0</small></div>
   ${semL0HTML()}
@@ -474,7 +483,7 @@ function semBuildsHTML() {
     <tbody>${builds.length ? builds.map((b) => `<tr class="${current && b.id === current.id ? "on" : ""}">
       <td class="mono"><b>${esc(b.dict_rev)}</b>${current && b.id === current.id ? ` <span class="tag moss">${esc(t("sem.build.current"))}</span>` : ""}</td>
       <td>${semPill(b.status)}</td>
-      <td class="mono tiny">${esc(short(b.created_at))}</td>
+      <td class="mono tiny">${tsHTML(b.created_at, "mono tiny")}</td>
       <td class="mono tiny">${esc(b.yaml_rev || "—")}</td>
       <td><button class="btn ghost sm" data-act="semReport" data-id="${esc(b.id)}">${esc(t("sem.build.report"))}</button></td>
     </tr>`).join("") : `<tr><td colspan="5" class="tiny muted" style="padding:16px">${esc(t("sem.build.noBuilds"))}</td></tr>`}</tbody></table>`;
@@ -518,7 +527,7 @@ async function semLoadSyncTab() {
   if (state.sem.admin) {
     if (state.sem.syncRuns == null || state.sem.syncRunsErr) {
       try {
-        state.sem.syncRuns = await listSyncRuns(cfg.org, { limit: 50 });
+        state.sem.syncRuns = await listSyncRuns(cfg.org, { limit: state.sem.syncRunsLimit });
         state.sem.syncRunsErr = null;
       } catch (e) { state.sem.syncRunsErr = e.status || 0; }
     }
@@ -531,7 +540,7 @@ async function semLoadSyncTab() {
   } else {
     // 非 admin：数据面探针 403 如实回显（语义侧只读注记 + 运行历史不可用）
     try {
-      state.sem.syncRuns = await listSyncRuns(cfg.org, { limit: 50 });
+      state.sem.syncRuns = await listSyncRuns(cfg.org, { limit: state.sem.syncRunsLimit });
       state.sem.syncRunsErr = null;
     } catch (e) { state.sem.syncRunsErr = e.status || 0; }
   }
@@ -680,10 +689,17 @@ Object.assign(actions, {
   async semSyncFilterRun() {
     const f = state.sem.syncFilter;
     try {
-      state.sem.syncRuns = await listSyncRuns(cfg.org, { limit: 50, adapter: f || undefined });
+      state.sem.syncRuns = await listSyncRuns(cfg.org, { limit: state.sem.syncRunsLimit, adapter: f || undefined });
       state.sem.syncRunsErr = null;
     } catch (e) { state.sem.syncRunsErr = e.status || 0; }
     render();
+    return false;
+  },
+  /* 运行历史「加载更多」（ui-3 条数与分页约定）：limit 阶梯 50→100→200，上限停 */
+  async semRunsMore() {
+    if (state.sem.syncRunsLimit >= 200) return false;
+    state.sem.syncRunsLimit = Math.min(state.sem.syncRunsLimit * 2, 200);
+    await actions.semSyncFilterRun();
     return false;
   },
   async semBuild() {

@@ -239,7 +239,12 @@ async function loadGovernanceDims() {
 
 function dimsHTML() {
   if (state.loading.govDims) return loadingHTML("access");
-  if (!state.dims.length) return `<div class="empty" style="margin:0"><h3>${esc(t("access.dims.empty"))}</h3></div>`;
+  if (!state.dims.length) return `
+  <div class="empty" style="margin:0"><h3>${esc(t("access.dims.empty"))}</h3>
+    <p>${t("access.dims.emptyBody")}</p>
+    ${isAdmin() ? `<div style="margin-top:16px"><button class="btn ghost sm" data-act="dimNewToggle">${state.dimNewOpen ? esc(t("common.collapse")) : esc(t("access.dims.new"))}</button></div>` : ""}
+  </div>
+  ${state.dimNewOpen && isAdmin() ? dimNewHTML() : ""}`;
   const canEdit = isAdmin();
   return `
   ${canEdit ? `<div style="margin-bottom:12px"><button class="btn ghost sm" data-act="dimNewToggle">${state.dimNewOpen ? esc(t("common.collapse")) : esc(t("access.dims.new"))}</button></div>${state.dimNewOpen ? dimNewHTML() : ""}` : ""}
