@@ -1,233 +1,101 @@
 <!doctype html>
-<!-- 静态页壳（design §5.7 / 原型 v0.5 信息结构基准——上传/检索两视图最小闭环）。
-     i18n：data-i18n + web/i18n.js 字典；默认中文、localStorage 持久化（FR-8）。 -->
+<!-- 静态页壳（ui-1 重建——视觉基准 prototype v0.6；无构建链，经典 <script> 按序引入）。
+     骨架：topbar（brand / 组织 picker / API 参考 / MCP 弹层 / 语言切换 / 连接设置）+
+     rail（nav 挂载点 + rail-foot）+ #main 挂载点 + #toasts。全部动态区由 JS 渲染。
+     i18n：data-i18n + i18n.js 字典；默认中文、localStorage 持久化（FR-8）。 -->
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>知识库薄壳</title>
+  <link rel="icon" href="data:,"><!-- 无独立 favicon 资源——空 data URI 防控制台 404 噪音 -->
+  <title>Knowledge Lattice 控制台</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <div class="shell">
-    <header class="topbar">
-      <div class="brand">
-        <span class="brand-mark">格</span>
-        <div>
-          <div class="brand-name" data-i18n="app.title">知识库薄壳</div>
-          <div class="brand-sub" data-i18n="app.subtitle">上传 / 检索最小闭环 · API 契约先行</div>
-        </div>
-      </div>
-      <!-- 语言切换：中 | EN（TC-UI-01——切换即时生效、localStorage 持久化） -->
-      <div class="lang-switch" id="langSwitch">
-        <button type="button" data-lang="zh">中</button><span class="sep">|</span><button type="button" data-lang="en">EN</button>
-      </div>
-    </header>
-
-    <div class="body">
-      <nav class="rail">
-        <button class="nav-item on" data-view="upload"><span data-i18n="nav.upload">文档上传</span></button>
-        <button class="nav-item" data-view="search"><span data-i18n="nav.search">检索测试</span></button>
-        <button class="nav-item" data-view="access"><span data-i18n="nav.access">权限</span></button>
-        <button class="nav-item" data-view="dims"><span data-i18n="nav.dims">维度治理</span></button>
-        <button class="nav-item" data-view="ops"><span data-i18n="nav.ops">任务与审计</span></button>
-        <div class="rail-note" data-i18n="nav.hint">管理面三视图：org_admin</div>
-        <div class="conn">
-          <div class="conn-h" data-i18n="settings.title">连接设置</div>
-          <input id="cfgToken" type="text" data-i18n-ph="settings.token.ph" placeholder="开发 JWT">
-          <input id="cfgOrg" type="text" data-i18n-ph="settings.org.ph" placeholder="如 org:tax">
-          <button class="btn" id="cfgSave" data-i18n="settings.save">保存</button>
-        </div>
-      </nav>
-
-      <main class="main">
-        <!-- ============ 上传视图 ============ -->
-        <section class="view" id="view-upload">
-          <header class="head">
-            <h1 data-i18n="upload.title">文档上传</h1>
-            <p class="lede" data-i18n="upload.lede">multipart 直传：维度值须在你的授权内。</p>
-          </header>
-          <div class="form">
-            <div class="row">
-              <label data-i18n="upload.dataset">知识库</label>
-              <select id="upDataset"><option data-i18n="upload.dataset.none">（先加载知识库）</option></select>
-            </div>
-            <div class="row">
-              <label data-i18n="upload.file">文件</label>
-              <input id="upFile" type="file" accept=".docx,.xlsx,.pptx,.html,.htm,.pdf">
-            </div>
-            <div class="row">
-              <label data-i18n="upload.dims">文档维度</label>
-              <div id="upDims" class="chips"><span class="muted" data-i18n="upload.dims.hint">必选维度必须选值；非必选维度可空（空值对所有人放行）</span></div>
-            </div>
-            <div class="row actions">
-              <button class="btn primary" id="upSubmit" data-i18n="upload.submit">上传</button>
-              <span id="upMsg" class="msg"></span>
-            </div>
-          </div>
-          <section class="status" id="upStatus" hidden>
-            <h3 data-i18n="status.title">任务与文档状态</h3>
-            <dl class="kv" id="upStatusKv"></dl>
-            <button class="btn ghost" id="upRefresh" data-i18n="status.refresh">刷新</button>
-          </section>
-        </section>
-
-        <!-- ============ 检索视图 ============ -->
-        <section class="view" id="view-search" hidden>
-          <header class="head">
-            <h1 data-i18n="search.title">检索测试</h1>
-            <p class="lede" data-i18n="search.lede">BM25 单路（M0a）。</p>
-          </header>
-          <div class="qbar">
-            <input id="qInput" type="text" data-i18n-ph="search.q.ph" placeholder="问一个业务问题……">
-            <button class="btn primary" id="qGo" data-i18n="search.go">检索</button>
-          </div>
-          <div class="qopts">
-            <label><span data-i18n="search.dataset">知识库</span>
-              <select id="qDataset"><option value="" data-i18n="search.all">全部可见</option></select>
-            </label>
-          </div>
-          <div id="searchMsg" class="msg"></div>
-          <div class="hits-wrap">
-            <table class="ledger" id="hitsTable" hidden>
-              <thead><tr>
-                <th data-i18n="search.col.rank">#</th>
-                <th data-i18n="search.col.chunk">chunk_id</th>
-                <th data-i18n="search.col.doc">文档</th>
-                <th data-i18n="search.col.page">页/sheet</th>
-                <th data-i18n="search.col.score">score</th>
-                <th data-i18n="search.col.dims">维度</th>
-                <th data-i18n="search.col.source">来源</th>
-              </tr></thead>
-              <tbody id="hitsBody"></tbody>
-            </table>
-            <div id="hitsEmpty" class="empty" hidden>
-              <h3 data-i18n="search.empty">没有可见结果</h3>
-            </div>
-          </div>
-        </section>
-        <!-- ============ 权限视图（m2-3——grants 管理 / CSV 导入导出 / expires_at） ============ -->
-        <section class="view" id="view-access" hidden>
-          <header class="head">
-            <h1 data-i18n="access.title">权限</h1>
-            <p class="lede" data-i18n="access.lede">授权 = 成员 × 维度取值；每格切换后「保存」= 一次全量替换（只动 local，sync 不动）。</p>
-            <div class="head-act">
-              <button class="btn ghost" id="grantsExport" data-i18n="access.export">导出 CSV</button>
-            </div>
-          </header>
-          <div class="form">
-            <div class="row">
-              <label data-i18n="access.member">成员</label>
-              <select id="gMember"><option data-i18n="access.member.none">（先加载授权）</option></select>
-            </div>
-            <div class="row">
-              <label data-i18n="access.grants">授权格</label>
-              <div id="gChips" class="chips"><span class="muted" data-i18n="access.grants.hint">local 授权可编辑；sync 授权只读</span></div>
-            </div>
-            <div class="row">
-              <label data-i18n="access.expires">过期时间（新选行预填）</label>
-              <input id="gExpires" type="text" data-i18n-ph="access.expires.ph" placeholder="如 2027-12-31 00:00:00（空=永久；仅预填新选行，各行可在行内输入框单独修改）">
-            </div>
-            <div class="row actions">
-              <button class="btn primary" id="gSave" data-i18n="access.save">保存（全量替换）</button>
-              <span id="gMsg" class="msg"></span>
-            </div>
-          </div>
-          <section class="status">
-            <h3 data-i18n="access.csv.title">CSV 批量导入</h3>
-            <p class="tiny muted" data-i18n="access.csv.hint">username,dim_key,value,expires_at——无 org 列（org 以路径为准）；dry_run 先看差异。</p>
-            <textarea id="csvText" rows="6" class="csv-box" placeholder="username,dim_key,value,expires_at"></textarea>
-            <div class="row actions" style="margin-top:8px">
-              <button class="btn" id="csvDryRun" data-i18n="access.csv.dryrun">差异预览</button>
-              <button class="btn primary" id="csvApply" data-i18n="access.csv.apply">导入生效</button>
-              <span id="csvMsg" class="msg"></span>
-            </div>
-            <pre id="csvDiff" class="diff-box" hidden></pre>
-          </section>
-        </section>
-
-        <!-- ============ 维度治理视图（m2-3——停用 dry_run / 退役二次确认） ============ -->
-        <section class="view" id="view-dims" hidden>
-          <header class="head">
-            <h1 data-i18n="dims.title">维度治理</h1>
-            <p class="lede" data-i18n="dims.lede">取值停用=收紧（dry_run 先看影响面）；维度退役=唯一放宽路径（预估 + 二次确认 + 审计）。</p>
-            <div class="head-act"><button class="btn ghost" id="dimsRefresh" data-i18n="dims.refresh">刷新</button></div>
-          </header>
-          <table class="ledger" id="dimsTable" hidden>
-            <thead><tr>
-              <th data-i18n="dims.col.dim">维度</th>
-              <th data-i18n="dims.col.required">必选</th>
-              <th data-i18n="dims.col.values">取值</th>
-              <th></th>
-            </tr></thead>
-            <tbody id="dimsBody"></tbody>
-          </table>
-          <div id="dimsEmpty" class="empty" hidden><h3 data-i18n="dims.empty">没有 active 维度</h3></div>
-          <div class="confirm" id="dimsConfirm" hidden>
-            <b id="dimsConfirmTitle"></b>
-            <p class="tiny muted" id="dimsConfirmBody"></p>
-            <div class="cf-act">
-              <button class="btn danger-btn sm" id="dimsConfirmOk" data-i18n="dims.confirm.ok">确认执行</button>
-              <button class="btn ghost sm" id="dimsConfirmCancel" data-i18n="dims.confirm.cancel">取消</button>
-            </div>
-          </div>
-        </section>
-
-        <!-- ============ 任务与审计视图（m2-3——取消 / 重嵌入入口 / 覆盖率面板 / 审计分级） ============ -->
-        <section class="view" id="view-ops" hidden>
-          <header class="head">
-            <h1 data-i18n="ops.title">任务与审计</h1>
-            <p class="lede" data-i18n="ops.lede">任务取消、重索引 / 换模型重嵌入入口、嵌入覆盖率（只读）、审计分级查询。</p>
-            <div class="head-act"><button class="btn ghost" id="opsRefresh" data-i18n="ops.refresh">刷新</button></div>
-          </header>
-          <section class="pane">
-            <div class="lane-h"><h3 data-i18n="ops.cover.title">嵌入与覆盖率</h3>
-              <span class="tiny muted" data-i18n="ops.cover.note">只读面板 · 改模型=走重嵌入流程</span></div>
-            <dl class="kv" id="covKv"></dl>
-            <div id="covBars"></div>
-            <div class="row actions" style="margin-top:10px">
-              <input id="reembedDoc" type="text" style="max-width:280px" data-i18n-ph="ops.reembed.doc.ph" placeholder="文档 doc_id">
-              <input id="reembedModel" type="text" style="max-width:200px" data-i18n-ph="ops.reembed.model.ph" placeholder="新模型标签（空=仅重索引）">
-              <button class="btn" id="reembedGo" data-i18n="ops.reembed.go">投递任务</button>
-              <span id="reembedMsg" class="msg"></span>
-            </div>
-          </section>
-          <table class="ledger" id="tasksTable" style="margin-top:18px" hidden>
-            <thead><tr>
-              <th data-i18n="ops.col.task">任务</th>
-              <th data-i18n="ops.col.type">类型</th>
-              <th data-i18n="ops.col.doc">文档</th>
-              <th data-i18n="ops.col.status">状态</th>
-              <th data-i18n="ops.col.error">备注</th>
-              <th></th>
-            </tr></thead>
-            <tbody id="tasksBody"></tbody>
-          </table>
-          <section class="pane" style="margin-top:18px">
-            <div class="lane-h"><h3 data-i18n="ops.audit.title">审计</h3>
-              <span class="tiny muted" id="auditScope"></span></div>
-            <table class="ledger" id="auditTable" hidden>
-              <thead><tr>
-                <th data-i18n="ops.audit.col.time">时间</th>
-                <th data-i18n="ops.audit.col.actor">操作者</th>
-                <th data-i18n="ops.audit.col.action">动作</th>
-                <th data-i18n="ops.audit.col.detail">详情</th>
-              </tr></thead>
-              <tbody id="auditBody"></tbody>
-            </table>
-            <div id="auditEmpty" class="empty" hidden><h3 data-i18n="ops.audit.empty">暂无事件</h3></div>
-          </section>
-          <section class="pane" style="margin-top:18px">
-            <div class="lane-h"><h3 data-i18n="ops.stats.title">运维</h3>
-              <span class="tiny muted" data-i18n="ops.stats.note">maintenance 最近一次运行</span></div>
-            <dl class="kv" id="statsKv"></dl>
-          </section>
-        </section>
-      </main>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="seal" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 6h12M6 12h12M6 18h12M6 6v12M12 6v12M18 6v12" stroke="#fff" stroke-opacity=".45" stroke-width="1.6" stroke-linecap="round"/><circle cx="6" cy="6" r="2.2" fill="#fff"/><circle cx="18" cy="12" r="2.2" fill="#fff"/><circle cx="12" cy="18" r="2.2" fill="#fff"/><path d="M6 6 18 12 12 18" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <span class="brand-name">Knowledge Lattice</span><span class="brand-sub" data-i18n="app.subtitle">Enterprise</span>
     </div>
-    <footer class="foot" data-i18n="footer.note">服务端不感知语言；语言仅为前端状态（localStorage）。</footer>
-  </div>
-  <script src="/static/i18n.js"></script>
-  <script src="/static/app.js"></script>
+    <span class="tb-sep" aria-hidden="true">/</span>
+    <!-- 组织切换（app.js renderRail 渲染：GET /api/orgs 菜单） -->
+    <div class="picker" id="orgPicker"></div>
+    <div class="tb-spacer"></div>
+    <button class="tb-link" data-act="apiDocs" data-i18n-title="topbar.apiDocs" title="OpenAPI · /docs"><svg class="ic" viewBox="0 0 24 24"><path d="M4 19.5V5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2Zm0 0A2 2 0 0 0 6 22h12"/></svg><span data-i18n="topbar.apiDocs">API 参考</span></button>
+    <div class="picker" id="mcpPicker">
+      <button class="tb-link" data-act="mcpMenu" aria-haspopup="true"><svg class="ic" viewBox="0 0 24 24"><path d="M9 7H6a3 3 0 0 0 0 6h3m6-6h3a3 3 0 0 1 0 6h-3M8 10h8"/></svg><span data-i18n="topbar.mcp">MCP 接入</span></button>
+      <div class="menu" id="menu-mcp" style="left:auto;right:0;min-width:360px">
+        <div class="tiny muted" style="padding:6px 10px 4px;font-weight:500" data-i18n="mcp.title">MCP 工具 · 单 server 挂载 /mcp</div>
+        <div class="menu-item"><code>search</code><small data-i18n="mcp.search">权限内检索</small></div>
+        <div class="menu-item"><code>fetch</code><small data-i18n="mcp.fetch">取块原文</small></div>
+        <div class="menu-item"><code>upload</code><small data-i18n="mcp.upload">凭证三步上传</small></div>
+        <div class="menu-item"><code>list_documents</code><small data-i18n="mcp.list_documents">文档列表</small></div>
+        <div class="menu-item"><code>annotate</code><small data-i18n="mcp.annotate">术语识别</small></div>
+        <div class="menu-item"><code>get_entity</code><small data-i18n="mcp.get_entity">实体与关系展开</small></div>
+        <div class="menu-item"><code>search_entities</code><small data-i18n="mcp.search_entities">实体检索</small></div>
+        <div class="menu-item"><code>describe_table</code><small data-i18n="mcp.describe_table">表列透传</small></div>
+        <div class="menu-note" data-i18n="mcp.note">委托 token——sub=用户、act=agent、org 单值 claim；禁止 token 原样透传（D18）。API 参考 = FastAPI OpenAPI /docs。</div>
+      </div>
+    </div>
+    <span class="tb-div" aria-hidden="true"></span>
+    <!-- 语言切换：中 | EN（FR-8——切换即时生效、localStorage 持久化） -->
+    <div class="lang-switch" id="langSwitch">
+      <button type="button" data-lang="zh">中</button><span class="sep">|</span><button type="button" data-lang="en">EN</button>
+    </div>
+    <span class="tb-div" aria-hidden="true"></span>
+    <!-- 身份视角（app.js renderRail 渲染：export 用户名 ∪ 自己 + 手动输入） -->
+    <div class="tb-lens">
+      <span class="rail-label" data-i18n-title="topbar.lens.title" title="检索、可见性、上传可选取值都按此身份计算" data-i18n="topbar.lens">以此身份查看</span>
+      <div class="picker" id="lensPicker"></div>
+    </div>
+    <span class="tb-div" aria-hidden="true"></span>
+    <!-- 连接设置（齿轮）：baseToken 重签 / 直接粘贴已签 token 两模式 -->
+    <div class="picker" id="connPicker">
+      <button class="tb-link" data-act="connMenu" aria-haspopup="true" data-i18n-title="settings.title" title="连接设置"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg><span data-i18n="settings.title">连接设置</span></button>
+      <div class="menu" id="menu-conn" style="left:auto;right:0;min-width:400px">
+        <div class="tiny muted" style="padding:6px 10px 4px;font-weight:500" data-i18n="settings.lede">连接 Knowledge Lattice 服务（Bearer token + X-Org-Id）</div>
+        <div class="menu-form">
+          <div class="mf-sec" data-i18n="settings.mode.reissue">模式 A · dev 重签（开发环境）</div>
+          <div class="mf-row"><label for="connBaseToken" data-i18n="settings.baseToken">基 token</label>
+            <input class="inp" id="connBaseToken" type="text" autocomplete="off" data-i18n-ph="settings.baseToken.ph" placeholder="系统管理员或本人 dev token（POST /api/dev/token 签发）"></div>
+          <div class="mf-row"><label for="connOrg" data-i18n="settings.org">组织 org</label>
+            <input class="inp" id="connOrg" type="text" autocomplete="off" data-i18n-ph="settings.org.ph" placeholder="如 org:tax（X-Org-Id / token org claim）"></div>
+          <div class="mf-row"><label for="connLens" data-i18n="settings.lens">身份 user_id</label>
+            <input class="inp" id="connLens" type="text" autocomplete="off" data-i18n-ph="settings.lens.ph" placeholder="留空 = 本人；给他人代签须系统管理员基 token"></div>
+          <div class="mf-act">
+            <button class="btn sm" data-act="connReissue" data-i18n="settings.reissue">重签并连接</button>
+            <span class="tiny muted" data-i18n="settings.reissue.note">组织/身份切换 = 用基 token 重签（dev 端点仅开发环境）</span>
+          </div>
+          <div class="mf-sec" data-i18n="settings.mode.signed">模式 B · 直接使用已签 token（生产可用）</div>
+          <div class="mf-row"><label for="connToken" data-i18n="settings.token">token</label>
+            <input class="inp" id="connToken" type="text" autocomplete="off" data-i18n-ph="settings.token.ph" placeholder="已签发的 Bearer token（含 org claim 更佳）"></div>
+          <div class="mf-act">
+            <button class="btn sm" data-act="connUseSigned" data-i18n="settings.useSigned">使用此 token 连接</button>
+            <button class="btn ghost sm" data-act="connDisconnect" data-i18n="settings.disconnect">断开</button>
+          </div>
+          <div class="menu-note" id="connStatus" style="border-top:1px solid var(--rule);margin-top:6px"></div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <aside class="rail" aria-label="导航" data-i18n-aria="rail.aria">
+    <nav class="nav" id="nav"></nav>
+    <div class="rail-foot" id="railFoot"></div>
+  </aside>
+  <main id="main"></main>
+</div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script src="/static/i18n.js"></script>
+<script src="/static/api.js"></script>
+<script src="/static/app.js"></script>
+<script src="/static/views/docs.js"></script>
+<script src="/static/views/search.js"></script>
+<script src="/static/views/access.js"></script>
+<script src="/static/views/ops.js"></script>
+<script src="/static/views/semantic.js"></script>
+<script src="/static/views/orgs.js"></script>
 </body>
 </html>
