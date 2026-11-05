@@ -12,6 +12,9 @@ const esc = (s) =>
 /* ---------- 全局状态 ---------- */
 const state = {
   view: "docs",
+  /* epoch（R2 P1-5）：组织/身份切换即自增——异步装载函数启动时捕获、写状态与
+   * render 前比对，不等即弃（防旧响应写入新视图）；pollTask 感知即停轮询。 */
+  epoch: 0,
   sub: { access: "grants", sem: "entities" },
   /* 元数据缓存（组织/身份切换与语言切换时复用，不重取） */
   orgs: [],            // GET /api/orgs（activeToken 视角）——含 role（普通用户面）
@@ -29,15 +32,15 @@ const state = {
   /* 检索视图 */
   q: "", qDs: "", autoEnt: false, lastSearch: null, searching: false,
   /* 权限视图（ui-2：授权格矩阵 + 成员子标签 + 可见性占位） */
-  g: { member: "", rows: [], picked: {}, expires: {}, existing: {}, prefill: "", csv: "", diff: null, diffMsg: "", detail: null, saving: "" },
-  mem: { addOpen: false, form: { uid: "", role: "member", expires: "" }, ask: null, expAsk: null, expVal: "", roleSel: null, roleVal: "member" },
+  g: { member: "", rows: [], picked: {}, expires: {}, existing: {}, prefill: "", csv: "", diff: null, diffMsg: "", detail: null, saving: "", error: null },
+  mem: { addOpen: false, form: { uid: "", role: "member", expires: "" }, ask: null, expAsk: null, expVal: "", expMode: "set", roleSel: null, roleVal: "member", known: {} },
   dimNewOpen: false, dimNew: { key: "", name: "", required: false },
   valAsk: null, valNew: { v: "", l: "" }, govAsk: null, disabledVals: [],
   /* 语义视图（ui-2）：probe null=未探 / "ok" / "noperm" / "notbuilt" */
   sem: {
     probe: null, dictRev: null,
     q: "", entSel: "", searching: false, results: null,
-    detail: null, detailId: null, detail404: false, detailLoading: false, depth: 1, relAll: false,
+    detail: null, detailId: null, detail404: false, detailErr: null, detailLoading: false, depth: 1, relAll: false,
     describe: null,
     annText: "", fuzzy: false, annResult: null, annBusy: false, annError: "",
     admin: null,               // null=未探 / true / false（semantic:admin≈org_admin）
@@ -46,9 +49,9 @@ const state = {
     l0: null, l0Err: null,
   },
   /* 组织视图（ui-2） */
-  orgView: { list: null, askOrg: null, newOpen: false, form: { id: "", name: "", admin: "" } },
+  orgView: { list: null, askOrg: null, newOpen: false, form: { id: "", name: "", admin: "" }, loadErr: null },
   /* 运维视图（ops 平移；auditLimit 递增 50→100→200——ui-3 条数与分页） */
-  ops: { tasks: null, coverage: null, audit: null, auditLimit: 50, stats: null, reembedDoc: "", reembedModel: "" },
+  ops: { tasks: null, tasksErr: null, coverage: null, audit: null, auditLimit: 50, stats: null, reembedDoc: "", reembedModel: "" },
   loading: {},
 };
 
@@ -68,9 +71,9 @@ function toast(html) {
 }
 function closeMenus() { document.querySelectorAll(".menu.open").forEach((x) => x.classList.remove("open")); }
 
-/* 动作侧错误 toast（403 已由 api.js 统一 toast——此处不重复） */
+/* 动作侧错误 toast（401/403 已由 api.js 统一 toast——此处不重复） */
 function errToast(e) {
-  if (e && e.status === 403) return;
+  if (e && (e.status === 403 || e.status === 401)) return;
   toast((e && e.status ? e.status + " · " : "") + esc(String((e && e.message) || e || "")));
 }
 
@@ -167,31 +170,50 @@ function loadingHTML(key) {
 
 /* ---------- 元数据装载 ---------- */
 
+/* 会话成员注册表（R2 P1-3）：username → {role?, expiresAt?}——POST members 201 /
+ * PATCH 响应维护、DELETE 成功移除、resetOrgState 清空；成员名单 = export 用户名
+ * ∪ known（零授权新成员加完立即可见、可分配首个授权）。 */
+function knownMembers() { return Object.keys(state.mem.known || {}); }
+function knownUser(u) { return (state.mem.known || {})[u] || null; }
+function setKnownUser(u, row) { state.mem.known[u] = row; }
+function dropKnownUser(u) { delete state.mem.known[u]; }
+
 async function loadUsernames() {
+  const ep = state.epoch;
   try {
     const text = await exportGrants(cfg.org);
+    if (ep !== state.epoch) return;
     const lines = text.trim().split(/\r?\n/);
-    state.usernames = [...new Set(lines.slice(1).filter((l) => l.trim()).map((l) => parseCsvLine(l)[0]))].sort();
+    state.usernames = [...new Set([
+      ...lines.slice(1).filter((l) => l.trim()).map((l) => parseCsvLine(l)[0]),
+      ...knownMembers(), // P1-3：会话新增成员并进身份菜单候选
+    ])].sort();
   } catch (e) {
+    if (ep !== state.epoch) return;
     state.usernames = []; // 非 org_admin（或未连接）——菜单退化为「自己 + 手动输入」
   }
 }
 
 async function loadMeta() {
   if (!connected()) return;
+  const ep = state.epoch;
   const [orgsRes, dsRes, dimRes] = await Promise.all([
     listOrgs().catch(() => ({ orgs: [] })),
     listDatasets(cfg.org).catch(() => ({ datasets: [] })),
     listDimensions(cfg.org).catch(() => ({ dimensions: [] })),
   ]);
+  if (ep !== state.epoch) return;
   state.orgs = orgsRes.orgs || [];
   state.datasets = dsRes.datasets || [];
   state.dims = dimRes.dimensions || [];
   await loadUsernames();
 }
 
-/* 组织/身份切换后：可见性相关缓存全重置（检索结果/文档列表/授权编辑/运维面板） */
+/* 组织/身份切换后：可见性相关缓存全重置（检索结果/文档列表/授权编辑/运维面板）；
+ * epoch 自增使在途异步装载全部作废（P1-5），loading 标志一并清零（新上下文自管）。 */
 function resetOrgState() {
+  state.epoch += 1;
+  state.loading = {};
   state.docs = { available: null, probed: false, loadError: null, list: [], session: [] };
   state.ds = "all"; state.selDoc = null; state.drawer = null; state.dsAsk = null; state.delAsk = null;
   state.newDs = { name: "", desc: "" };
@@ -199,25 +221,26 @@ function resetOrgState() {
   state.editDims = false; state.editPicked = {}; state.quality = null; state.qualDraft = {};
   state.qs = { flags: null, loading: false, seed: "ui3" };
   state.q = ""; state.qDs = ""; state.autoEnt = false; state.lastSearch = null; state.searching = false;
-  state.g = { member: "", rows: [], picked: {}, expires: {}, existing: {}, prefill: "", csv: "", diff: null, diffMsg: "", detail: null, saving: "" };
-  state.mem = { addOpen: false, form: { uid: "", role: "member", expires: "" }, ask: null, expAsk: null, expVal: "", roleSel: null, roleVal: "member" };
+  state.g = { member: "", rows: [], picked: {}, expires: {}, existing: {}, prefill: "", csv: "", diff: null, diffMsg: "", detail: null, saving: "", error: null };
+  state.mem = { addOpen: false, form: { uid: "", role: "member", expires: "" }, ask: null, expAsk: null, expVal: "", expMode: "set", roleSel: null, roleVal: "member", known: {} };
   state.dimNewOpen = false; state.dimNew = { key: "", name: "", required: false };
   state.valAsk = null; state.valNew = { v: "", l: "" }; state.govAsk = null; state.disabledVals = [];
   state.sem = {
     probe: null, dictRev: null,
     q: "", entSel: "", searching: false, results: null,
-    detail: null, detailId: null, detail404: false, detailLoading: false, depth: 1, relAll: false,
+    detail: null, detailId: null, detail404: false, detailErr: null, detailLoading: false, depth: 1, relAll: false,
     describe: null,
     annText: "", fuzzy: false, annResult: null, annBusy: false, annError: "",
     admin: null, syncRuns: null, syncRunsErr: null, syncFilter: "", syncBusy: "", syncRunsLimit: 50,
     builds: null, buildsErr: null, buildReportId: null, buildReportData: null,
     l0: null, l0Err: null,
   };
-  state.orgView = { list: null, askOrg: null, newOpen: false, form: { id: "", name: "", admin: "" } };
-  state.ops = { tasks: null, coverage: null, audit: null, auditLimit: 50, stats: null, reembedDoc: "", reembedModel: "" };
+  state.orgView = { list: null, askOrg: null, newOpen: false, form: { id: "", name: "", admin: "" }, loadErr: null };
+  state.ops = { tasks: null, tasksErr: null, coverage: null, audit: null, auditLimit: 50, stats: null, reembedDoc: "", reembedModel: "" };
 }
 
 async function reloadAfterIdentityChange() {
+  state.epoch += 1; // 双保险：resetOrgState 未先行时（直连模式 B 等）也作废旧装载
   await loadMeta();
   const view = VIEWS[state.view];
   if (view && view.onEnter) { try { await view.onEnter(); } catch (e) { /* 已 toast */ } }
@@ -309,7 +332,7 @@ function renderRail() {
     `<button class="nav-item ${state.view === k ? "on" : ""}" data-act="view" data-v="${k}"><span class="ni-k">${ic(k)}</span><span>${esc(name)}</span><span class="ni-c">${esc(c)}</span></button>`).join("")).join("");
 
   $("#railFoot").innerHTML = connected()
-    ? `<div class="rf-h"><i></i>${esc(t("rail.connected", { org: cfg.org }))}</div>${t("rail.note")}`
+    ? `<div class="rf-h"><i></i>${t("rail.connected", { org: esc(cfg.org) })}</div>${t("rail.note")}`
     : `<div class="rf-h" style="color:var(--danger)"><i style="background:var(--danger);box-shadow:0 0 0 3px var(--danger-w)"></i>${esc(t("rail.offline"))}</div>${t("rail.note")}`;
 }
 

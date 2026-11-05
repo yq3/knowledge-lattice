@@ -34,20 +34,23 @@ function semPill(st) {
 /* ---------- 进入探针（三态） ---------- */
 
 async function probeSemantic() {
+  const ep = state.epoch; // P1-5
   try {
     const l0 = await getL0(cfg.org);
+    if (ep !== state.epoch) return;
     state.sem.l0 = l0;
     state.sem.l0Err = null;
     if (l0.dict_rev == null || l0.dict_rev === 0) state.sem.probe = "notbuilt";
     else { state.sem.probe = "ok"; state.sem.dictRev = l0.dict_rev; }
   } catch (e) {
+    if (ep !== state.epoch) return;
     if (e.status === 403) state.sem.probe = "noperm";
     else { // 非 403（5xx 等）——视图可用，L0 面板如实展示错误
       state.sem.probe = "ok";
       state.sem.l0Err = String((e && e.message) || e);
     }
   }
-  state.sem.admin = isAdmin(); // semantic:admin ≈ org_admin 兼任（§6.3）
+  if (ep === state.epoch) state.sem.admin = isAdmin(); // semantic:admin ≈ org_admin 兼任（§6.3）
 }
 
 async function onEnterSemantic() {
@@ -146,6 +149,11 @@ function semDetailWrapHTML() {
   if (state.sem.detail404) {
     return `<div class="empty"><h3>404 · ${esc(t("sem.ent.notFound.title"))}</h3><p>${t("sem.ent.notFound.body")}</p>
       <p style="margin-top:10px"><button class="btn ghost sm" data-act="semBack">${esc(t("sem.ent.back"))}</button></p></div>`;
+  }
+  if (state.sem.detailErr) { // P2-3：装载失败即停转圈——错误卡 + 返回
+    return `<div class="empty"><h3>${esc(t("sem.ent.loadErr", { err: esc(state.sem.detailErr) }))}</h3>
+      <p style="margin-top:10px"><button class="btn ghost sm" data-act="semBack">${esc(t("sem.ent.back"))}</button>
+      <button class="btn ghost sm" data-act="semRetryDetail">${esc(t("common.retry"))}</button></p></div>`;
   }
   const d = state.sem.detail;
   if (!d) return loadingHTML("semantic");
@@ -291,9 +299,10 @@ function semGraphSVG(d) {
         <text text-anchor="middle" dy="4">+${n.g.hidden.length} ${esc(t("sem.ent.more"))}</text></g>`;
       const tp = n.x === focus ? d.entity.type : n.n.type;
       const c = n.x === focus;
+      // R2 P0：type 为后端存储值——style 属性插值必须 esc()（防属性逃逸）
       return `<g class="node ${c ? "center" : ""}" data-act="semOpen" data-id="${esc(n.x)}" transform="translate(${n.px.toFixed(1)},${n.py.toFixed(1)})">
         <title>${esc(semTypeLabel(tp))} · ${esc(n.n.name)} · ${esc(n.n.key || "")}</title>
-        <rect x="${-n.w / 2}" y="-13" width="${n.w}" height="26" rx="7" style="fill:${c ? `var(--t-${tp})` : `color-mix(in oklch, var(--t-${tp === "?" ? "system" : tp}) 16%, var(--paper))`}"></rect>
+        <rect x="${-n.w / 2}" y="-13" width="${n.w}" height="26" rx="7" style="fill:${c ? `var(--t-${esc(tp)})` : `color-mix(in oklch, var(--t-${esc(tp === "?" ? "system" : tp)}) 16%, var(--paper))`}"></rect>
         <text text-anchor="middle" dy="4" ${c ? `style="fill:var(--paper)"` : ""}>${esc(n.text)}</text></g>`;
     }).join("")}
   </svg>`;
@@ -402,8 +411,13 @@ function annotateHTML() {
 /* ---------- 同步与构建子标签（semantic:admin） ---------- */
 
 function semRunStatsSummary(statsJson) {
-  let s = {};
-  try { s = JSON.parse(statsJson || "{}"); } catch (e) { return ""; }
+  // R2 P1-2：后端 _sem_run_dict 已把 stats_json 解析为对象直出——兼容双形态
+  // （对象直接用 / 字符串才 parse），否则统计列恒空。
+  let s = statsJson;
+  if (typeof s === "string") {
+    try { s = JSON.parse(s || "{}"); } catch (e) { return ""; }
+  }
+  if (!s || typeof s !== "object") return "";
   const parts = [];
   if (s.inserted != null) parts.push(t("sem.sync.statIns") + " " + s.inserted);
   if (s.updated != null) parts.push(t("sem.sync.statUpd") + " " + s.updated);
@@ -524,51 +538,66 @@ function semL0HTML() {
 /* ---------- 数据装载 ---------- */
 
 async function semLoadSyncTab() {
+  const ep = state.epoch; // P1-5
   if (state.sem.admin) {
     if (state.sem.syncRuns == null || state.sem.syncRunsErr) {
       try {
-        state.sem.syncRuns = await listSyncRuns(cfg.org, { limit: state.sem.syncRunsLimit });
+        const runs = await listSyncRuns(cfg.org, { limit: state.sem.syncRunsLimit });
+        if (ep !== state.epoch) return;
+        state.sem.syncRuns = runs;
         state.sem.syncRunsErr = null;
-      } catch (e) { state.sem.syncRunsErr = e.status || 0; }
+      } catch (e) { if (ep === state.epoch) state.sem.syncRunsErr = e.status || 0; }
     }
     if (state.sem.builds == null || state.sem.buildsErr) {
       try {
-        state.sem.builds = await listBuilds(cfg.org, { limit: 50 });
+        const builds = await listBuilds(cfg.org, { limit: 50 });
+        if (ep !== state.epoch) return;
+        state.sem.builds = builds;
         state.sem.buildsErr = null;
-      } catch (e) { state.sem.buildsErr = e.status || 0; }
+      } catch (e) { if (ep === state.epoch) state.sem.buildsErr = e.status || 0; }
     }
   } else {
     // 非 admin：数据面探针 403 如实回显（语义侧只读注记 + 运行历史不可用）
     try {
-      state.sem.syncRuns = await listSyncRuns(cfg.org, { limit: state.sem.syncRunsLimit });
+      const runs = await listSyncRuns(cfg.org, { limit: state.sem.syncRunsLimit });
+      if (ep !== state.epoch) return;
+      state.sem.syncRuns = runs;
       state.sem.syncRunsErr = null;
-    } catch (e) { state.sem.syncRunsErr = e.status || 0; }
+    } catch (e) { if (ep === state.epoch) state.sem.syncRunsErr = e.status || 0; }
   }
   try {
-    state.sem.l0 = await getL0(cfg.org);
+    const l0 = await getL0(cfg.org);
+    if (ep !== state.epoch) return;
+    state.sem.l0 = l0;
     state.sem.l0Err = null;
     if (state.sem.l0.dict_rev != null) state.sem.dictRev = state.sem.l0.dict_rev;
-  } catch (e) { state.sem.l0Err = e.status ? (String(e.status) + " · " + String((e && e.message) || "")) : String(e); }
+  } catch (e) {
+    if (ep === state.epoch) state.sem.l0Err = e.status ? (String(e.status) + " · " + String((e && e.message) || "")) : String(e);
+  }
 }
 
 async function semLoadEntity(id) {
+  const ep = state.epoch; // P1-5
   state.sem.detailId = id;
   state.sem.detail = null;
   state.sem.detail404 = false;
+  state.sem.detailErr = null;
   state.sem.detailLoading = true;
   state.sem.relAll = false;
   state.sem.describe = null;
   render();
   try {
-    state.sem.detail = await getSemanticEntity(cfg.org, id, {
+    const detail = await getSemanticEntity(cfg.org, id, {
       depth: state.sem.depth, include: ["curated", "attrs", "aliases"],
     });
+    if (ep !== state.epoch) return;
+    state.sem.detail = detail;
   } catch (e) {
+    if (ep !== state.epoch) return;
     if (e.status === 404) state.sem.detail404 = true; // 不存在/无权/非 active——存在性零泄露
-    else errToast(e);
+    else state.sem.detailErr = String((e && e.message) || e); // P2-3：错误即停转圈、显错误卡
   } finally {
-    state.sem.detailLoading = false;
-    render();
+    if (ep === state.epoch) { state.sem.detailLoading = false; render(); }
   }
 }
 
@@ -579,6 +608,7 @@ Object.assign(actions, {
   async semSearch() {
     const q = state.sem.q.trim();
     if (!q || state.sem.searching) return false;
+    const ep = state.epoch; // P1-5
     state.sem.searching = true;
     state.sem.detailId = null; state.sem.detail = null;
     render();
@@ -586,14 +616,20 @@ Object.assign(actions, {
       const body = await searchSemanticEntities(cfg.org, {
         q, types: state.sem.entSel ? [state.sem.entSel] : [], top_k: 20,
       });
+      if (ep !== state.epoch) return false;
       state.sem.results = { q, entities: body.entities || [] };
     } catch (e) {
+      if (ep !== state.epoch) return false;
       errToast(e);
       state.sem.results = null;
     } finally {
-      state.sem.searching = false;
-      render();
+      if (ep === state.epoch) { state.sem.searching = false; render(); }
     }
+    return false;
+  },
+  /* P2-3：详情装载失败后的显式重试 */
+  semRetryDetail(el) {
+    if (state.sem.detailId != null) semLoadEntity(state.sem.detailId);
     return false;
   },
   semFacet(el) {
@@ -619,6 +655,7 @@ Object.assign(actions, {
   },
   semBack() {
     state.sem.detailId = null; state.sem.detail = null; state.sem.detail404 = false;
+    state.sem.detailErr = null;
     state.sem.describe = null;
   },
   semDepth(el) {
@@ -637,11 +674,15 @@ Object.assign(actions, {
   async semDescribe() {
     const d = state.sem.detail;
     if (!d) return false;
+    const ep = state.epoch; // P1-5
     state.sem.describe = { loading: true };
     render();
     try {
-      state.sem.describe = await describeTable(cfg.org, d.entity.key);
+      const desc = await describeTable(cfg.org, d.entity.key);
+      if (ep !== state.epoch) return false;
+      state.sem.describe = desc;
     } catch (e) {
+      if (ep !== state.epoch) return false;
       state.sem.describe = { error: e.status || 0 };
     }
     render();
@@ -652,17 +693,20 @@ Object.assign(actions, {
   async semAnnotate() {
     const text = state.sem.annText.trim();
     if (!text) { toast(esc(t("sem.ann.needText"))); return false; }
+    const ep = state.epoch; // P1-5
     state.sem.annBusy = true;
     render();
     try {
-      state.sem.annResult = await annotateText(cfg.org, { text, fuzzy: !!state.sem.fuzzy });
+      const result = await annotateText(cfg.org, { text, fuzzy: !!state.sem.fuzzy });
+      if (ep !== state.epoch) return false;
+      state.sem.annResult = result;
     } catch (e) {
+      if (ep !== state.epoch) return false;
       if (e.status === 400) toast(esc(String((e && e.message) || e)));
       else errToast(e);
       state.sem.annResult = null;
     } finally {
-      state.sem.annBusy = false;
-      render();
+      if (ep === state.epoch) { state.sem.annBusy = false; render(); }
     }
     return false;
   },
@@ -688,10 +732,13 @@ Object.assign(actions, {
   },
   async semSyncFilterRun() {
     const f = state.sem.syncFilter;
+    const ep = state.epoch; // P1-5
     try {
-      state.sem.syncRuns = await listSyncRuns(cfg.org, { limit: state.sem.syncRunsLimit, adapter: f || undefined });
+      const runs = await listSyncRuns(cfg.org, { limit: state.sem.syncRunsLimit, adapter: f || undefined });
+      if (ep !== state.epoch) return false;
+      state.sem.syncRuns = runs;
       state.sem.syncRunsErr = null;
-    } catch (e) { state.sem.syncRunsErr = e.status || 0; }
+    } catch (e) { if (ep === state.epoch) state.sem.syncRunsErr = e.status || 0; }
     render();
     return false;
   },

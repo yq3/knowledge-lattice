@@ -103,7 +103,7 @@
 ## 交付记录（2026-11-03，主会话验收后回填）
 
 - **开发**：subagent（general-purpose，规格书驱动）；**验收**：主会话独立复核。
-- **改动**：`prototype/index.html` 单文件 2048 → 2500 行（+495/−43）；`<style>` 零改动。
+- **改动**：`prototype/index.html` 单文件 2048 → 2500 行（+495/−43）；**CSS 规则零改动**（仅 `<style>` 头注释版本行 +15 字节——R2 复审勘误：原表述「style 零改动」不精确）。
 - **主会话独立验收**（不采信子代理自检）：
   - ✅ git status 白名单（仅 prototype/index.html + 本规格书未跟踪）；零 commit。
   - ✅ diff 全量审读：守卫忠实（T23 三步 409 / 唯一管理员自锁 409 / D16 404 / RESTRICT 409 / retired 不扩值 409）、actions 返回语义正确（不可变动作 return false 防重渲染）、resetOrgState 收纳新交互态。

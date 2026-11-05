@@ -8,7 +8,8 @@
  *   给他人代签须系统管理员基 token（403）；生产无 dev 端点（404 → 提示直接粘贴已签 token）。
  * - 领域函数：每端点一函数。四处 contract-first 降级（be-① 文档列表 / m3-1 建库
  *   建维度与组织停用）各收口单函数并注释标记——后端实装后只改此处。
- * - pollTask：任务轮询（interval 1.5s / 终态停止 / 超时 120s）。
+ * - pollTask：任务轮询（interval 1.5s / 终态停止 / 超时 120s / shouldStop 回调
+ *   感知上下文切换即停——R2 P1-5，返回 null=已弃）。
  */
 "use strict";
 
@@ -55,8 +56,9 @@ async function apiFetch(path, opts = {}) {
   const headers = Object.assign({}, opts.headers || {});
   if (cfg.activeToken) headers["Authorization"] = "Bearer " + cfg.activeToken;
   if (cfg.org) headers["X-Org-Id"] = cfg.org;
+  // opts.contentType 覆盖缺省 JSON（R2 P2-4：CSV 等纯文本体走 text/plain）
   if (opts.body != null && !(opts.body instanceof FormData) && !headers["Content-Type"]) {
-    headers["Content-Type"] = "application/json";
+    headers["Content-Type"] = opts.contentType || "application/json";
   }
   let resp;
   try {
@@ -135,7 +137,8 @@ function createDataset(org, body) {
   return apiJson(`/api/orgs/${enc(org)}/datasets`, { method: "POST", body: JSON.stringify(body) });
 }
 function deleteDataset(org, id) {
-  return apiFetch(`/api/orgs/${enc(org)}/datasets/${enc(id)}`, { method: "DELETE" });
+  // R2 P1-1：DELETE 收口 apiJson 同款 !ok 抛 ApiError（204 空 body → {} 正常返回）
+  return apiJson(`/api/orgs/${enc(org)}/datasets/${enc(id)}`, { method: "DELETE" });
 }
 function listDimensions(org) { return apiJson(`/api/orgs/${enc(org)}/dimensions`); }
 
@@ -162,7 +165,8 @@ function patchDocumentDims(org, docId, dims) {
   });
 }
 function deleteDocument(org, docId) {
-  return apiFetch(`/api/orgs/${enc(org)}/documents/${enc(docId)}`, { method: "DELETE" });
+  // R2 P1-1：同 deleteDataset——!ok 抛 ApiError，调用方 catch 分径
+  return apiJson(`/api/orgs/${enc(org)}/documents/${enc(docId)}`, { method: "DELETE" });
 }
 function uploadMultipart(org, { file, dataset, title, dims, docId }) {
   const fd = new FormData();
@@ -187,9 +191,10 @@ function getTask(org, taskId) { return apiJson(`/api/orgs/${enc(org)}/tasks/${en
 function cancelTask(org, taskId) {
   return apiJson(`/api/orgs/${enc(org)}/tasks/${enc(taskId)}/cancel`, { method: "POST" });
 }
-async function pollTask(taskId, { interval = 1500, timeout = 120000, onTick } = {}) {
+async function pollTask(taskId, { interval = 1500, timeout = 120000, onTick, shouldStop } = {}) {
   const started = Date.now();
   for (;;) {
+    if (shouldStop && shouldStop()) return null; // R2 P1-5：上下文已换（epoch 变）——静默停轮询
     const task = await getTask(cfg.org, taskId);
     if (onTick) onTick(task);
     if (task.status === "done" || task.status === "failed") return task;
@@ -214,8 +219,9 @@ async function exportGrants(org) {
   return resp.text();
 }
 function importGrants(org, csvText, dryRun) {
+  // R2 P2-4：CSV 文本体显式 text/plain（缺省会误标 application/json）
   return apiJson(`/api/orgs/${enc(org)}/grants/import${dryRun ? "?dry_run=1" : ""}`, {
-    method: "POST", body: csvText,
+    method: "POST", body: csvText, contentType: "text/plain",
   });
 }
 function putGrants(org, userId, grants) {
@@ -302,7 +308,8 @@ function patchMember(org, userId, body) {
   });
 }
 function deleteMember(org, userId) {
-  return apiFetch(`/api/orgs/${enc(org)}/members/${enc(userId)}`, { method: "DELETE" });
+  // R2 P1-1：同 deleteDataset——!ok 抛 ApiError（409 最后管理员 / 404 如实）
+  return apiJson(`/api/orgs/${enc(org)}/members/${enc(userId)}`, { method: "DELETE" });
 }
 
 /* ---------- 组织管理（ui-2——POST /api/orgs 实装；PATCH 停用 m3-1 contract-first） ---------- */

@@ -31,6 +31,7 @@ function viewOps() {
 
 async function onEnterOps() {
   if (!connected()) return;
+  const ep = state.epoch; // P1-5
   // 二次刷新不闪空（ui-3 加载态约定）：仅首装（tasks 尚无缓存）显示整视图 loading，
   // 之后刷新保持既有表渲染，数据到后原位更新。
   state.loading.ops = state.ops.tasks == null;
@@ -41,38 +42,67 @@ async function onEnterOps() {
     loadAudit().catch(() => { state.ops.audit = { error: true }; }),
     loadStats().catch(() => { state.ops.stats = { error: true }; }),
   ]);
+  if (ep !== state.epoch) return;
   state.loading.ops = false;
   render();
 }
 
 async function loadTasks() {
+  const ep = state.epoch; // P1-5
   try {
     const body = await listTasks(cfg.org);
+    if (ep !== state.epoch) return;
     state.ops.tasks = body.tasks || [];
+    state.ops.tasksErr = null;
   } catch (e) {
+    if (ep !== state.epoch) return;
     state.ops.tasks = state.ops.tasks || [];
+    state.ops.tasksErr = String((e && e.message) || e); // P2-3：失败显错误态（非「暂无任务」空态）
   }
 }
 
 async function loadCoverage() {
-  try { state.ops.coverage = await embeddingCoverage(cfg.org); }
-  catch (e) { state.ops.coverage = { error: e.status }; }
+  const ep = state.epoch;
+  try {
+    const body = await embeddingCoverage(cfg.org);
+    if (ep !== state.epoch) return;
+    state.ops.coverage = body;
+  } catch (e) {
+    if (ep !== state.epoch) return;
+    state.ops.coverage = { error: e.status };
+  }
 }
 
 async function loadAudit() {
-  try { state.ops.audit = await audit(cfg.org, state.ops.auditLimit); }
-  catch (e) { state.ops.audit = { error: e.status }; }
+  const ep = state.epoch;
+  try {
+    const body = await audit(cfg.org, state.ops.auditLimit);
+    if (ep !== state.epoch) return;
+    state.ops.audit = body;
+  } catch (e) {
+    if (ep !== state.epoch) return;
+    state.ops.audit = { error: e.status };
+  }
 }
 
 async function loadStats() {
-  try { state.ops.stats = await stats(cfg.org); }
-  catch (e) { state.ops.stats = { error: e.status }; }
+  const ep = state.epoch;
+  try {
+    const body = await stats(cfg.org);
+    if (ep !== state.epoch) return;
+    state.ops.stats = body;
+  } catch (e) {
+    if (ep !== state.epoch) return;
+    state.ops.stats = { error: e.status };
+  }
 }
 
 /* ---------- 任务 ledger ---------- */
 
 function tasksHTML() {
   const tasks = state.ops.tasks || [];
+  if (state.ops.tasksErr) return `<div class="empty" style="margin:0"><h3>${esc(t("ops.tasks.loadErr", { err: esc(state.ops.tasksErr) }))}</h3>
+    <div style="margin-top:16px"><button class="btn ghost sm" data-act="opsRefresh">${esc(t("common.retry"))}</button></div></div>`; // P2-3：失败≠空态
   return `<table class="ledger">
     <thead><tr><th>${esc(t("ops.col.task"))}</th><th>${esc(t("ops.col.type"))}</th><th>${esc(t("ops.col.doc"))}</th><th>${esc(t("ops.col.status"))}</th><th class="num">${esc(t("ops.col.attempts"))}</th><th>${esc(t("ops.col.note"))}</th><th>${esc(t("ops.col.updated"))}</th><th></th></tr></thead>
     <tbody>${tasks.length ? tasks.map((task) => `<tr>

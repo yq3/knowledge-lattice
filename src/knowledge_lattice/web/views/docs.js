@@ -8,27 +8,31 @@
 
 async function onEnterDocs() {
   if (!connected()) return;
+  const ep = state.epoch; // P1-5
   if (!state.docs.probed) {
     state.loading.docsList = true;
     try {
       // be-1 contract-first：列表端点未实装——404 降级（横幅 + 会话缓存），其余错误如实展示
       const body = await listDocuments(cfg.org);
+      if (ep !== state.epoch) return;
       state.docs.available = true;
       state.docs.list = body.documents || [];
     } catch (e) {
+      if (ep !== state.epoch) return;
       state.docs.available = false;
       state.docs.loadError = e.status === 404 ? null : String(e.message || e);
     } finally {
-      state.docs.probed = true;
-      state.loading.docsList = false;
+      if (ep === state.epoch) { state.docs.probed = true; state.loading.docsList = false; }
     }
   }
   if (state.selDoc) refreshSelectedDoc().catch((e) => { errToast(e); }); // 非 403（404 等）也要如实可见（ui-3 错误态盘点）
 }
 
 async function refreshSelectedDoc() {
+  const ep = state.epoch; // P1-5
   const id = state.selDoc;
   const body = await getDocument(cfg.org, id); // 详情无 dims 字段——维度取列表行缓存（be-①）
+  if (ep !== state.epoch) return;
   mergeDocRow({
     doc_id: body.doc_id, title: body.title, dataset: body.dataset,
     dims: rowDims(id), // 保留既有缓存维度
@@ -41,13 +45,18 @@ async function refreshSelectedDoc() {
 }
 
 async function loadQuality(docId) {
+  if (docId == null) return; // P2-3 防御：无选中文档不取质检
+  const ep = state.epoch; // P1-5
   state.loading.quality = true;
   try {
-    state.quality = await getDocumentQuality(cfg.org, docId);
+    const body = await getDocumentQuality(cfg.org, docId);
+    if (ep !== state.epoch) return;
+    state.quality = body && typeof body === "object" ? body : { flags: [], open_count: 0 }; // P2-3：空/畸形体防御
   } catch (e) {
+    if (ep !== state.epoch) return;
     state.quality = { error: e.status, message: String(e.message || e) };
   } finally {
-    state.loading.quality = false;
+    if (ep === state.epoch) state.loading.quality = false;
   }
 }
 
@@ -280,7 +289,7 @@ function qualityHTML(d) {
   else if (q.error) inner = `<div class="tiny muted">${esc(t("docs.quality.denied"))}（${esc(q.status)}）</div>`;
   else if (!(q.flags || []).length) inner = `<div class="tiny muted">${esc(t("docs.quality.noFlags"))}</div>`;
   else inner = (q.flags || []).map((f) => {
-    const reason = QUAL_CN[f.reason] ? t(QUAL_CN[f.reason]) : f.reason;
+    const reason = QUAL_CN[f.reason] ? t(QUAL_CN[f.reason]) : (f.reason || "—"); // P2-3：未知/缺失 reason 防御
     const draft = state.qualDraft[f.flag_id] || { kw: "", tags: "" };
     return `<div class="flag ${f.state !== "open" ? "resolved" : ""}">
       <div class="f-act"><span class="tag ${f.reason === "both" ? "seal" : "amber"}">${esc(reason)}</span>
@@ -303,17 +312,19 @@ function qualityHTML(d) {
 /* ---------- 质检抽查面板（ui-3 C1——org_admin：GET /api/quality-flags/sample + PATCH 行内补标） ---------- */
 
 async function loadQs(resample) {
+  const ep = state.epoch; // P1-5
   state.qs.loading = true;
   if (resample) state.qs.seed = "ui3-" + Math.random().toString(36).slice(2, 8); // 确定性抽样——换 seed = 换一批
   render();
   try {
     const body = await sampleQualityFlags({ n: 20, seed: state.qs.seed });
-    state.qs.flags = body.flags || [];
+    if (ep !== state.epoch) return;
+    state.qs.flags = (body && body.flags) || [];
   } catch (e) {
+    if (ep !== state.epoch) return;
     state.qs.flags = []; // 403 等——api.js 已 toast detail；面板内呈现计数为零
   } finally {
-    state.qs.loading = false;
-    render();
+    if (ep === state.epoch) { state.qs.loading = false; render(); }
   }
 }
 
@@ -325,7 +336,7 @@ function qsPanelHTML() {
   else body = `<table class="ledger">
     <thead><tr><th>${esc(t("docs.qs.col.flag"))}</th><th>${esc(t("docs.qs.col.doc"))}</th><th>${esc(t("docs.qs.col.reason"))}</th><th class="num">${esc(t("docs.qs.col.sim"))}</th><th class="num">${esc(t("docs.qs.col.idf"))}</th><th>${esc(t("docs.quality.title"))}</th></tr></thead>
     <tbody>${q.flags.map((f) => {
-      const reason = QUAL_CN[f.reason] ? t(QUAL_CN[f.reason]) : f.reason;
+      const reason = QUAL_CN[f.reason] ? t(QUAL_CN[f.reason]) : (f.reason || "—"); // P2-3 防御
       return `<tr>
         <td class="mono tiny"><span class="cut" style="max-width:150px" title="${esc(f.flag_id)}">${esc(f.flag_id)}</span></td>
         <td class="mono tiny"><span class="cut" style="max-width:170px" title="${esc(f.doc_id)}">${esc(f.doc_id)}</span></td>
@@ -463,22 +474,19 @@ Object.assign(actions, {
   async dsDelOk(el) {
     const id = el.dataset.id;
     const name = dsName(id);
-    let resp;
-    try { resp = await deleteDataset(cfg.org, id); }
-    catch (e) { state.dsAsk = null; render(); return false; } // 401：已 toast + 打开连接设置
-    if (resp.status === 204) {
-      state.datasets = state.datasets.filter((x) => x.id !== id);
+    try { await deleteDataset(cfg.org, id); } // R2 P1-1：204 正常返回 / !ok 抛 ApiError
+    catch (e) {
       state.dsAsk = null;
-      if (state.ds === id) state.ds = "all";
-      if (state.up.ds === id) state.up.ds = "";
-      toast(t("docs.ds.deleted", { name: esc(name) }));
-    } else {
-      const body = await resp.json().catch(() => ({}));
-      const msg = body.detail || body.error || resp.statusText || resp.status;
-      state.dsAsk = null;
-      if (resp.status === 409) toast(t("docs.ds.del.conflict409", { msg: esc(String(msg)) }));
-      else toast(resp.status + " · " + esc(String(msg)));
+      if (e.status === 409) toast(t("docs.ds.del.conflict409", { msg: esc(String(e.message || "")) })); // 库内仍有文档 RESTRICT
+      else errToast(e); // 403/404/500 如实（403/401 已由 api.js 统一 toast）
+      render();
+      return false;
     }
+    state.datasets = state.datasets.filter((x) => x.id !== id);
+    state.dsAsk = null;
+    if (state.ds === id) state.ds = "all";
+    if (state.up.ds === id) state.up.ds = "";
+    toast(t("docs.ds.deleted", { name: esc(name) }));
     render();
     return false;
   },
@@ -552,7 +560,7 @@ Object.assign(actions, {
     try { await patchQualityFlag(id, body); }
     catch (e) { errToast(e); return false; }
     toast(t("docs.qual.done"));
-    loadQuality(state.selDoc).then(() => render()).catch(() => {});
+    if (state.selDoc) loadQuality(state.selDoc).then(() => render()).catch(() => {}); // P2-3：空选防御
     return false;
   },
   async qualIgnore(el) {
@@ -560,7 +568,7 @@ Object.assign(actions, {
     try { await patchQualityFlag(id, { state: "ignored" }); }
     catch (e) { errToast(e); return false; }
     toast(t("docs.qual.ignored"));
-    loadQuality(state.selDoc).then(() => render()).catch(() => {});
+    if (state.selDoc) loadQuality(state.selDoc).then(() => render()).catch(() => {});
     return false;
   },
 });
@@ -577,12 +585,15 @@ Object.assign(INPUTS, {
 /* ---------- 上传后任务轮询（pollTask → 阶段推进 toast，终态停止） ---------- */
 
 async function pollDocTask(docId, taskId, title) {
+  const ep = state.epoch; // P1-5：组织/身份切换即停轮询、旧响应不写入新视图
   let lastStage = null;
   try {
     const task = await pollTask(taskId, {
+      shouldStop: () => ep !== state.epoch,
       onTick: async (tk) => {
         try {
           const doc = await getDocument(cfg.org, docId);
+          if (ep !== state.epoch) return;
           const stage = doc.pending_status || doc.active_status;
           mergeDocRow({
             doc_id: docId,
@@ -595,19 +606,21 @@ async function pollDocTask(docId, taskId, title) {
             lastStage = stage;
           }
         } catch (e) { /* 单跳详情失败不中断轮询 */ }
-        if (state.view === "docs") render();
+        if (ep === state.epoch && state.view === "docs") render();
       },
     });
+    if (!task) return; // shouldStop 触发（上下文已换）——静默停，不再写状态
     const doc = await getDocument(cfg.org, docId).catch(() => null);
+    if (ep !== state.epoch) return;
     if (doc) mergeDocRow({ doc_id: docId, active_version: doc.active_version, active_status: doc.active_status, pending_version: doc.pending_version, pending_status: doc.pending_status, pending_error: doc.pending_error, updated_at: doc.updated_at });
     if (task.status === "done") toast(t("docs.task.done", { title: esc(title) }));
     else toast(t("docs.task.failed", { title: esc(title), err: esc(task.error || "") }));
   } catch (e) {
-    toast(t("docs.task.pollTimeout", { title: esc(title) }));
+    if (ep === state.epoch) toast(t("docs.task.pollTimeout", { title: esc(title) }));
   }
-  if (state.view === "docs") render();
+  if (ep === state.epoch && state.view === "docs") render();
   // 终态后刷新质检（摄取管线 quality 阶段产物）
-  if (state.selDoc === docId) loadQuality(docId).then(() => render()).catch(() => {});
+  if (ep === state.epoch && state.selDoc === docId) loadQuality(docId).then(() => render()).catch(() => {});
 }
 
 VIEWS.docs = { render: viewDocs, onEnter: onEnterDocs };

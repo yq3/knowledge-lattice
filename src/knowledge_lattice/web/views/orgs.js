@@ -12,12 +12,17 @@
 
 async function onEnterOrgs() {
   if (!connected()) return;
+  const ep = state.epoch; // P1-5
   if (!state.orgView.list) {
     try {
       const body = await listOrgs();
+      if (ep !== state.epoch) return;
       state.orgView.list = body.orgs || [];
+      state.orgView.loadErr = null;
     } catch (e) {
+      if (ep !== state.epoch) return;
       state.orgView.list = [];
+      state.orgView.loadErr = String((e && e.message) || e); // P2-3：失败显错误态（非「无组织」空态）
     }
   }
 }
@@ -27,6 +32,8 @@ function viewOrgs() {
   const v = state.orgView;
   // 首装无缓存（list 未取到且元数据也未带出组织）→ loading（防「无组织」空态误闪——ui-3）
   if (v.list == null && !state.orgs.length) return loadingHTML("orgs");
+  if (v.loadErr && !(v.list || []).length) return `<div class="empty" style="margin:0"><h3>${esc(t("orgs.loadErr", { err: esc(v.loadErr) }))}</h3>
+    <div style="margin-top:16px"><button class="btn ghost sm" data-act="orgsRetry">${esc(t("common.retry"))}</button></div></div>`; // P2-3
   const orgs = v.list != null ? v.list : state.orgs;
   return `
   <header class="head"><h1>${esc(t("orgs.title"))}</h1>
@@ -86,6 +93,15 @@ Object.assign(actions, {
     v.newOpen = !v.newOpen;
     v.form = { id: "", name: "", admin: "" };
     v.askOrg = null;
+  },
+  /* P2-3：组织列表装载失败后的显式重试 */
+  async orgsRetry() {
+    state.orgView.list = null;
+    state.orgView.loadErr = null;
+    render();
+    await onEnterOrgs();
+    render();
+    return false;
   },
   async orgCreate() {
     const d = state.orgView.form;

@@ -77,6 +77,7 @@ Object.assign(actions, {
   async doSearch() {
     const q = state.q.trim();
     if (!q || state.searching) return false;
+    const ep = state.epoch; // P1-5：身份切换后旧检索结果不写入新视图
     state.searching = true;
     state.lastSearch = { q };
     render();
@@ -85,12 +86,14 @@ Object.assign(actions, {
     if (state.autoEnt) payload.auto_entities = true; // 实体路开关（M2-S3）
     try {
       const body = await search(payload);
+      if (ep !== state.epoch) return false;
       state.lastSearch = { q, body };
     } catch (e) {
+      if (ep !== state.epoch) return false;
       state.lastSearch = e.status === 403 ? { q, denied: true } : null; // 403 → denied 空态（api.js 已 toast detail）
       if (e.status !== 403 && e.status !== 401) errToast(e);
     } finally {
-      state.searching = false;
+      if (ep === state.epoch) state.searching = false;
     }
     render();
     return false;

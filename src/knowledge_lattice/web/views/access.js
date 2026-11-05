@@ -13,9 +13,11 @@
 /* ---------- 授权数据装载（export CSV = local 真相源） ---------- */
 
 async function loadGrantsTable() {
+  const ep = state.epoch; // P1-5：组织/身份切换后旧响应不写入新视图
   state.loading.grants = true;
   try {
     const text = await exportGrants(cfg.org);
+    if (ep !== state.epoch) return;
     const lines = text.trim().split(/\r?\n/);
     state.g.rows = lines.length > 1
       ? lines.slice(1).filter((l) => l.trim()).map((l) => {
@@ -24,19 +26,22 @@ async function loadGrantsTable() {
           return { username: cols[0], dimKey: cols[1], value: cols[2], expiresAt: cols[3] || "" };
         })
       : [];
-    state.usernames = [...new Set(state.g.rows.map((r) => r.username))].sort();
+    state.g.error = null; // 装载成功清错误态（P2-3）
+    state.usernames = [...new Set([...state.g.rows.map((r) => r.username), ...knownMembers()])].sort();
     if (state.g.detail && !state.usernames.includes(state.g.detail)) state.g.detail = null;
     if (state.g.detail) seedGrantEditor(state.g.detail);
   } catch (e) {
-    state.g.rows = []; // 403 非 org_admin——提示在视图内展示（api.js 已 toast）
+    if (ep !== state.epoch) return;
+    state.g.rows = [];
+    state.g.error = String((e && e.message) || e); // P2-3：失败显错误态（非「暂无授权行」空态）
   } finally {
-    state.loading.grants = false;
+    if (ep === state.epoch) state.loading.grants = false;
   }
 }
 
-/* 授权格成员集（export 用户名升序）与格态判定（display-only 到期比较） */
+/* 授权格成员集（export 用户名 ∪ 会话成员注册表，升序——P1-3）与格态判定（display-only 到期比较） */
 function latticeMembers() {
-  return [...new Set(state.g.rows.map((r) => r.username))].sort();
+  return [...new Set([...state.g.rows.map((r) => r.username), ...knownMembers()])].sort();
 }
 function grantRowsOf(username) {
   return state.g.rows.filter((r) => r.username === username);
@@ -63,6 +68,8 @@ function grantsHTML() {
   const g = state.g;
   if (state.loading.grants && !g.rows.length) return loadingHTML("access");
   if (!isAdmin()) return `<div class="note amber">${t("access.grants.needAdmin")}</div>`;
+  if (g.error) return `<div class="empty" style="margin:0"><h3>${esc(t("access.grants.loadErr", { err: esc(g.error) }))}</h3>
+    <div style="margin-top:16px"><button class="btn ghost sm" data-act="grantsRetry">${esc(t("common.retry"))}</button></div></div>`; // P2-3：失败≠空态
   if (!g.rows.length) return `<div class="empty" style="margin:0"><h3>${esc(t("access.grants.empty.title"))}</h3><p>${t("access.grants.empty.body")}</p></div>`;
   const members = latticeMembers();
   const now = nowUtcStr();
@@ -151,6 +158,8 @@ function grantDetailHTML(member) {
 function membersHTML() {
   if (state.loading.grants && !state.g.rows.length) return loadingHTML("access");
   if (!isAdmin()) return `<div class="note amber">${t("access.grants.needAdmin")}</div>`;
+  if (state.g.error) return `<div class="empty" style="margin:0"><h3>${esc(t("access.grants.loadErr", { err: esc(state.g.error) }))}</h3>
+    <div style="margin-top:16px"><button class="btn ghost sm" data-act="grantsRetry">${esc(t("common.retry"))}</button></div></div>`;
   const m = state.mem;
   const roster = latticeMembers();
   const now = nowUtcStr();
@@ -162,24 +171,36 @@ function membersHTML() {
     <tbody>${roster.length ? roster.map((u) => {
       const mine = grantRowsOf(u);
       const expRows = mine.filter((r) => r.expiresAt && r.expiresAt <= now).length;
+      const known = knownUser(u); // P1-4：会话已知 role/expiresAt（无则不默认代填）
       const row = `<tr>
         <td>${avatar(u)} <b class="t-title">${esc(u)}</b></td>
         <td>${m.roleSel === u
-          ? `<div style="display:flex;gap:6px;align-items:center">
+          ? `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
               <select class="sel" data-in="memRoleSel" style="height:26px;width:130px">
+                ${m.roleVal ? "" : `<option value="" selected disabled hidden>${esc(t("access.mem.rolePick"))}</option>`}
                 <option value="member" ${m.roleVal === "member" ? "selected" : ""}>member</option>
                 <option value="org_admin" ${m.roleVal === "org_admin" ? "selected" : ""}>org_admin</option>
               </select>
-              <button class="btn sm" data-act="memRoleOk" data-u="${esc(u)}">${esc(t("common.save"))}</button>
+              <span class="tiny muted">${m.roleVal ? esc(t("access.mem.roleConfirm", { role: esc(m.roleVal) })) : esc(t("access.mem.roleUnknown"))}</span>
+              <button class="btn sm" data-act="memRoleOk" data-u="${esc(u)}" ${m.roleVal ? "" : "disabled"}>${esc(t("common.save"))}</button>
               <button class="btn ghost sm" data-act="memRoleCancel">${esc(t("common.cancel"))}</button></div>`
-          : `<button class="btn ghost sm" data-act="memRoleAsk" data-u="${esc(u)}" title="PATCH /members/${esc(u)}">${esc(t("access.mem.changeRole"))}</button>`}</td>
+          : `<span class="pill ${known && known.role === "org_admin" ? "ok" : ""}">${esc(known && known.role ? known.role : "—")}</span>
+             <button class="btn ghost sm" data-act="memRoleAsk" data-u="${esc(u)}" title="PATCH /members/${esc(u)}">${esc(t("access.mem.changeRole"))}</button>`}</td>
         <td>${m.expAsk === u
           ? `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-              <input class="inp" data-in="memExpVal" placeholder="${esc(t("access.mem.expPh"))}" value="${esc(m.expVal)}" style="height:26px;width:200px">
-              <button class="btn sm" data-act="memExpOk" data-u="${esc(u)}">${esc(t("common.save"))}</button>
+              <select class="sel" data-in="memExpMode" style="height:26px;width:110px">
+                <option value="set" ${m.expMode !== "perm" ? "selected" : ""}>${esc(t("access.mem.expMode.set"))}</option>
+                <option value="perm" ${m.expMode === "perm" ? "selected" : ""}>${esc(t("access.mem.expMode.perm"))}</option>
+              </select>
+              ${m.expMode === "perm"
+                ? `<span class="tiny muted">${esc(t("access.mem.expConfirm", { v: "null" }))}</span>`
+                : `<input class="inp" data-in="memExpVal" placeholder="${esc(t("access.mem.expEditPh"))}" value="${esc(m.expVal)}" style="height:26px;width:200px">
+                   <span class="tiny muted">${m.expVal.trim() ? esc(t("access.mem.expConfirm", { v: esc(m.expVal.trim()) })) : ""}</span>`}
+              <button class="btn sm" data-act="memExpOk" data-u="${esc(u)}" ${m.expMode === "set" && !m.expVal.trim() ? "disabled" : ""}>${esc(t("common.save"))}</button>
               <button class="btn ghost sm" data-act="memExpCancel">${esc(t("common.cancel"))}</button>
             </div>`
-          : `<button class="link tiny" data-act="memExpAsk" data-u="${esc(u)}" title="PATCH /members/${esc(u)} · ${esc(t("access.mem.expTip"))}">${esc(t("access.mem.changeExp"))}</button>`}</td>
+          : `<span class="tiny muted">${known && known.expiresAt ? tsHTML(known.expiresAt, "mono tiny") : "—"}</span>
+             <button class="link tiny" data-act="memExpAsk" data-u="${esc(u)}" title="PATCH /members/${esc(u)} · ${esc(t("access.mem.expTip"))}">${esc(t("access.mem.changeExp"))}</button>`}</td>
         <td class="num">${mine.length}${expRows ? ` <span class="tag amber" title="${esc(t("access.mem.expGrantsTip"))}">${expRows} ${esc(t("access.mem.expGrants"))}</span>` : ""}</td>
         <td>${m.ask === u ? "" : `<button class="btn ghost sm" data-act="memAsk" data-u="${esc(u)}" style="color:var(--danger)">${esc(t("access.mem.remove"))}…</button>`}</td></tr>`;
       if (m.ask !== u) return row;
@@ -228,12 +249,14 @@ function visHTML() {
 /* ---------- 维度子标签（ui-1 平移） ---------- */
 
 async function loadGovernanceDims() {
+  const ep = state.epoch; // P1-5
   state.loading.govDims = true;
   try {
     const body = await listDimensions(cfg.org);
+    if (ep !== state.epoch) return;
     state.dims = body.dimensions || [];
   } finally {
-    state.loading.govDims = false;
+    if (ep === state.epoch) state.loading.govDims = false;
   }
 }
 
@@ -306,9 +329,10 @@ function govConfirmHTML() {
   const impactText = a.type === "disable"
     ? `${t("access.dims.impact.docs")}: <b>${esc(imp.docs ?? "—")}</b> · ${t("access.dims.impact.grants")}: <b>${esc(imp.grants ?? "—")}</b> · ${t("access.dims.impact.users")}: <b>${esc(imp.users ?? "—")}</b> · ${t("access.dims.impact.locked")}: <b>${esc(imp.locked_docs ?? "—")}</b>`
     : `${t("access.dims.impact.docs")}: <b>${esc(imp.docs ?? "—")}</b> · ${t("access.dims.impact.grants")}: <b>${esc(imp.grants ?? "—")}</b> · ${t("access.dims.impact.values")}: <b>${esc(imp.values ?? "—")}</b>`;
+  // R2 P0：value/key 为后端可控存储值（维度取值/键）——t() 纯插值不转义，参数必须 esc()
   const title = a.type === "disable"
-    ? t("access.dims.disable.ask", { value: a.value })
-    : t("access.dims.retire.ask", { key: a.dimKey });
+    ? t("access.dims.disable.ask", { value: esc(a.value) })
+    : t("access.dims.retire.ask", { key: esc(a.dimKey) });
   return `<div class="confirm"><b>${title}</b> ${a.type === "disable" ? t("access.dims.disable.body") : t("access.dims.retire.body")}
     <div>${impactText}</div>
     <div class="cf-act">
@@ -422,7 +446,9 @@ Object.assign(actions, {
     if (!member) return false;
     // B①：逐行独立 expires——每行取自身输入框值（初始值=库内值；空=永久）
     const grants = Object.keys(state.g.picked).map((k) => {
-      const [dimKey, value] = k.split("=");
+      // R2 P2-5：按首个 = 分割——取值本身可含 =（split("=") 会截断）
+      const eq = k.indexOf("=");
+      const dimKey = k.slice(0, eq), value = k.slice(eq + 1);
       const expires = state.g.expires[k] ?? state.g.existing[k] ?? "";
       return { dim_key: dimKey, value, expires_at: expires || null };
     });
@@ -454,65 +480,96 @@ Object.assign(actions, {
     const d = state.mem.form;
     const uid = d.uid.trim();
     if (!uid) return false;
+    let body;
     try {
-      const body = await addMember(cfg.org, {
+      body = await addMember(cfg.org, {
         user_id: uid, role: d.role, expires_at: d.expires.trim() || null,
       });
-      toast(t("access.mem.added", { user: esc(body.user_id || uid), role: esc(body.role || d.role) }));
     } catch (e) {
       if (e.status === 404) toast(t("access.mem.add404", { user: esc(uid) }));
       else if (e.status === 409) toast(t("access.mem.add409", { user: esc(uid) }));
       else errToast(e);
       return false;
     }
+    // P1-3：201 响应 {user_id, role, expires_at} 入会话注册表——零授权新成员立即可见
+    // （expires_at 为 null=永久是合法值——仅 undefined 才回退表单值）
+    setKnownUser(body.user_id || uid, {
+      role: body.role !== undefined ? body.role : d.role,
+      expiresAt: body.expires_at !== undefined ? body.expires_at : (d.expires.trim() || null),
+    });
+    toast(t("access.mem.added", { user: esc(body.user_id || uid), role: esc(body.role || d.role) }));
     state.mem.addOpen = false;
     state.mem.form = { uid: "", role: "member", expires: "" };
+    state.usernames = [...new Set([...state.usernames, body.user_id || uid])].sort();
     await loadGrantsTable();
     render();
     return false;
   },
   memRoleAsk(el) {
-    state.mem.roleSel = el.dataset.u;
-    state.mem.roleVal = "member";
+    const u = el.dataset.u;
+    state.mem.roleSel = u;
+    // P1-4：会话已知 role 预选；未知则空选项 + 保存禁用——不默认代填 member
+    const known = knownUser(u);
+    state.mem.roleVal = known && known.role ? known.role : "";
     state.mem.ask = null;
   },
   memRoleCancel() { state.mem.roleSel = null; },
   async memRoleOk(el) {
     const u = el.dataset.u;
-    const role = state.mem.roleVal || "member";
+    const role = state.mem.roleVal;
+    if (!role) return false; // 未知当前角色时必须显式选择（P1-4）
+    let body;
     try {
-      await patchMember(cfg.org, u, { role });
-      toast(t("access.mem.roleSet", { user: esc(u), role: esc(role) }));
+      body = await patchMember(cfg.org, u, { role }); // 单字段发送（键缺失=不变不受影响）
     } catch (e) {
       if (e.status === 409) toast(t("access.mem.patch409", { user: esc(u) }));
       else if (e.status === 404) toast(t("access.mem.patch404", { user: esc(u) }));
       else errToast(e);
       return false;
     }
+    // PATCH 回整行 {user_id, role, expires_at}——null=永久为合法值，仅 undefined 回退旧值
+    const prevRole = knownUser(u) || {};
+    setKnownUser(u, {
+      role: body.role !== undefined ? body.role : (prevRole.role ?? role),
+      expiresAt: body.expires_at !== undefined ? body.expires_at : (prevRole.expiresAt ?? null),
+    });
+    toast(t("access.mem.roleSet", { user: esc(u), role: esc(body.role || role) }));
     state.mem.roleSel = null;
     await loadGrantsTable();
     render();
     return false;
   },
   memExpAsk(el) {
-    state.mem.expAsk = el.dataset.u;
-    state.mem.expVal = "";
+    const u = el.dataset.u;
+    state.mem.expAsk = u;
+    // P1-4：显式二选一（设时点 / 改永久）——known 有值则预填；不再隐式空串=永久
+    const known = knownUser(u);
+    state.mem.expVal = known && known.expiresAt ? known.expiresAt : "";
+    state.mem.expMode = "set";
     state.mem.ask = null;
   },
   memExpCancel() { state.mem.expAsk = null; },
   async memExpOk(el) {
     const u = el.dataset.u;
-    const v = state.mem.expVal.trim();
-    // 键显式出现：空串输入 = expires_at null（改永久）；非空 = 设定时点
+    const m = state.mem;
+    let value;
+    if (m.expMode === "perm") value = null;              // 显式改永久
+    else { value = m.expVal.trim(); if (!value) return false; } // 设时点必须非空（禁用隐式空=永久）
+    let body;
     try {
-      await patchMember(cfg.org, u, { expires_at: v || null });
-      toast(t("access.mem.expSet", { user: esc(u), v: esc(v || "null") }));
+      body = await patchMember(cfg.org, u, { expires_at: value }); // 键显式出现（null=改永久）
     } catch (e) {
       if (e.status === 409) toast(t("access.mem.patch409", { user: esc(u) }));
       else if (e.status === 404) toast(t("access.mem.patch404", { user: esc(u) }));
       else errToast(e);
       return false;
     }
+    const prevExp = knownUser(u) || {};
+    setKnownUser(u, {
+      role: body.role !== undefined ? body.role : (prevExp.role ?? null),
+      expiresAt: body.expires_at !== undefined ? body.expires_at : null, // 本动作显式改 expires
+    });
+    toast(t("access.mem.expSet", { user: esc(u), v: esc(body.expires_at == null ? "null" : body.expires_at) }));
     state.mem.expAsk = null;
     render();
     return false;
@@ -521,20 +578,24 @@ Object.assign(actions, {
   memCancel() { state.mem.ask = null; },
   async memDelOk(el) {
     const u = el.dataset.u;
-    let resp;
     try {
-      resp = await deleteMember(cfg.org, u);
+      await deleteMember(cfg.org, u); // R2 P1-1：!ok 抛 ApiError（204 空 body 正常返回）
     } catch (e) {
-      if (e && e.status === 409) toast(t("access.mem.del409", { user: esc(u) }));
-      else if (e && e.status === 404) toast(t("access.mem.patch404", { user: esc(u) }));
-      else errToast(e);
-      return false;
+      if (e.status === 409) toast(t("access.mem.del409", { user: esc(u) }));
+      else if (e.status === 404) toast(t("access.mem.patch404", { user: esc(u) }));
+      else errToast(e); // 403/500 等如实 toast（api.js 已 toast 403 detail）
+      return false; // 失败不删行、不收起确认条
     }
-    if (resp && resp.status === 409) { toast(t("access.mem.del409", { user: esc(u) })); return false; }
-    if (resp && resp.status === 404) { toast(t("access.mem.patch404", { user: esc(u) })); return false; }
+    dropKnownUser(u); // P1-3：会话注册表移除
     toast(t("access.mem.deleted", { user: esc(u) }));
     state.mem.ask = null;
     if (state.g.detail === u) state.g.detail = null;
+    await loadGrantsTable();
+    render();
+    return false;
+  },
+  /* P2-3：授权导出装载失败后的显式重试（grants/members 两子标签共用） */
+  async grantsRetry() {
     await loadGrantsTable();
     render();
     return false;
@@ -668,8 +729,10 @@ Object.assign(INPUTS, {
   memNewUid: (v) => { state.mem.form.uid = v; },
   memNewRole: (v) => { state.mem.form.role = v; },
   memNewExp: (v) => { state.mem.form.expires = v; },
-  memRoleSel: (v) => { state.mem.roleVal = v; return false; },
-  memExpVal: (v) => { state.mem.expVal = v; return false; },
+  /* P1-4：选择/输入即重渲染——确认行（role := X / expires_at := v）随动明示目标值 */
+  memRoleSel: (v) => { state.mem.roleVal = v; },
+  memExpVal: (v) => { state.mem.expVal = v; },
+  memExpMode: (v) => { state.mem.expMode = v; },
   dimKey: (v) => { state.dimNew.key = v; },
   dimName: (v) => { state.dimNew.name = v; },
   dimReq: (v) => { state.dimNew.required = v; },
