@@ -3,11 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Knowledge Lattice · 企业知识层控制台（原型 v0.5.1）</title>
+<!-- v0.6（2026-11-03）：非决策变更——C 项补画（组织管理/成员/维度取值 CRUD/五源同步/运维面板/MCP 接入）+ 任务面口径，D 编号与冻结结论不动（issue #20） -->
+<title>Knowledge Lattice · 企业知识层控制台（原型 v0.6）</title>
 <style>
 /* ==========================================================================
-   Knowledge Lattice 控制台原型 v0.5.1 —— 企业 SaaS 视觉：浅灰底 + 白色卡片 + 品牌蓝
-   信息结构对齐 design.md v0.8：§5.1 维度 ACL / §5.3 版本在用 / §5.4 区分度 / §5.8~5.10 语义层 / §6.2 REST
+   Knowledge Lattice 控制台原型 v0.6 —— 企业 SaaS 视觉：浅灰底 + 白色卡片 + 品牌蓝
+   信息结构对齐 design v0.9.9 + issue #20 C 项补画：§5.1 维度 ACL / §5.3 版本在用 / §5.4 区分度 / §5.8~5.10 语义层 / §6.2 REST
    ========================================================================== */
 :root {
   /* 表面与描边（变量名沿用，值为 SaaS 灰阶） */
@@ -563,8 +564,22 @@ details[open] > summary::before { transform: rotate(90deg); }
     <span class="tb-sep" aria-hidden="true">/</span>
     <div class="picker" id="orgPicker"></div>
     <div class="tb-spacer"></div>
-    <button class="tb-link" data-act="stub" data-msg="OpenAPI 参考：/api/docs · 与 design.md §6.2 REST 对齐"><svg class="ic" viewBox="0 0 24 24"><path d="M4 19.5V5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2Zm0 0A2 2 0 0 0 6 22h12"/></svg><span>API 参考</span></button>
-    <button class="tb-link" data-act="stub" data-msg="MCP 接入：agent 通过 search / annotate / expand / describe_table 调用，委托 token（sub=用户、act=agent、org 单值 claim）；禁止 token 原样透传（D18）"><svg class="ic" viewBox="0 0 24 24"><path d="M9 7H6a3 3 0 0 0 0 6h3m6-6h3a3 3 0 0 1 0 6h-3M8 10h8"/></svg><span>MCP 接入</span></button>
+    <button class="tb-link" data-act="apiDocs" title="OpenAPI · /docs（与 design §6.2 REST 对齐）"><svg class="ic" viewBox="0 0 24 24"><path d="M4 19.5V5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2Zm0 0A2 2 0 0 0 6 22h12"/></svg><span>API 参考</span></button>
+    <div class="picker" id="mcpPicker">
+      <button class="tb-link" data-act="mcpMenu" aria-haspopup="true"><svg class="ic" viewBox="0 0 24 24"><path d="M9 7H6a3 3 0 0 0 0 6h3m6-6h3a3 3 0 0 1 0 6h-3M8 10h8"/></svg><span>MCP 接入</span></button>
+      <div class="menu" id="menu-mcp" style="left:auto;right:0;min-width:380px">
+        <div class="tiny muted" style="padding:6px 10px 4px;font-weight:500">MCP 工具 · 单 server 挂载 <code>/mcp</code></div>
+        <div class="menu-item"><code>search</code><small>权限内检索</small></div>
+        <div class="menu-item"><code>fetch</code><small>取块原文</small></div>
+        <div class="menu-item"><code>upload</code><small>凭证三步上传</small></div>
+        <div class="menu-item"><code>list_documents</code><small>文档列表</small></div>
+        <div class="menu-item"><code>annotate</code><small>术语识别</small></div>
+        <div class="menu-item"><code>get_entity</code><small>实体与关系展开</small></div>
+        <div class="menu-item"><code>search_entities</code><small>实体检索</small></div>
+        <div class="menu-item"><code>describe_table</code><small>表列透传</small></div>
+        <div class="menu-note">委托 token——sub=用户、act=agent、org 单值 claim；<b>禁止 token 原样透传（D18）</b>。API 参考 = FastAPI OpenAPI <code>/docs</code>。</div>
+      </div>
+    </div>
     <span class="tb-div" aria-hidden="true"></span>
     <div class="tb-lens">
       <span class="rail-label" title="检索、可见性、上传可选取值都按此身份计算">以此身份查看</span>
@@ -575,8 +590,8 @@ details[open] > summary::before { transform: rotate(90deg); }
   <aside class="rail" aria-label="导航">
     <nav class="nav" id="nav"></nav>
     <div class="rail-foot">
-      <div class="rf-h"><i></i>原型 v0.5.1 · Mock 数据</div>
-      信息结构对齐 <code>design.md v0.8</code><br>
+      <div class="rf-h"><i></i>原型 v0.6 · Mock 数据</div>
+      信息结构对齐 <code>design v0.9.9</code> + issue #20 C 项补画<br>
       §5.1 ACL · §5.3 版本在用<br>§5.8–5.10 语义 · §6.2 REST
     </div>
   </aside>
@@ -592,13 +607,14 @@ details[open] > summary::before { transform: rotate(90deg); }
    ========================================================================== */
 const NOW = "2026-10-18 12:30:00";
 const USERS = {
+  u0: "系统管理员",
   u1: "张会计", u2: "李顾问", u3: "王实习", u4: "周主管", u5: "孙外聘",
   f1: "陈出纳", f2: "赵审核",
 };
 
 const ORGS = [
 {
-  id: "01JORGTAX", name: "税务事业部", agent: "tax-copilot",
+  id: "01JORGTAX", name: "税务事业部", agent: "tax-copilot", status: "active",
   dims: [
     { key: "region",   label: "作业区域", required: true,  status: "active",  source: "local",
       values: [["CN", "中国区"], ["OS", "海外区"]] },
@@ -607,7 +623,7 @@ const ORGS = [
     { key: "entity",   label: "法人主体", required: false, status: "active",  source: "sync:主数据",
       values: [["CN01", "境内主体 01"], ["CN02", "境内主体 02"], ["SG01", "新加坡主体"]] },
     { key: "channel",  label: "渠道",     required: false, status: "retired", source: "local",
-      values: [["ONLINE", "线上"], ["OFFLINE", "线下"]] },
+      values: [["ONLINE", "线上", "disabled"], ["OFFLINE", "线下"]] },   // 取值第三位 = 状态（缺省 active）——disabled 演示停用态
   ],
   datasets: [
     { id: "ds_vat",  name: "流转税实务", desc: "增值税申报、发票、留抵" },
@@ -840,9 +856,30 @@ const ORGS = [
     { t: "10:02:47", actor: "user:u4", act: "dimension.retire", detail: "退役维度 channel · 预估 3 份文档新增可见", out: "ok" },
     { t: "09:40:12", actor: "svc:grant_sync", act: "grant.sync", detail: "entity · 主数据快照 #2210 · 5 人无变化", out: "ok" },
   ],
+  /* GET /api/orgs/{org}/embedding-coverage 响应形态（C-3 对齐）：embed_model / dim / totals / coverage[] / reembed */
+  embCov: {
+    model: "qwen3-embedding-4b:2560", dim: 2560,
+    totals: { done: 386, total: 392 },
+    coverage: [
+      { dataset_name: "流转税实务", done: 216, total: 219 },
+      { dataset_name: "所得税",     done: 74,  total: 77 },
+      { dataset_name: "国际税收",   done: 96,  total: 96 },
+    ],
+    reembed: { status: "running", target_model: "qwen3-embedding-8b:4096", done: 8, total: 12 },
+  },
+  /* GET /api/orgs/{org}/stats → { maintenance: {…} }：11 个注册表键（最近一次运行计数） */
+  maintenance: {
+    at: "2026-10-18 02:45:00",
+    keys: [
+      ["credentials_purged", 3], ["memberships_purged", 1], ["tombstones_purged", 12], ["task_rows_trimmed", 418],
+      ["audit_shipped", "2026-10-18 00:10"], ["audit_months_sealed", "2026-09"], ["audit_months_pruned", "2026-04"],
+      ["backup_snapshot", "2026-10-18 02:10 · ok"], ["audit_outbox_trimmed", 96],
+      ["semantic_daily_sync", "2026-10-18 02:40 · ok"], ["semantic_reconcile", "2026-10-18 02:45 · 修复 2"],
+    ],
+  },
 },
 {
-  id: "01JORGFIN", name: "财务共享中心", agent: "fin-assistant",
+  id: "01JORGFIN", name: "财务共享中心", agent: "fin-assistant", status: "active",
   dims: [
     { key: "region",   label: "作业区域", required: true, status: "active", source: "local", values: [["CN", "中国区"], ["OS", "海外区"]] },
     { key: "biz_line", label: "业务线",   required: true, status: "active", source: "local", values: [["GL", "总账"], ["AP", "应付"], ["TE", "差旅"]] },
@@ -872,6 +909,45 @@ const ORGS = [
   tasks: [ { id: "01JU01", type: "ingest", doc: "01J8B3", st: "done", stage: "searchable_full", hb: null, lease: null, att: 0 } ],
   queryAudit: [ { t: "11:15:42", actor: "agent:fin-assistant · user:f1", act: "search", detail: "「差旅 住宿 限额」→ 2 块", out: "ok" } ],
   permAudit: [ { t: "09:10:00", actor: "user:f2", act: "member.add", detail: "李顾问 加入（member）", out: "ok" } ],
+  embCov: {
+    model: "qwen3-embedding-4b:2560", dim: 2560,
+    totals: { done: 124, total: 124 },
+    coverage: [ { dataset_name: "费用制度", done: 124, total: 124 } ],
+    reembed: { status: null, target_model: null, done: 0, total: 0 },
+  },
+  maintenance: {
+    at: "2026-10-18 03:05:00",
+    keys: [
+      ["credentials_purged", 0], ["memberships_purged", 0], ["tombstones_purged", 4], ["task_rows_trimmed", 61],
+      ["audit_shipped", "2026-10-18 00:10"], ["audit_months_sealed", "2026-09"], ["audit_months_pruned", "2026-05"],
+      ["backup_snapshot", "2026-10-18 03:00 · ok"], ["audit_outbox_trimmed", 18],
+      ["semantic_daily_sync", "—（未接入语义）"], ["semantic_reconcile", "—（未接入语义）"],
+    ],
+  },
+},
+{
+  /* 第三个样例组织：停用态演示（#14——组织只停用不删除，停用即全员拒绝，审计保留） */
+  id: "01JORGHK", name: "香港分所", agent: "hk-assistant", status: "disabled", disabledAt: "2026-10-01 00:00:00",
+  dims: [
+    { key: "region",   label: "作业区域", required: true,  status: "active", source: "local", values: [["HK", "香港"], ["CN", "内地"]] },
+    { key: "biz_line", label: "业务线",   required: false, status: "active", source: "local", values: [["TAX", "税务"], ["AUD", "审计"]] },
+  ],
+  datasets: [ { id: "ds_hk", name: "香港税务", desc: "利得税 / 薪俸税口径（停用前未导入文档）" } ],
+  members: [
+    { uid: "u2", role: "org_admin", expires: null, perms: [], grants: { region: ["HK", "CN"], biz_line: ["TAX", "AUD"] } },
+  ],
+  docs: [], chunks: [], qflags: [], semantic: null,
+  tasks: [], queryAudit: [], permAudit: [],
+  embCov: { model: "qwen3-embedding-4b:2560", dim: 2560, totals: { done: 0, total: 0 }, coverage: [], reembed: { status: null, target_model: null, done: 0, total: 0 } },
+  maintenance: {
+    at: "2026-10-01 02:45:00",
+    keys: [
+      ["credentials_purged", 0], ["memberships_purged", 0], ["tombstones_purged", 0], ["task_rows_trimmed", 0],
+      ["audit_shipped", "2026-10-01 00:10"], ["audit_months_sealed", "2026-09"], ["audit_months_pruned", "—"],
+      ["backup_snapshot", "2026-10-01 02:10 · ok（停用后不再运行）"], ["audit_outbox_trimmed", 0],
+      ["semantic_daily_sync", "—（未接入语义）"], ["semantic_reconcile", "—（未接入语义）"],
+    ],
+  },
 },
 ];
 
@@ -899,12 +975,21 @@ const state = {
   selEnt: null, depth: 1, entQ: "", entSel: null, relAll: false, degraded: false,
   annText: "附表二的进项转出怎么填？中台什么时候同步认证税额，留底能退吗？TP 要不要单独报",
   fuzzy: false, vis: null, retireAsk: null,
+  /* v0.6 C 项补画：组织 / 成员 / 维度取值 / 删库 的交互状态 */
+  orgAsk: null, orgNewOpen: false, orgNew: { id: "", name: "", admin: "" },
+  memAsk: null, memExpAsk: null, memExpVal: "", memAddOpen: false, memNew: { uid: "", role: "member", expires: "" },
+  dimNewOpen: false, dimNew: { key: "", label: "", required: false }, valAsk: null, valNew: { v: "", l: "" },
+  dsAsk: null,
 };
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const O = () => ORGS.find(o => o.id === state.orgId);
 const uname = uid => USERS[uid] || uid;
-const lens = () => O().members.find(m => m.uid === state.lens[O().id]) || O().members[0];
+/* 系统管理员档（C-1a）：非成员的特殊档——lens 菜单固定项；memberValid/canSee 放行（mock 演示：组织内数据全显） */
+const SYSADMIN = { uid: "u0", role: "sysadmin", expires: null, perms: [], grants: {} };
+const isU0 = m => m && m.uid === "u0";
+const lens = () => state.lens[O().id] === "u0" ? SYSADMIN
+  : (O().members.find(m => m.uid === state.lens[O().id]) || O().members[0] || SYSADMIN);
 const isAdmin = m => m.role === "org_admin";
 const memberValid = m => !m.expires || m.expires > NOW;            // 文本比较 = 时间比较（统一 UTC 格式）
 const grantValid = (m, k) => !(m.grantExp && m.grantExp[k] && m.grantExp[k] <= NOW);
@@ -935,6 +1020,7 @@ function queryEvent(act, detail, out = "ok") { O().queryAudit.unshift({ t: tick(
    §5.1 维度 ACL —— 全部 active 维度：有值则求交集、空值放行；空授权集只放行空值；无 owner 分支
    ========================================================================== */
 function canSee(m, doc) {
+  if (isU0(m)) return true;                                 // 系统管理员档：mock 演示口径——组织内数据全显
   if (!memberValid(m)) return false;                        // 第 0 步：成员关系（含过期）
   for (const d of activeDims()) {
     const vals = doc.dims[d.key] || [];
@@ -946,6 +1032,10 @@ function canSee(m, doc) {
 }
 function explain(m, doc) {
   const rows = [];
+  if (isU0(m)) {
+    rows.push({ ic: "y", k: "系统管理员", v: "跨组织特殊档（mock 演示：组织内数据全显）——不做组织内业务检索" });
+    return rows;
+  }
   if (!memberValid(m)) {
     rows.push({ ic: "n", k: "成员关系", v: `已于 ${short(m.expires)} 过期 → 第 0 步拒绝，后续不再计算` });
     return rows;
@@ -972,6 +1062,10 @@ function compileSQL(m) {
   const o = O(), L = [];
   const c = s => `<span class="c">${esc(s)}</span>`, k = s => `<span class="k">${s}</span>`;
   L.push(c(`-- 视角：${uname(m.uid)} @ ${o.name}（${isAdmin(m) ? "org_admin" : "member"}）—— 角色不影响检索过滤`));
+  if (isU0(m)) {
+    L.push(c(`-- 系统管理员（u0）：跨组织特殊档，mock 演示组织内数据全显；实装为管理面视角`));
+    return L.join("\n");
+  }
   if (!memberValid(m)) {
     L.push(c(`-- 第 0 步：成员关系 expires_at ${m.expires} ≤ :now → 403，不进入检索`));
     return L.join("\n");
@@ -1204,6 +1298,7 @@ const ICONS = {
   access: '<path d="M12 3 5 6v5c0 4.4 3 8.3 7 9.5 4-1.2 7-5.1 7-9.5V6z"/><path d="m9.2 12 2 2 3.8-3.8"/>',
   semantic: '<circle cx="6" cy="6" r="2.4"/><circle cx="18" cy="8" r="2.4"/><circle cx="9" cy="18" r="2.4"/><path d="M8.2 7 15.7 7.6M7 8.2l1.4 7.5M16.6 10 10.8 16.3"/>',
   ops: '<path d="M3 12h4l3-7 4 14 3-7h4"/>',
+  orgs: '<path d="M3 21h18M5 21V5a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v16M14 9h4a1 1 0 0 1 1 1v11"/><path d="M8 8h3M8 12h3M8 16h3M17 13h.01M17 17h.01"/>',
 };
 const ic = k => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[k]}</svg>`;
 const CARET = `<svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>`;
@@ -1217,25 +1312,26 @@ function renderRail() {
     </button>
     <div class="menu" id="menu-org">
       <div class="tiny muted" style="padding:6px 10px 4px;font-weight:500">工作空间（组织）</div>
-      ${ORGS.map((x, i) => `<button class="menu-item ${x.id === o.id ? "on" : ""}" data-act="org" data-id="${x.id}"><span>${esc(x.name)}<span class="mono tiny muted" style="display:block;font-weight:400">${x.id}</span></span><small>${x.members.length} 人 · ${x.docs.length} 文档</small></button>`).join("")}
-      <div class="menu-note">系统管理员视角。切换组织 = 切换整套库、维度、授权与语义图；跨组织零可见。</div>
+      ${ORGS.map((x, i) => `<button class="menu-item ${x.id === o.id ? "on" : ""}" data-act="org" data-id="${x.id}"><span>${esc(x.name)}${x.status === "disabled" ? ` <span class="tag" style="margin-left:4px">已停用</span>` : ""}<span class="mono tiny muted" style="display:block;font-weight:400">${x.id}</span></span><small>${x.members.length} 人 · ${x.docs.length} 文档</small></button>`).join("")}
+      <div class="menu-note">切换组织 = 切换整套库、维度、授权与语义图；跨组织零可见。停用组织全员拒绝、只停用不删除（#14）。</div>
     </div>`;
-  const roleCn = x => !memberValid(x) ? "已过期" : isAdmin(x) ? "组织管理员" : "成员";
+  const roleCn = x => isU0(x) ? "系统管理员" : !memberValid(x) ? "已过期" : isAdmin(x) ? "组织管理员" : "成员";
   $("#lensPicker").innerHTML = `
     <button class="picker-btn" data-act="menu" data-m="lens" aria-haspopup="true">
       ${avatar(m.uid)}<span class="pk-main"><span class="pk-t">${esc(uname(m.uid))}</span><span class="pk-s">${roleCn(m)}${m.expires && memberValid(m) ? ` · 至 ${short(m.expires)}` : ""}</span></span><span class="caret">${CARET}</span>
     </button>
     <div class="menu" id="menu-lens">
       <div class="tiny muted" style="padding:6px 10px 4px;font-weight:500">切换查看身份</div>
+      <button class="menu-item ${m.uid === "u0" ? "on" : ""}" data-act="lens" data-id="u0">${avatar("u0", 24)}系统管理员<small>sysadmin · 跨组织</small></button>
       ${o.members.map(x => `<button class="menu-item ${x.uid === m.uid ? "on" : ""}" data-act="lens" data-id="${x.uid}">${avatar(x.uid, 24)}${esc(uname(x.uid))}<small>${roleCn(x)}</small></button>`).join("")}
-      <div class="menu-note">以谁的身份看：检索结果、可见标记、上传可选取值都随之变化。</div>
+      <div class="menu-note">以谁的身份看：检索结果、可见标记、上传可选取值都随之变化。系统管理员 = 跨组织特殊档（mock 演示：组织内数据全显），建组织 / 停用 / 恢复仅此视角可用。</div>
     </div>`;
   const visN = o.docs.filter(d => canSee(m, d)).length;
   const runN = o.tasks.filter(t => ["running", "leased", "pending"].includes(t.st)).length;
   const groups = [
     ["知识", [["semantic", "业务语义", o.semantic ? `rev ${o.semantic.dictRev}` : "未接入", "M2-S"], ["docs", "文档知识", `${visN}/${o.docs.length}`], ["search", "检索测试", ""]]],
     ["管理", [["access", "维度与权限", `${activeDims().length} 维`]]],
-    ["运维", [["ops", "任务与审计", runN ? `${runN} 进行` : ""]]],
+    ["运维", [["ops", "任务与审计", runN ? `${runN} 进行` : ""], ["orgs", "组织", `${ORGS.length} 个`]]],
   ];
   $("#nav").innerHTML = groups.map(([g, items]) => `<div class="nav-group">${g}</div>` + items.map(([k, name, c, tag]) =>
     `<button class="nav-item ${state.view === k ? "on" : ""}" data-act="view" data-v="${k}"><span class="ni-k">${ic(k)}</span><span>${name}${tag ? `<span class="nav-tag">${tag}</span>` : ""}</span><span class="ni-c">${c}</span></button>`).join("")).join("");
@@ -1253,7 +1349,6 @@ function viewDocs() {
     <h1>文档</h1>
     <p class="lede">知识库只是分组，<b>可见性只由维度决定</b>。一份文件的内容若分属不同维度取值，拆成多份上传。</p>
     <div class="head-act">
-      <button class="btn ghost" data-act="advance">推进任务</button>
       <button class="btn seal-btn" data-act="toggleUpload">${state.drawer === "upload" ? "收起" : "＋ 上传文档"}</button>
     </div>
   </header>
@@ -1263,11 +1358,16 @@ function viewDocs() {
       <button class="${state.ds === "all" && state.drawer !== "newds" ? "on" : ""}" data-act="ds" data-id="all">所有知识库 ${o.docs.length}</button>
       ${o.datasets.map(d => `<button class="${state.ds === d.id && state.drawer !== "newds" ? "on" : ""}" data-act="ds" data-id="${d.id}" title="${esc(d.desc)}">${esc(d.name)} ${o.docs.filter(x => x.ds === d.id).length}</button>`).join("")}
       ${isAdmin(m) && memberValid(m) ? `<button class="seg-add ${state.drawer === "newds" ? "on" : ""}" data-act="newDs" title="新建知识库 · 组织管理员">＋ 新建知识库</button>` : ""}
+      ${state.ds !== "all" && o.docs.filter(x => x.ds === state.ds).length === 0
+        ? `<button class="seg-add" data-act="dsDel" data-id="${state.ds}" ${isAdmin(m) ? "" : "disabled"} title="${isAdmin(m) ? "DELETE /api/orgs/" + o.id + "/datasets/{id} · 非空库 409 RESTRICT · 组织管理员" : "组织管理员专属"}" style="color:var(--danger)">删除知识库</button>` : ""}
     </div>
     <span style="flex:1"></span>
     <span class="tiny muted">${esc(uname(m.uid))} 可见 <b style="color:var(--ink)">${visN}</b> / ${docs.length}</span>
     <span class="legend" style="margin:0"><span class="lg"><span class="lens-dot y"></span>可见</span><span class="lg"><span class="lens-dot n"></span>不可见</span><span class="lg"><span class="lens-dot x"></span>成员过期</span></span>
   </div>
+  ${state.dsAsk ? `<div class="confirm"><b>删除知识库「${esc(dsName(state.dsAsk))}」</b>：空库才可删——非空库 <code>409 RESTRICT</code>（先删文档再删库）。
+    <div class="cf-act"><button class="btn danger-btn sm" data-act="dsDelOk" data-id="${state.dsAsk}">确认删除</button><button class="btn ghost sm" data-act="dsDelCancel">取消</button>
+    <span class="tiny muted" style="align-self:center"><code>DELETE /api/orgs/${o.id}/datasets/${state.dsAsk}</code></span></div></div>` : ""}
   ${state.drawer === "newds" ? newDsHTML() : `
   <div class="split">
     <div>
@@ -1330,6 +1430,7 @@ function docPane(d) {
 }
 function uploadHTML() {
   const o = O(), m = lens();
+  if (!o.datasets.length) return `<div class="upload"><div class="note amber" style="grid-column:1/-1;margin:0">这个组织还没有知识库——先以组织管理员视角「＋ 新建知识库」，再上传文档。</div></div>`;
   if (!state.up.ds) state.up.ds = o.datasets[0].id;
   if (!memberValid(m)) return `<div class="upload"><div class="note seal" style="grid-column:1/-1;margin:0">当前视角成员关系已过期，不能上传。</div></div>`;
   const dims = activeDims();
@@ -1455,15 +1556,16 @@ function searchPane(r) {
 const isSyncDim = d => (d.source || "").startsWith("sync:");
 function viewAccess() {
   const o = O(), m = lens(), sub = state.sub.access;
-  const tabs = [["grants", "授权格"], ["dims", "维度"], ["vis", "可见性矩阵"]];
+  const tabs = [["grants", "授权格"], ["dims", "维度"], ["members", "成员"], ["vis", "可见性矩阵"]];
   return `
   <header class="head"><h1>权限</h1>
     <p class="lede">授权 = 成员 × 维度取值。检索时实时展开为过滤条件，<b>角色不影响过滤</b>；组织管理员只是能改这张表。</p>
     <div class="head-act"><button class="btn ghost" data-act="stub" data-msg="GET /api/orgs/${o.id}/grants/export → CSV（无 org 列）">导出</button><button class="btn ghost" data-act="stub" data-msg="POST …/grants/import?dry_run=1 → 差异预览后再幂等全量替换">导入</button></div>
   </header>
   <nav class="sub-tabs">${tabs.map(([k, l]) => `<button class="sub-tab ${sub === k ? "on" : ""}" data-act="sub" data-s="access" data-v="${k}">${l}</button>`).join("")}</nav>
-  ${!isAdmin(m) && sub !== "vis" ? `<div class="note amber" style="margin-bottom:16px">当前视角 <b>${esc(uname(m.uid))}</b> 不是组织管理员：只读。右上角切到组织管理员即可编辑。</div>` : ""}
-  ${sub === "grants" ? grantsHTML() : sub === "dims" ? dimsHTML() : visHTML()}`;
+  ${isU0(m) && sub === "members" ? `<div class="note amber" style="margin-bottom:16px">系统管理员不做组织内成员管理（<b>组织自治</b>）——本子标签对系统管理员只读；成员增删改由组织管理员在本组织内完成。</div>`
+    : !isAdmin(m) && sub !== "vis" ? `<div class="note amber" style="margin-bottom:16px">当前视角 <b>${esc(uname(m.uid))}</b> 不是组织管理员：只读。右上角切到组织管理员即可编辑。</div>` : ""}
+  ${sub === "grants" ? grantsHTML() : sub === "dims" ? dimsHTML() : sub === "members" ? membersHTML() : visHTML()}`;
 }
 function grantsHTML() {
   const o = O(), dims = activeDims(), canEdit = isAdmin(lens()) && memberValid(lens());
@@ -1499,6 +1601,68 @@ function grantsHTML() {
     ${o.dims.some(d => d.status !== "active") ? `<br>已退役维度（${o.dims.filter(d => d.status !== "active").map(d => esc(d.label)).join("、")}）不出现在这里——它们已不参与过滤。` : ""}
   </div>`;
 }
+/* ---------------- 成员子标签（C-1b）：三方法 + T23 约束 ---------------- */
+function membersHTML() {
+  const o = O(), m = lens(), canEdit = isAdmin(m) && memberValid(m) && !isU0(m);
+  const PERM_CN = { "semantic:read": "语义读", "semantic:admin": "语义管理", "semantic:restricted": "受限实体" };
+  const cands = Object.keys(USERS).filter(uid => uid !== "u0" && !o.members.some(x => x.uid === uid));
+  return `
+  ${canEdit ? `<div style="margin-bottom:16px"><button class="btn ghost sm" data-act="memAdd">${state.memAddOpen ? "收起加成员" : "＋ 加成员"}</button></div>${state.memAddOpen ? memAddHTML(cands) : ""}` : ""}
+  <table class="ledger">
+    <thead><tr><th>成员</th><th>角色</th><th>成员关系</th><th>语义权限</th><th></th></tr></thead>
+    <tbody>${o.members.map(mb => {
+      const exp = !memberValid(mb), soleAdmin = isAdmin(mb) && o.members.filter(x => isAdmin(x)).length === 1;
+      const editing = state.memExpAsk === mb.uid;
+      const row = `<tr style="${exp ? "opacity:.55" : ""}">
+        <td><div style="display:flex;gap:8px;align-items:center">${avatar(mb.uid)}<div><div class="t-title">${esc(uname(mb.uid))}</div><div class="t-sub mono">${mb.uid}</div></div></div></td>
+        <td>${isAdmin(mb) ? `<span class="pill ok">org_admin</span>` : `<span class="pill">member</span>`}</td>
+        <td>${editing ? `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <input class="inp" data-in="memExp" placeholder="YYYY-MM-DD HH:MM:SS 或空=永久" value="${esc(state.memExpVal)}" style="height:26px;width:200px">
+            <button class="btn sm" data-act="memExpOk" data-u="${mb.uid}">保存</button><button class="btn ghost sm" data-act="memExpCancel">取消</button>
+          </div>`
+          : mb.expires ? (exp ? `<span class="tiny">已于 ${short(mb.expires)} 过期</span>` : `至 ${short(mb.expires)}`) : "长期"}</td>
+        <td>${(mb.perms || []).length ? `<span class="chips">${mb.perms.map(p => `<span class="chip" title="${esc(PERM_CN[p] || p)}">${esc(p)}</span>`).join("")}</span>` : `<span class="tiny muted">—</span>`}</td>
+        <td>${canEdit ? `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <button class="btn ghost sm" data-act="memRole" data-u="${mb.uid}" ${exp ? `title="已过期行 PATCH → 409"` : ""}>${isAdmin(mb) ? "降为成员" : "升为管理员"}</button>
+            <button class="btn ghost sm" data-act="memExp" data-u="${mb.uid}">改过期</button>
+            <button class="btn ghost sm" data-act="memAsk" data-u="${mb.uid}" style="color:var(--danger)" ${soleAdmin ? 'title="唯一管理员自删 → 409 守卫"' : ""}>移除…</button>
+          </div>` : `<span class="tiny muted">组织管理员</span>`}</td></tr>`;
+      if (state.memAsk !== mb.uid) return row;
+      return row + `<tr><td colspan="5" style="border-bottom:0"><div class="confirm">
+        <b>移除 ${esc(uname(mb.uid))}</b>：级联清其<b>本组织</b>授权（他组织的成员关系与授权不受影响，D7）；${soleAdmin ? "唯一管理员自删 / 自锁 → <b>409 守卫</b>，先指派新管理员。" : "唯一管理员自删 / 自锁 → 409 守卫。"}
+        <div class="cf-act"><button class="btn danger-btn sm" data-act="memDelOk" data-u="${mb.uid}">确认移除</button><button class="btn ghost sm" data-act="memCancel">取消</button>
+        <span class="tiny muted" style="align-self:center"><code>DELETE /api/orgs/${o.id}/members/${mb.uid}</code></span></div></div></td></tr>`;
+    }).join("")}${!o.members.length ? `<tr><td colspan="5" class="tiny muted" style="padding:20px 16px">本组织还没有成员——${canEdit ? "用上方「＋ 加成员」添加" : "由组织管理员添加"}。</td></tr>` : ""}</tbody>
+  </table>
+  <div class="note" style="margin-top:16px;max-width:88ch">
+    软停用 = <code>expires_at</code> 置过去时点（<b>零新列</b>，置灰行）；<b>已过期行 PATCH → 409</b>，唯一恢复路径 = 删行重加三步：DELETE 行 → POST 重加 → 到「授权格」PUT grants 补授权（T23）。
+    移除 = 级联清<b>本组织</b>授权，不破坏他组织。改过期口径：键缺失 = 不变、显式空（null）= 改永久。
+    <code>POST / PATCH / DELETE /api/orgs/${o.id}/members</code> · 授权格 = <code>PUT …/members/{uid}/grants</code>（「授权格」子标签）。
+  </div>`;
+}
+function memAddHTML(cands) {
+  const o = O(), d = state.memNew, ok = !!d.uid;
+  return `<div class="upload" style="margin-bottom:16px">
+    <div style="grid-column:1/-1"><b style="font-size:15px">加成员</b>
+      <span class="tiny muted">—— user_id 须为既有用户（SSO 首登 JIT 建档）；加入后到「授权格」分配维度授权</span></div>
+    <div class="u-row"><label>用户<span class="req">*</span></label>
+      ${cands.length ? `<select class="sel" data-in="memNewUid"><option value="">选择既有用户…</option>${cands.map(uid => `<option value="${uid}" ${d.uid === uid ? "selected" : ""}>${esc(uname(uid))}（${uid}）</option>`).join("")}</select>`
+        : `<div class="note amber" style="margin:0;grid-column:1/-1">mock 用户池里的人都在本组织了——实装从全量用户目录选择。</div>`}</div>
+    <div class="u-row"><label>角色</label>
+      <select class="sel" data-in="memNewRole">
+        <option value="member" ${d.role === "member" ? "selected" : ""}>member · 成员</option>
+        <option value="org_admin" ${d.role === "org_admin" ? "selected" : ""}>org_admin · 组织管理员</option>
+      </select></div>
+    <div class="u-row"><label>有效期<span class="tiny muted"> 可选</span></label>
+      <input class="inp" data-in="memNewExp" placeholder="YYYY-MM-DD HH:MM:SS；留空 = 长期" value="${esc(d.expires)}"></div>
+    <div class="u-foot">
+      <button class="btn seal-btn" data-act="memCreate" ${ok ? "" : "disabled"}>加入</button>
+      <button class="btn ghost" data-act="memAdd">取消</button>
+      <span class="tiny ${ok ? "" : "muted"}">${ok ? "初始无任何维度授权（= 只可见未标维度值的文档）" : "先选用户"}</span>
+      <span style="flex:1"></span>
+      <span class="tiny muted">user_id 须既有用户（JIT 建档，<b>D16 管理员不建账号</b>，不存在 <code>404</code>）；已存在（含过期行）<code>409</code> · <code>POST /api/orgs/${o.id}/members</code></span>
+    </div></div>`;
+}
 function retireImpact(key) {
   const o = O(), d = dimOf(key), docs = new Set(); let pairs = 0;
   const before = new Map();
@@ -1511,6 +1675,7 @@ function retireImpact(key) {
 function dimsHTML() {
   const o = O(), canEdit = isAdmin(lens()) && memberValid(lens());
   return `
+  ${canEdit ? `<div style="margin-bottom:16px"><button class="btn ghost sm" data-act="dimNew">${state.dimNewOpen ? "收起新建" : "＋ 新建维度"}</button></div>${state.dimNewOpen ? dimNewHTML() : ""}` : ""}
   <table class="ledger dims-ledger">
     <thead><tr><th>维度</th><th>来源</th><th>必选</th><th>状态</th><th>取值</th><th class="num">文档</th><th></th></tr></thead>
     <tbody>${o.dims.map(d => {
@@ -1520,7 +1685,19 @@ function dimsHTML() {
         <td>${isSyncDim(d) ? `<span class="tag">${esc(d.source)}</span>` : `<span class="tiny muted">本地</span>`}</td>
         <td>${d.required ? "是" : `<span class="muted">否</span>`}<div class="tiny muted">仅影响上传</div></td>
         <td>${d.status === "active" ? `<span class="pill ok">生效</span>` : `<span class="pill idle">已退役</span><div class="tiny muted">不参与过滤</div>`}</td>
-        <td><div class="vals">${d.values.map(([v, l]) => `<span class="chip d${dimIdx(d.key)}" title="${esc(v)}">${esc(l)}</span>`).join("")}</div></td>
+        <td><div class="vals">${d.values.map(([v, l, st]) => {
+          const off = st === "disabled";
+          return `<span class="chip d${dimIdx(d.key)}${off ? " v-off" : ""}" title="${esc(v)}${off ? " · 已停用（不参与计算）" : ""}">${esc(l)}</span>` +
+            (off
+              ? `<button class="link tiny" data-act="valOn" data-k="${esc(d.key)}" data-v="${esc(v)}" ${canEdit ? "" : "disabled"} title="PATCH /api/orgs/${o.id}/dimensions/${esc(d.key)}/values/{id} · active=重新启用">恢复</button>`
+              : `<button class="link tiny" data-act="valOff" data-k="${esc(d.key)}" data-v="${esc(v)}" ${canEdit ? "" : "disabled"} title="PATCH /api/orgs/${o.id}/dimensions/${esc(d.key)}/values/{id} · dry_run 先给影响面 · 停用即收紧进计算">停用</button>`);
+        }).join("")}
+        ${d.status !== "retired"
+          ? (state.valAsk === d.key
+            ? `<input class="inp" data-in="valKey" placeholder="value" style="height:26px;width:84px;font-family:var(--mono)" value="${esc(state.valNew.v)}"><input class="inp" data-in="valLabel" placeholder="显示名" style="height:26px;width:84px" value="${esc(state.valNew.l)}"><button class="btn sm" data-act="valAdd" data-k="${esc(d.key)}" title="POST /api/orgs/${o.id}/dimensions/${esc(d.key)}/values">加入</button>`
+            : `<button class="vchip" data-act="valAsk" data-k="${esc(d.key)}" ${canEdit ? "" : "disabled"} title="POST /api/orgs/${o.id}/dimensions/${esc(d.key)}/values">＋ 取值</button>`)
+          : `<span class="tiny muted">已退役 · 409 不扩值</span>`}
+        </div></td>
         <td class="num">${used}</td>
         <td>${d.status === "active" && canEdit ? `<button class="btn ghost sm" data-act="retire" data-k="${d.key}">退役…</button>` : ""}</td></tr>`;
       if (state.retireAsk !== d.key) return row;
@@ -1536,8 +1713,27 @@ function dimsHTML() {
     <span class="lg"><b>必选 / 启用</b>只约束上传表单，不影响过滤</span>
     <span class="lg"><b>过滤规则</b>：所有生效维度，文档有值 → 与授权求交；空值 → 放行</span>
     <span class="lg"><b>停用取值</b>走 <code>PATCH status=disabled</code>，<code>dry_run</code> 先给影响面</span>
-  </div>
-  ${canEdit ? `<div style="margin-top:16px"><button class="btn ghost sm" data-act="stub" data-msg="POST /api/orgs/${o.id}/dimensions · 新维度对存量文档 = 空值 → 放行，不会让任何人突然看不到">＋ 新建维度</button></div>` : ""}`;
+    <span class="lg"><b>恢复口径（D19）</b>：取值停用可逆（active=重新启用），维度退役不可逆</span>
+  </div>`;
+}
+function dimNewHTML() {
+  const o = O(), d = state.dimNew, ok = d.key.trim().length > 0 && d.label.trim().length > 0;
+  return `<div class="upload" style="margin-bottom:16px">
+    <div style="grid-column:1/-1"><b style="font-size:15px">新建维度</b>
+      <span class="tiny muted">—— 新维度对存量文档 = 空值 → <b>放行</b>，不会让任何人突然看不到</span></div>
+    <div class="u-row"><label>key<span class="req">*</span></label>
+      <input class="inp" data-in="dimKey" placeholder="mono 标识，如 region / biz_line" value="${esc(d.key)}" style="font-family:var(--mono)"></div>
+    <div class="u-row"><label>显示名<span class="req">*</span></label>
+      <input class="inp" data-in="dimLabel" placeholder="例如：作业区域" value="${esc(d.label)}"></div>
+    <div class="u-row"><label>必选</label>
+      <label class="switch"><input type="checkbox" data-in="dimReq" ${d.required ? "checked" : ""}><span class="tiny muted">仅约束上传表单，不影响过滤</span></label></div>
+    <div class="u-foot">
+      <button class="btn seal-btn" data-act="dimCreate" ${ok ? "" : "disabled"}>创建</button>
+      <button class="btn ghost" data-act="dimNew">取消</button>
+      <span class="tiny ${ok ? "" : "muted"}">${ok ? "创建后先加取值，再到「授权格」分配" : "key 与显示名必填"}</span>
+      <span style="flex:1"></span>
+      <span class="tiny muted">新维度对存量文档=空值→放行 · <code>POST /api/orgs/${o.id}/dimensions</code> · 组织管理员</span>
+    </div></div>`;
 }
 function visHTML() {
   const o = O(), sel = state.vis;
@@ -1776,16 +1972,35 @@ function annotateHTML() {
     <div class="note" style="margin-top:16px">最长匹配优先、不重叠；英文 / 编码按整词边界。受限实体的别名对无权视角不进入匹配表——识别结果本身不泄露受限概念的存在。</div>
   </div>`;
 }
+/* 五适配器（C-2）：枚举固定——前四个可手动触发；yaml 只经 Git webhook 回调 */
+const ADAPTERS = ["template_center", "metadata", "scenario_config", "report_center", "yaml"];
+const ADAPTER_CN = { template_center: "模板中心", metadata: "主数据元数据", scenario_config: "场景配置", report_center: "报表中心", yaml: "YAML 覆盖层" };
 function syncHTML() {
   const sm = S(), m = lens(), admin = hasPerm(m, "semantic:admin");
-  const adapters = [...new Set(sm.syncRuns.map(r => r.adapter))];
+  const latest = a => sm.syncRuns.find(r => r.adapter === a);
   const missing = sm.entities.filter(e => e.st === "missing");
+  const cut = s => s.length > 46 ? s.slice(0, 46) + "…" : s;
   return `
   ${!admin ? `<div class="note amber" style="margin-bottom:16px">构建 / 同步操作需要 <code>semantic:admin</code>；当前视角只读。</div>` : ""}
-  <div class="sec-title">源端事实同步 <small>每个适配器独立；消失比例 &gt; 20% 整轮中止不落库（删除保护）</small></div>
+  <div class="sec-title">源端事实同步 <small>五个适配器 · 枚举固定；每个独立成轮</small></div>
+  <table class="ledger"><thead><tr><th>适配器</th><th>最近运行</th><th class="num">新增</th><th class="num">更新</th><th class="num">消失</th><th>触发</th><th>说明</th></tr></thead>
+    <tbody>${ADAPTERS.map(a => {
+      if (a === "yaml") return `<tr><td class="mono">yaml<div class="tiny muted" style="font-weight:400">${ADAPTER_CN.yaml}</div></td>
+        <td><span class="tiny muted">—（见下方词典构建）</span></td><td class="num"><span class="tiny muted">—</span></td><td class="num"><span class="tiny muted">—</span></td><td class="num"><span class="tiny muted">—</span></td>
+        <td><span class="tag">webhook</span></td>
+        <td class="tiny">YAML 覆盖层经 Git 合并回调触发（HMAC-SHA256 签名验签，<code>POST /semantic/yaml/webhook</code>）；无签名 401</td></tr>`;
+      const r = latest(a), note = r && r.note ? r.note : `${ADAPTER_CN[a]}事实源 · 每日 02:00 档`;
+      return `<tr><td class="mono">${a}<div class="tiny muted" style="font-weight:400">${ADAPTER_CN[a]}</div></td>
+        <td>${r ? `<span class="mono tiny">${short(r.at)}</span> ${stPill(r.st)}` : `<span class="tiny muted">—</span>`}</td>
+        <td class="num">${r ? r.ins : "—"}</td><td class="num">${r ? r.upd : "—"}</td><td class="num">${r ? r.miss : "—"}</td>
+        <td><button class="btn ghost sm" data-act="sync" data-a="${a}" ${admin ? "" : "disabled"} title="POST /semantic/sync/{adapter} · 写 outbox，由任务执行">↻ 手动</button></td>
+        <td class="tiny" title="${esc(note)}">${esc(cut(note))}</td></tr>`;
+    }).join("")}</tbody></table>
+  <div class="note" style="margin-top:12px"><b>口径</b>：① 错峰窗口——每日 <b>02:00</b> 档顺序执行（防源端峰值）；② 每日兜底——maintenance <code>semantic_daily_sync</code>（G-19：无 webhook / 无手动触发也有兜底轮）；③ 删除保护——消失比例 &gt; 20% 整轮中止不落库并告警（aborted_guard）。</div>
+
+  <div class="sec-title">运行历史 <small>最近同步轮次 · 手动触发即时入列</small></div>
   <table class="ledger"><thead><tr><th>时间</th><th>适配器</th><th>结果</th><th class="num">新增</th><th class="num">更新</th><th class="num">消失</th><th>说明</th></tr></thead>
     <tbody>${sm.syncRuns.map(r => `<tr><td class="mono tiny">${short(r.at)}</td><td class="mono">${esc(r.adapter)}</td><td>${stPill(r.st)}</td><td class="num">${r.ins}</td><td class="num">${r.upd}</td><td class="num">${r.miss}</td><td class="tiny">${esc(r.note) || `<span class="muted">—</span>`}</td></tr>`).join("")}</tbody></table>
-  <div class="chips" style="margin-top:10px">${adapters.map(a => `<button class="btn ghost sm" data-act="sync" data-a="${esc(a)}" ${admin ? "" : "disabled"}>↻ ${esc(a)}</button>`).join("")}<span class="tiny muted" style="align-self:center"><code>POST /semantic/sync/{adapter}</code> · 写 outbox，由任务执行</span></div>
 
   <div class="sec-title">词典构建 <small>新 rev 构建完成才原子切换；切换后低优先级重打标</small></div>
   <table class="ledger"><thead><tr><th>dict_rev</th><th>状态</th><th>时间</th><th>触发</th><th class="num">别名</th><th>说明</th></tr></thead>
@@ -1801,37 +2016,105 @@ function syncHTML() {
 }
 
 /* ==========================================================================
+   视图：组织（C-1a——系统管理员管理面：跨组织总览 / 建 / 停用 / 恢复）
+   ========================================================================== */
+function viewOrgs() {
+  const m = lens(), u0 = isU0(m);
+  return `
+  <header class="head"><h1>组织</h1>
+    <p class="lede">组织 = 隔离边界：库、维度、成员授权、语义图互不可见（D7）。组织<b>只停用不删除</b>——停用即全员拒绝，数据与审计保留（#14）。</p>
+    <div class="head-act"><button class="btn seal-btn" data-act="orgNew" ${u0 ? "" : "disabled"} title="${u0 ? "POST /api/orgs · 系统管理员专属" : "系统管理员专属"}">＋ 新建组织</button></div>
+  </header>
+  ${u0
+    ? `<div class="note" style="margin:0 0 16px">系统管理员视角 · 跨组织（mock 演示：组织内数据全显）。<code>GET /api/orgs</code>——系统管理员=全部组织；普通用户=本人 membership 组织（跨组织存在性不泄露，TC-AZ-02）。</div>`
+    : `<div class="note amber" style="margin:0 0 16px">当前视角 <b>${esc(uname(m.uid))}</b> 不是系统管理员：建组织 / 停用 / 恢复仅系统管理员可用——右上角身份菜单切到「系统管理员」。</div>`}
+  <div class="drawer ${state.orgNewOpen ? "open" : ""}"><div class="dr-in">${orgNewHTML()}</div></div>
+  <table class="ledger">
+    <thead><tr><th>组织</th><th>状态</th><th class="num">成员</th><th class="num">文档</th><th>语义接入</th><th>agent</th><th></th></tr></thead>
+    <tbody>${ORGS.map(x => {
+      const dis = x.status === "disabled";
+      const row = `<tr>
+        <td><div class="t-title">${esc(x.name)}</div><div class="t-sub mono">${x.id}</div></td>
+        <td>${dis ? `<span class="pill idle">已停用</span><div class="tiny muted">停用于 ${short(x.disabledAt)}</div>` : `<span class="pill ok">生效</span>`}</td>
+        <td class="num">${x.members.length}</td>
+        <td class="num">${x.docs.length}</td>
+        <td>${x.semantic ? `<span class="tag moss">rev ${x.semantic.dictRev}</span>` : `<span class="tiny muted">未接入</span>`}</td>
+        <td class="mono tiny">${x.agent ? esc(x.agent) : "—"}</td>
+        <td>${dis
+          ? `<button class="btn ghost sm" data-act="orgEnable" data-id="${x.id}" ${u0 ? "" : "disabled"} title="${u0 ? "恢复 = status 置回 active；成员 / 任务 / 检索即恢复" : "系统管理员专属"}">恢复</button>`
+          : `<button class="btn ghost sm" data-act="orgDisable" data-id="${x.id}" ${u0 ? "" : "disabled"} title="${u0 ? "停用 = status 置 disabled" : "系统管理员专属"}">停用…</button>`}</td></tr>`;
+      if (state.orgAsk !== x.id) return row;
+      return row + `<tr><td colspan="7" style="border-bottom:0"><div class="confirm">
+        <b>停用「${esc(x.name)}」</b>：停用后成员认证 / 检索 / 任务 / webhook / 语义面<b>全部拒绝</b>；组织只停用不删除（#14）；审计同事务。
+        <div class="cf-act"><button class="btn danger-btn sm" data-act="orgDisableOk" data-id="${x.id}">确认停用</button><button class="btn ghost sm" data-act="orgDisableCancel">取消</button>
+        <span class="tiny muted" style="align-self:center">组织停用 · <code>#14</code>（status: active → disabled）</span></div></div></td></tr>`;
+    }).join("")}</tbody>
+  </table>
+  <div class="note" style="margin-top:16px;max-width:88ch">成员、维度、知识库在<b>组织内自治</b>——左上角切进组织后到「权限」视图维护；本页只做组织级生命周期。<code>POST /api/orgs</code>（建）为系统管理员专属，<code>id / name / org_admin</code> 三必填。</div>`;
+}
+function orgNewHTML() {
+  const d = state.orgNew, ok = d.id.trim() && d.name.trim() && d.admin.trim();
+  return `<div class="upload">
+    <div style="grid-column:1/-1"><b style="font-size:15px">新建组织</b>
+      <span class="tiny muted">—— 建完是空组织：0 维度 / 0 库 / 0 成员；先加成员、建维度与库，再传文档</span></div>
+    <div class="u-row"><label>组织 ID<span class="req">*</span></label>
+      <input class="inp" data-in="orgNewId" placeholder="如 01JORGTAX（ULID 风格，全局唯一）" value="${esc(d.id)}" style="font-family:var(--mono)"></div>
+    <div class="u-row"><label>显示名<span class="req">*</span></label>
+      <input class="inp" data-in="orgNewName" placeholder="如：转让定价卓越中心" value="${esc(d.name)}"></div>
+    <div class="u-row"><label>org_admin<span class="req">*</span></label>
+      <input class="inp" data-in="orgNewAdmin" placeholder="既有用户 ID，如 u2" value="${esc(d.admin)}" style="font-family:var(--mono)"></div>
+    <div class="u-foot">
+      <button class="btn seal-btn" data-act="orgCreate" ${ok ? "" : "disabled"}>创建</button>
+      <button class="btn ghost" data-act="orgNew">取消</button>
+      <span class="tiny ${ok ? "" : "muted"}">${ok ? "三必填齐备" : "组织 ID / 显示名 / org_admin 三必填"}</span>
+      <span style="flex:1"></span>
+      <span class="tiny muted">org_admin 必填 = 防无人可管的死组织；用户不存在 <code>404</code>（管理员不建账号，建档走 SSO JIT——D16）；重复 <code>409</code> · <code>POST /api/orgs</code> · 系统管理员专属</span>
+    </div></div>`;
+}
+
+/* ==========================================================================
    视图：运行（任务台账 + 两条审计泳道）
    ========================================================================== */
 function viewOps() {
-  const o = O();
+  const o = O(), ec = o.embCov, mt = o.maintenance;
   const typeCn = { ingest: "入库", reembed: "重嵌入", semantic_sync: "语义同步", semantic_build: "词典构建", semantic_retag: "重打标" };
-  const vCover = { ds_vat: 98.5, ds_cit: 96.2, ds_intl: 100, ds_exp: 100 };   // mock：各知识库向量覆盖率
+  const pct = (a, b) => b > 0 ? (a / b * 100) : 0;
   const html = `
   <header class="head"><h1>运行</h1>
-    <p class="lede">一张任务表承载入库、嵌入与语义任务：租约 60s、心跳 15s，过期由 reaper 回收重新入队，attempts 上限 3。</p>
-    <div class="head-act"><button class="btn ghost" data-act="advance">推进任务</button></div></header>
-  <table class="ledger"><thead><tr><th>任务</th><th>类型</th><th>对象</th><th>状态</th><th>阶段</th><th class="num">心跳</th><th class="num">租约剩余</th><th class="num">尝试</th><th>备注</th></tr></thead>
+    <p class="lede">一张任务表承载入库、嵌入与语义任务：租约 60s、心跳 15s，过期由 reaper 回收重新入队，attempts 上限 3。任务由 <b>worker 子进程自动认领推进</b>，本页只读 + 取消。</p>
+    <div class="head-act"><button class="btn ghost" data-act="advance" title="实装=worker 自动认领（心跳 15s / 租约 60s / attempts≤3）+ 状态轮询，无手动推进">模拟推进 · mock</button></div></header>
+  <table class="ledger"><thead><tr><th>任务</th><th>类型</th><th>对象</th><th>状态</th><th>阶段</th><th class="num">心跳</th><th class="num">租约剩余</th><th class="num">尝试</th><th>备注</th><th></th></tr></thead>
     <tbody>${o.tasks.map(t => { const d = t.doc && docById(t.doc);
       return `<tr><td class="mono tiny">${t.id}</td><td>${typeCn[t.type] || t.type}</td>
         <td>${t.doc ? (d ? `<button class="link" data-act="openDoc" data-id="${d.id}">${esc(d.title)}</button>` : `<span class="muted">（文档已删除）</span>`) : `<span class="mono tiny">${esc(t.target)}</span>`}</td>
         <td>${t.st === "cancelled" ? `<span class="pill idle">已取消</span>` : stPill(t.st)}</td><td class="tiny">${esc(STAGE_CN[t.stage] || t.stage)}</td>
-        <td class="num tiny">${t.hb != null ? t.hb + "s 前" : "—"}</td><td class="num tiny">${t.lease != null ? t.lease + "s" : "—"}</td><td class="num">${t.att}</td><td class="tiny muted">${esc(t.note || "")}</td></tr>`; }).join("")}</tbody></table>
+        <td class="num tiny">${t.hb != null ? t.hb + "s 前" : "—"}</td><td class="num tiny">${t.lease != null ? t.lease + "s" : "—"}</td><td class="num">${t.att}</td><td class="tiny muted">${esc(t.note || "")}</td>
+        <td>${["running", "leased", "pending"].includes(t.st) ? `<button class="btn ghost sm" data-act="taskCancel" data-id="${t.id}" title="POST /api/orgs/${o.id}/tasks/${t.id}/cancel">取消</button>` : `<span class="tiny muted">—</span>`}</td></tr>`; }).join("")}</tbody></table>
   <section style="background:var(--paper);border:1px solid var(--rule);border-radius:var(--r-lg);box-shadow:var(--sh-xs);padding:var(--s4) var(--s5);margin-top:32px">
-    <div class="lane-h"><h3>嵌入与存储</h3><span class="tiny muted">只读 · 嵌入面板（design §8 M2 管理面）</span></div>
+    <div class="lane-h"><h3>嵌入与存储</h3><span class="tiny muted">只读 · <code>GET /api/orgs/${o.id}/embedding-coverage</code> · org_admin</span></div>
     <dl style="display:grid;grid-template-columns:96px 1fr;gap:6px 12px;font-size:13px">
-      <dt class="muted">嵌入模型</dt><dd><code>qwen3-embedding-4b:2560</code> · 维度 2560</dd>
+      <dt class="muted">embed_model</dt><dd><code>${esc(ec.model)}</code> · dim <b>${ec.dim}</b></dd>
+      <dt class="muted">totals</dt><dd><b>${ec.totals.done}</b> / ${ec.totals.total} 块已嵌入（${pct(ec.totals.done, ec.totals.total).toFixed(1)}%）</dd>
+      <dt class="muted">reembed</dt><dd>${ec.reembed && ec.reembed.status ? `<span class="pill run">running</span> · <b>${ec.reembed.done}</b> / ${ec.reembed.total} 块 → 目标 <code>${esc(ec.reembed.target_model || "")}</code>` : `<span class="tiny muted">无重嵌入窗口</span>`}
+        <div class="tiny muted" style="margin-top:2px">蓝绿相位②口径：换模型 = 走重嵌入流程，窗口期间<b>新旧标签并存</b>，窗口闭合后检索与面板同刻切换。</div></dd>
       <dt class="muted">存储后端</dt><dd>sqlite（默认）/ postgres+pgvector（可选，D24）</dd>
     </dl>
-    <div class="defn-k" style="margin:12px 0 6px">各知识库向量覆盖率</div>
-    <div class="funnel">${o.datasets.map(d => { const p = vCover[d.id] ?? 100;
-      return `<div class="fn-row" style="grid-template-columns:88px 1fr 56px"><span>${esc(d.name)}</span>
-        <div class="fn-bar"><span class="fb-ok" style="width:${p}%"></span></div>
-        <span class="fn-n">${p.toFixed(1)}%</span></div>`; }).join("")}
+    <div class="defn-k" style="margin:12px 0 6px">各知识库覆盖率 · coverage[]</div>
+    <div class="funnel">${ec.coverage.map(c => `<div class="fn-row" style="grid-template-columns:88px 1fr 56px"><span>${esc(c.dataset_name)}</span>
+        <div class="fn-bar"><span class="fb-ok" style="width:${pct(c.done, c.total)}%"></span></div>
+        <span class="fn-n">${pct(c.done, c.total).toFixed(1)}%</span></div>`).join("") || `<span class="tiny muted">无知识库 / 无块</span>`}
     </div>
-    <div class="tiny muted" style="margin-top:8px">存储后端为 postgres+pgvector 时，向量与业务数据同库，随 PG 实例统一备份 / 迁移。</div>
-    <div style="margin-top:12px"><button class="btn sm" disabled title="M2 管理面提供">重嵌入（M2 管理面）</button>
+    <div class="tiny muted" style="margin-top:8px">分子 / 分母都限<b>在用块</b>（tombstone=0 且 version=active_version）；存储后端为 postgres+pgvector 时，向量与业务数据同库，随 PG 实例统一备份 / 迁移。</div>
+    <div style="margin-top:12px"><button class="btn sm" disabled title="换模型走重嵌入流程（RUNBOOK §1），面板无按钮">重嵌入（走流程）</button>
       <span class="tiny muted" style="margin-left:8px">面板只读、不做可改参数；换模型 = 走重嵌入流程（嵌入模型是查询谓词）</span></div>
+  </section>
+  <section style="background:var(--paper);border:1px solid var(--rule);border-radius:var(--r-lg);box-shadow:var(--sh-xs);padding:var(--s4) var(--s5);margin-top:24px">
+    <div class="lane-h"><h3>maintenance 计数</h3><span class="tiny muted">${mt ? `最近一次运行 ${short(mt.at)} · ` : ""}只读 · <code>GET /api/orgs/${o.id}/stats</code> · org_admin</span></div>
+    ${mt ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 32px;font-size:13px;margin-top:4px">
+      ${mt.keys.map(([k, v]) => `<div style="display:flex;gap:10px;align-items:baseline;min-width:0"><span class="mono tiny" style="color:var(--ink-3);flex:none">${esc(k)}</span><span>${typeof v === "number" ? `<b>${v}</b>` : esc(v)}</span></div>`).join("")}
+    </div>
+    <div class="tiny muted" style="margin-top:10px">11 个注册表键 = 各 maintenance 任务<b>最近一次运行</b>的计数 / 时点；<code>audit_outbox_trimmed</code> = 已搬运 outbox 行的保留期清理。</div>`
+      : `<div class="tiny muted" style="margin-top:4px">尚无 maintenance 运行记录（新组织首轮任务未跑）。</div>`}
   </section>
   <div class="lanes" style="margin-top:32px">
     <section><div class="lane-h"><h3>查询审计</h3><span class="tiny muted">异步批量写 · 允许极少量丢失 · 不阻塞检索</span></div>
@@ -1856,7 +2139,7 @@ function render() {
   const sel = key && "selectionStart" in a ? [a.selectionStart, a.selectionEnd] : null;
   renderRail();
   const vk = state.view + "/" + (state.view === "access" ? state.sub.access : state.view === "semantic" ? state.sub.sem : "") + "/" + state.orgId;
-  const body = { docs: viewDocs, search: viewSearch, access: viewAccess, semantic: viewSemantic, ops: viewOps }[state.view]();
+  const body = { docs: viewDocs, search: viewSearch, access: viewAccess, semantic: viewSemantic, ops: viewOps, orgs: viewOrgs }[state.view]();
   $("#main").innerHTML = `<section class="${vk !== lastKey ? "view" : ""}">${body}</section>`;
   lastKey = vk;
   O().queryAudit.forEach(e => e.fresh = false); O().permAudit.forEach(e => e.fresh = false);
@@ -1871,6 +2154,10 @@ function resetOrgState() {
   state.up = { ds: "", picked: {}, file: "" }; state.ds = "all"; state.qDs = "all";
   state.drawer = null; state.newDs = { name: "", desc: "" };
   state.selEnt = null;
+  /* v0.6 C 项补画：成员 / 维度取值 / 删库 / 组织 的交互状态随组织切换收起 */
+  state.memAsk = null; state.memExpAsk = null; state.memAddOpen = false; state.memNew = { uid: "", role: "member", expires: "" };
+  state.dimNewOpen = false; state.dimNew = { key: "", label: "", required: false }; state.valAsk = null; state.valNew = { v: "", l: "" };
+  state.dsAsk = null; state.orgAsk = null; state.orgNewOpen = false; state.orgNew = { id: "", name: "", admin: "" };
 }
 function rerunSearch() { if (state.lastSearch && state.q.trim()) state.lastSearch = runSearch(state.q.trim()); }
 
@@ -1952,7 +2239,7 @@ const actions = {
     o.tasks.unshift({ id: newId("01JT"), type: "ingest", doc: id, st: "pending", stage: "uploaded", hb: null, lease: null, att: 0 });
     permEvent("document.create", `${title} → ${dsName(state.up.ds)}`);
     state.up = { ds: state.up.ds, picked: {}, file: "" }; state.drawer = null; state.selDoc = id; state.ds = "all";
-    toast(`已上传 <b>${esc(title)}</b>，入队解析。点「推进任务」看它走完流水线`);
+    toast(`已上传 <b>${esc(title)}</b>，入队解析——实装由 worker 自动认领推进，本页只读 + 取消（「运行」页可看进度）`);
   },
   search() { const q = state.q.trim(); if (!q) return false; state.lastSearch = runSearch(q); },
   sugg(el) { state.q = el.dataset.q; state.lastSearch = runSearch(state.q); },
@@ -2004,12 +2291,164 @@ const actions = {
     O().tasks.unshift({ id: newId("01JT"), type: "semantic_retag", target: `dict_rev ${b.rev} · ${O().chunks.length} 块`, st: "pending", stage: "—", hb: null, lease: null, att: 0, note: "最低优先级，夜间错峰" });
     toast(`dict_rev <b>${b.rev}</b> 就绪并原子切换；重打标任务已入队（期间旧标注继续可用）`);
   },
+  /* ---------------- v0.6 C 项补画 ---------------- */
+  /* C-5 顶栏 */
+  apiDocs() { window.open("/docs", "_blank"); toast(`OpenAPI · <code>/docs</code>（与 design §6.2 REST 对齐）`); return false; },
+  mcpMenu() {
+    const mn = $("#menu-mcp"), open = mn.classList.contains("open");
+    document.querySelectorAll(".menu.open").forEach(x => x.classList.remove("open"));
+    if (!open) mn.classList.add("open");
+    return false;
+  },
+  /* C-1a 组织管理（系统管理员专属） */
+  orgNew() { state.orgNewOpen = !state.orgNewOpen; },
+  orgCreate() {
+    const d = state.orgNew, id = d.id.trim(), name = d.name.trim(), admin = d.admin.trim();
+    if (!id || !name || !admin) return false;
+    if (ORGS.some(x => x.id === id)) { toast(`组织 ID <code>${esc(id)}</code> 已存在 → <b>409</b>`); return false; }
+    if (!(admin in USERS) || admin === "u0") { toast(`用户 <code>${esc(admin)}</code> 不存在 → <b>404</b>：管理员不建账号，建档走 SSO JIT（D16）`); return false; }
+    ORGS.push({ id, name, agent: "", status: "active", dims: [], datasets: [], members: [], docs: [], chunks: [], qflags: [], semantic: null, tasks: [], queryAudit: [], permAudit: [],
+      embCov: { model: "—", dim: 0, totals: { done: 0, total: 0 }, coverage: [], reembed: { status: null, target_model: null, done: 0, total: 0 } }, maintenance: null });
+    permEvent("org.create", `新建组织 ${name}（${id}）· org_admin=${admin}`);
+    state.orgNew = { id: "", name: "", admin: "" }; state.orgNewOpen = false;
+    toast(`已创建组织 <b>${esc(name)}</b>（mock 演示：成员表为空，用系统管理员视角查看空组织）`);
+  },
+  orgDisable(el) { state.orgAsk = el.dataset.id; },
+  orgDisableCancel() { state.orgAsk = null; },
+  orgDisableOk(el) {
+    const x = ORGS.find(g => g.id === el.dataset.id);
+    if (!x) return false;
+    x.status = "disabled"; x.disabledAt = NOW;
+    permEvent("org.disable", `停用组织 ${x.name}（${x.id}）· #14：全员拒绝、只停用不删除、审计同事务`);
+    state.orgAsk = null;
+    toast(`已停用 <b>${esc(x.name)}</b>：成员认证 / 检索 / 任务 / webhook / 语义面全部拒绝；组织只停用不删除（#14）`);
+  },
+  orgEnable(el) {
+    const x = ORGS.find(g => g.id === el.dataset.id);
+    if (!x) return false;
+    x.status = "active"; x.disabledAt = null;
+    permEvent("org.enable", `恢复组织 ${x.name}（${x.id}）· status → active`);
+    toast(`已恢复 <b>${esc(x.name)}</b>（mock 直接恢复）：成员认证 / 检索 / 任务 / 语义面即恢复`);
+  },
+  /* C-1b 成员三方法（org_admin） */
+  memAdd() { state.memAddOpen = !state.memAddOpen; state.memNew = { uid: "", role: "member", expires: "" }; },
+  memCreate() {
+    const o = O(), d = state.memNew;
+    if (!d.uid) return false;
+    if (o.members.some(x => x.uid === d.uid)) { toast(`<code>POST …/members</code> → <b>409</b>：已存在（含过期行）——过期行恢复走 DELETE + 重加 + PUT grants（T23）`); return false; }
+    const exp = d.expires.trim();
+    if (exp && !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(exp)) { toast("有效期格式：<code>YYYY-MM-DD HH:MM:SS</code>（UTC），或留空 = 长期"); return false; }
+    o.members.push({ uid: d.uid, role: d.role, expires: exp || null, perms: [], grants: {} });
+    permEvent("member.add", `${uname(d.uid)} 加入（${d.role}${exp ? " · 至 " + exp : ""}）`);
+    state.memAddOpen = false; state.memNew = { uid: "", role: "member", expires: "" }; state.lastSearch = null;
+    toast(`已加入 <b>${esc(uname(d.uid))}</b>——初始无任何维度授权，到「授权格」分配`);
+  },
+  memRole(el) {
+    const o = O(), mb = o.members.find(x => x.uid === el.dataset.u);
+    if (!mb) return false;
+    if (!memberValid(mb)) { toast(`<code>PATCH /api/orgs/${o.id}/members/${mb.uid}</code> → <b>409</b>：已过期行不可改——DELETE 后重加 + PUT grants 补授权（T23 三步）`); return false; }
+    if (isAdmin(mb) && o.members.filter(x => isAdmin(x)).length === 1) { toast(`<code>PATCH …/members/${mb.uid}</code> → <b>409</b>：唯一管理员降级 = 自锁（先指派新 org_admin）`); return false; }
+    mb.role = isAdmin(mb) ? "member" : "org_admin";
+    permEvent("member.update", `${uname(mb.uid)} · role := ${mb.role}`);
+    toast(`<code>PATCH /api/orgs/${o.id}/members/${mb.uid}</code> role=${mb.role}`);
+  },
+  memExp(el) {
+    const o = O(), mb = o.members.find(x => x.uid === el.dataset.u);
+    if (!mb) return false;
+    if (!memberValid(mb)) { toast(`<code>PATCH …/members/${mb.uid}</code> → <b>409</b>：已过期行不可续期——DELETE 后重加 + PUT grants 补授权（T23 三步）`); return false; }
+    state.memAsk = null; state.memExpAsk = mb.uid; state.memExpVal = mb.expires || "";
+  },
+  memExpCancel() { state.memExpAsk = null; },
+  memExpOk(el) {
+    const o = O(), mb = o.members.find(x => x.uid === el.dataset.u);
+    if (!mb) return false;
+    const v = state.memExpVal.trim();
+    if (v && !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(v)) { toast("格式：<code>YYYY-MM-DD HH:MM:SS</code>（UTC），或留空 = 改永久"); return false; }
+    mb.expires = v || null;
+    permEvent("member.update", `${uname(mb.uid)} · expires_at := ${v || "null（永久）"}`);
+    state.memExpAsk = null; state.lastSearch = null; state.vis = null;
+    toast(`<code>PATCH /api/orgs/${o.id}/members/${mb.uid}</code> ${v ? `expires_at=${v}` : "expires_at=null"} · 键缺失=不变、显式空=改永久${!memberValid(mb) ? " · 已置过期：软停用生效（零新列，置灰行）" : ""}`);
+  },
+  memAsk(el) { state.memAsk = el.dataset.u; state.memExpAsk = null; },
+  memCancel() { state.memAsk = null; },
+  memDelOk(el) {
+    const o = O(), uid = el.dataset.u, mb = o.members.find(x => x.uid === uid);
+    if (!mb) return false;
+    if (isAdmin(mb) && o.members.filter(x => isAdmin(x)).length === 1) { toast(`<code>DELETE …/members/${uid}</code> → <b>409</b>：唯一管理员自删守卫（先指派新管理员）`); return false; }
+    permEvent("member.remove", `${uname(uid)} 移除 · 级联清本组织授权`);
+    o.members = o.members.filter(x => x.uid !== uid);
+    if (state.lens[o.id] === uid) state.lens[o.id] = o.members[0] ? o.members[0].uid : "u0";
+    state.memAsk = null; state.lastSearch = null; state.vis = null;
+    toast(`已移除 <b>${esc(uname(uid))}</b>：本组织授权级联清除，他组织不受影响（D7）`);
+  },
+  /* C-1c 维度 / 取值 CRUD */
+  dimNew() { state.dimNewOpen = !state.dimNewOpen; },
+  dimCreate() {
+    const o = O(), d = state.dimNew, key = d.key.trim(), label = d.label.trim();
+    if (!key || !label) return false;
+    if (o.dims.some(x => x.key === key)) { toast(`维度 key <code>${esc(key)}</code> 已存在`); return false; }
+    o.dims.push({ key, label, required: !!d.required, status: "active", source: "local", values: [] });
+    permEvent("dimension.create", `新建维度 ${key}（${label}）· 存量文档=空值→放行`);
+    state.dimNewOpen = false; state.dimNew = { key: "", label: "", required: false };
+    toast(`已创建维度 <b>${esc(label)}</b>：对存量文档=空值→放行——先加取值，再到「授权格」分配`);
+  },
+  valAsk(el) { state.valAsk = state.valAsk === el.dataset.k ? null : el.dataset.k; state.valNew = { v: "", l: "" }; },
+  valAdd(el) {
+    const o = O(), d = dimOf(el.dataset.k);
+    if (!d) return false;
+    if (d.status === "retired") { toast(`<code>POST …/dimensions/${d.key}/values</code> → <b>409</b>：retired 维度不扩值`); return false; }
+    const v = state.valNew.v.trim(), l = state.valNew.l.trim();
+    if (!v) { toast("先填 value（mono 标识）"); return false; }
+    if (d.values.some(x => x[0] === v)) { toast(`取值 <code>${esc(v)}</code> 已存在`); return false; }
+    d.values.push([v, l || v]);
+    permEvent("dimension.value.create", `${d.key} += ${v}`);
+    state.valNew = { v: "", l: "" };
+    toast(`<code>POST /api/orgs/${o.id}/dimensions/${d.key}/values</code> · value=${esc(v)}（可连续添加）`);
+  },
+  valOff(el) {
+    const o = O(), d = dimOf(el.dataset.k), t = d && d.values.find(x => x[0] === el.dataset.v);
+    if (!t) return false;
+    t[2] = "disabled";
+    permEvent("dimension.value.update", `停用取值 ${d.key}=${t[0]}（${t[1]}）· dry_run 先给影响面`);
+    state.lastSearch = null;
+    toast(`<code>PATCH /api/orgs/${o.id}/dimensions/${d.key}/values/{id}</code> status=disabled · dry_run 先给影响面 · 停用即收紧进计算`);
+  },
+  valOn(el) {
+    const o = O(), d = dimOf(el.dataset.k), t = d && d.values.find(x => x[0] === el.dataset.v);
+    if (!t) return false;
+    delete t[2];
+    permEvent("dimension.value.update", `启用取值 ${d.key}=${t[0]}（${t[1]}）· D19 恢复路径`);
+    state.lastSearch = null;
+    toast(`<code>PATCH /api/orgs/${o.id}/dimensions/${d.key}/values/{id}</code> status=active · D19：停用可逆（重新启用），退役不可逆`);
+  },
+  /* C-1c 删空知识库（RESTRICT） */
+  dsDel(el) { state.dsAsk = el.dataset.id; },
+  dsDelCancel() { state.dsAsk = null; },
+  dsDelOk(el) {
+    const o = O(), id = el.dataset.id, d = o.datasets.find(x => x.id === id);
+    if (!d) return false;
+    if (o.docs.some(x => x.ds === id)) { toast(`<code>DELETE …/datasets/${id}</code> → <b>409 RESTRICT</b>：先删文档再删库`); return false; }
+    o.datasets = o.datasets.filter(x => x.id !== id);
+    permEvent("dataset.delete", `删除空知识库「${d.name}」`);
+    state.dsAsk = null; if (state.ds === id) state.ds = "all"; if (state.up.ds === id) state.up.ds = "";
+    toast(`已删除知识库 <b>${esc(d.name)}</b>——回到「所有知识库」`);
+  },
+  /* B① 任务取消 */
+  taskCancel(el) {
+    const o = O(), t = o.tasks.find(x => x.id === el.dataset.id);
+    if (!t) return false;
+    if (!["running", "leased", "pending"].includes(t.st)) { toast(`<code>POST …/tasks/${t.id}/cancel</code> · 已终态（${t.st}）幂等返现态`); return false; }
+    t.st = "cancelled"; t.hb = t.lease = null; t.note = "cancelled: by user request";
+    toast(`<code>POST /api/orgs/${o.id}/tasks/${t.id}/cancel</code> · 非终态→failed+'cancelled: by user request'；已终态幂等返现态`);
+  },
 };
 
 document.addEventListener("click", ev => {
   const el = ev.target.closest("[data-act]");
   if (!el) { if (!ev.target.closest(".menu")) document.querySelectorAll(".menu.open").forEach(x => x.classList.remove("open")); return; }
   if (el.disabled) return;
+  // 顶栏弹层（MCP）不经 render 重建：点击其它动作时一并收起（菜单内点击与自身切换除外）
+  if (!el.closest(".menu") && el.dataset.act !== "mcpMenu" && el.dataset.act !== "menu") document.querySelectorAll(".menu.open").forEach(x => x.classList.remove("open"));
   const fn = actions[el.dataset.act];
   if (!fn) return;
   if (fn(el) !== false) render();
@@ -2030,6 +2469,19 @@ function onInput(ev) {
     case "annText": state.annText = v; $("#annRes").innerHTML = annResultHTML(); return;
     case "fuzzy": state.fuzzy = v; break;
     case "degraded": state.degraded = v; break;
+    /* v0.6 C 项补画输入项 */
+    case "orgNewId": state.orgNew.id = v; break;
+    case "orgNewName": state.orgNew.name = v; break;
+    case "orgNewAdmin": state.orgNew.admin = v; break;
+    case "memNewUid": state.memNew.uid = v; break;
+    case "memNewRole": state.memNew.role = v; break;
+    case "memNewExp": state.memNew.expires = v; break;
+    case "memExp": state.memExpVal = v; break;
+    case "dimKey": state.dimNew.key = v; break;
+    case "dimLabel": state.dimNew.label = v; break;
+    case "dimReq": state.dimNew.required = v; break;
+    case "valKey": state.valNew.v = v; break;
+    case "valLabel": state.valNew.l = v; break;
     default: return;
   }
   render();
