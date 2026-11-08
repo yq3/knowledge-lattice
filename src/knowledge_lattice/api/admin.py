@@ -1052,11 +1052,24 @@ async def org_stats(
     org: str, request: Request, auth: AuthContext = Depends(get_auth),
 ) -> dict:
     """运维面板 stats（m2-3 B4——maintenance 任务族最近一次运行计数；含
-    audit_outbox_trimmed 新键：已搬运 outbox 行保留期清理）。只读。"""
+    audit_outbox_trimmed 新键：已搬运 outbox 行保留期清理）。只读。
+
+    m3-3 G-28⑦：新增 ``query_audit``（dropped/pending——查询审计队列溢出
+    丢弃与在队深度观测面，此前仅日志可见；队列未装配时键缺省 None）。"""
     org = org_scoped(request, org, auth)
     service = get_service(request)
     _require_org_admin(service, auth, org)
-    return {"maintenance": service.backend.read_last_maintenance_stats()}
+    body = {"maintenance": service.backend.read_last_maintenance_stats()}
+    qa = getattr(service, "query_audit", None)
+    if qa is not None:
+        try:
+            body["query_audit"] = {"dropped": int(qa.dropped),
+                                   "pending": int(qa.pending)}
+        except Exception:  # noqa: BLE001 —— 观测面取数失败不 500 stats
+            body["query_audit"] = None
+    else:
+        body["query_audit"] = None
+    return body
 
 
 # ============================================================================

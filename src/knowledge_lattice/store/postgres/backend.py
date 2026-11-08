@@ -3618,12 +3618,13 @@ class PgBackend:
                 ensure_month_partition(
                     conn, datetime(int(month[:4]), int(month[4:6]), 1, tzinfo=UTC)
                 )
-                start, end = month_bounds(month)
+                # m3-3 G-28④：existed 按本批 id 查询（消 O(当月行数)/次 的
+                # 全月扫描——幂等跳过语义不变：批内已存 id 跳过不推进 prev）
+                batch_ids = [ev["id"] for ev in recs]
                 existed = {
                     r[0] for r in conn.execute(
-                        "SELECT id FROM audit_events"
-                        " WHERE created_at >= %(s)s AND created_at < %(e)s",
-                        {"s": start, "e": end},
+                        "SELECT id FROM audit_events WHERE id = ANY(%(ids)s)",
+                        {"ids": batch_ids},
                     ).fetchall()
                 }
                 prev = last_row_hash(conn, month)

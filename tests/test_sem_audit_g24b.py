@@ -37,7 +37,7 @@ def g24_env(backend, tmp_path):
     from knowledge_lattice.config import Settings
     from knowledge_lattice.core.semantic.annotator import clear_annotator_cache
     from knowledge_lattice.core.semantic.build import run_build
-    from knowledge_lattice.core.semantic.records import EntityRecord, RelationRecord
+    from knowledge_lattice.core.semantic.records import EntityRecord
     from knowledge_lattice.core.semantic.sync import run_sync
     from knowledge_lattice.domain.auth import hash_token
 

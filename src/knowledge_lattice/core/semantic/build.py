@@ -51,10 +51,15 @@ def _rev_payload(snapshot: dict, *, embed_model_label: str,
     """dict_rev 哈希输入（规范化序列化——排序 + 紧凑分隔，双方言同 rev）。
 
     parent_id 以 -1 规避 None 与 int 的排序比较；curated_json 入实体元组 +
-    yaml_rev 入顶层输入——YAML 改 definition 必触发重建（G-17 双保险）。"""
+    yaml_rev 入顶层输入——YAML 改 definition 必触发重建（G-17 双保险）；
+    fuzzy_code_rev 入顶层（G-23⑤——m3-3：模糊索引算法/规范化代码变更触发
+    重建，常量在 fuzzy.FUZZY_CODE_REV）。"""
+    from knowledge_lattice.core.semantic.fuzzy import FUZZY_CODE_REV
+
     return {
         "embed_model": embed_model_label,
         "yaml_rev": yaml_rev or "",
+        "fuzzy_code_rev": FUZZY_CODE_REV,
         "entities": sorted(
             [str(e["id"]), e["type"], e["key"], e["name"],
              str(e["parent_id"] if e["parent_id"] is not None else -1),
@@ -93,15 +98,19 @@ def dict_rev_components(
     snapshot: dict, *, embed_model_label: str, yaml_rev: str | None = None
 ) -> dict:
     """dict_rev 各分量摘要（A4 构建报告——entities/aliases/relations 分量
-    sha + yaml_rev + embed_model 原值：变更面定位）。"""
+    sha + yaml_rev + embed_model 原值：变更面定位；m3-3 起含 fuzzy_code_rev
+    ——G-23⑤ 算法代码变更触发重建时报告可辨）。"""
     payload = _rev_payload(snapshot, embed_model_label=embed_model_label,
                            yaml_rev=yaml_rev)
+    from knowledge_lattice.core.semantic.fuzzy import FUZZY_CODE_REV
+
     return {
         "entities": _sha(payload["entities"]),
         "aliases": _sha(payload["aliases"]),
         "relations": _sha(payload["relations"]),
         "yaml_rev": yaml_rev or "",
         "embed_model": embed_model_label,
+        "fuzzy_code_rev": FUZZY_CODE_REV,
     }
 
 
@@ -462,7 +471,8 @@ def run_build(
             logger.info("semantic build reactivated (rev rollback): org=%s"
                         " build=%s rev=%s", org_id, build_id, dict_rev)
             _write_fuzzy_index(backend, org_id, fuzzy_term_rows,
-                               fuzzy_del_rows, stats, build_id=build_id)
+                               fuzzy_del_rows, stats, build_id=build_id,
+                               embed_model_label=settings.embed_model_label)
             stats["retag_enqueued"] = _maybe_enqueue_retag(
                 backend, org_id, dict_rev, stats, prev_build)
             return {"build_id": build_id, "dict_rev": dict_rev, "status": "ready",
@@ -498,9 +508,11 @@ def run_build(
         logger.info("semantic build ready: org=%s build=%s rev=%s entities=%s",
                     org_id, build_id, dict_rev, stats["entities"])
         # 模糊索引写库（m2s-6——ready 可见后写：eval 拦下的词典不生效到模糊面；
-        # P2-1/R2：写失败标记持久化进 build stats，收敛交 skipped 对账修复路径）
+        # P2-1/R2：写失败标记持久化进 build stats，收敛交 skipped 对账修复路径；
+        # m3-3 G-23③：成功后回写内容哈希锚——skipped 快速通过）
         _write_fuzzy_index(backend, org_id, fuzzy_term_rows, fuzzy_del_rows,
-                           stats, build_id=build_id)
+                           stats, build_id=build_id,
+                           embed_model_label=settings.embed_model_label)
         stats["retag_enqueued"] = _maybe_enqueue_retag(
             backend, org_id, dict_rev, stats, prev_build)
         return {"build_id": build_id, "dict_rev": dict_rev, "status": "ready",
@@ -551,14 +563,27 @@ def _build_fuzzy_products(snapshot: dict, settings: Settings, embedder):
 
 def _write_fuzzy_index(backend, org_id: str, term_rows: list[dict],
                        del_rows: list[dict], stats: dict,
-                       *, build_id: int | None = None) -> None:
+                       *, build_id: int | None = None,
+                       embed_model_label: str = "") -> None:
     """模糊索引整替写库（成功切换后——失败标记**持久化**进 build 行 stats
     〔P2-1/R2：sem_update_build_stats，build_report 可见〕；收敛交 skipped
-    对账修复路径——见 _repair_fuzzy_index_if_needed）。"""
+    对账修复路径——见 _repair_fuzzy_index_if_needed）。
+
+    m3-3 G-23③：成功后回写**内容集合哈希**（带 embed_model 维度）进 build
+    行 stats.fuzzy——skipped 构建快速通过的数据锚（健康索引零 build_fuzzy_
+    terms 全量重算）。vec_expected/vec_embedded 由 stats.fuzzy 既有键承载
+    （build_fuzzy_products 产物）。"""
     try:
         written = backend.sem_fuzzy_replace(org_id, term_rows, del_rows)
         logger.info("semantic fuzzy index written: org=%s terms=%s dels=%s",
                     org_id, written, len(del_rows))
+        fuzzy = {**(stats.get("fuzzy") or {})}
+        fuzzy["content_hash"] = _fuzzy_content_hash(term_rows)
+        fuzzy["content_model"] = (embed_model_label
+                                  or (term_rows[0].get("embed_model") if term_rows else ""))
+        stats["fuzzy"] = fuzzy
+        if build_id is not None:
+            _persist_build_stats(backend, org_id, build_id, stats)
     except Exception:  # noqa: BLE001 —— 非可用性前提：不回滚构建
         logger.exception(
             "semantic fuzzy index write failed: org=%s（模糊面沿用旧索引；"
@@ -566,73 +591,177 @@ def _write_fuzzy_index(backend, org_id: str, term_rows: list[dict],
         stats["fuzzy"] = {**(stats.get("fuzzy") or {}),
                           "index_write_failed": True}
         if build_id is not None:
-            try:
-                backend.sem_update_build_stats(
-                    org_id, build_id,
-                    json.dumps(stats, ensure_ascii=False, default=str))
-            except Exception:  # noqa: BLE001 —— 标记持久化失败不掩盖主路径
-                logger.exception(
-                    "fuzzy index_write_failed marker persist failed:"
-                    " org=%s build=%s", org_id, build_id)
+            _persist_build_stats(backend, org_id, build_id, stats)
+
+
+def _persist_build_stats(backend, org_id: str, build_id: int, stats: dict,
+                         ) -> None:
+    """build 行 stats_json 原地更新（持久化失败不掩盖主路径——P2-1/R2）。"""
+    try:
+        backend.sem_update_build_stats(
+            org_id, build_id,
+            json.dumps(stats, ensure_ascii=False, default=str))
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "fuzzy build stats persist failed: org=%s build=%s", org_id,
+            build_id)
+
+
+def _fuzzy_content_hash(rows) -> str:
+    """内容集合哈希（G-23③ 裁定②——m3-3）：``{(entity_id, kind, text_norm,
+    embed_model)}`` 排序序列 sha——embed_model 入集合维度（G-23① 模型迁移
+    崩溃窗口：旧标签行内容恰等也不撞哈希）；纯内容比对/回写共用。"""
+    entries = sorted(
+        (str(r["entity_id"]), str(r["kind"]), str(r["text_norm"]),
+         str(r.get("embed_model") or ""))
+        for r in rows
+    )
+    return _sha(entries)
+
+
+def _updated_fuzzy_stats(current: dict | None, content_hash: str,
+                         label: str, vec_expected: int,
+                         repaired: dict | None) -> dict | None:
+    """current 行 stats.fuzzy 更新（G-23②④——返回更新后的 stats dict）：
+
+    - 清 ``index_write_failed`` / ``vec_skipped`` 标记（修复/对账通过面
+      ——成功粘滞消除）；
+    - 回写 content_hash / content_model / vec_expected（下次 skipped 快速
+      通过锚）；
+    - ``repaired`` 注记（触发原因/行数——被修复 build 行的历史事实可读；
+      非修复路径清除旧注记）。
+
+    current 缺位（评测拦下/首建等）→ None（调用方跳过持久化）。"""
+    if not current:
+        return None
+    stats_json = current.get("stats_json") or "{}"
+    try:
+        stats = (json.loads(stats_json) if isinstance(stats_json, str)
+                 else dict(stats_json))
+    except (TypeError, ValueError):
+        stats = {}
+    if not isinstance(stats, dict):
+        stats = {}
+    fuzzy = stats.get("fuzzy") or {}
+    if not isinstance(fuzzy, dict):
+        fuzzy = {}
+    fuzzy["index_write_failed"] = False
+    fuzzy["vec_skipped"] = False
+    fuzzy["content_hash"] = content_hash
+    fuzzy["content_model"] = label
+    fuzzy["vec_expected"] = vec_expected
+    if repaired is not None:
+        fuzzy["repaired"] = repaired
+    else:
+        fuzzy.pop("repaired", None)
+    stats["fuzzy"] = fuzzy
+    return stats
+
+
+def _current_fuzzy_stats(current: dict | None) -> dict:
+    """current build 行 stats.fuzzy 节（畸形防御 → {}）。"""
+    if not current:
+        return {}
+    stats_json = current.get("stats_json") or "{}"
+    if isinstance(stats_json, str):
+        try:
+            stats_json = json.loads(stats_json)
+        except (TypeError, ValueError):
+            return {}
+    if not isinstance(stats_json, dict):
+        return {}
+    fuzzy = stats_json.get("fuzzy") or {}
+    return fuzzy if isinstance(fuzzy, dict) else {}
 
 
 def _repair_fuzzy_index_if_needed(backend, org_id: str, snapshot: dict,
                                   settings: Settings, embedder,
                                   *, current: dict | None = None) -> dict | None:
     """skipped 构建的模糊索引对账修复（P2-1/R2 + P2-2/R3——用户裁定 5
-    「最终一致+修复路径」正式口径）：
+    「最终一致+修复路径」正式口径；m3-3 G-23 残余收口）：
 
-    - **内容集合对账（P2-2/R3 主判定）**：期望集合 `{(entity_id, kind,
-      text_norm)}`（当前快照经 build_fuzzy_terms 纯计算）vs 现存
-      `sem_fuzzy_terms_all` 行集合——**任何不相等即触发整替**（词典收缩、
-      等行数改名等纯计数/覆盖对账的盲区由此覆盖）；
-    - **向量覆盖对账**：内容一致但 `vec_embedded < vec_expected` 且当前
+    - **内容哈希快速通过（G-23③——裁定②内容哈希方向）**：current 行
+      stats.fuzzy 存有 content_hash（带 embed_model 维度）且现存行集哈希
+      一致、标签一致、向量覆盖足够 → 直接通过（**零 build_fuzzy_terms
+      全量重算**——pypinyin 秒级固定开销收窄；「再次 skipped 不重触」）；
+    - **内容集合对账（P2-2/R3 主判定 + G-23①）**：期望集合
+      ``{(entity_id, kind, text_norm, embed_model)}``（纯计算——标签随
+      期望钉当前 settings）vs 现存 ``sem_fuzzy_terms_all`` 行集合——**任何
+      不相等即触发整替**（词典收缩、等行数改名、**模型迁移崩溃窗口的旧
+      标签行**等盲区由此覆盖）；
+    - **向量覆盖对账**：内容一致但 ``vec_embedded < vec_expected`` 且当前
       有 embedder → 触发整替补齐（降级自愈）；embedder 缺席时不因向量
       不足触发（无能力补——留待有 embedder 的 skipped 构建）；
-    - **持久化标记附加触发（P2-2/R3）**：current build 行 stats.fuzzy 的
-      `index_write_failed` / `vec_skipped` 落库标记（崩溃场景无内存标记，
-      落库线索是唯一触发面）——即使内容/覆盖恰好一致也触发一次对账性
-      整替（修面即清陈旧标记态）；
+    - **标记触发面已移除（G-23① 修法推论）**：embed_model 入集合 + 内容/
+      覆盖对账完备后 ``index_write_failed``/``vec_skipped`` 持久化标记的
+      附加触发冗余（健康索引仅标记 True 不再触发幂等整替）；标记保留写入
+      （观测面），**凡修复发生即清除并记 repaired 注记**（G-23②④——
+      修面即清陈旧标记态，被修复 build 行历史事实可读）；
     - **「只补缺不降级」的边缘（Tester P3-1/R3 注记）**：embedder 缺失/
       故障但**内容缺失**触发整替时，会短暂以 NULL 向量覆盖旧非空向量
       （整替无行级合并）——收敛依赖后续有可用 embedder 的 skipped 构建
-      补齐（每次同 rev 构建都会走到本对账——最终一致成立）；embedder
-      缺席时内容一致 + 向量不足不触发，不主动制造该边缘；
+      补齐；embedder 缺席时内容一致 + 向量不足不触发，不主动制造该边缘；
     - 修复成功返回 sem_fuzzy_index_stats（调用方进 skipped 返回
-      stats.fuzzy_repaired 供观测）；失败记 warning——下次 skipped 构建再
-      对账（真实收敛路径）。
+      stats.fuzzy_repaired 供观测——skipped 审计事件携带）；失败记
+      warning——下次 skipped 构建再对账（真实收敛路径）。
     """
     try:
         from knowledge_lattice.core.semantic.fuzzy import build_fuzzy_terms
 
-        term_rows, _dels, expected = build_fuzzy_terms(
-            snapshot, None, embed_model_label=settings.embed_model_label)
-        expect_terms = expected["terms"]
-        expect_vec = expected["vec_expected"]
-        expect_set = {(r["entity_id"], r["kind"], r["text_norm"])
-                      for r in term_rows}
+        label = settings.embed_model_label
+        cur_fuzzy = _current_fuzzy_stats(current)
         have_rows = backend.sem_fuzzy_terms_all(org_id)
-        have_set = {(r["entity_id"], r["kind"], r["text_norm"])
+        idx_stats = backend.sem_fuzzy_index_stats(org_id)
+
+        # ---- 快速通过（G-23③）：哈希 + 标签 + 覆盖全一致 → 零全量重算 ----
+        if (cur_fuzzy.get("content_hash")
+                and cur_fuzzy.get("content_model") == label
+                and _fuzzy_content_hash(have_rows)
+                == cur_fuzzy["content_hash"]):
+            expect_saved = int(cur_fuzzy.get("vec_expected") or 0)
+            if (embedder is None
+                    or idx_stats["vec_embedded"] >= expect_saved):
+                return None
+
+        # ---- 全量对账（既有主判定 + embed_model 维度——G-23①）----
+        term_rows, _dels, expected = build_fuzzy_terms(
+            snapshot, None, embed_model_label=label)
+        expect_vec = expected["vec_expected"]
+        expect_hash = _fuzzy_content_hash(term_rows)
+        expect_set = {(r["entity_id"], r["kind"], r["text_norm"],
+                       r.get("embed_model") or label)
+                      for r in term_rows}
+        have_set = {(r["entity_id"], r["kind"], r["text_norm"],
+                     r.get("embed_model") or "")
                     for r in have_rows}
-        stats = backend.sem_fuzzy_index_stats(org_id)
         reasons: list[str] = []
         if have_set != expect_set:
             reasons.append(
                 f"content drift（have={len(have_set)} expect={len(expect_set)}）")
         elif (embedder is not None
-              and stats["vec_embedded"] < expect_vec):
-            reasons.append(f"vec coverage（{stats['vec_embedded']} <"
+              and idx_stats["vec_embedded"] < expect_vec):
+            reasons.append(f"vec coverage（{idx_stats['vec_embedded']} <"
                            f" {expect_vec}）")
-        # 持久化标记附加触发（崩溃场景的落库线索——见 docstring）
-        marker = _fuzzy_failure_marker(current)
-        if marker:
-            reasons.append(f"persisted marker（{marker}）")
         if not reasons:
+            # 对账通过但快速路径未命中（存量行无哈希/覆盖曾经不足现已补齐）：
+            # 回写哈希锚供下次 skipped 快速通过（非修复语义——清旧注记）
+            new_stats = _updated_fuzzy_stats(
+                current, expect_hash, label, expect_vec, repaired=None)
+            if new_stats is not None:
+                _persist_build_stats(backend, org_id, current["id"],
+                                     new_stats)
             return None
         term_rows, del_rows, _stats = _build_fuzzy_products(
             snapshot, settings, embedder)
         written = backend.sem_fuzzy_replace(org_id, term_rows, del_rows)
         after = backend.sem_fuzzy_index_stats(org_id)
+        # G-23②④：修面即清标记 + repaired 注记 + 新哈希锚（同一次 stats 更新）
+        new_stats = _updated_fuzzy_stats(
+            current, expect_hash, label, expect_vec,
+            repaired={"reasons": reasons, "terms": written,
+                      "vec_embedded": after["vec_embedded"]})
+        if new_stats is not None:
+            _persist_build_stats(backend, org_id, current["id"], new_stats)
         logger.warning(
             "semantic fuzzy index repaired on skipped build: org=%s"
             " terms=%s vec_embedded=%s（对账触发：[%s]）",
@@ -643,28 +772,6 @@ def _repair_fuzzy_index_if_needed(backend, org_id: str, snapshot: dict,
             "semantic fuzzy index repair failed on skipped build: org=%s"
             "（下次同 rev 构建再对账）", org_id)
         return None
-
-
-def _fuzzy_failure_marker(current: dict | None) -> str | None:
-    """current build 行持久化的模糊索引失败/降级标记（P2-2/R3 附加触发面）：
-    'index_write_failed' / 'vec_skipped' 任一为真即返回标记名。"""
-    if not current:
-        return None
-    stats_json = current.get("stats_json") or "{}"
-    if isinstance(stats_json, str):
-        try:
-            stats_json = json.loads(stats_json)
-        except (TypeError, ValueError):
-            return None
-    if not isinstance(stats_json, dict):
-        return None
-    fuzzy = stats_json.get("fuzzy") or {}
-    if not isinstance(fuzzy, dict):
-        return None
-    for key in ("index_write_failed", "vec_skipped"):
-        if fuzzy.get(key):
-            return key
-    return None
 
 
 # ---- 构建报告（A4——REST GET /semantic/builds/{id}/report 数据源） ----

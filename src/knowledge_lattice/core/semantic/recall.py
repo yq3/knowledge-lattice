@@ -58,8 +58,15 @@ def resolve_query_entities(
 
         try:
             result = annotate_text(backend, settings, org_id, query)
-        except ValueError:
-            raise
+        except ValueError as exc:
+            # G-24⑥（m3-3）：auto 分支超长（query >4000 字——附录 A-10）返回
+            # None 不阻断检索——超长是输入形态而非调用方参数错误，实体路是
+            # 增益路非可用性前提（§5.10「增益路失败不阻断」）；显式 entities
+            # 分支的参数错误（>20 seeds）仍上抛 400（调用方契约）。
+            logger.warning(
+                "auto_entities annotate rejected (%s: %s)——实体路本轮跳过"
+                "（超长不阻断检索，G-24⑥）", type(exc).__name__, exc)
+            return None
         except Exception as exc:  # noqa: BLE001 —— 增益路失败不阻断检索
             logger.warning(
                 "auto_entities annotate failed (%s: %s)——实体路本轮跳过",

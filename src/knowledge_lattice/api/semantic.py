@@ -350,6 +350,12 @@ async def semantic_annotate(
             context_entities=ctx, prefer_types=prefer, fuzzy=fuzzy,
             include_restricted=can_restricted,
             embedder=getattr(service, "embedder", None),
+            # m3-3 G-24⑨：probe gate 接线（探针拒绝关 fuzzy vec 层）+
+            # 有界等待/共享熔断/降级审计（scope=annotate——沿 search_entities
+            # m2-5 形态）
+            gate=getattr(service, "gate", None),
+            breakers=getattr(service, "breakers", None),
+            user_id=auth.user_id,
         )
 
     def _restricted_ids(result: dict) -> list[int]:
@@ -380,8 +386,16 @@ async def semantic_annotate(
                    "请稍后重试或联系运维）",
         ) from exc
     if can_restricted:
+        # m3-3 D-5：权限事件取数失败跳过（200 主响应已定，不为审计升级 500）
+        try:
+            restricted_hits = await asyncio.to_thread(_restricted_ids, result)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "annotate restricted-audit ids lookup failed: org=%s"
+                "（权限事件跳过，不影响主响应）", org)
+            restricted_hits = []
         _audit_restricted_access(service, org, auth, "annotate",
-                                  await asyncio.to_thread(_restricted_ids, result))
+                                  restricted_hits)
     # m3-2 G-22：accepted 如实返回面（entity_ids=mention 列表——无 restricted
     # id 时即无权面真实形态，不额外标记——存在性不泄露优先）
     enqueue_query_event(service, build_query_event(
@@ -464,7 +478,8 @@ async def list_semantic_entities(
         # 事件循环（§5.2/NFR-8「模型 HTTP 调用绝不阻塞事件循环」——与端点
         # 其余语义读 annotate/get_entity 的 to_thread 形态一致）；
         # G-24③（m2-5）：vec 档改经 query_embed_timeout_s 有界等待 + 共享
-        # embed 熔断器 + search.degraded 降级审计（core 侧 _embed_query_bounded）
+        # embed 熔断器 + search.degraded 降级审计（core 侧 embed_query_bounded）；
+        # G-24⑨前半（m3-3）：probe gate 接线——探针拒绝关查询侧向量路
         from knowledge_lattice.config import effective_settings
 
         return await asyncio.to_thread(
@@ -474,6 +489,7 @@ async def list_semantic_entities(
             settings=effective_settings(service.settings, service.embedder),
             embedder=getattr(service, "embedder", None),
             breakers=service.breakers, user_id=auth.user_id,
+            gate=getattr(service, "gate", None),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -526,11 +542,18 @@ async def get_semantic_entity(
             include=include, can_restricted=can_restricted,
         )
     except EntityNotFound as exc:
-        # 404 = restricted 静默面或真不存在——查询审计 refused（A-16：可回溯）
-        row = service.backend.sem_entity_by_id(org, entity_id)
-        reason = ("restricted"
-                  if row is not None and row["sensitivity"] == "restricted"
-                  else "not_found")
+        # 404 = restricted 静默面或真不存在——查询审计 refused（A-16：可回溯）。
+        # m3-3 D-5：回查仅服务审计 reason 判定——取数失败保守记 not_found
+        # （404 语义已定，不为审计取数升级 500）。
+        reason = "not_found"
+        try:
+            row = service.backend.sem_entity_by_id(org, entity_id)
+            if row is not None and row["sensitivity"] == "restricted":
+                reason = "restricted"
+        except Exception:  # noqa: BLE001 —— 审计回查失败保守化（不影响 404）
+            logger.warning(
+                "get_entity 404 audit reason lookup failed: org=%s id=%s"
+                "（保守记 not_found）", org, entity_id)
         enqueue_query_event(service, build_query_event(
             EVENT_QUERY_GET_ENTITY, org_id=org, actor=auth.user_id,
             outcome="refused",
@@ -544,12 +567,19 @@ async def get_semantic_entity(
     if can_restricted:
         # G-24②①：restricted 根访问落权限事件（REST 面无 curated 前提——
         # include=['attrs'] 同样落）+ ②：展开「看到」的 restricted 端点并入
-        restricted_ids: list[int] = []
-        row = service.backend.sem_entity_by_id(org, entity_id)
-        if row is not None and row["sensitivity"] == "restricted":
-            restricted_ids.append(entity_id)
-        node_ids = [n["id"] for n in result.get("nodes") or ()]
-        restricted_ids.extend(service.backend.sem_restricted_ids(org, node_ids))
+        # 权限事件取数（m3-3 D-5 包裹——失败跳过权限事件，不阻断 200 主响应）
+        try:
+            restricted_ids: list[int] = []
+            row = service.backend.sem_entity_by_id(org, entity_id)
+            if row is not None and row["sensitivity"] == "restricted":
+                restricted_ids.append(entity_id)
+            node_ids = [n["id"] for n in result.get("nodes") or ()]
+            restricted_ids.extend(service.backend.sem_restricted_ids(org, node_ids))
+        except Exception:  # noqa: BLE001 —— 权限事件取数失败跳过（主响应已定）
+            logger.warning(
+                "get_entity restricted-audit ids lookup failed: org=%s"
+                " id=%s（权限事件跳过，不影响主响应）", org, entity_id)
+            restricted_ids = []
         _audit_restricted_access(service, org, auth, "get_entity",
                                  restricted_ids)
     enqueue_query_event(service, build_query_event(

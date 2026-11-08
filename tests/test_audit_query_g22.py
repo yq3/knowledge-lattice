@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 import time
-import uuid
 
 import pytest
 
@@ -62,7 +61,7 @@ def qa_env(backend, tmp_path):
     from knowledge_lattice.config import Settings
     from knowledge_lattice.core.semantic.annotator import clear_annotator_cache
     from knowledge_lattice.core.semantic.build import run_build
-    from knowledge_lattice.core.semantic.records import EntityRecord, RelationRecord
+    from knowledge_lattice.core.semantic.records import EntityRecord
     from knowledge_lattice.core.semantic.sync import run_sync
     from knowledge_lattice.domain.auth import hash_token
 
@@ -198,14 +197,19 @@ def test_qa1_queue_flush_and_window(backend, tmp_path) -> None:
 
 
 def test_qa1b_queue_stop_flushes_pending(backend, tmp_path) -> None:
-    """stop() 关停即 flush 残留队列（lifespan 关停口径——崩溃外的正常关停零丢失）。"""
+    """stop() 关停即 flush 残留队列（lifespan 关停口径——崩溃外的正常关停零丢失）。
+
+    m3-3 P3-3 隔离改造：**不 start 后台线程**——enqueue 即 wake 会令后台线程
+    立即 flush（60s 周期形同虚设），旧形态无法证明落库出自 stop()。本形态
+    队列无后台线程，落库只可能来自 stop() 的关停 flush。"""
     from knowledge_lattice.query_audit import QueryAuditQueue, build_query_event
 
     b = _thread_safe_backend(backend, tmp_path)
-    qa = QueryAuditQueue(b, flush_interval_s=60.0)  # 周期远超测试时长
-    qa.start()
+    qa = QueryAuditQueue(b, flush_interval_s=60.0)  # 不 start——无后台线程
     qa.enqueue(build_query_event(
         EVENT_SEARCH, org_id=ORG, actor="u_full", detail={"query": "q"}))
+    assert b.read_org_audit(ORG, action=EVENT_SEARCH) == [], (
+        "无后台线程时入队不落库——后续落库只可能出自 stop()")
     qa.stop()
     assert b.read_org_audit(ORG, action=EVENT_SEARCH), "stop 必须 flush 残留队列"
 

@@ -13,17 +13,18 @@
 |---|---|---|---|---|
 | 1 | task-knowledge-lattice-m3-1 | **管理面补强批（含 be-1 并入）**：#13 §6.2 五方法组合（GET members、POST/PATCH datasets、POST/PATCH dimensions、GET values）+ GET 单维度/单取值端点 + #14 orgs.status 列停用载体+停用语义 + G-24① sem_restricted 管理面授予入口 + **issue #20 be-①②（D-① GET documents 列表 + D-② explain——契约形状以 issue #20 冻结评论为准；用户拍板并入 2026-11-05）**；交付后触发 ui-be 前端对账轮（见 §二 M3-UI 遗留挂账） | ~~前置~~ ✅ 契约冻结评论已发布（2026-11-05，issuecomment-6649900631） | ✅ **done（2026-11-08，round=1 双通过——SHA 33fb815，门禁 1715+1→1791+1，TC-OPS-10 组 76 用例；#13/#14 清偿、G-24① 划销、#20 be-①② 实现面交付〔issue 待 m3-2 收尾〕；边界裁定：explain membership deny 保展开+detail 口径 m3-2 落笔、停用维护链豁免；详见检查点）** |
 | 2 | task-knowledge-lattice-m3-2 | **查询级审计批（含 ui-be 并入——用户裁定 2026-11-08 取消独立轮）**：G-22 查询级异步审计子系统（docs/semantic 两侧、月库共用）+ T-S9⑥ 真断言 + m2s-6「显式断言三补」依赖闭环 + G-24② 持权审计两漏记 + ⑧ 审计常量入 domain/audit_events 登记处（顺手）+ **ui-be 前端对账**（api.js contract-first 单函数对齐真契约〔createDataset/createDimension/PATCH orgs 头一致性〕+ be-①②/m3-1 降级横幅撤除 + docs 视图 visible 徽标列+explain 卡+可见性矩阵实装 + mem.known→GET members 真源化 + GET members 替换 export-CSV 名单源；#20 issue 收尾）+ **后端小修**（P3-1 pg list_members·list_orgs_for_user expires_at to_char 归一+双后端断言、P3-3 未用导入、边界① explain membership deny detail 文案「成员关系无效，维度行仅供参考」；顺手 P3-2/5/6/7/8） | 无 | ✅ **done（2026-11-08，round=1 双通过——SHA 995d6fd，门禁 1791+1→1842+1，TC-OPS-11 组；G-22/G-24②⑧ 划销、T-S9⑥+A-16 收口、三补收官、#20 收尾、G-28 新增〔P2-1 用户裁定 m3-3 修复〕；详见检查点）** |
-| 3 | task-knowledge-lattice-m3-3 | **语义 hardening 批（含 G-28③⑤ 承接——用户裁定 2026-11-08）**：#15/G-24⑨ 语义查询面随 probe gate 关闭 + annotate fuzzy vec 有界/熔断/降级审计 + G-24⑥ 超长降级/⑦ L1 disambiguation + G-23 残余（模糊层最终一致性修复路径）+ 构建产物 code versioning + R1 P3 残留 + **G-28③：P2-1 pg 单连接共享修复（backend_factory 独立连接/串行化+pg 臂双连接）** + **G-28⑤：链互斥并发测试收编（首轮必做）+qa1b 隔离+refused 分支断言补** + 文案 4 键清扫（i18n access.mem.empty 等「待 m3-1/无 GET members」矛盾文案+注释/CSS）+ 未用导入清扫（顺手：audit 取数包裹/flush existed 按批查询/G-28⑦ 观测面） | 无 | ⬜ 未开工 |
+| 3 | task-knowledge-lattice-m3-3 | **语义 hardening 批（含 G-28③⑤ 承接——用户裁定 2026-11-08）**：#15/G-24⑨ 语义查询面随 probe gate 关闭 + annotate fuzzy vec 有界/熔断/降级审计 + G-24⑥ 超长降级/⑦ L1 disambiguation + G-23 残余（模糊层最终一致性修复路径）+ 构建产物 code versioning + R1 P3 残留 + **G-28③：P2-1 pg 单连接共享修复（backend_factory 独立连接/串行化+pg 臂双连接）** + **G-28⑤：链互斥并发测试收编（首轮必做）+qa1b 隔离+refused 分支断言补** + 文案 4 键清扫（i18n access.mem.empty 等「待 m3-1/无 GET members」矛盾文案+注释/CSS）+ 未用导入清扫（顺手：audit 取数包裹/flush existed 按批查询/G-28⑦ 观测面〔④⑦扩容并入——裁定③〕） | 无 | ✅ **done（2026-11-08，round=1 双通过——SHA 3a0a214，门禁 1842+1→1880+1，TC-OPS-12 组 38 用例；G-23 划销/G-24 全项清/G-28④⑤⑦ 划销+③机制与测试已交付〔残余=生产 lifespan 接线部署期〕；#15 随 PR 关闭；口径裁定①补字段〔design §6.3② 自然落位〕②内容哈希③④⑦并入；详见检查点）** |
 | 4 | task-knowledge-lattice-m3-4 | **评测框架批**：TC-EVAL-02 黄金集合成扩容（中/纯英/混排三态）+ 双后端完整集基线（G-6 重开条件复测载体）+ TC-EVAL-04 deepeval 门禁挂 test_gate.sh + 预注入回归验证 + ragas 选型接入 + #16 conftest teardown DROP 吞错（顺手）+ 门禁 172 条 warnings 治理（m3-1 Tester P3② 存量——dev JWT 弱密钥/docling·pydantic Deprecation） | 无（合成扩容先行；真实语料受阻申报维持——待决-1） | ⬜ 未开工 |
 | 5 | task-knowledge-lattice-m3-5 | **评测收口批**：TC-EVAL-03 judge 双语校准（框架 + ~50 条人工双评材料——人工部分用户侧协同）+ 响应层指标固化 + TC-EVAL-05 在线引用锚点抽样 + MRL 截断判据正式落笔（G-8 依赖完整集）+ §六 M3 行总勾验 + 待决-1 受阻申报更新 | judge 端点裁定（design §7「judge 走内部网关」——开发态网关未就绪时是否沿 m2-5 百炼先例转 qwen） | ⬜ 未开工 |
 
 ## 二、挂账清单（新会话必读）
 
 **M3 backlog 池（m2-5 移交 + issue 登记）**：
-- issue #13 §6.2 五方法组合 → m3-1；#14 组织停用 → m3-1；#15 语义 gate（G-24⑨）→ m3-3；#16 conftest teardown → m3-4（顺手）
-- G-22 查询级审计 → m3-2；G-23 残余 → m3-3；G-24 余项①→m3-1、②⑧→m3-2、⑥⑦⑨→m3-3
-- m2s-6 followups 四项：显式断言三补（T-S9⑥ 依赖 G-22）→ m3-2；G-23 残余/code versioning/R1 P3 残留 → m3-3
+- issue #13 §6.2 五方法组合 → ~~m3-1~~ ✅；#14 组织停用 → ~~m3-1~~ ✅；#15 语义 gate（G-24⑨）→ ~~m3-3~~ ✅（随 PR 关闭）；#16 conftest teardown → m3-4（顺手）
+- G-22 查询级审计 → ~~m3-2~~ ✅；G-23 残余 → ~~m3-3~~ ✅ 划销；G-24 余项①→~~m3-1~~✅、②⑧→~~m3-2~~✅、⑥⑦⑨→~~m3-3~~✅（G-24 全项清）
+- m2s-6 followups 四项：显式断言三补 → ~~m3-2~~ ✅；G-23 残余/code versioning/R1 P3 残留 → ~~m3-3~~ ✅
 - 待决-1 真实语料：**维持未决**——m3-4 合成扩容先行、真实语料部分受阻申报；TC-EVAL-06 完整收口 + MRL 判据正式落笔依赖（m3-5 出数）
+- **m3-3 移交（m3-3 检查点遗留节）**：m3-4 顺手批——Committer P3-2（test_query_audit_m33 import time）+P3-6（test_r3_p2_2 函数名更名）+建议项 P3-10（gate 四接线点端点级 e2e 用例）；后续 web/语义批——P3-1/3/4/7/8/9 顺手级；PG 接线部署期——P3-5/11+死锁复现注记（RUNBOOK §1.z 已记）；G-28③ 生产 lifespan 接线残余（RUNBOOK §1.z 已记接线点）
 
 **M3-UI 遗留挂账（issue #20 · 2026-11-05 编排；M3-UI 终态 2d1ea4e = ui-0/1/2/3 + R2）**：
 - ① #13 五方法（GET members / POST·PATCH datasets·dimensions / GET values）→ **m3-1 已清偿 ✅（2026-11-08）**。UI 联动（后端落地后前端小改）：建库/建维度 contract-first 降级撤除、`mem.known` 会话注册表退化以 GET members 为真源（零授权成员持久可见 + 成员行 role/到期补全）——**并入 m3-2（用户裁定 2026-11-08）**
@@ -48,11 +49,11 @@
 
 ## 三、下一段开工指引
 
-1. **推荐下段 m3-2（查询级审计批·含 ui-be 并入——用户裁定 2026-11-08）**——G-22 查询级异步审计（docs/semantic 两侧、月库共用——design §6.3⑥「共用月库」锚点）+ T-S9⑥ 真断言 + G-24②⑧ + 前端对账（api.js 对齐/降级撤除/矩阵·explain 实装/mem.known 真源化）+ 后端小修（P3-1 expires_at 归一/P3-3/边界① detail 文案；顺手 P3-2/5/6/7/8）+ #20 issue 收尾；按协议 0：扫历史检查点（**m3-1 遗留节为最新权威**）+ 建检查点 + 用户确认
-2. 硬约束：门禁 **1791+1 起零回归**（双后端双模式 0 skipped、pg 臂收集数 >0）；coder 禁改 docs/ 与 prototype/（ui-be 前端改动属 web/ 不属 prototype/）；分层纪律（core 无方言 SQL、auto_entities 钉 api/mcp 层）
-3. 开发/提交固定 develop_opencode、PR base=develop、commit `[task-knowledge-lattice-m3-2] R<n>`；每段 chore 归档批带上工作区遗留流程文档（若有）
+1. **推荐下段 m3-4（评测框架批）**——TC-EVAL-02 黄金集合成扩容（中/纯英/混排三态）+ 双后端完整集基线（G-6 重开条件复测载体）+ TC-EVAL-04 deepeval 门禁挂 test_gate.sh + 预注入回归验证 + ragas 选型接入 + #16 conftest teardown DROP 吞错（顺手）+ 门禁 172 条 warnings 治理（m3-1 Tester P3② 存量）+ **m3-3 移交顺手批（Committer P3-2 import time/P3-6 函数名更名/建议项 P3-10 gate 四接线点端点级 e2e 用例）**；按协议 0：扫历史检查点（**m3-3 检查点遗留节为最新权威**）+ 建检查点 + 用户确认
+2. 硬约束：门禁 **1880+1 起零回归**（双后端双模式 0 skipped、pg 臂收集数 >0）；coder 禁改 docs/ 与 prototype/；分层纪律（core 无方言 SQL、auto_entities 钉 api/mcp 层）
+3. 开发/提交固定 develop_opencode、PR base=develop、commit `[task-knowledge-lattice-m3-4] R<n>`；每段 chore 归档批带上工作区遗留流程文档（若有）
 4. M3 里程碑验收句（design §8）：门禁能卡住一次人为注入的检索层回归（TC-EVAL-04）；judge-人一致性达标（TC-EVAL-03）；黄金集覆盖中英三态（TC-EVAL-02）；在线锚点（TC-EVAL-05）——m3-5 收口段勾验
-5. m3-1 交付基线：origin/develop 前进至 m3-1 PR 合入点（合入后回填）；门禁基线 **1791+1**（pg 臂 671=637+34）
+5. m3-3 交付基线：origin/develop 前进至 m3-3 PR 合入点（合入后回填）；门禁基线 **1880+1**（pg 臂 714=680+34）
 
 ## 四、维护规则
 
