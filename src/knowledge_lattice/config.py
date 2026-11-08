@@ -19,7 +19,9 @@ WORKER_MODES = (WORKER_MODE_INLINE, WORKER_MODE_SUBPROCESS)
 
 # mock IdP 公开缺省密钥（m2-4 R2 P2-2：仓库公开常量——prod + 该缺省值组合被
 # build_sso_verifier fail-closed 拒绝，与 dev JWT P2-5 同口径〔公开密钥=可伪造〕）
-DEFAULT_SSO_MOCK_SECRET = "dev-mock-idp-secret"
+# ≥32 字节（PyJWT InsecureKeyLengthWarning 清零——m3-4 E-2 warnings 治理；
+# 公开缺省值语义不变：prod+mock-idp+缺省值启动即拒的守卫不受长度影响）
+DEFAULT_SSO_MOCK_SECRET = "dev-mock-idp-secret-0123456789abcdef"
 
 
 @dataclass(frozen=True)

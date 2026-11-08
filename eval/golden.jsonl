@@ -24,5 +24,37 @@
 {"qid": "q24", "query": "个税 individual income tax 年终奖计税", "lang": "mix", "labels": [["gk-mix-07", 1]]}
 {"qid": "q25", "query": "土地增值税 land appreciation tax 清算预征", "lang": "mix", "labels": [["gk-mix-09", 1]]}
 {"qid": "q26", "query": "关税 customs duty 完税价格 dutiable value", "lang": "mix", "labels": [["gk-mix-06", 1]]}
-{"qid": "q27", "query": "增值税发票开具规范 发票栏次", "lang": "mix", "labels": [["gk-vat-09", 1]]}
+{"qid": "q27", "query": "增值税发票开具规范 发票栏次", "lang": "zh", "labels": [["gk-vat-09", 1]]}
 {"qid": "q28", "query": "契税 deed tax 税率计税依据", "lang": "mix", "labels": [["gk-mix-12", 1]]}
+{"qid": "q29", "lang": "zh", "query": "电子发票数电票如何开具和交付", "labels": [["gk-zh-m01", 1]]}
+{"qid": "q30", "lang": "zh", "query": "专用发票勾选认证的流程和期限", "labels": [["gk-zh-m02", 1]]}
+{"qid": "q31", "lang": "zh", "query": "纳税信用等级分为哪几级怎么复评", "labels": [["gk-zh-m03", 1]]}
+{"qid": "q32", "lang": "zh", "query": "欠税什么情况会被公告或阻止出境", "labels": [["gk-zh-m04", 1]]}
+{"qid": "q33", "lang": "zh", "query": "税务稽查自查补税的程序是怎样的", "labels": [["gk-zh-m05", 1]]}
+{"qid": "q34", "lang": "zh", "query": "发票丢失了怎么挂失补办", "labels": [["gk-zh-m06", 1]]}
+{"qid": "q35", "lang": "zh", "query": "小规模纳税人免税的月销售额标准", "labels": [["gk-zh-m07", 1]]}
+{"qid": "q36", "lang": "zh", "query": "跨县提供建筑服务如何预缴增值税", "labels": [["gk-zh-m08", 1]]}
+{"qid": "q37", "lang": "zh", "query": "税收减免留存备查资料有哪些要求", "labels": [["gk-zh-m09", 1]]}
+{"qid": "q38", "lang": "mix", "query": "非居民企业 non-resident enterprise 股息红利预提所得税", "labels": [["gk-mx-m03", 1]]}
+{"qid": "q39", "lang": "zh", "query": "证券交易印花税的税率是多少", "labels": [["gk-mx-m08", 1]]}
+{"qid": "q40", "lang": "zh", "query": "车船税的扣缴义务人是谁", "labels": [["gk-mx-m10", 1]]}
+{"qid": "q41", "lang": "en", "query": "red invoice reversal cancelled sale confirmation sheet", "labels": [["gk-en-m01", 1]]}
+{"qid": "q42", "lang": "en", "query": "withholding tax rate non-resident enterprise dividends", "labels": [["gk-en-m02", 1]]}
+{"qid": "q43", "lang": "en", "query": "transfer pricing documentation master file local file thresholds", "labels": [["gk-en-m03", 1]]}
+{"qid": "q44", "lang": "en", "query": "customs valuation transaction value method sequence", "labels": [["gk-en-m04", 1]]}
+{"qid": "q45", "lang": "en", "query": "export VAT rebate rate production enterprises method", "labels": [["gk-en-m05", 1]]}
+{"qid": "q46", "lang": "en", "query": "cross-border digital services reverse charge withholding", "labels": [["gk-en-m06", 1]]}
+{"qid": "q47", "lang": "en", "query": "expatriate individual income tax annual reconciliation worldwide income", "labels": [["gk-en-m07", 1]]}
+{"qid": "q48", "lang": "en", "query": "R&D super deduction auxiliary ledger qualifying expenses", "labels": [["gk-en-m08", 1]]}
+{"qid": "q49", "lang": "en", "query": "tax treaty residency certificate withholding agent", "labels": [["gk-en-m09", 1]]}
+{"qid": "q50", "lang": "en", "query": "consumption tax premium cosmetics yachts catalogue", "labels": [["gk-en-m10", 1]]}
+{"qid": "q51", "lang": "mix", "query": "平台经济 platform economy 个税代扣代缴", "labels": [["gk-mx-m01", 1]]}
+{"qid": "q52", "lang": "mix", "query": "转让定价 transfer pricing 关联申报", "labels": [["gk-mx-m02", 1]]}
+{"qid": "q53", "lang": "mix", "query": "税收协定 tax treaty 相互协商程序", "labels": [["gk-mx-m04", 1]]}
+{"qid": "q54", "lang": "mix", "query": "常设机构 permanent establishment 判定标准", "labels": [["gk-mx-m05", 1]]}
+{"qid": "q55", "lang": "mix", "query": "奢侈品消费税 luxury goods 超豪华小汽车零售环节", "labels": [["gk-mx-m06", 1]]}
+{"qid": "q56", "lang": "mix", "query": "关税配额 tariff-rate quota 滑准税", "labels": [["gk-mx-m07", 1]]}
+{"qid": "q57", "lang": "mix", "query": "环境保护税 environmental protection tax 排放口申报", "labels": [["gk-mx-m09", 1]]}
+{"qid": "q58", "lang": "mix", "query": "社保缴费基数 social insurance contribution base 上下限", "labels": [["gk-mx-m11", 1]]}
+{"qid": "q59", "lang": "mix", "query": "出口退税 export rebate 无纸化申报", "labels": [["gk-mx-m12", 1]]}
+{"qid": "q60", "lang": "mix", "query": "税务行政处罚 tax administrative penalty 听证怎么申请", "labels": [["gk-mx-m13", 1]]}

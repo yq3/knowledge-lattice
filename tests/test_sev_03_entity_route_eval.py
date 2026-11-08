@@ -1,7 +1,7 @@
 """m2s-6 TC-SEV-03 检索增益评测（design §8 M2-S3 验收句——A4）。
 
-- docs 黄金集（corpus.jsonl 39 篇 + golden.jsonl 28 条）开/关实体召回路对比
-  **recall@10 与 MRR**——**不回退才允许 auto_entities 默认开启**，否则保持
+- docs 黄金集（m3-4 起 corpus.jsonl 73 篇 + golden.jsonl 60 条——TC-EVAL-02
+  完整集；28 条期数字见报告历史档）开/关实体召回路对比 **recall@10 与 MRR**——**不回退才允许 auto_entities 默认开启**，否则保持
   显式参数（默认值断言：False——保守档，按实测结论）；
 - 实体路面：参考词典（eval/semantic_seed——与语料同域）+ build + ingest
   同事务打标（语料块带 sem_chunk_entities）→ auto_entities=True 时 query
