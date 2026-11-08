@@ -519,7 +519,7 @@
 
 #### TC-OPS-10 管理面补强与 be-①②（m3-1 组，v1.9.15 新增）【集成｜M3】
 
-- **载体**：`tests/test_admin_m31_endpoints.py`（A/C 组 13 用例）+ `tests/test_org_disable_m31.py`（B 组 8 用例）+ `tests/test_docs_explain_m31.py`（D 组 12 用例）+ `tests/test_az_m31_scan.py`（越权 5 用例）——全部双后端 REST 端到端参数化（38/臂）。
+- **载体**：`tests/test_admin_m31_endpoints.py`（A/C 组 12 用例）+ `tests/test_org_disable_m31.py`（B 组 8 用例）+ `tests/test_docs_explain_m31.py`（D 组 13 用例）+ `tests/test_az_m31_scan.py`（越权 5 用例）——全部双后端 REST 端到端参数化（38/臂；12+8+13+5）。
 - **A（#13 五方法+GET 单维度/单取值）**：GET members（org_admin 门控、行 `{user_id, username, role, expires_at}`、过期行如实列出）；POST/PATCH datasets（`{key,title?}`→id/name 列、组织内冲突 409、初始空库 SQL 直查、dataset.created/updated 审计 payload）；POST/PATCH dimensions（默认 enabled=true/required=false API+DB 双核、retired 409、**PATCH status→400 归退役端点**、D5 行为面：enabled=false 不影响 read_grants 过滤）；GET 单维度/values 列表（**含 disabled 行**）/单取值（org_scoped 读面）。
 - **B（#14 组织停用五要素）**：PATCH orgs sysadmin 专属（org_admin 本/他组织、member、无认证 = 403/403/401）+幂等（同值 200 零新审计）；六处 fail-closed 403 `org_disabled`（org_scoped/resolve_request_org/search/MCP `_auth_and_org` ToolError/webhook 验签后〔无签名仍 401 不泄露〕/reindex·audit 自守卫）；进行中任务让跑完（inline worker 轮询到终态）+新投递入口拒绝；恢复后端点回通；GET orgs status 列双面（sysadmin 全量/membership）+停用组织仍列出。
 - **C（G-24①）**：POST/PATCH members role=`sem_restricted` 授予（org_admin 门控）；非法 role 400 fail-closed；唯一 active org_admin 降级 sem_restricted 409 防自锁（双 admin 可降对照）。
