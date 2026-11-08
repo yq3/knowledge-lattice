@@ -224,8 +224,21 @@ LATTICE_PG_DUMP_CMD="docker exec lattice-pg pg_dump"   # .env 注入示例
   （`audit_events`，action=`search.query`/`search.annotate`/`search.get_entity`；哈希链自动入链）；
   热路径仅入队；关停（uvicorn lifespan stop）drain flush，正常关停零丢失，崩溃尾部窗口 ≤5s（FR-6 接受）。
 - **日志观测**：`grep -E "query audit (queue overflow|flush failed|drop)"` ——溢出丢最旧/连续失败
-  3 次丢批均有计数日志；dropped/pending 当前仅日志可见（/stats 暴露登记 G-28⑦）。
+  3 次丢批均有计数日志；**dropped/pending 已暴露于 /stats**（`query_audit{dropped,pending}` 键——m3-3 起，未装配/取数异常→null 不 500；G-28⑦ 销账）。
 - **查询**：`GET /api/orgs/{org}/audit`（org_admin 全量含查询词与命中；sysadmin 仅元数据——
   detail_json 逐事件剥离）；ops 视图审计「查询道」泳道按 `search.` 前缀自动分流。
-- **PG 接线前置（G-28③，m3-3 修复）**：flush 不得与请求线程共享 PgBackend 单连接
-  （backend_factory 独立连接）；ensure_month_partition DDL 缓存与 last_row_hash 索引同批。
+- **PG 接线前置（G-28③——机制+测试已随 m3-3 交付，生产接线点部署期落地）**：
+  ①`QueryAuditQueue` 已收 `backend_factory`（ContextManager 工厂）+ `store/postgres/audit_factory.py`
+  `audit_backend_factory` 惰性单连接（独立于请求连接——pg 臂 `pg_backend_pid()` 断言双连接）；
+  生产 PG 形态落地时需在 **app lifespan 装配处注入工厂**并在关停处调 `factory.close()`
+  （当前 app 恒 sqlite 无暴露——G-28③ 残余即此接线）；
+  ②**惰性单连接择型依据（复现注记）**：每轮 flush 开新连接会触发连接工厂内审计分区滚动
+  setup DDL 与并发写事务在 pg catalog 锁上交叉死锁（DeadlockDetected——m3-3 开发期实测收敛为
+  惰性单连接+`_flush_lock` 串行复用）；
+  ③PG 工厂连接损坏（PG 重启等）无自动重连路径——flush 失败走既有回队/3 次丢弃循环，
+  进程重启自愈；接线时可评估 broken 检测重连；
+  ④ensure_month_partition DDL 缓存与 last_row_hash 索引随部署期接线同批。
+- **模糊索引 code versioning（m3-3 起）**：`FUZZY_CODE_REV`（core/semantic/fuzzy.py）入 dict_rev——
+  pinyin/编辑距离/term 构造/规范化行为变更时**必须 bump**（否则健康索引 skipped 快速通过会保留
+  陈旧产物）；bump 或首次升级后各组织 dict_rev 变化→semantic_build 全量重建一次（沿 yaml_rev
+  先例属预期行为，构建任务错峰限速照常）。

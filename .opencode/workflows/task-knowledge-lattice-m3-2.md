@@ -5,7 +5,7 @@ target: /Users/youqi/develop/knowledge-lattice
 coderTaskId: ses_e46e0ea25ffeqWt3t1x5GAB4rz
 testerTaskId: ses_e4681cc91ffe9UOA6doKqvN9ly
 committerTaskId: ses_e4674cd1effez6sPCw1aaGW0Tx
-status: approved
+status: done
 round: 1
 maxRounds: 3
 testVerdict: PASS
@@ -16,7 +16,7 @@ reviewedSha: 995d6fd668215e457f0b654f0f63da26a7e3605a
 filesChanged: [src/knowledge_lattice/query_audit.py, src/knowledge_lattice/domain/audit_events.py, src/knowledge_lattice/core/semantic/constants.py, src/knowledge_lattice/store/backend.py, src/knowledge_lattice/store/audit_chain.py, src/knowledge_lattice/store/sqlite/backend.py, src/knowledge_lattice/store/sqlite/acl_render.py, src/knowledge_lattice/store/postgres/backend.py, src/knowledge_lattice/store/postgres/acl_render.py, src/knowledge_lattice/api/search.py, src/knowledge_lattice/api/semantic.py, src/knowledge_lattice/api/admin.py, src/knowledge_lattice/api/documents.py, src/knowledge_lattice/mcp/server.py, src/knowledge_lattice/app.py, src/knowledge_lattice/web/api.js, src/knowledge_lattice/web/app.js, src/knowledge_lattice/web/i18n.js, src/knowledge_lattice/web/style.css, src/knowledge_lattice/web/views/docs.js, src/knowledge_lattice/web/views/access.js, src/knowledge_lattice/web/views/orgs.js, tests/test_audit_query_g22.py, tests/test_sem_audit_g24b.py, tests/test_qa_ts7_ts8_m32.py, tests/test_admin_m31_endpoints.py, tests/test_admin_store_reads.py, tests/test_docs_explain_m31.py, tests/test_org_disable_m31.py]
 endReason: null
 createdAt: 2026-11-08T11:04:35+08:00
-updatedAt: 2026-11-08T15:53:43+08:00
+updatedAt: 2026-11-08T16:05:22+08:00
 ---
 
 # task-knowledge-lattice-m3-2: 查询级审计批（含 ui-be 并入）
@@ -120,6 +120,11 @@ design §6.3⑥ 查询级审计实现注记+A-16 收口口径、known-gaps G-22 
 - **双通过达成（2026-11-08 13:17，round=1 收敛）**：testVerdict=PASS + reviewVerdict=APPROVED，testedSha=reviewedSha=995d6fd668215e457f0b654f0f63da26a7e3605a=当前 HEAD——status=approved，待用户确认交付（交付序列：监督侧 docs 批→coder chore 归档批→push+PR base=develop→committer PR review→manifest→用户合入；#20 随交付评论关闭）。
 - **交付裁定（2026-11-08 15:48，用户「P2-1（pg 单连接共享）需要排进M3-3修复，然后交付」——status=approved→归档中）**：**P2-1 去向改判**——Tester/Committer 原裁定「部署期 PG 接线必修」被用户上调为 **m3-3 段内修复**（QueryAuditQueue 改 backend_factory 独立连接或连接级串行化+pg 臂双连接形态；known-gaps 开放点措辞按此落笔）；其余 P3 去向维持（文案 4 键+注释清扫→m3-3 顺手、链互斥并发测试→m3-3 首轮必做、flush 规模化 P3-5→known-gaps 登记生产化前修〔与 P2-1 同批修复经济，m3-3 可顺路〕）；交付序列启动。
 - **交付执行①：监督侧 docs 批完成（2026-11-08 15:53）**——design **v0.9.11**（版本行非决策声明+§6.3⑥ 查询审计实现注记收口〔六入口/异步形态/链防叉/refused A-16 收口/脱敏/action 命名〕+日期行）；known-gaps **G-22 划销**（概览+条目完成态）、**G-24 v4 注记②⑧ 划销**、**G-28 新增**（8 分项开放点——③P2-1 m3-3 用户裁定/⑤并发测试 m3-3/①②⑥⑧触发时/④生产化前）；TEST-CASES **v1.9.16**（T-S9⑥ 摘挂起+A-16 收口+TC-OPS-11 新组〔51 收集+注入 2 组说明+D 组 ui-be 完成态〕+TC-OPS-03 延展注记+TC-UI-05 豁免销项暂未逐条〔组级登记〕+§六 M3 行 m3-2 段）；AGENTS §1 M3 进度更新；_m3-plan row2 done+row3 扩容（G-28③⑤ 承接+文案清扫+顺手项）；RUNBOOK **§1.z 查询级审计观测**（形态/日志 grep/查询分级/PG 接线前置）。工作区 8 文件待 coder chore 归档批。#20 评论关闭随 PR 开出后执行。
+- **交付执行②：Coder chore 归档批完成（2026-11-08 15:58 报告，续接会话）**——**chore `d19c9a6`**（8 files +466/−19 doc-only，git diff 995d6fd -- src/ tests/ 空）；origin/develop=62613d8 无前进确认；**push 成功 a287604..d19c9a6**（R1 995d6fd+chore d19c9a6）；**PR #24 已开**（base=develop，https://github.com/yq3/knowledge-lattice/pull/24 ，**--body-file 正确使用**〔m3-1 事故教训〕——body 回读双校验 7410 字节完整非路径字符串、锚点 10 处在位；**无 closing keywords**〔#20 监督侧评论关闭〕；MERGEABLE·CLEAN）。待办：Committer PR review 留痕 → Coder manifest → 监督侧 #20 评论关闭 → 用户合入。
+- **交付执行③：Committer PR 审查留痕完成（2026-11-08 16:00 报告，续接会话）**——`--approve` 自审限制失败（沿先例），回退 **COMMENTED 完整留痕**（review id `PRR_kwDOVZ9dhM8AAAABWrpDGA`，anchor d19c9a6；body 含 APPROVED 结论/双 SHA〔code 995d6fd·delivery d19c9a6·base 62613d8〕/门禁采信 Tester 1842+1〔committer 未独立复跑注明〕/**P2-1 裁定更新：用户上调 m3-3 修复→G-28③**/P3 去向/manifest 放行条件）；**d19c9a6 doc-only 复核通过**（8 流程/文档文件、src/tests/scripts/prototype 零夹带、链路核对 ✓）；PR MERGEABLE·CLEAN。
+- **交付执行④：Coder manifest 入 PR + 监督侧 #20 关闭（2026-11-08 16:03）**——manifest 17 键替换占位（回读双校验通过：10556 字节逐字节一致+json.loads 可解析+21 锚点在位；择型 1 条机械适配 `\x1f`→`\\x1f` JSON 合法转义）；**issue #20 已评论关闭**（M3-UI 线收官——be-①② m3-1+ui-be m3-2 全交付证据+浏览器级自查申报注记+TC-UI 走查指向）。**PR #24 终态：OPEN/MERGEABLE/CLEAN，commits=[995d6fd（R1）, d19c9a6（chore）]，base=develop——待用户合入**（无 closing keywords——#20 已由监督侧关闭）。合入后补记 mergeCommit 条目；该条目之后的工作区改动（检查点）随 m3-3 chore 归档批入库。
+
+- **交付完成（终态）（2026-11-08 16:05，用户确认「合入」，status=done）**：**PR #24 MERGED**——mergeCommit `2fcf280e950eacd83b978e31fb87565385214a01`（mergedAt 2026-11-08T08:05:08Z，merge 形态沿先例、远端分支保留）；origin/develop 前进至 2fcf280，develop_opencode 已 ff 同步；issue #20 已于交付链内关闭（M3-UI 线收官）。**m3-2 段收官：round=1 一轮收敛（coder→tester PASS→committer APPROVED），门禁 1791+1→1842+1，G-22/G-24②⑧ 划销、T-S9⑥+A-16 收口、显式断言三补收官、ui-be 对账+#20 收尾、G-28 新增（P2-1 用户裁定 m3-3 修复）。M3 进度 2/5（m3-3 语义 hardening 批——下一段，含 G-28③⑤ 承接）；本条目之后的工作区改动（检查点）随 m3-3 chore 归档批入库。
 
 ## 最新验证意见原文
 （tester/committer 报告逐字保留——恢复时给 coder 的修复依据）
