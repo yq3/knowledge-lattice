@@ -439,3 +439,112 @@ def test_c4_last_admin_guard_covers_sem_restricted(rest_env) -> None:
         f"/api/orgs/{ORG}/members/admin_full", headers=_hdr(env, "admin_tax"),
         json={"role": "org_admin"},
     ).status_code == 200
+
+
+# ============ m3-2 E 组补强：P3-5 / P3-6①③ / P3-8 ============
+
+
+def test_a2b_dataset_name_conflict_message_distinct(rest_env) -> None:
+    """P3-5（m3-1 Committer 移交——m3-2 修）：建库 409 文案区分 name 冲突与
+    id 冲突——不同 key 同名 title → 「dataset name 冲突」；同 key → 「dataset
+    已存在（id 全局唯一…）」。"""
+    client, env = rest_env["client"], rest_env
+    # 造一个已知 title 的库（title=显示名=name 列）
+    assert client.post(
+        f"/api/orgs/{ORG}/datasets", headers=_hdr(env, "admin_tax"),
+        json={"key": "ds:titled_a", "title": "同名库"},
+    ).status_code == 201
+    # 不同 key、同名 title → 409 且文案指向 name 冲突
+    r = client.post(
+        f"/api/orgs/{ORG}/datasets", headers=_hdr(env, "admin_tax"),
+        json={"key": "ds:titled_b", "title": "同名库"},
+    )
+    assert r.status_code == 409, r.text
+    assert "name 冲突" in r.json()["detail"], r.text
+    assert "UNIQUE(org_id, name)" in r.json()["detail"]
+    # 同 key → 409 且文案指向 id 冲突
+    r2 = client.post(
+        f"/api/orgs/{ORG}/datasets", headers=_hdr(env, "admin_tax"),
+        json={"key": "ds:titled_a"},
+    )
+    assert r2.status_code == 409
+    assert "id 全局唯一" in r2.json()["detail"], r2.text
+
+
+def test_a3b_patch_dataset_description_null_clears(rest_env) -> None:
+    """P3-6①（m3-1 Committer 测试缺口）：PATCH description 显式 null=清空
+    （model_fields_set 语义——键缺失=不变对照）。"""
+    client, env = rest_env["client"], rest_env
+    assert client.patch(
+        f"/api/orgs/{ORG}/datasets/ds:vat_lib", headers=_hdr(env, "admin_tax"),
+        json={"description": "temp desc"},
+    ).status_code == 200
+    # 显式 null → 清空
+    r = client.patch(
+        f"/api/orgs/{ORG}/datasets/ds:vat_lib", headers=_hdr(env, "admin_tax"),
+        json={"description": None},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["description"] is None
+    row = env["db"].execute(
+        "SELECT description FROM datasets WHERE id = ?", ("ds:vat_lib",)
+    ).fetchone()
+    assert row[0] is None
+    # 键缺失 → 不变（对照）
+    assert client.patch(
+        f"/api/orgs/{ORG}/datasets/ds:vat_lib", headers=_hdr(env, "admin_tax"),
+        json={"title": "库 ds:vat_lib"},
+    ).status_code == 200
+    row2 = env["db"].execute(
+        "SELECT description FROM datasets WHERE id = ?", ("ds:vat_lib",)
+    ).fetchone()
+    assert row2[0] is None
+
+
+def test_a2c_post_extra_forbidden_status_rejected(rest_env) -> None:
+    """P3-8（m3-1 Committer 移交——m3-2 修）：POST datasets/dimensions 请求体
+    extra=forbid 统一——携带 status（生命周期字段）显式拒绝 422，与 PATCH
+    「status→400 归退役端点」口径对齐（不再静默忽略）。"""
+    client, env = rest_env["client"], rest_env
+    r = client.post(
+        f"/api/orgs/{ORG}/datasets", headers=_hdr(env, "admin_tax"),
+        json={"key": "ds:x1", "status": "active"},
+    )
+    assert r.status_code == 422, r.text
+    r2 = client.post(
+        f"/api/orgs/{ORG}/dimensions", headers=_hdr(env, "admin_tax"),
+        json={"key": "dim_x", "label": "X", "status": "active"},
+    )
+    assert r2.status_code == 422, r2.text
+    # 未落任何行（拒绝即无副作用）
+    n = env["db"].execute(
+        "SELECT count(*) FROM datasets WHERE id = ?", ("ds:x1",)).fetchone()[0]
+    assert n == 0
+    n2 = env["db"].execute(
+        "SELECT count(*) FROM dimensions WHERE org_id = ? AND key = ?",
+        (ORG, "dim_x")).fetchone()[0]
+    assert n2 == 0
+
+
+def test_a2d_sysadmin_without_membership_403(rest_env) -> None:
+    """P3-6③（m3-1 Committer 测试缺口）：sysadmin 无本组织成员关系 →
+    POST/PATCH datasets/dimensions 一律 403（org_admin 门控——sysadmin 不因
+    系统管理身份获得组织写面）。"""
+    client = rest_env["client"]
+    assert client.post(
+        f"/api/orgs/{ORG}/datasets", headers=_hdr(rest_env, "sysadmin"),
+        json={"key": "ds:sys"},
+    ).status_code == 403
+    assert client.patch(
+        f"/api/orgs/{ORG}/datasets/ds:vat_lib", headers=_hdr(rest_env, "sysadmin"),
+        json={"title": "x"},
+    ).status_code == 403
+    assert client.post(
+        f"/api/orgs/{ORG}/dimensions", headers=_hdr(rest_env, "sysadmin"),
+        json={"key": "dim_sys", "label": "S"},
+    ).status_code == 403
+    assert client.patch(
+        f"/api/orgs/{ORG}/dimensions/dim:org:tax:region",
+        headers=_hdr(rest_env, "sysadmin"),
+        json={"label": "x"},
+    ).status_code == 403

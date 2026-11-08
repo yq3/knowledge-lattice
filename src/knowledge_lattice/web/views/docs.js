@@ -1,6 +1,7 @@
-/* views/docs.js —— 文档知识（ui-1）：知识库 seg + be-① 文档列表（contract-first
- * 降级）/ multipart 上传抽屉 + 任务轮询 / 详情 pane（版本双态·阶段进度·维度编辑·
- * 质检补标·删除）/ 可见性解释 = 待 be-② 占位（前端不演算 ACL——issue B5）。
+/* views/docs.js —— 文档知识（ui-1）：知识库 seg + 文档列表（m3-1 be-① 实装
+ * ——m3-2 ui-be 撤降级接真端点）/ multipart 上传抽屉 + 任务轮询 / 详情 pane
+ * （版本双态·阶段进度·维度编辑·质检补标·删除·可见性解释卡〔m3-1 be-② 实装
+ * ——自解释 GET explain，前端不演算 ACL——issue B5〕）+ org_admin visible 徽标列。
  * 视觉结构沿原型 v0.6 文档页（.upload/.seg/.ledger/.split/.pane）。 */
 "use strict";
 
@@ -12,15 +13,16 @@ async function onEnterDocs() {
   if (!state.docs.probed) {
     state.loading.docsList = true;
     try {
-      // be-1 contract-first：列表端点未实装——404 降级（横幅 + 会话缓存），其余错误如实展示
+      // be-① 已实装（GET documents——13 字段行 + total）：错误态如实展示
       const body = await listDocuments(cfg.org);
       if (ep !== state.epoch) return;
       state.docs.available = true;
       state.docs.list = body.documents || [];
+      state.docs.loadError = null;
     } catch (e) {
       if (ep !== state.epoch) return;
       state.docs.available = false;
-      state.docs.loadError = e.status === 404 ? null : String(e.message || e);
+      state.docs.loadError = String(e.message || e); // 403/5xx 如实（不再 404 降级）
     } finally {
       if (ep === state.epoch) { state.docs.probed = true; state.loading.docsList = false; }
     }
@@ -117,7 +119,7 @@ function viewDocs() {
   </div>
   <div class="split">
     <div>
-      ${state.docs.available === false ? be1BannerHTML() : ""}
+      ${state.docs.available === false ? docsLoadErrHTML() : ""}
       ${state.loading.docsList ? loadingHTML("docs") : rows.length ? docsTableHTML(rows) : emptyDocsHTML()}
     </div>
     <aside class="pane">${state.selDoc && docRows().find((r) => r.doc_id === state.selDoc) ? docPaneHTML(docRows().find((r) => r.doc_id === state.selDoc)) : docTeachHTML()}</aside>
@@ -125,23 +127,31 @@ function viewDocs() {
   `;
 }
 
-function be1BannerHTML() {
-  return `<div class="banner">${state.docs.loadError
-    ? t("docs.list.loadErr", { err: esc(state.docs.loadError) })
-    : t("docs.list.be1")} ${t("docs.list.be1.session")}</div>`;
+/* 列表装载失败错误态（be-① 已实装——不再有 404 降级横幅；失败如实可重试） */
+function docsLoadErrHTML() {
+  return `<div class="empty" style="margin:0"><h3>${esc(t("docs.list.loadErr", { err: esc(state.docs.loadError || "") }))}</h3>
+    <div style="margin-top:16px"><button class="btn ghost sm" data-act="docsRetry">${esc(t("common.retry"))}</button></div></div>`;
+}
+
+/* org_admin 面：visible 徽标（管理面对账——member 行恒可见不显示列） */
+function visibleCellHTML(d) {
+  if (d.visible === false) return `<span class="pill bad" title="${esc(t("docs.vis.notVisibleTip"))}">✗</span>`;
+  if (d.visible === true) return `<span class="pill ok" title="${esc(t("docs.vis.visibleTip"))}">✓</span>`;
+  return `<span class="tiny muted">—</span>`;
 }
 
 function docsTableHTML(rows) {
   return `<table class="ledger">
-    <thead><tr><th style="width:36%">${esc(t("docs.col.doc"))}</th><th>${esc(t("docs.col.dims"))}</th><th>${esc(t("docs.col.ver"))}</th><th class="num">${esc(t("docs.col.chunks"))}</th><th>${esc(t("docs.col.quality"))}</th><th>${esc(t("docs.col.updated"))}</th></tr></thead>
+    <thead><tr><th style="width:36%">${esc(t("docs.col.doc"))}</th><th>${esc(t("docs.col.dims"))}</th><th>${esc(t("docs.col.ver"))}</th>${isAdmin() ? `<th>${esc(t("docs.col.visible"))}</th>` : ""}<th class="num">${esc(t("docs.col.chunks"))}</th><th>${esc(t("docs.col.quality"))}</th><th>${esc(t("docs.col.updated"))}</th></tr></thead>
     <tbody>${rows.map((d) => {
       return `<tr class="clickable ${state.selDoc === d.doc_id ? "on" : ""}" data-act="selDoc" data-id="${esc(d.doc_id)}">
         <td><div class="t-title">${esc(d.title || d.doc_id)}</div><div class="t-sub">${esc(dsName(d.dataset))} · ${esc(d.doc_id)}</div></td>
-        <td>${d.dims == null ? `<span class="tiny muted">${esc(t("docs.dims.pendingBe1"))}</span>` : dimChipsHTML(d.dims)}</td>
+        <td>${d.dims == null ? dimChipsHTML({}, { showEmpty: true }) : dimChipsHTML(d.dims)}</td>
         <td><div class="ver">
           ${d.active_version ? `<span class="vl"><span class="vn">v${esc(d.active_version)}</span>${stPill(d.active_status)}</span>` : `<span class="vl muted"><span class="vn">—</span>${esc(t("docs.ver.none"))}</span>`}
           ${d.pending_version ? `<span class="vl"><span class="vn">v${esc(d.pending_version)}</span>${stPill(d.pending_status)}<span class="tiny muted">${esc(t("docs.ver.pending"))}</span></span>` : ""}
         </div></td>
+        ${isAdmin() ? `<td>${visibleCellHTML(d)}</td>` : ""}
         <td class="num">${d.chunk_count != null ? esc(d.chunk_count) : "—"}</td>
         <td>${d.quality_open != null && d.quality_open > 0 ? `<span class="tag amber">${esc(t("docs.quality.openCount", { n: d.quality_open }))}</span>` : `<span class="tiny muted">—</span>`}</td>
         <td class="tiny muted">${tsHTML(d.updated_at, "mono tiny muted")}</td></tr>`;
@@ -167,18 +177,20 @@ function dsDelConfirmHTML() {
 
 function newDsHTML() {
   if (!isAdmin()) return `<div class="upload"><div class="note seal" style="grid-column:1/-1;margin:0">${t("docs.ds.new.needAdmin")}</div></div>`;
-  const ok = state.newDs.name.trim().length > 0;
+  const ok = state.newDs.key.trim().length > 0;
   return `<div class="upload">
     <div style="grid-column:1/-1"><b style="font-size:15px">${esc(t("docs.ds.new"))}</b>
       <span class="tiny muted">—— ${t("docs.ds.new.note")}</span></div>
-    <div class="u-row"><label>${esc(t("docs.ds.name"))}<span class="req">*</span></label>
-      <input class="inp" data-in="dsName" placeholder="${esc(t("docs.ds.name.ph"))}" value="${esc(state.newDs.name)}"></div>
+    <div class="u-row"><label>key<span class="req">*</span></label>
+      <input class="inp" data-in="dsKey" placeholder="${esc(t("docs.ds.key.ph"))}" value="${esc(state.newDs.key)}" style="font-family:var(--mono)"></div>
+    <div class="u-row"><label>${esc(t("docs.ds.title"))}<span class="tiny muted"> ${esc(t("common.optional"))}</span></label>
+      <input class="inp" data-in="dsTitle" placeholder="${esc(t("docs.ds.title.ph"))}" value="${esc(state.newDs.title)}"></div>
     <div class="u-row"><label>${esc(t("docs.ds.desc"))}<span class="tiny muted"> ${esc(t("common.optional"))}</span></label>
       <input class="inp" data-in="dsDesc" placeholder="${esc(t("docs.ds.desc.ph"))}" value="${esc(state.newDs.desc)}"></div>
     <div class="u-foot">
       <button class="btn seal-btn" data-act="dsCreate" ${ok ? "" : "disabled"}>${esc(t("common.create"))}</button>
       <button class="btn ghost" data-act="newDsToggle">${esc(t("common.cancel"))}</button>
-      <span class="tiny ${ok ? "" : "muted"}">${ok ? esc(t("docs.ds.new.ok")) : esc(t("docs.ds.name.ph"))}</span>
+      <span class="tiny ${ok ? "" : "muted"}">${ok ? esc(t("docs.ds.new.ok")) : esc(t("docs.ds.key.ph"))}</span>
       <span style="flex:1"></span>
       <span class="tiny muted">${t("docs.ds.new.foot")}</span>
     </div></div>`;
@@ -248,7 +260,7 @@ function docPaneHTML(d) {
       </div>
     </div>
     <div class="pane-sec"><div class="ps-h">${esc(t("docs.dims.title"))}</div>
-      ${d.dims == null ? `<div class="tiny muted">${esc(t("docs.dims.pendingBe1"))}</div>` : dimChipsHTML(d.dims, { showEmpty: true })}
+      ${d.dims == null ? dimChipsHTML({}, { showEmpty: true }) : dimChipsHTML(d.dims, { showEmpty: true })}
       ${state.editDims ? editDimsHTML(d) : `
       <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
         <button class="btn ghost sm" data-act="editDims" data-id="${esc(d.doc_id)}" ${d.pending_version ? "disabled" : ""}>${esc(t("docs.dims.edit"))}</button>
@@ -256,15 +268,63 @@ function docPaneHTML(d) {
       </div>`}
     </div>
     ${qualityHTML(d)}
-    <div class="pane-sec"><div class="ps-h">${esc(t("docs.vis.title"))}</div>
-      <div class="tiny muted">${t("docs.vis.pendingBe2")}</div>
-    </div>
+    ${explainCardHTML(d)}
     <div class="pane-sec">
       ${state.delAsk === d.doc_id ? `<div class="confirm"><b>${esc(t("docs.del.confirm", { title: d.title || d.doc_id }))}</b> ${t("docs.del.body")}
         <div class="cf-act"><button class="btn danger-btn sm" data-act="delDocOk" data-id="${esc(d.doc_id)}">${esc(t("common.confirm"))}</button>
         <button class="btn ghost sm" data-act="delDocCancel">${esc(t("common.cancel"))}</button></div></div>`
       : `<button class="btn ghost sm" data-act="delDoc" data-id="${esc(d.doc_id)}" style="color:var(--danger)">${esc(t("docs.del.btn"))}</button> <span class="tiny muted">${esc(t("docs.del.note"))}</span>`}
     </div>`;
+}
+
+/* 可见性解释卡（m3-1 be-② 实装——m3-2 ui-be 接真端点）：自解释 GET explain；
+ * 前端不演算 ACL（issue B5）——只呈现服务端解释行（只解释不裁定）。 */
+const VERDICT_PILL = {
+  allow: '<span class="pill ok">allow</span>',
+  deny: '<span class="pill bad">deny</span>',
+  skip: '<span class="pill idle">skip</span>',
+};
+
+function explainCardHTML(d) {
+  const ex = state.docs.explain && state.docs.explain.docId === d.doc_id
+    ? state.docs.explain : null;
+  let body;
+  if (!ex) {
+    body = `<div style="margin-top:6px"><button class="btn ghost sm" data-act="explainDoc" data-id="${esc(d.doc_id)}">${esc(t("docs.vis.explainBtn"))}</button>
+      <span class="tiny muted" style="margin-left:8px">${t("docs.vis.explainNote")}</span></div>`;
+  } else if (ex.loading) {
+    body = `<div class="loading">${esc(t("common.loading", { what: t("docs.vis.title") }))}</div>`;
+  } else if (ex.error) {
+    body = `<div class="tiny" style="color:var(--danger);margin-top:4px">${esc(t("docs.vis.explainErr", { status: ex.error }))}</div>
+      <div style="margin-top:6px"><button class="btn ghost sm" data-act="explainDoc" data-id="${esc(d.doc_id)}">${esc(t("common.retry"))}</button></div>`;
+  } else {
+    body = `<div style="margin-top:6px" class="explain-rows">
+      ${(ex.rows || []).map((r) => `<div class="explain-row">
+        <span>${VERDICT_PILL[r.verdict] || esc(r.verdict || "—")}</span>
+        <b>${esc(r.kind === "membership" ? t("docs.vis.membership") : (r.label || r.key || r.kind))}</b>
+        <span class="tiny muted">${esc(r.detail || "")}</span>
+      </div>`).join("")}
+      <div class="tiny" style="margin-top:6px">${ex.visible
+        ? `<span class="pill ok">${esc(t("docs.vis.visible"))}</span> ${t("docs.vis.visibleNote")}`
+        : `<span class="pill bad">${esc(t("docs.vis.notVisible"))}</span> ${t("docs.vis.notVisibleNote")}`}</div>
+    </div>`;
+  }
+  return `<div class="pane-sec"><div class="ps-h">${esc(t("docs.vis.title"))}</div>${body}</div>`;
+}
+
+async function loadExplain(docId) {
+  const ep = state.epoch; // P1-5
+  state.docs.explain = { docId, loading: true };
+  render();
+  try {
+    const body = await explainDocument(cfg.org, docId);
+    if (ep !== state.epoch) return;
+    state.docs.explain = { docId, rows: body.rows || [], visible: !!body.visible };
+  } catch (e) {
+    if (ep !== state.epoch) return;
+    state.docs.explain = { docId, error: e.status || 0 };
+  }
+  render();
 }
 
 function editDimsHTML(d) {
@@ -410,6 +470,7 @@ Object.assign(actions, {
   selDoc(el) {
     state.selDoc = state.selDoc === el.dataset.id ? null : el.dataset.id;
     state.editDims = false; state.quality = null; state.qualDraft = {};
+    state.docs.explain = null; // 切换文档清解释卡
     if (state.selDoc) refreshSelectedDoc().then(() => render()).catch(() => { /* 已 toast */ });
     return false;
   },
@@ -491,21 +552,41 @@ Object.assign(actions, {
     return false;
   },
   async dsCreate() {
-    const name = state.newDs.name.trim();
-    if (!name) return false;
+    const key = state.newDs.key.trim();
+    if (!key) return false;
     let body;
     try {
-      // m3-1 contract-first：POST datasets 未实装——404 由 api.js 抛出，此处降级提示
-      body = await createDataset(cfg.org, { name, description: state.newDs.desc.trim() || null });
+      // m3-2 ui-be 对账：真契约 {key, title?}（description 仅 PATCH——
+      // createDatasetWithDesc 承载两步）
+      body = await createDatasetWithDesc(cfg.org, {
+        key, title: state.newDs.title.trim() || undefined,
+        description: state.newDs.desc.trim() || undefined,
+      });
     } catch (e) {
-      if (e.status === 404) toast(t("degrade.m31"));
+      if (e.status === 409) toast(esc(String(e.message || ""))); // key/name 冲突文案如实
+      else errToast(e);
       return false;
     }
-    const id = body.id || (body.dataset && body.dataset.id) || name;
-    state.datasets.push({ id, name, description: state.newDs.desc.trim() });
-    state.ds = id; state.up.ds = id; state.drawer = null; state.newDs = { name: "", desc: "" };
+    const id = body.id || key;
+    const name = body.name || state.newDs.title.trim() || key;
+    state.datasets.push({ id, name, description: state.newDs.desc.trim() || "" });
+    state.ds = id; state.up.ds = id; state.drawer = null;
+    state.newDs = { key: "", title: "", desc: "" };
     toast(t("docs.ds.created", { name: esc(name) }));
     render();
+    return false;
+  },
+  /* 列表装载失败重试（be-① 实装后的错误态——重新探针） */
+  async docsRetry() {
+    state.docs.probed = false;
+    state.docs.available = null;
+    render();
+    await onEnterDocs();
+    render();
+    return false;
+  },
+  explainDoc(el) {
+    loadExplain(el.dataset.id).catch(() => { /* 已在卡内呈现错误态 */ });
     return false;
   },
   editDims(el) {
@@ -576,7 +657,8 @@ Object.assign(actions, {
 Object.assign(INPUTS, {
   upDs: (v) => { state.up.ds = v; },
   upFile: (v, el) => { state.up.fileObj = (el.files && el.files[0]) || null; state.up.file = state.up.fileObj ? state.up.fileObj.name : ""; },
-  dsName: (v) => { state.newDs.name = v; },
+  dsKey: (v) => { state.newDs.key = v; },
+  dsTitle: (v) => { state.newDs.title = v; },
   dsDesc: (v) => { state.newDs.desc = v; },
   qualKw: (v, el) => { const d = state.qualDraft[el.dataset.id] || { kw: "", tags: "" }; d.kw = v; state.qualDraft[el.dataset.id] = d; return false; },
   qualTags: (v, el) => { const d = state.qualDraft[el.dataset.id] || { kw: "", tags: "" }; d.tags = v; state.qualDraft[el.dataset.id] = d; return false; },

@@ -217,3 +217,15 @@ LATTICE_PG_DUMP_CMD="docker exec lattice-pg pg_dump"   # .env 注入示例
 - 工具**在但失败**（DSN 错/磁盘满）→ 任务 **failed**（error 前缀
   `backup_snapshot`）——任务列表/日志可发现，`data/backups/` 快照产物异常
   应纳入例行巡检。
+
+### 1.z 查询级审计观测（m3-2 起）
+
+- **形态**：`query_audit.py` 进程内异步队列——满 5s 或满批 200 条 flush 直写当月月库
+  （`audit_events`，action=`search.query`/`search.annotate`/`search.get_entity`；哈希链自动入链）；
+  热路径仅入队；关停（uvicorn lifespan stop）drain flush，正常关停零丢失，崩溃尾部窗口 ≤5s（FR-6 接受）。
+- **日志观测**：`grep -E "query audit (queue overflow|flush failed|drop)"` ——溢出丢最旧/连续失败
+  3 次丢批均有计数日志；dropped/pending 当前仅日志可见（/stats 暴露登记 G-28⑦）。
+- **查询**：`GET /api/orgs/{org}/audit`（org_admin 全量含查询词与命中；sysadmin 仅元数据——
+  detail_json 逐事件剥离）；ops 视图审计「查询道」泳道按 `search.` 前缀自动分流。
+- **PG 接线前置（G-28③，m3-3 修复）**：flush 不得与请求线程共享 PgBackend 单连接
+  （backend_factory 独立连接）；ensure_month_partition DDL 缓存与 last_row_hash 索引同批。

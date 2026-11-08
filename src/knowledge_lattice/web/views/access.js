@@ -235,15 +235,109 @@ function memAddHTML() {
     </div></div>`;
 }
 
-/* ---------- 可见性矩阵占位（be-① / be-② 落地前不实装——B5） ---------- */
+/* ---------- 可见性矩阵（m3-1 be-①② 实装——m3-2 ui-be 实装：org_admin 逐格
+ *           GET explain?user_id=X 取数；前端不演算 ACL〔B5〕，只平铺服务端结论） ---------- */
 
 function visHTML() {
-  return `<div class="empty">
-    <h3>${esc(t("access.vis.title"))}</h3>
-    <p>${t("access.vis.body")}</p>
-    <p style="margin-top:10px">${t("access.vis.body2")}</p>
+  if (!isAdmin()) {
+    return `<div class="note amber">${t("access.grants.needAdmin")}</div>
+    <div class="note" style="margin-top:12px;max-width:88ch">${t("access.vis.memberNote")}</div>`;
+  }
+  const v = state.vis;
+  if (v.error) return `<div class="empty" style="margin:0"><h3>${esc(t("access.grants.loadErr", { err: esc(v.error) }))}</h3>
+    <div style="margin-top:16px"><button class="btn ghost sm" data-act="visRetry">${esc(t("common.retry"))}</button></div></div>`;
+  if (!v.rows) return loadingHTML("access");
+  if (!(v.members || []).length || !(v.docs || []).length) {
+    return `<div class="empty" style="margin:0"><h3>${esc(t("access.vis.empty.title"))}</h3><p>${t("access.vis.empty.body")}</p></div>`;
+  }
+  return `
+  <div class="lane-h" style="margin-top:4px"><h3>${esc(t("access.vis.title"))}</h3>
+    <span class="tiny muted">${t("access.vis.legend.note")}</span></div>
+  <table class="lattice vis-lattice">
+    <thead>
+      <tr><th style="text-align:left;padding-left:14px">${esc(t("access.vis.col.member"))} \\ ${esc(t("access.vis.col.doc"))}</th>
+        ${v.docs.map((d) => `<th class="vh dg"><span class="cut" style="max-width:130px;display:inline-block" title="${esc(d.doc_id)}">${esc(d.title || d.doc_id)}</span></th>`).join("")}
+      </tr>
+    </thead>
+    <tbody>${v.members.map((u) => `<tr><th><b style="font-weight:600">${esc(u)}</b></th>
+      ${v.docs.map((d) => {
+        const cell = v.cells[`${u}|${d.doc_id}`];
+        const cls = cell ? (cell.visible ? "ok" : "bad") : "";
+        const mark = cell == null ? `<span class="tiny muted">·</span>`
+          : cell.visible ? "✓" : "✗";
+        return `<td><button class="cellbtn vis-cell ${cls}" data-act="visCell" data-u="${esc(u)}" data-id="${esc(d.doc_id)}"
+          title="${esc(u)} · ${esc(d.doc_id)}" aria-label="${esc(u)} × ${esc(d.doc_id)}">${mark}</button></td>`;
+      }).join("")}</tr>`).join("")}
+    </tbody>
+  </table>
+  <div class="legend">
+    <span class="lg"><span class="cellbtn on"></span>${esc(t("access.vis.legend.visible"))}</span>
+    <span class="lg"><span class="cellbtn"></span>${esc(t("access.vis.legend.hidden"))}</span>
+    <span class="lg">·</span>
+    <span class="lg">${t("access.vis.legend.note")}</span>
   </div>
-  <div class="note" style="max-width:88ch">${t("access.vis.note")}</div>`;
+  ${state.vis.detail ? visDetailHTML(state.vis.detail) : ""}
+  <div class="note" style="margin-top:16px;max-width:88ch">${t("access.vis.note")}</div>`;
+}
+
+/* 点格下钻：该 (member, doc) 的 explain 行集（逐维度结论——服务端解释） */
+function visDetailHTML(detail) {
+  return `<div class="pane" style="margin-top:16px;padding:14px 16px">
+    <div class="lane-h"><h3>${esc(t("access.vis.detailTitle", { user: detail.user, doc: detail.doc }))}</h3>
+      <button class="link tiny" data-act="visDetailClose">${esc(t("common.collapse"))}</button></div>
+    ${(detail.rows || []).map((r) => `<div class="explain-row">
+      <span>${VERDICT_PILL[r.verdict] || esc(r.verdict || "—")}</span>
+      <b>${esc(r.kind === "membership" ? t("docs.vis.membership") : (r.label || r.key || r.kind))}</b>
+      <span class="tiny muted">${esc(r.detail || "")}</span>
+    </div>`).join("")}
+    <div class="tiny" style="margin-top:6px">${detail.visible
+      ? `<span class="pill ok">${esc(t("docs.vis.visible"))}</span>`
+      : `<span class="pill bad">${esc(t("docs.vis.notVisible"))}</span>`}</div>
+  </div>`;
+}
+
+/* 矩阵取数（org_admin）：members（GET members 真源）× documents（GET documents）
+ * 逐格 GET explain?user_id——并发小批（4）推进，格点落位即渲染（不阻塞整表）。 */
+async function loadVisMatrix() {
+  const ep = state.epoch;
+  state.vis = { rows: false, members: [], docs: [], cells: {}, error: null, detail: null };
+  render();
+  try {
+    const [memBody, docBody] = await Promise.all([
+      listMembers(cfg.org), listDocuments(cfg.org),
+    ]);
+    if (ep !== state.epoch) return;
+    state.vis.members = (memBody.members || []).map((m) => m.user_id);
+    state.vis.docs = (docBody.documents || []).filter((d) => d.doc_id);
+    state.vis.rows = true;
+    render();
+    // 逐格取数（小批并发——org_admin 面；403/失败格保持 · 未取态）
+    const jobs = [];
+    for (const u of state.vis.members) {
+      for (const d of state.vis.docs) jobs.push([u, d.doc_id]);
+    }
+    const CONC = 4;
+    let idx = 0;
+    async function worker() {
+      while (idx < jobs.length) {
+        const [u, docId] = jobs[idx++];
+        try {
+          const body = await explainDocument(cfg.org, docId, u);
+          if (ep !== state.epoch) return;
+          state.vis.cells[`${u}|${docId}`] = {
+            visible: !!body.visible, rows: body.rows || [],
+          };
+        } catch (e) { /* 单格失败保持未取态——不阻断整表 */ }
+      }
+    }
+    await Promise.all(Array.from({ length: CONC }, worker));
+    if (ep !== state.epoch) return;
+    render();
+  } catch (e) {
+    if (ep !== state.epoch) return;
+    state.vis.error = String((e && e.message) || e);
+    render();
+  }
 }
 
 /* ---------- 维度子标签（ui-1 平移） ---------- */
@@ -373,6 +467,10 @@ async function onEnterAccess() {
   if (!state.dims.length && !state.loading.govDims) {
     await loadGovernanceDims().catch(() => { /* 已 toast */ });
   }
+  // 成员行 role/到期真源补全（GET members——org_admin；失败静默退化会话注册表）
+  if (sub === "members" && isAdmin()) await loadMembers();
+  // 可见性矩阵懒装载（首次进入 vis 子标签）
+  if (sub === "vis" && isAdmin() && state.vis.rows === null) await loadVisMatrix();
 }
 
 /* ---------- 动作与输入 ---------- */
@@ -601,18 +699,44 @@ Object.assign(actions, {
     return false;
   },
 
+  /* ----- 可见性矩阵（m3-2 ui-be：org_admin 逐格取数） ----- */
+  async visRetry() {
+    await loadVisMatrix();
+    return false;
+  },
+  visCell(el) {
+    const u = el.dataset.u, docId = el.dataset.id;
+    const cell = state.vis.cells[`${u}|${docId}`];
+    if (!cell) {
+      // 未取格（单格失败面）——点按单格重取
+      explainDocument(cfg.org, docId, u).then((body) => {
+        state.vis.cells[`${u}|${docId}`] = {
+          visible: !!body.visible, rows: body.rows || [],
+        };
+        state.vis.detail = { user: u, doc: docId, rows: body.rows || [], visible: !!body.visible };
+        render();
+      }).catch((e) => errToast(e));
+      return false;
+    }
+    state.vis.detail = { user: u, doc: docId, ...cell };
+    render();
+    return false;
+  },
+  visDetailClose() { state.vis.detail = null; },
+
   /* ----- 维度治理（ui-1 平移） ----- */
   dimNewToggle() { state.dimNewOpen = !state.dimNewOpen; },
   async dimCreate() {
     const d = state.dimNew;
-    const key = d.key.trim(), name = d.name.trim();
-    if (!key || !name) return false;
+    const key = d.key.trim(), label = d.name.trim();
+    if (!key || !label) return false;
     let body;
     try {
-      // m3-1 contract-first：POST dimensions 未实装——404 降级提示
-      body = await createDimension(cfg.org, { key, name, required: !!d.required });
+      // m3-2 ui-be 对账：真契约 {key, label, required?}（m3-1 #13 实装——
+      // label=显示名；表单「名称」作 label）
+      body = await createDimension(cfg.org, { key, label, required: !!d.required });
     } catch (e) {
-      if (e.status === 404) toast(t("degrade.m31"));
+      if (e.status === 409) toast(esc(String(e.message || "")));
       else errToast(e);
       return false;
     }
@@ -742,12 +866,19 @@ Object.assign(INPUTS, {
 
 VIEWS.access = { render: viewAccess, onEnter: onEnterAccess };
 
-/* 子标签切换也走懒装载（onEnter 只覆盖整视图进入——首切「授权/成员」时补载） */
+/* 子标签切换也走懒装载（onEnter 只覆盖整视图进入——首切「授权/成员/矩阵」时补载） */
 const _subBase = actions.sub;
 actions.sub = (el) => {
   _subBase(el);
-  if (el.dataset.s === "access" && (el.dataset.v === "grants" || el.dataset.v === "members")
+  const s = el.dataset.s, v = el.dataset.v;
+  if (s === "access" && (v === "grants" || v === "members")
       && isAdmin() && !state.g.rows.length && !state.loading.grants) {
     loadGrantsTable().then(() => render()).catch(() => { /* 已 toast */ });
+  }
+  if (s === "access" && v === "members" && isAdmin()) {
+    loadMembers().then(() => render()).catch(() => {});
+  }
+  if (s === "access" && v === "vis" && isAdmin() && state.vis.rows === null) {
+    loadVisMatrix().catch(() => { /* 错误态已在 loadVisMatrix 呈现 */ });
   }
 };

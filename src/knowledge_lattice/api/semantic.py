@@ -57,8 +57,16 @@ import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 
+from knowledge_lattice.core.docs.acl import AclDeniedError
 from knowledge_lattice.core.semantic.constants import SYNC_ADAPTERS
-from knowledge_lattice.domain.audit_events import EVENT_SEMANTIC_BUILD, EVENT_SEMANTIC_SYNC
+from knowledge_lattice.domain.audit_events import (
+    EVENT_QUERY_ANNOTATE,
+    EVENT_QUERY_GET_ENTITY,
+    EVENT_SEMANTIC_BUILD,
+    EVENT_SEMANTIC_RESTRICTED_ACCESS,
+    EVENT_SEMANTIC_SYNC,
+)
+from knowledge_lattice.query_audit import build_query_event, enqueue_query_event
 
 from .upload import get_auth, get_service, org_scoped
 
@@ -265,10 +273,6 @@ def _audit_restricted_access(service, org: str, auth, tool: str,
     """持权访问 restricted 实体的权限事件（A-16 口径持权面——outbox）。"""
     if not entity_ids:
         return
-    from knowledge_lattice.core.semantic.constants import (
-        EVENT_SEMANTIC_RESTRICTED_ACCESS,
-    )
-
     try:
         service.backend.append_outbox(
             EVENT_SEMANTIC_RESTRICTED_ACCESS,
@@ -292,10 +296,26 @@ async def semantic_annotate(
     ≤4000 字（超长 400——不静默截断，附录 A-10）。AC 四步消歧 + L0 片段
     兜底；fuzzy=true 开第 3 层模糊兜底（§5.9/m2s-6——低信任候选落
     candidates）；restricted 实体表现为不存在（T-S9——持 semantic:
-    restricted 者可见，命中入权限审计）。"""
-    org = org_scoped(request, org, auth)
+    restricted 者可见，命中入权限审计）。m3-2 G-22：accepted/refused 入
+    查询级异步审计（annotate 记普通查询如实返回面——mention 无 restricted
+    id 不额外标记，裁定②）。"""
     service = get_service(request)
-    _require_semantic_read(service, org, auth)
+    try:
+        org = org_scoped(request, org, auth)
+    except AclDeniedError as exc:
+        enqueue_query_event(service, build_query_event(
+            EVENT_QUERY_ANNOTATE, org_id=org, actor=auth.user_id,
+            outcome="refused", detail={"reason": exc.code},
+        ))
+        raise
+    try:
+        _require_semantic_read(service, org, auth)
+    except HTTPException:
+        enqueue_query_event(service, build_query_event(
+            EVENT_QUERY_ANNOTATE, org_id=org, actor=auth.user_id,
+            outcome="refused", detail={"reason": "semantic:read denied"},
+        ))
+        raise
     can_restricted = _has_semantic_restricted(service, org, auth)
 
     try:
@@ -361,7 +381,15 @@ async def semantic_annotate(
         ) from exc
     if can_restricted:
         _audit_restricted_access(service, org, auth, "annotate",
-                                 await asyncio.to_thread(_restricted_ids, result))
+                                  await asyncio.to_thread(_restricted_ids, result))
+    # m3-2 G-22：accepted 如实返回面（entity_ids=mention 列表——无 restricted
+    # id 时即无权面真实形态，不额外标记——存在性不泄露优先）
+    enqueue_query_event(service, build_query_event(
+        EVENT_QUERY_ANNOTATE, org_id=org, actor=auth.user_id,
+        detail={"text": text, "fuzzy": bool(fuzzy),
+                "entity_ids": [m["entity_id"]
+                               for m in result.get("mentions") or ()]},
+    ))
     return result
 
 
@@ -460,10 +488,34 @@ async def get_semantic_entity(
     """实体详情与关系展开（semantic:read——同 MCP get_entity；L1138；
     不存在/他组织/restricted（无权）/非 active 一律 404——存在性零泄露
     T-S7/T-S9；持 semantic:restricted 者可见 restricted 实体〔m2s-6 持权
-    路径〕；参数越界经 core 校验 → 400——与 MCP 口径一致）。"""
-    org = org_scoped(request, org, auth)
+    路径〕；参数越界经 core 校验 → 400——与 MCP 口径一致）。
+
+    m3-2：G-22 查询审计（403/404=refused〔restricted 静默面 reason=restricted
+    ——A-16 回溯〕/200=accepted node_ids 如实）+ G-24②② 展开见 restricted
+    端点并入权限事件 entity_ids。"""
     service = get_service(request)
-    _require_semantic_read(service, org, auth)
+    try:
+        org = org_scoped(request, org, auth)
+    except AclDeniedError as exc:
+        enqueue_query_event(service, build_query_event(
+            EVENT_QUERY_GET_ENTITY, org_id=org, actor=auth.user_id,
+            outcome="refused",
+            detail={"entity_id": entity_id, "reason": exc.code},
+            target_type="entity",
+            target_id=str(entity_id) if entity_id is not None else None,
+        ))
+        raise
+    try:
+        _require_semantic_read(service, org, auth)
+    except HTTPException:
+        enqueue_query_event(service, build_query_event(
+            EVENT_QUERY_GET_ENTITY, org_id=org, actor=auth.user_id,
+            outcome="refused",
+            detail={"entity_id": entity_id, "reason": "semantic:read denied"},
+            target_type="entity",
+            target_id=str(entity_id) if entity_id is not None else None,
+        ))
+        raise
     can_restricted = _has_semantic_restricted(service, org, auth)
     from knowledge_lattice.core.semantic.expand import EntityNotFound, get_entity
 
@@ -474,14 +526,39 @@ async def get_semantic_entity(
             include=include, can_restricted=can_restricted,
         )
     except EntityNotFound as exc:
+        # 404 = restricted 静默面或真不存在——查询审计 refused（A-16：可回溯）
+        row = service.backend.sem_entity_by_id(org, entity_id)
+        reason = ("restricted"
+                  if row is not None and row["sensitivity"] == "restricted"
+                  else "not_found")
+        enqueue_query_event(service, build_query_event(
+            EVENT_QUERY_GET_ENTITY, org_id=org, actor=auth.user_id,
+            outcome="refused",
+            detail={"entity_id": entity_id, "reason": reason},
+            target_type="entity",
+            target_id=str(entity_id) if entity_id is not None else None,
+        ))
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if can_restricted:
+        # G-24②①：restricted 根访问落权限事件（REST 面无 curated 前提——
+        # include=['attrs'] 同样落）+ ②：展开「看到」的 restricted 端点并入
+        restricted_ids: list[int] = []
         row = service.backend.sem_entity_by_id(org, entity_id)
         if row is not None and row["sensitivity"] == "restricted":
-            _audit_restricted_access(service, org, auth, "get_entity",
-                                     [entity_id])
+            restricted_ids.append(entity_id)
+        node_ids = [n["id"] for n in result.get("nodes") or ()]
+        restricted_ids.extend(service.backend.sem_restricted_ids(org, node_ids))
+        _audit_restricted_access(service, org, auth, "get_entity",
+                                 restricted_ids)
+    enqueue_query_event(service, build_query_event(
+        EVENT_QUERY_GET_ENTITY, org_id=org, actor=auth.user_id,
+        detail={"entity_id": entity_id,
+                "node_ids": [n["id"] for n in result.get("nodes") or ()]},
+        target_type="entity",
+        target_id=str(entity_id) if entity_id is not None else None,
+    ))
     return result
 
 
@@ -530,9 +607,7 @@ async def semantic_yaml_webhook(
 
     service = get_service(request)
     # 停用组织 webhook 拒绝（m3-1 issue #14——fail-closed；签名校验先行保持：
-    # 无/错签名仍 401，不因停用状态泄露验签口径）
-    from .upload import _require_org_active
-
+    # 无/错签名仍 401，不因停用状态泄露验签口径）——直接用 get_org_status
     org_disabled = service.backend.get_org_status(org) == "disabled"
     secret = _yaml_webhook_secret(service.settings, org)
     body = await request.body()

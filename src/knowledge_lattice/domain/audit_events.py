@@ -61,6 +61,22 @@ EVENT_DIMENSION_UPDATED = "dimension.updated"  # 修改维度（PATCH dimensions
 EVENT_ORG_DISABLED = "org.disabled"          # 组织停用（PATCH orgs——sysadmin 专属）
 EVENT_ORG_ENABLED = "org.enabled"            # 组织恢复（PATCH orgs——幂等翻转审计）
 
+# ---- 查询级异步审计（m3-2 A 组——G-22 / FR-6 / design §6.3⑥ + §4 detail_json） ----
+# action 域取 search 前缀（design §4 audit_events.action 注释字面含 search——
+# 查询级事件的域词）；第二段点名入口。ops 视图查询道泳道按 search. 前缀路由
+# （零前端改动口径）。载体=月库直写（不走 outbox——异步弱一致，丢失窗口 ≤5s）。
+EVENT_QUERY_SEARCH = "search.query"          # REST POST /api/search + MCP search
+EVENT_QUERY_ANNOTATE = "search.annotate"     # REST/MCP annotate（§6.3⑥）
+EVENT_QUERY_GET_ENTITY = "search.get_entity"  # REST/MCP get_entity（§6.3⑥）
+# search_entities / describe_table / l0 不入查询审计（design §6.3⑥ 字面未含
+# ——known-gaps 开放点，不在 m3-2 扩）。
+
+# ---- 语义侧权限事件（m2s-6 起接入；m3-2 G-24⑧ 迁入单一登记处） ----
+EVENT_SEMANTIC_RESTRICTED_ACCESS = "semantic.restricted_access"  # 持权访问
+                                              # restricted 实体（A-16 持权面——
+                                              # outbox；自 core/semantic/constants
+                                              # 迁入，G-24⑧）
+
 # ---- 认证事件（m2-4 M2.2 生产化认证段——TC-AUTH-03/04/05/T13） ----
 
 EVENT_AUTH_USER_JIT = "auth.user_jit_created"       # SSO 首次登录 JIT 建档（D16）
@@ -103,6 +119,10 @@ __all__ = [
     "EVENT_DIMENSION_UPDATED",
     "EVENT_ORG_DISABLED",
     "EVENT_ORG_ENABLED",
+    "EVENT_QUERY_SEARCH",
+    "EVENT_QUERY_ANNOTATE",
+    "EVENT_QUERY_GET_ENTITY",
+    "EVENT_SEMANTIC_RESTRICTED_ACCESS",
     "EVENT_AUTH_USER_JIT",
     "EVENT_AUTH_DELEGATED",
     "EVENT_AUTH_SSO_REFUSED",

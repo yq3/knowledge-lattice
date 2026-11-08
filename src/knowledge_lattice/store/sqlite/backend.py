@@ -1711,7 +1711,14 @@ class SqliteBackend:
                  "req": int(bool(required)), "en": int(bool(enabled))},
             )
             if audit is not None:
-                self._outbox_insert(conn, *audit)
+                # P3-2（m3-2，沿 m2-4 followup ④ 先例）：outbox 完整性错误
+                # 不得落入下方 IntegrityError→DimensionExistsError 宽捕
+                try:
+                    self._outbox_insert(conn, *audit)
+                except sqlite3.IntegrityError as exc:
+                    raise RuntimeError(
+                        f"audit outbox 写入完整性错误（{exc}）——新建维度"
+                    ) from exc
             conn.execute("COMMIT")
         except sqlite3.IntegrityError as exc:
             self._rollback()
@@ -2100,7 +2107,7 @@ class SqliteBackend:
         )
         from knowledge_lattice.store.taskclock import utc_now_ts
 
-        from .audit import chain_start_hash, ensure_monthly_audit, last_row_hash
+        from .audit import chain_start_hash, ensure_monthly_audit
 
         now_ts = now or utc_now_ts()
         db_dir = self._db_dir()
@@ -2131,6 +2138,10 @@ class SqliteBackend:
                 mconn = sqlite3.connect(mpath)
                 try:
                     mconn.execute("PRAGMA busy_timeout = 5000")
+                    # m3-2 G-22：BEGIN IMMEDIATE 单写事务——「读链基→算链→插入」
+                    # 原子化（与查询道直写 append_query_events 写互斥，防同 prev
+                    # 分叉破链；原「ro 连接读链基 + 无事务插入」有跨写道竞态窗）
+                    mconn.execute("BEGIN IMMEDIATE")
                     # P2-2：搬运前取本月已存在 id→row_hash（重试路径跳过依据）
                     existed = {
                         x[0]: x[1]
@@ -2138,7 +2149,11 @@ class SqliteBackend:
                             "SELECT id, row_hash FROM audit_events"
                         ).fetchall()
                     }
-                    prev = last_row_hash(db_dir, month)
+                    _tail = mconn.execute(
+                        "SELECT row_hash FROM audit_events"
+                        " WHERE row_hash IS NOT NULL ORDER BY rowid DESC LIMIT 1"
+                    ).fetchone()
+                    prev = _tail[0] if _tail else None
                     if prev is None and not existed:
                         # 月库空：首条 prev = 上月末哈希（FR-6——跨空月向前找）
                         prev = chain_start_hash(db_dir, month)
@@ -2179,6 +2194,66 @@ class SqliteBackend:
             {"now": now, **{f"i{n}": i for n, i in enumerate(ids)}},
         )
         conn.commit()
+
+    # ---- 查询级审计直写月库（m3-2 G-22——FR-6 §5.6 异步弱一致，不走 outbox） ----
+
+    def append_query_events(self, events) -> int:
+        """查询级审计事件直写月库 audit_events（语义见 backend.py 协议）。
+
+        sqlite 形态：按事件月分组 → 月库连接 **BEGIN IMMEDIATE 单写事务**
+        （链基读取含在事务内——与 ship_outbox 的月库写互斥，防同 prev 分叉
+        破链）；已存 id 跳过不推进 prev（与搬运道同防叉纪律——重试路径幂等）。
+        """
+        from knowledge_lattice.store.audit_chain import compute_row_hash, month_of
+
+        from .audit import chain_start_hash, ensure_monthly_audit
+
+        if not events:
+            return 0
+        db_dir = self._db_dir()
+        by_month: dict[str, list[dict]] = {}
+        for ev in events:
+            by_month.setdefault(month_of(str(ev["created_at"])), []).append(ev)
+        written = 0
+        for month, recs in by_month.items():
+            when_dt = datetime(int(month[:4]), int(month[4:6]), 1, tzinfo=UTC)
+            mpath = ensure_monthly_audit(db_dir, when_dt)
+            mconn = sqlite3.connect(mpath)
+            try:
+                mconn.execute("PRAGMA busy_timeout = 5000")
+                mconn.execute("BEGIN IMMEDIATE")
+                existed = {
+                    x[0] for x in mconn.execute(
+                        "SELECT id FROM audit_events").fetchall()
+                }
+                _tail = mconn.execute(
+                    "SELECT row_hash FROM audit_events"
+                    " WHERE row_hash IS NOT NULL ORDER BY rowid DESC LIMIT 1"
+                ).fetchone()
+                prev = _tail[0] if _tail else None
+                if prev is None and not existed:
+                    prev = chain_start_hash(db_dir, month)
+                for ev in recs:
+                    if ev["id"] in existed:
+                        continue
+                    row = dict(ev)
+                    row["prev_hash"] = prev
+                    row["row_hash"] = compute_row_hash(row, prev)
+                    mconn.execute(
+                        "INSERT OR IGNORE INTO audit_events(id, org_id, actor,"
+                        " action, target_type, target_id, outcome, request_id,"
+                        " detail_json, prev_hash, row_hash, created_at)"
+                        " VALUES(:id, :org_id, :actor, :action, :target_type,"
+                        " :target_id, :outcome, :request_id, :detail_json,"
+                        " :prev_hash, :row_hash, :created_at)",
+                        row,
+                    )
+                    prev = row["row_hash"]
+                    written += 1
+                mconn.commit()
+            finally:
+                mconn.close()
+        return written
 
     def read_monthly_events(self, *, when: str) -> list[dict]:
         """读指定时点所在月的 audit_events（m2-3 B2：**链遍历序**——按
@@ -2281,10 +2356,24 @@ class SqliteBackend:
                 {"i": dataset_id, "org": org_id, "n": name},
             )
             if audit is not None:
-                self._outbox_insert(conn, *audit)
+                # P3-2（m3-2，沿 m2-4 followup ④ 先例）：outbox 完整性错误
+                # 不得落入下方 IntegrityError→DatasetExistsError 宽捕
+                try:
+                    self._outbox_insert(conn, *audit)
+                except sqlite3.IntegrityError as exc:
+                    raise RuntimeError(
+                        f"audit outbox 写入完整性错误（{exc}）——新建知识库"
+                    ) from exc
             conn.execute("COMMIT")
         except sqlite3.IntegrityError as exc:
             self._rollback()
+            # P3-5（m3-2）：按约束来源区分 409 文案（同名 name 冲突 vs id 冲突
+            # ——原统一文案对「不同 key 同名 title」不实）
+            if "datasets.name" in str(exc):
+                raise DatasetExistsError(
+                    f"dataset name 冲突: {name!r}（UNIQUE(org_id, name)"
+                    "——同名库已存在，title 需唯一）"
+                ) from exc
             raise DatasetExistsError(
                 f"dataset 已存在: {dataset_id!r}（id 全局唯一——组织内 key"
                 " 冲突或跨组织占用）"
@@ -2323,7 +2412,14 @@ class SqliteBackend:
                 {"n": new_name, "d": new_desc, "ds": dataset_id, "org": org_id},
             )
             if cur.rowcount and audit is not None:
-                self._outbox_insert(conn, *audit)
+                # P3-2（m3-2，沿 m2-4 followup ④ 先例）：outbox 完整性错误
+                # 不得落入下方 IntegrityError→DatasetExistsError 宽捕
+                try:
+                    self._outbox_insert(conn, *audit)
+                except sqlite3.IntegrityError as exc:
+                    raise RuntimeError(
+                        f"audit outbox 写入完整性错误（{exc}）——修改知识库"
+                    ) from exc
             conn.execute("COMMIT")
         except sqlite3.IntegrityError as exc:
             self._rollback()
@@ -4355,6 +4451,21 @@ class SqliteBackend:
                             next_frontier.append(oid)
             frontier = next_frontier
         return {"nodes": list(nodes.values()), "edges": edges, "truncated": truncated}
+
+    def sem_restricted_ids(self, org_id: str, entity_ids) -> list[int]:
+        """id 集中 restricted 实体子集（m3-2 G-24②②——展开端点审计数据源；
+        IN 分片同 _SEM_IN_CHUNK 口径）。"""
+        ids = [i for i in entity_ids if i is not None]
+        out: list[int] = []
+        for chunk in _sem_chunks(ids, self._SEM_IN_CHUNK):
+            rows = self._conn.execute(
+                "SELECT id FROM sem_entities"
+                f" WHERE org_id = ? AND sensitivity = 'restricted'"
+                f"   AND id IN ({','.join('?' for _ in chunk)})",
+                (org_id, *chunk),
+            ).fetchall()
+            out.extend(r[0] for r in rows)
+        return out
 
     def sem_search_entities(
         self, org_id: str, q_norm: str, q_raw: str, *,

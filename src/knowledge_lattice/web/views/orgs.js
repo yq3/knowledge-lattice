@@ -1,13 +1,12 @@
 /* views/orgs.js —— 组织管理（ui-2 新增，nav 运维组「组织」项）：
- * - ledger：GET /api/orgs 结果（系统管理员=全部组织 {org_id,name}；普通用户=
- *   本人 membership {org_id,name,role,expires_at}——跨组织存在性不泄露 TC-AZ-02）
- *   + 当前 token 可见性标注。
- * - 建组织：POST /api/orgs {id,name,org_admin} 三必填（sysadmin 专属 403 / 用户
- *   不存在 404 / 重复 409 如实回显）——基 token 是否 sysadmin 无 JWT 可判
- *   （decodeJwt 无 role claim），按钮常显、提交后 403 如实 toast。
- * - 停用/恢复：PATCH /api/orgs/{org} {status}（#14 全员拒绝/只停不删/审计同
- *   事务）——组织停用未实装（m3-1 #14），contract-first（api.js setOrgStatus†），
- *   404/405 → 降级 toast「待 m3-1」。 */
+ * - ledger：GET /api/orgs 结果（系统管理员=全部组织 {org_id,name,status}；
+ *   普通用户=本人 membership {org_id,name,role,expires_at,status}——跨组织
+ *   存在性不泄露 TC-AZ-02）+ 当前 token 可见性标注 + 状态徽标（m3-1 #14
+ *   实装——m3-2 ui-be 撤降级接真列）。
+ * - 建组织：POST /api/orgs {id,name,org_admin} 三必填（sysadmin 专属 403 /
+ *   用户不存在 404 / 重复 409 如实回显）。
+ * - 停用/恢复：PATCH /api/orgs/{org} {status}（#14 m3-1 实装——sysadmin
+ *   专属/只停不删/审计同事务；跨组织行按路径对齐 X-Org-Id——api.js 承载）。 */
 "use strict";
 
 async function onEnterOrgs() {
@@ -46,15 +45,19 @@ function viewOrgs() {
     <thead><tr><th>${esc(t("orgs.col.org"))}</th><th>${esc(t("orgs.col.visible"))}</th><th>${esc(t("orgs.col.role"))}</th><th>${esc(t("orgs.col.expires"))}</th><th></th></tr></thead>
     <tbody>${orgs.length ? orgs.map((x) => {
       const isCurrent = x.org_id === cfg.org;
-      const row = `<tr class="${isCurrent ? "on" : ""}">
+      const disabled = x.status === "disabled";
+      const row = `<tr class="${isCurrent ? "on" : ""} ${disabled ? "retired" : ""}">
         <td><div class="t-title">${esc(x.name)}</div><div class="t-sub mono">${esc(x.org_id)}</div></td>
         <td>${isCurrent ? `<span class="pill ok">${esc(t("orgs.current"))}</span>` : `<span class="tiny muted">${esc(t("orgs.listedOnly"))}</span>`}</td>
         <td>${x.role ? `<span class="pill ${x.role === "org_admin" ? "ok" : ""}">${esc(x.role)}</span>` : `<span class="tiny muted">—</span>`}</td>
         <td class="tiny">${x.expires_at ? tsHTML(x.expires_at, "mono tiny") : `<span class="tiny muted">${esc(t("orgs.permanent"))}</span>`}</td>
         <td><div style="display:flex;gap:6px;align-items:center">
-          <button class="btn ghost sm" data-act="orgDisableAsk" data-id="${esc(x.org_id)}" data-name="${esc(x.name)}" title="${esc(t("orgs.disableTip"))}" style="color:var(--danger)">${esc(t("orgs.disable"))}…</button>
-          <button class="btn ghost sm" data-act="orgEnable" data-id="${esc(x.org_id)}" data-name="${esc(x.name)}" title="${esc(t("orgs.enableTip"))}">${esc(t("orgs.enable"))}</button>
-        </div><div class="tiny muted">${esc(t("orgs.statusUnknown"))}</div></td></tr>`;
+          ${disabled
+            ? `<span class="pill bad">${esc(t("orgs.statusDisabled"))}</span>
+               <button class="btn ghost sm" data-act="orgEnable" data-id="${esc(x.org_id)}" data-name="${esc(x.name)}" title="${esc(t("orgs.enableTip"))}">${esc(t("orgs.enable"))}</button>`
+            : `<span class="pill ok">${esc(t("orgs.statusActive"))}</span>
+               <button class="btn ghost sm" data-act="orgDisableAsk" data-id="${esc(x.org_id)}" data-name="${esc(x.name)}" title="${esc(t("orgs.disableTip"))}" style="color:var(--danger)">${esc(t("orgs.disable"))}…</button>`}
+        </div></td></tr>`;
       if (v.askOrg !== x.org_id) return row;
       return row + `<tr><td colspan="5" style="border-bottom:0"><div class="confirm">
         <b>${t("orgs.disableAsk", { name: esc(x.name) })}</b> ${t("orgs.disableBody")}
@@ -132,15 +135,16 @@ Object.assign(actions, {
     const org = el.dataset.id, name = el.dataset.name;
     let body;
     try {
-      // m3-1 contract-first：PATCH /api/orgs/{org}（恢复 = status → active）——404/405 降级
       body = await setOrgStatus(org, "active");
     } catch (e) {
-      if (e.status === 404 || e.status === 405) toast(t("orgs.disablePending"));
-      else if (e.status === 403) toast(t("orgs.disable403"));
+      if (e.status === 403) toast(t("orgs.disable403"));
       else errToast(e);
       return false;
     }
     toast(t("orgs.enabled", { name: esc(name), status: esc(body && body.status || "active") }));
+    state.orgView.list = null;
+    await onEnterOrgs();
+    render();
     return false;
   },
   async orgDisableOk(el) {
@@ -148,15 +152,16 @@ Object.assign(actions, {
     state.orgView.askOrg = null;
     let body;
     try {
-      // m3-1 contract-first：PATCH /api/orgs/{org}（#14 停用）——404/405 降级
       body = await setOrgStatus(org, "disabled");
     } catch (e) {
-      if (e.status === 404 || e.status === 405) toast(t("orgs.disablePending"));
-      else if (e.status === 403) toast(t("orgs.disable403"));
+      if (e.status === 403) toast(t("orgs.disable403"));
       else errToast(e);
       return false;
     }
     toast(t("orgs.disabled", { name: esc(name), status: esc(body && body.status || "disabled") }));
+    state.orgView.list = null;
+    await onEnterOrgs();
+    render();
     return false;
   },
 });

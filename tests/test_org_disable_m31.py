@@ -93,6 +93,12 @@ def test_b2_patch_org_status_gate_and_audit(rest_env) -> None:
     assert client.patch(
         f"/api/orgs/{ORG}", headers=_hdr(env, "sysadmin"), json={}
     ).status_code == 422
+    # P3-6②（m3-2）：X-Org-Id 与路径不一致 → 400（D18 路径/头一致性——
+    # UI 恒发 cfg.org 头时跨组织行操作会踩此口径）
+    assert client.patch(
+        f"/api/orgs/{ORG}", headers={**_hdr(env, "sysadmin"), "X-Org-Id": ORG_GL},
+        json={"status": "active"},
+    ).status_code == 400
     # 审计 org.disabled（payload 带 org_id + actor）
     events = _outbox_types(env, "org.disabled")
     assert events and events[-1]["payload"].get("org_id") == ORG_GL
@@ -284,7 +290,9 @@ def test_b4_inflight_task_completes_and_new_submission_denied(rest_env) -> None:
             "不得因组织停用而滞留）"
         )
         time.sleep(0.2)
-    # 新任务投递拒绝：上传入口 403（org_scoped 停用拦截）
+    # 新任务投递拒绝：上传入口 403（org_scoped 停用拦截）+ P3-6④（m3-2）：
+    # 拒绝请求**无新任务行产生**（任务总量前后对照——403 承载、不投递）
+    before = env["db"].execute("SELECT count(*) FROM tasks").fetchone()[0]
     r = client.post(
         f"/api/orgs/{ORG}/documents", headers=_hdr(env, "u_full"),
         files={"file": ("a.html", b"<html><body>x</body></html>",
@@ -292,6 +300,8 @@ def test_b4_inflight_task_completes_and_new_submission_denied(rest_env) -> None:
         data={"dataset": "ds:vat_lib", "dims": "{}"},
     )
     assert r.status_code == 403, f"停用组织新上传须 403（got {r.status_code}）"
+    after = env["db"].execute("SELECT count(*) FROM tasks").fetchone()[0]
+    assert after == before, "停用组织的被拒上传不得产生新任务行"
 
 
 # ============ B5：恢复（幂等） + 审计 ============

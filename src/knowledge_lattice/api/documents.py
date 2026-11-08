@@ -263,6 +263,16 @@ async def explain_document_visibility(
                 "detail": "文档无值——空值放行（§5.1 统一模板）",
             })
             continue
+        if not membership_ok:
+            # 边界①（用户裁定选 A——m3-2）：membership deny 时保持维度行展开
+            # （管理面对账信息），但 detail 不得声称「有效授权 []」（成员过期
+            # 不清理授权行，空集是收口结果非事实授权面）——改参考口径
+            rows.append({
+                "kind": "dimension", "key": key, "label": label,
+                "verdict": "deny",
+                "detail": "成员关系无效，维度行仅供参考",
+            })
+            continue
         effective = set(grants.get(key) or ())
         inter = doc_values & effective
         if inter:

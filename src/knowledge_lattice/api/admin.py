@@ -248,7 +248,11 @@ async def list_dimensions(
 
 class DimensionCreateRequest(BaseModel):
     """新建维度请求（m3-1 A4——{key, label, ...}：label→name 列〔显示名〕；
-    required/enabled 可选，默认 enabled=true/required=false——D5 仅影响上传）。"""
+    required/enabled 可选，默认 enabled=true/required=false——D5 仅影响上传）。
+    P3-8（m3-2）：extra=forbid——status 等生命周期字段在 POST 面显式拒绝
+    （422），与 PATCH「status→400 归退役端点」口径对齐。"""
+
+    model_config = {"extra": "forbid"}
 
     key: str
     label: str
@@ -395,7 +399,10 @@ async def list_datasets(
 
 class DatasetCreateRequest(BaseModel):
     """新建知识库请求（m3-1 A2——{key, title?}：key=id 稳定标识、title=显示名
-    缺省=key）。"""
+    缺省=key）。P3-8（m3-2）：extra=forbid——与 PATCH 统一（status 等
+    生命周期字段 POST 面显式拒绝 422）。"""
+
+    model_config = {"extra": "forbid"}
 
     key: str
     title: str | None = None

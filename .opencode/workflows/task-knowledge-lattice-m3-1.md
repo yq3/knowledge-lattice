@@ -5,7 +5,7 @@ target: /Users/youqi/develop/knowledge-lattice
 coderTaskId: ses_e473a6ec4ffehxosh9HoSIpJM0
 testerTaskId: ses_e470eb7c3ffekQYY7IfQv2dBz2
 committerTaskId: ses_e4700f2e3ffe2DHytNqnum4jqT
-status: approved
+status: done
 round: 1
 maxRounds: 3
 testVerdict: PASS
@@ -16,7 +16,7 @@ reviewedSha: 33fb8150c9f77551146e28e271828cda7ce8fd3e
 filesChanged: [store/sqlite/migrations/docs/0011_org_status.sql, store/postgres/migrations/docs/0011_org_status.sql, src/knowledge_lattice/store/backend.py, src/knowledge_lattice/store/sqlite/backend.py, src/knowledge_lattice/store/postgres/backend.py, src/knowledge_lattice/store/sqlite/acl_render.py, src/knowledge_lattice/store/postgres/acl_render.py, src/knowledge_lattice/api/admin.py, src/knowledge_lattice/api/documents.py, src/knowledge_lattice/api/upload.py, src/knowledge_lattice/api/search.py, src/knowledge_lattice/api/semantic.py, src/knowledge_lattice/mcp/server.py, src/knowledge_lattice/domain/audit_events.py, tests/test_admin_m31_endpoints.py, tests/test_org_disable_m31.py, tests/test_docs_explain_m31.py, tests/test_az_m31_scan.py, tests/conftest.py, tests/test_scaf_03_migrations.py, tests/test_v11_schema.py, tests/test_regress_m0a1_followups.py, tests/test_pg_scaff.py]
 endReason: null
 createdAt: 2026-11-08T09:26:40+08:00
-updatedAt: 2026-11-08T10:55:01+08:00
+updatedAt: 2026-11-08T11:01:51+08:00
 ---
 
 # task-knowledge-lattice-m3-1: 管理面补强批（含 be-①② 并入）
@@ -125,6 +125,10 @@ design §6.2 契约回写（五方法+GET 单维度/单取值+PATCH orgs 停用+
 - **交付执行①：监督侧 docs 批完成（2026-11-08 10:50）**——design **v0.9.10**（版本行非决策声明+§6.2 表格 m3-1 注记 8 处+新增 5 行〔PATCH orgs/GET documents/GET explain/GET 单维度/GET 单取值〕+实现状态注记块 v0.9.10 状态更新〔五方法已实装/停用有载体/sem_restricted 有入口/be-①② 已实装+剩余 P3-1 缺口登记〕+§6.3 sem_restricted 载体注记更新）；known-gaps **G-24① 划销**（概览行 v3 注记——②⑧→m3-2、⑥⑦⑨→m3-3 维持）；TEST-CASES **v1.9.15**（新增 TC-OPS-10 组〔m3-1 四文件 76 用例 A/B/C/D 逐组登记+注入验证〕+TC-OPS-09 m3-1 扩展注记+§六 M3 行 m3-1 段〔门禁 1791+1〕）；AGENTS §1 M3 进行中+m3-1 交付句；_m3-plan row1 done+row2 扩容（ui-be 并入）+§二挂账勾销/改向+§三下段指引 m3-2（基线 1791+1）；RUNBOOK **§1.y 组织停用与恢复**（命令/影响面/维护链豁免/恢复）。工作区 7 文件（6 改+检查点新入库）待 coder chore 归档批。issue 回写（#13/#14 交付评论+PR closing、#20 be-①② 交付评论）随 PR 开出后执行。
 - **交付执行②：Coder chore 归档批完成（2026-11-08 10:52 报告，续接会话）**——**chore `bc189f0`**（doc-only 复核 ✓ git diff 33fb815 -- src/ tests/ 为空；7 文件 +398/−26：docs 批 6+检查点新入库）；origin/develop=cb340f5 无前进确认；**push 成功 507b017..bc189f0**（R1 33fb815+chore bc189f0 两提交）；**PR #23 已开**（base=develop，https://github.com/yq3/knowledge-lattice/pull/23 ，body 含四组摘要+门禁证据+`Closes #13`/`Closes #14` closing keywords〔#20 注明待 m3-2〕+`<!-- EVIDENCE-MANIFEST -->` 占位+评审记录）；**issue #20 评论留痕**（issuecomment-6716383438——be-①② 交付+待 m3-2 收尾）。待办：Committer gh pr review 留痕 → Coder manifest 入 PR description → 用户合入。
 - **交付执行③：Committer PR 审查留痕完成（2026-11-08 10:55 报告，续接会话）**——`--approve` 因 GitHub 自审限制失败（PR 作者=yq3，沿 #2~#17 先例），回退 **COMMENTED 形态完整留痕**（review id `PRR_kwDOVZ9dhM8AAAABWqxnGQ`，anchor bc189f0，body 含 APPROVED 结论/双 SHA 33fb815/门禁采信 Tester 独立复跑〔committer 未独立复跑如实注明〕/P3×8 与边界②处置去向/manifest 放行条件/合人留给所有者）；**bc189f0 doc-only 复核通过**（7 文件流程/文档、src/tests diff 空、PR 全量 30 文件=23+7 与本地一致、MERGEABLE）；**发现 2 处 doc 笔误**（①TEST-CASES TC-OPS-10 载体行与 PR 描述 A/C=13、D=12 写反——实为 A/C=12、D=13〔总和 38/臂不变〕②检查点「新增 4 行」实为 5 行；_m3-plan row4 未列 warnings）——监督侧已修 3 处（TEST-CASES 载体行/检查点 5 行/_m3-plan row4 补 warnings 治理）；PR 描述侧笔误随 coder 交付收尾批修。
+- **交付执行④：Coder 交付收尾完成（2026-11-08 10:58 报告，续接会话）**——**勘误批 `a287604`**（3 文件 +6/−4 doc-only，git diff bc189f0 -- src/ tests/ 空）；push 成功 bc189f0..a287604；**PR body 事故发现并修复**：创建时误用 `gh pr create --body <文件路径>`（--body 收字面文本）致 body 曾为 73 字节路径字符串——本次 `gh pr edit 23 --body-file` 重写完整 body（TC-OPS-10 用例数修正+commits 表补 a287604+manifest JSON 替换占位）；**回读双校验通过**（5743 字节逐字一致、manifest json.loads 可解析、摘要/Closes/评审记录零丢失、锚点 12 处在位）。**PR #23 终态：OPEN/MERGEABLE/CLEAN，3 commits=[33fb815（R1）, bc189f0（chore 归档）, a287604（勘误批）]，base=develop——待用户合入**（`Closes #13`/`Closes #14` 合并时生效；#20 已留痕待 m3-2）。合入后补记 mergeCommit/origin develop 前进条目；该条目之后的工作区改动随 m3-2 chore 归档批入库（沿先例）。
+
+- **交付完成（终态）（2026-11-08 10:59，用户确认「合入」，status=done）**：**PR #23 MERGED**——mergeCommit `62613d8eea5cfc0638ca379b432b2c0371fac54b`（mergedAt 2026-11-08T02:59:38Z，merge 形态沿 #2~#17 先例、远端分支保留）；origin/develop 前进至 62613d8，develop_opencode 已 ff 同步；**#13/#14 随 closing keywords 自动关闭**；#20 开放待 m3-2 前端对账收尾。**m3-1 段收官：round=1 一轮收敛（coder→tester PASS→committer APPROVED），门禁 1715+1→1791+1，#13/#14/G-24①/#20 be-①② 清偿。**M3 进度 1/5（m3-2 查询级审计批·含 ui-be 并入——下一段）；本条目之后的工作区改动（检查点）随 m3-2 chore 归档批入库。
+- **#13/#14 手动关闭（2026-11-08 11:01）**：PR body 含 `Closes #13`/`Closes #14` 但 merge 后未自动关闭——body 曾经 `gh pr edit`（REST API）重写，GitHub 未重新解析 closing keywords（已知行为，与 PR body 事故修复同因）；监督侧手动关闭并留交付评论（mergeCommit 62613d8/测试载体/门禁/文档指针，注明手动关闭原因）。终态：#13 CLOSED、#14 CLOSED、#20 OPEN（待 m3-2 前端对账收尾）。
 
 ## 最新验证意见原文
 （tester/committer 报告逐字保留——恢复时给 coder 的修复依据）
