@@ -31,12 +31,13 @@
 | [G-19](#g-19-五源每天一次兜底调度未接线design-§58-适配器表半句) | **已收口**（m2s-4 R1——maintenance 挂载 semantic_daily_sync：五源/日·窗口跨零点·pending 幂等·sem_sync_runs 24h 与 webhook 去重） | design §5.8 适配器表「每天一次兜底」半句——五源仅 webhook/手动两路径，app 兜底循环只认领任务行不投递同步；长期无 webhook 的源停留旧快照 | FR-S1 / design §5.8 · M2-S1 | 2026-10-31 |
 | [G-20](#g-20-webhook-验签前读取完整请求体无大小上限公网入口内存放大) | 已接受（私有化内网面+部署侧反代限流兜底） | webhook 验签前 `await request.body()` 无上限——公网入口内存放大（design 未要求）；公网直曝部署时补应用层上限 | 安全 / design §6.2 · M2-S2 | 2026-10-31 |
 | [G-21](#g-21-annotatello-读-live-快照而非-build-产物冷缓存重启窗口-rev-锚点失真评测门禁非持久m2s-4-p2-1-方案-b-登记项) | **已收口**（m2s-5 方案 A：0008 快照附表+按 current build 取快照+冷缓存/重启服务 build 产物；残留 8 项登记〔快照 GC/pg CHECK/对账双层口径等〕；**m2s-6 核销 6 项+再挂 2 项**〔mixed-mode/l0_extra〕2026-11-01） | annotate/L0 恒读 live：冷缓存/重启 rev 锚点失真、评测拦下词典重启后仍被服务、sync→build 窗口内容/rev 错配 | 语义 / design §5.8·§5.9 · M2-S2 | 2026-10-31 |
-| [G-22](#g-22-查询级异步审计未实现fr-6-既有缺口ts9⑥a-16) | 已登记（POC 接受——事件级审计已闭环，查询级挂起） | 查询级异步审计全库未实现——T-S9⑥/A-16 挂起，refused 查询不可回溯 | FR-6 / design §6.3⑥ · T-S9 | 2026-11-01 |
+| [G-22](#g-22-查询级异步审计未实现fr-6-既有缺口ts9⑥a-16) | **已收口**（m3-2——六入口查询审计+T-S9⑥/A-16 收口） | ~~查询级异步审计全库未实现~~（m3-2 划销——query_audit.py 月库直写+链防叉互斥+refused+sysadmin 脱敏） | FR-6 / design §6.3⑥ · T-S9 | 2026-11-01 |
 | [G-23](#g-23-模糊索引最终一致的残余窗口m2s-6-裁定-5-口径落地后) | 已登记（下批收口——正常路径与写失败路径已覆盖，异常窗口极窄） | `embed_model` 未入内容集合（模型迁移+崩溃窗口向量层静默为空）/标记粘滞（静态词典重触整替）/per-skip 全量重算/`fuzzy_repaired` 观测语义/构建产物 code versioning | design §5.8 · m2s-6 | 2026-11-01 |
-| [G-24](#g-24-语义面-p3-残留集合m2s-6-交付后登记) | 已登记（①③④⑤已划销——m2-5/m3-1；②⑧→m3-2、⑥⑦⑨→m3-3） | ~~`sem_restricted` 无授予入口~~（m3-1 划销）/持权审计两漏记/auto_entities 超长不降级/L1 缺 disambiguation/审计常量登记处 | design §6.3 / NFR-8·11 · m2s-6 | 2026-11-01 |
+| [G-24](#g-24-语义面-p3-残留集合m2s-6-交付后登记) | 已登记（①②③④⑤⑧已划销——m2-5/m3-1/m3-2；⑥⑦⑨→m3-3） | ~~`sem_restricted` 无授予入口~~（m3-1）/~~持权审计两漏记·审计常量登记处~~（m3-2 划销）/auto_entities 超长不降级/L1 缺 disambiguation | design §6.3 / NFR-8·11 · m2s-6 | 2026-11-01 |
 | [G-25](#g-25-可信子系统限流器进程内态m2-4-登记) | 已登记（重开=多进程/多实例部署） | `ServiceRateLimiter` 进程内存态——多 worker/多实例部署限流不跨进程共享（线程锁已加、计数并发安全） | design §2 L810 · m2-4 | 2026-11-01 |
 | [G-26](#g-26-认证拒绝路径审计写放大m2-4-登记) | 已登记（部署侧准入兜底） | `unknown_service` 等 refused 审计由未认证调用方可触发——无界写 audit_outbox（T13 设计强制 vs 写放大权衡） | design §5.5/T13 · m2-4 | 2026-11-01 |
 | [G-27](#g-27-reembed-覆盖率未收敛fail-closedm2-6-登记) | 已登记（可选收窄=runner 按 error 分类回队） | reembed 全库覆盖率未收敛时任务 failed **留人工**（不再自动重试——并发持续摄取极端窗口）；附：members 守卫 pg 咨询锁 `hashtext(org)` 键碰撞=跨组织偶发串行化（纯性能面，事务级即释） | design §5.3 / RUNBOOK §1 · m2-6 | 2026-11-01 |
+| [G-28](#g-28-查询审计与前端开放点集合m3-2-交付后登记) | 已登记（③⑤→m3-3 用户裁定；①②⑥⑧触发时处置；④生产化前） | 查询审计覆盖面/矩阵 m×n 无护栏/PG 接线三件〔P2-1 单连接共享〕/flush 全月扫描/链互斥并发测试缺口/refused 写放大/溢出观测面/哈希链 \x1f 硬化 | FR-6 · design §6.3⑥ · m3-2 | 2026-11-08 |
 
 ---
 
@@ -241,9 +242,7 @@
 - **来源**：m2s-6 R1 Committer 需求边界审查（2026-11-01）——Tester「docs 查询审计通用套件间接覆盖」结论被推翻（grep 全库无任何 query-audit 实现/用例）。
 - **问题**：design §6.3⑥「annotate / get_entity 普通查询走查询级异步审计，与 docs 查询审计共用月库」全库未实现——docs 检索与语义查询均只有 outbox 权限/业务事件，无查询级 refused/普通查询落审计路径。T-S9⑥（无权尝试走查询级异步审计、refused 可回溯）无法按字面验收。
 - **设计现状与对冲**：FR-6 既有缺口、非 m2s-6 引入；事件级（restricted 持权访问 outbox）已闭环。T-S9 按用户裁定（2026-11-01）以 ①~⑤+持权路径收口。
-- **残留缺口**：查询级审计（语义+docs 两侧）实现与 T-S9⑥ 显式断言挂起。
-- **收窄动作（未排期）**：查询级审计落地时（建议独立任务/主线段）补 T-S9⑥+A-16 关闭。
-- **重开条件**：审计合规要求查询级可回溯时。
+- **✅ 已收口（m3-2，2026-11-08）**：六入口（REST/MCP × search·annotate·get_entity）查询级异步审计实现——`query_audit.py` 进程内异步队列（5s/满批 200/月库直写/关停 flush）+ `append_query_events` 双方言直写月库（哈希链入链）+ 两写道链防叉互斥（sqlite BEGIN IMMEDIATE/pg 咨询锁）+ refused（403 三因+get_entity 404 二值回查）+ sysadmin 元数据脱敏；**T-S9⑥ 真断言+A-16 收口**（TEST-CASES v1.9.16）；完整口径见 design v0.9.11 §6.3⑥ 注记。残余开放点移 G-28。
 
 ## G-23 模糊索引最终一致的残余窗口（m2s-6 裁定 5 口径落地后）
 
@@ -257,7 +256,7 @@
 
 - **来源**：m2s-6 R1/R3 Committer P3 清单（2026-11-01，按裁定登记不动）。
 - **问题（分项）**：①`semantic:restricted` 授予载体为 membership `role='sem_restricted'`（design v0.9.6 注记）但**无管理面授予入口**（POC 仅 DB/dev 工具）；②**持权审计两漏记**——get_entity `include=['attrs']` 时 restricted 根实体访问不落审计（审计前提为 curated 非空）；经关系展开「看到」restricted 端点（非根）不审计；③**search_entities vec 档无有界超时/熔断/降级审计**——`embedder.embed` 用 `embed_timeout_s=30s`、未走 `query_embed_timeout_s`/breaker、失败仅 warning（NFR-8/§5.2 口径——to_thread 已消除事件循环阻塞，此为延迟/可观测面）；④**模糊内存面性能**——annotator 每片段 `dict()` 全量复制 pinyin/dels 映射+无条件构建模糊面（10⁴~10⁵ 实体 NFR-11 P99 20ms 风险）；⑤**vec top-3 硬编码**——annotator 未消费 `LATTICE_SEM_FUZZY_VEC_TOP`；⑥**auto_entities 超长不降级**——query >4000 字时 annotate ValueError 上抛 400 整次检索（与增益路失败不阻断相悖——建议 auto 分支返回 None）；⑦**中间件 L1 概念行缺 disambiguation**（mention 契约未携带该字段——design §6.3② 字面含）；⑧**审计事件常量未入 domain/audit_events.py 单一登记处**（EVENT_SEMANTIC_RESTRICTED_ACCESS 在 core/semantic/constants）。
-- **设计现状与对冲**：全部登记级、无功能/安全面阻塞；③④挂 m2-5（TC-PERF-05 同轮），其余下批。**v2 注记（2026-11-02，m2-5 收口）**：**③④⑤ 已收口划销**——③ search_entities vec 档 `query_embed_timeout_s` 有界等待+共享熔断（service.breakers["embed"]）+`search.degraded`（scope=search_entities）降级审计（REST/MCP 双接线）；④ 模糊内存面懒构建+索引直读（万级词典首建 3.75s 一次性、AC 主路径零开销；R2 补 threading.Lock+哨兵赋值序——并发首建恰一次）；⑤ `LATTICE_SEM_FUZZY_VEC_TOP` 端到端消费（vec top-3 硬编码消除）。**新增⑨（m2-5 Committer 复审登记）**：**语义查询面不随指纹探针 gate 关闭**——docs 检索在探针拒绝时关查询侧向量路（api/search 传 service.gate），而 search_entities/annotate 的 fuzzy vec 层不看 gate（探针拒绝后仍用跨底模向量计算语义近邻，与 NFR-8/§5.2「查询侧向量路关闭」跨切面不一致）+ annotate fuzzy vec 走 embed_timeout_s=30s 同步嵌入无 breaker/无降级审计（③只覆盖 search_entities）——M3 语义补强批处置（[#15](https://github.com/yq3/knowledge-lattice/issues/15)）。**v3 注记（2026-11-08，m3-1 交付）**：**① 已收口划销**——`sem_restricted` 管理面授予入口实装（POST/PATCH members role 枚举扩展：org_admin 门控+单值列不兼任 org_admin〔T-S9〕+唯一 active org_admin 守卫兼容 409；审计 member.add/update 同事务）；②⑧→m3-2、⑥⑦⑨→m3-3 维持。
+- **设计现状与对冲**：全部登记级、无功能/安全面阻塞；③④挂 m2-5（TC-PERF-05 同轮），其余下批。**v2 注记（2026-11-02，m2-5 收口）**：**③④⑤ 已收口划销**——③ search_entities vec 档 `query_embed_timeout_s` 有界等待+共享熔断（service.breakers["embed"]）+`search.degraded`（scope=search_entities）降级审计（REST/MCP 双接线）；④ 模糊内存面懒构建+索引直读（万级词典首建 3.75s 一次性、AC 主路径零开销；R2 补 threading.Lock+哨兵赋值序——并发首建恰一次）；⑤ `LATTICE_SEM_FUZZY_VEC_TOP` 端到端消费（vec top-3 硬编码消除）。**新增⑨（m2-5 Committer 复审登记）**：**语义查询面不随指纹探针 gate 关闭**——docs 检索在探针拒绝时关查询侧向量路（api/search 传 service.gate），而 search_entities/annotate 的 fuzzy vec 层不看 gate（探针拒绝后仍用跨底模向量计算语义近邻，与 NFR-8/§5.2「查询侧向量路关闭」跨切面不一致）+ annotate fuzzy vec 走 embed_timeout_s=30s 同步嵌入无 breaker/无降级审计（③只覆盖 search_entities）——M3 语义补强批处置（[#15](https://github.com/yq3/knowledge-lattice/issues/15)）。**v3 注记（2026-11-08，m3-1 交付）**：**① 已收口划销**——`sem_restricted` 管理面授予入口实装（POST/PATCH members role 枚举扩展：org_admin 门控+单值列不兼任 org_admin〔T-S9〕+唯一 active org_admin 守卫兼容 409；审计 member.add/update 同事务）；②⑧→m3-2、⑥⑦⑨→m3-3 维持。**v4 注记（2026-11-08，m3-2 交付）**：**②⑧ 已收口划销**——②持权审计两漏记补齐（get_entity `include=['attrs']` 根实体无条件审计〔删「curated 非空」前提〕+展开端点 `sem_restricted_ids` 批量判定并入 entity_ids、无 restricted 零事件不虚报〔test_g24b2c 对照〕）；⑧审计事件常量统一入 `domain/audit_events.py` 单一登记处（EVENT_SEMANTIC_RESTRICTED_ACCESS 迁入+查询审计新常量——全 src 无旧路径导入的文本扫描用例）；⑥⑦⑨→m3-3 维持。
 - **收窄动作（未排期）**：分项入 m2s followups/m2-5。
 - **重开条件**：持权审计合规要求（②）或性能达标测试（③④）触发时优先。
 
@@ -285,3 +284,11 @@
 - **收窄动作（未排期）**：runner 按 error 分类回队（「未收敛」类自动重投+退避）；RUNBOOK §1 已注处置口径。
 - **重开条件**：并发摄取密集部署下频繁出现未收敛 failed。
 - **附注（性能面，无需处置）**：members 唯一 admin 自锁守卫 `pg_advisory_xact_lock(hashtext(org))` 键碰撞=跨组织偶发串行化（事务级即释，纯性能非正确性）。
+
+## G-28 查询审计与前端开放点集合（m3-2 交付后登记）
+
+- **来源**：m3-2 R1 Tester/Committer 审查（2026-11-08）+ 用户裁定（P2-1 上调 m3-3 修复）。
+- **问题（分项）**：①**查询审计覆盖面**——`search_entities`/`describe_table`/`l0` 不入查询级审计（design §6.3⑥ 字面只点名 annotate/get_entity+docs 检索；`fetch`/`list_documents` 亦未列）；②**可见性矩阵 m×n 无规模护栏**——前端 org_admin 面全量逐格 GET explain 取数（4 并发，O(m·n) 请求量——大组织需分页/懒取）；③**PG 接线三件**——flush 线程与请求线程共享 `PgBackend._conn` 单连接（psycopg 无跨线程锁，P2-1——**用户裁定 2026-11-08 m3-3 修复**：backend_factory 独立连接/连接级串行化+pg 臂双连接）；`ensure_month_partition` 每轮 flush DDL 无进程内缓存；pg `last_row_hash` 按 seq DESC 无索引；④**flush 全月扫描规模化**——existed 每轮查整月 id 集合（O(当月行数)/次、月度累计 O(N²)）+「enqueue 即 wake」低流量近乎逐条触发（修法=按批 id 查询/索引/ensure 缓存——生产化前修，与 ③ 同批经济）；⑤**链互斥并发测试缺口**——test_qa9 顺序形态无法捕获互斥回归（注入实证摘除后仍绿）→**m3-3 首轮必做**（收编并发脚本）；⑥**查询级 refused 写放大**（G-26 延伸）——认证后无权用户每次尝试落一条 refused（含任意路径 org/query 文本），上界=队列 10⁴ 丢最旧+月库累积（未认证 401 先于入队不触发）；⑦**溢出/丢弃观测面仅日志**——dropped/pending 不在 /stats（可 m3-3 顺手暴露）；⑧**哈希链 canonical `\x1f` 前置**——查询道 org_id/target_id 用户可控字段未净化（需 DB 写权限才可利用，理论硬化项）。
+- **设计现状与对冲**：全部登记级——③ 生产 app 恒 sqlite（factory 检测 PG DSN 仅告警）无当前暴露；④ sqlite 默认形态流量放大有限且不阻塞检索（增量 1.4ms 实测）；⑤ 互斥实现本身经并发注入验证正确；⑥ 属可接受审计面（与 G-26 部署侧准入兜底同栏）。
+- **收窄动作**：③⑤（+⑦ 顺手）→ m3-3（用户裁定）；①②⑥⑧ 登记（触发时处置——①需扩覆盖面属口径决定、②大组织部署触发、⑧理论硬化）；④→ 生产化/PG 接线前（m3-3 可顺路）。
+- **重开条件**：PG 切换（③④ 前置必修）；大组织矩阵卡顿（②）；审计合规扩面（①）。
