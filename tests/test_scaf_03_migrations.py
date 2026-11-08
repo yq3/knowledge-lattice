@@ -34,7 +34,7 @@ from helpers import (
 # trg_membership_delete_cleanup 与 trg_docdims_consistency（体内 SELECT dimensions），
 # 表重建后连同 trg_dimensions_org_immutable（随 DROP TABLE 连带删除）一并重建。
 V3_REBUILD_SQL = """\
--- 0010 测试迁移：dimensions 重建加 remark 列（建新表→拷数据→删旧表）
+-- 0012 测试迁移：dimensions 重建加 remark 列（建新表→拷数据→删旧表；0011 org_status〔m3-1〕已内置占用）
 DROP TRIGGER trg_membership_delete_cleanup;
 DROP TRIGGER trg_docdims_consistency;
 CREATE TABLE dimensions_new (
@@ -83,7 +83,7 @@ def _migrated_conn(db_path: Path) -> sqlite3.Connection:
 def _write_v2(tmp_path: Path) -> Path:
     mig_dir = tmp_path / "extra_migrations"
     mig_dir.mkdir()
-    (mig_dir / "0011_test_rebuild_dimensions.sql").write_text(V3_REBUILD_SQL, encoding="utf-8")
+    (mig_dir / "0012_test_rebuild_dimensions.sql").write_text(V3_REBUILD_SQL, encoding="utf-8")
     return mig_dir
 
 
@@ -97,7 +97,7 @@ def test_fresh_migrate_applies_schema_v1(db_path: Path) -> None:
     from knowledge_lattice.store.sqlite.migrate import BUILTIN_DIRS, discover
 
     conn = _migrated_conn(db_path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 10  # 0001+0002 uploads〔M1-3〕+0004 tombstoned_at〔M2.1〕+0005 task_target_version〔M2.1 R2〕+0006 semantic_v1〔M2-S1〕+0007 semantic_yaml〔m2s-3〕+0008 sem_build_snapshots〔m2s-5〕+0009 semantic_fuzzy〔m2s-6〕+0010 task_seq〔m2-6 B②〕
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 11  # 0001+0002 uploads〔M1-3〕+0004 tombstoned_at〔M2.1〕+0005 task_target_version〔M2.1 R2〕+0006 semantic_v1〔M2-S1〕+0007 semantic_yaml〔m2s-3〕+0008 sem_build_snapshots〔m2s-5〕+0009 semantic_fuzzy〔m2s-6〕+0010 task_seq〔m2-6 B②〕+0011 org_status〔m3-1 issue #14〕
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
     # 文档侧 §4 全量表落库 + v1.1 分表 chunk_vectors（M0b-3）+ v1.2 uploads
@@ -120,7 +120,7 @@ def test_fresh_migrate_applies_schema_v1(db_path: Path) -> None:
     # 内置迁移目录为二维结构 store/sqlite/migrations/{docs,semantic}
     assert (BUILTIN_DIRS["docs"] / "0001_schema_v1.sql").is_file()
     assert BUILTIN_DIRS["semantic"].is_dir()
-    assert [m.version for m in discover()] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]  # M0a-1 基线 + M0b-3 v1.1 + M1-3 uploads + M2.1 tombstoned_at + M2.1 R2 target_version + M2-S1 semantic_v1 + m2s-3 semantic_yaml + m2s-5 sem_build_snapshots + m2s-6 semantic_fuzzy
+    assert [m.version for m in discover()] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]  # M0a-1 基线 + M0b-3 v1.1 + M1-3 uploads + M2.1 tombstoned_at + M2.1 R2 target_version + M2-S1 semantic_v1 + m2s-3 semantic_yaml + m2s-5 sem_build_snapshots + m2s-6 semantic_fuzzy + m3-1 org_status
 
     # P3-5 残（m1-3 committer R2）：uploads 表结构断言补全——CHECK 状态机 /
     # 回收索引 / 三要素外键（0003 DDL 防回归）
@@ -154,7 +154,7 @@ def test_migrate_idempotent_rerun_no_side_effects(db_path: Path) -> None:
 
     applied = migrate_db(conn)
     assert applied == []  # user_version 已是最新，无重放
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 11
     assert conn.execute("SELECT count(*) FROM documents").fetchone()[0] == before
     conn.close()
 
@@ -170,8 +170,8 @@ def test_migration_rebuild_flow_with_fk_check(db_path: Path, tmp_path: Path) -> 
     extra_dirs = _v3_dirs(tmp_path)
 
     applied = migrate_db(conn, dirs=extra_dirs)
-    assert applied == [11]
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 11
+    assert applied == [12]
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 12
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
     cols = {r[1] for r in conn.execute("PRAGMA table_info(dimensions)")}
@@ -220,7 +220,7 @@ def test_migration_fk_violation_detected_and_rolled_back(db_path: Path, tmp_path
     assert {"trg_membership_delete_cleanup", "trg_docdims_consistency"} <= trigger_names(conn)
 
     # 回滚后库态与迁移前一致：user_version 未前进、DDL 未生效、既有数据不动
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 11
     cols = {r[1] for r in conn.execute("PRAGMA table_info(dimensions)")}
     assert "remark" not in cols
     assert conn.execute("SELECT count(*) FROM user_dimension_grants").fetchone()[0] == grants_before
@@ -254,13 +254,13 @@ def test_apply_one_skips_when_version_already_applied(db_path: Path, tmp_path: P
 
     other = connect(db_path)
     try:
-        assert migrate_db(other, dirs=dirs) == [11]
+        assert migrate_db(other, dirs=dirs) == [12]
     finally:
         other.close()
 
-    v7 = [m for m in discover(dirs) if m.version == 11][0]
-    assert _apply_one(conn, v7) is False  # 写锁内重读 11>=11 → COMMIT + 跳过，绝不重放 DDL
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 11
+    v7 = [m for m in discover(dirs) if m.version == 12][0]
+    assert _apply_one(conn, v7) is False  # 写锁内重读 12>=12 → COMMIT + 跳过，绝不重放 DDL
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 12
     # P3（M0a-1 遗留③-4）：干净跳过分支同样恢复 foreign_keys=ON（finally 覆盖跳过路径）
     assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     conn.close()
@@ -294,4 +294,4 @@ def test_concurrent_migrate_both_processes_survive(db_path: Path, tmp_path: Path
     failures = [r for r in results if isinstance(r, BaseException)]
     assert failures == [], f"concurrent migrate crashed: {failures!r}"
     flattened = sorted(v for r in results for v in r)  # type: ignore[union-attr]
-    assert flattened == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]  # 恰好应用一次，另一进程跳过
+    assert flattened == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]  # 恰好应用一次，另一进程跳过

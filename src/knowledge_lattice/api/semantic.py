@@ -529,6 +529,11 @@ async def semantic_yaml_webhook(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     service = get_service(request)
+    # 停用组织 webhook 拒绝（m3-1 issue #14——fail-closed；签名校验先行保持：
+    # 无/错签名仍 401，不因停用状态泄露验签口径）
+    from .upload import _require_org_active
+
+    org_disabled = service.backend.get_org_status(org) == "disabled"
     secret = _yaml_webhook_secret(service.settings, org)
     body = await request.body()
     signature = request.headers.get("x-lattice-signature", "")
@@ -542,6 +547,12 @@ async def semantic_yaml_webhook(
             status_code=401,
             detail="webhook signature invalid（X-Lattice-Signature: "
                    "sha256=HMAC-SHA256(body)——服务身份校验失败）",
+        )
+    if org_disabled:
+        raise HTTPException(
+            status_code=403,
+            detail=f"org disabled: {org!r}——组织已停用，webhook 拒绝"
+            "（fail-closed；恢复走 PATCH /api/orgs/{org} status=active）",
         )
 
     try:

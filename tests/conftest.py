@@ -446,6 +446,63 @@ def app_env(tmp_path):
     conn.close()
 
 
+# ============ M3-1 管理面 REST 壳（test_admin_m31_* / test_org_disable_m31 /
+#              test_docs_explain_m31 / test_az_m31_scan 共用） ============
+
+
+@pytest.fixture()
+def rest_env(matrix, tmp_path):
+    """M3-1 管理面 REST 壳：matrix 造数 + create_app(backend=) REST 壳
+    （pg 臂注入 / sqlite 臂默认工厂同 db 文件——az_matrix_m25 az_env 同款纪律）
+    + 矩阵 12 用户静态 token。
+
+    返回 dict(client, db, backend, tokens)——db=matrix 包装器（直写造数面）、
+    backend=make_backend()（store 直调面）。
+    """
+    from fastapi.testclient import TestClient
+
+    from knowledge_lattice.adapters.embedder import EmbeddingGate
+    from knowledge_lattice.app import create_app
+    from knowledge_lattice.config import Settings
+    from knowledge_lattice.domain.auth import hash_token
+    from fake_providers import FakeEmbedder
+
+    settings = Settings(
+        environment="test", data_dir=tmp_path, embed_dim=2560,
+        probe_interval_s=0, worker_mode="inline",
+    )
+    kwargs = dict(
+        embedder=FakeEmbedder(dim=2560), gate=EmbeddingGate(),
+        run_startup_probe=False,
+    )
+    if matrix.name == "pg":
+        app = create_app(settings, backend=matrix.make_backend(), **kwargs)
+    else:
+        app = create_app(settings, **kwargs)
+
+    tokens = {
+        uid: f"dev-static-{uid.replace('_', '-')}"
+        for uid in (
+            "u_full", "u_cn", "u_cn_vat", "u_os", "u_expired_grant",
+            "u_expired_member", "u_owner", "admin_tax", "admin_full",
+            "sysadmin", "u_gl", "u_multi",
+        )
+    }
+    for uid, token in tokens.items():
+        matrix.execute(
+            "UPDATE users SET token_hash = ? WHERE id = ?",
+            (hash_token(token), uid),
+        )
+    matrix.commit()
+
+    with TestClient(app) as client:
+        yield {
+            "client": client, "db": matrix,
+            "backend": matrix.make_backend(),
+            "tokens": tokens, "app": app,
+        }
+
+
 # ============ M1-3 上传凭证 fixtures ============
 
 

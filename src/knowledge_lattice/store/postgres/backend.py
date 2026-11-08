@@ -105,6 +105,38 @@ class PgBackend:
                 bucket.add(value)
         return {key: tuple(sorted(values)) for key, values in grants.items()}
 
+    # ---- explain 数据源（m3-1 D-②——可见性解释，只解释不裁定） ----
+
+    def read_membership_row(self, user_id: str, org_id: str) -> dict | None:
+        """成员关系原始行（不过滤过期——explain membership 第 0 步数据源）。
+        expires_at 按 B⑦ 契约 to_char 归一为库格式字符串（datetime 不外泄）。"""
+        row = self._conn.execute(
+            "SELECT role, to_char(expires_at, 'YYYY-MM-DD HH24:MI:SS')"
+            " FROM user_org_memberships"
+            " WHERE user_id = %(uid)s AND org_id = %(org)s",
+            {"uid": user_id, "org": org_id},
+        ).fetchone()
+        return None if row is None else {"role": row[0], "expires_at": row[1]}
+
+    def read_grant_rows(self, user_id: str, org_id: str) -> list[dict]:
+        """授权行（active 维度 × active 取值、不过滤 expires_at——explain
+        「授权已过期 detail 注明」数据源；expires_at B⑦ 契约字符串归一）。"""
+        rows = self._conn.execute(
+            "SELECT dim.key, v.value,"
+            " to_char(g.expires_at, 'YYYY-MM-DD HH24:MI:SS')"
+            " FROM user_dimension_grants g"
+            " JOIN dimensions dim ON dim.id = g.dimension_id"
+            "   AND dim.org_id = %(org)s AND dim.status = 'active'"
+            " JOIN dimension_values v"
+            "   ON v.id = g.value_id AND v.dimension_id = dim.id"
+            "   AND v.status = 'active'"
+            " WHERE g.user_id = %(uid)s ORDER BY dim.key, v.value",
+            {"uid": user_id, "org": org_id},
+        ).fetchall()
+        return [
+            {"key": r[0], "value": r[1], "expires_at": r[2]} for r in rows
+        ]
+
     # ============ Search 域（M1-1 实装：FTS/向量召回 + 名次协议 + 双断言源） ============
 
     def recall_fts(
@@ -859,6 +891,68 @@ class PgBackend:
             {"id": r[0], "name": r[1], "doc_count": r[2]}
             for r in self._conn.execute(sql, params)
         ]
+
+    # ---- 文档列表 D-①（m3-1 issue #20 be-①——与 sqlite 实现同构） ----
+
+    _DOC_LIST_COLS = (
+        "d.id AS doc_id, d.dataset_id, d.title, d.active_version,"
+        " d.active_status, d.active_error, d.pending_version, d.pending_status,"
+        " d.updated_at,"
+        " (SELECT count(*) FROM chunks c WHERE c.doc_id = d.id"
+        "   AND c.version = d.active_version AND c.tombstone = 0) AS chunk_count,"
+        " (SELECT count(*) FROM quality_flags qf WHERE qf.doc_id = d.id"
+        "   AND qf.state = 'open') AS quality_open"
+    )
+
+    def list_org_documents(
+        self, org_id: str, *,
+        dataset_id: str | None = None,
+        limit: int = 50, offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        """org_admin 面：本组织全量文档行（不过 ACL——visible 由 api 层按调用者
+        本人编译产物回填；管理面对账用）。"""
+        conds = ["d.org_id = %(org)s"]
+        fparams: dict[str, object] = {"org": org_id}
+        if dataset_id is not None:
+            conds.append("d.dataset_id = %(ds)s")
+            fparams["ds"] = dataset_id
+        where = " AND ".join(conds)
+        total = self._conn.execute(
+            f"SELECT count(*) FROM documents d WHERE {where}", fparams
+        ).fetchone()[0]
+        cursor = self._conn.execute(
+            f"SELECT {self._DOC_LIST_COLS} FROM documents d WHERE {where}"
+            " ORDER BY d.updated_at DESC NULLS LAST, d.id"
+            " LIMIT %(limit)s OFFSET %(offset)s",
+            {**fparams, "limit": limit, "offset": offset},
+        )
+        cols = [c[0] for c in cursor.description]
+        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+        self._attach_dims(rows)
+        return rows, total
+
+    def visible_documents_page(
+        self, plan: AclPlan, *,
+        dataset_ids: list[str] | None = None,
+        limit: int = 50, offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        """member 面：ACL 过滤后可见文档行（visible_docs CTE——与检索路同一
+        编译产物；分页/排序与 list_org_documents 同款）。"""
+        from knowledge_lattice.store.postgres.acl_render import (
+            render_documents_page_select,
+        )
+
+        page_sql, page_params, total_sql, total_params = (
+            render_documents_page_select(
+                plan, dataset_ids=dataset_ids, limit=limit, offset=offset
+            )
+        )
+        cursor = self._conn.execute(page_sql, page_params)
+        cols = [c[0] for c in cursor.description]
+        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+        self._attach_dims(rows)
+        total = self._conn.execute(total_sql, total_params).fetchone()[0]
+        return rows, total
 
     # ============ Quality 域（design §5.4 / FR-3——M1-4，与 SqliteBackend 同构） ============
 
@@ -1623,6 +1717,215 @@ class PgBackend:
             {"org": org_id},
         ).fetchall()
         return [{"id": r[0], "name": r[1], "description": r[2]} for r in rows]
+
+    # ---- dimensions/datasets CRUD（m3-1 A2~A8——与 sqlite 实现同构，
+    #      仅参数标记/异常映射方言差异） ----
+
+    def create_dataset(
+        self, org_id: str, dataset_id: str, name: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        """新建知识库（m3-1 A2——初始空库；id 冲突 → DatasetExistsError 409；
+        dataset.created 与插入同一事务）。"""
+        from psycopg import errors as pg_errors
+
+        from knowledge_lattice.store.backend import DatasetExistsError
+
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "INSERT INTO datasets(id, org_id, name)"
+                " VALUES(%(i)s, %(org)s, %(n)s)",
+                {"i": dataset_id, "org": org_id, "n": name},
+            )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except pg_errors.UniqueViolation as exc:
+            self._rollback()
+            raise DatasetExistsError(
+                f"dataset 已存在: {dataset_id!r}（id 全局唯一——组织内 key"
+                " 冲突或跨组织占用）"
+            ) from exc
+        except BaseException:
+            self._rollback()
+            raise
+        return {"id": dataset_id, "name": name, "description": None}
+
+    def update_dataset(
+        self, org_id: str, dataset_id: str, *,
+        name: object = ..., description: object = ...,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """修改知识库 title/description（m3-1 A3——key 不可改；改名撞
+        UNIQUE(org_id, name) → DatasetExistsError 409；dataset.updated 同事务）。"""
+        from psycopg import errors as pg_errors
+
+        from knowledge_lattice.store.backend import DatasetExistsError
+
+        row = self._conn.execute(
+            "SELECT name, description FROM datasets WHERE id = %(ds)s"
+            " AND org_id = %(org)s",
+            {"ds": dataset_id, "org": org_id},
+        ).fetchone()
+        if row is None:
+            return None
+        new_name = row[0] if name is ... else name
+        new_desc = row[1] if description is ... else description
+        if (new_name is None or str(new_name).strip() == "") and name is not ...:
+            raise ValueError("name 不得为空")
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE datasets SET name = %(n)s, description = %(d)s"
+                " WHERE id = %(ds)s AND org_id = %(org)s",
+                {"n": new_name, "d": new_desc, "ds": dataset_id, "org": org_id},
+            )
+            if cur.rowcount and audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except pg_errors.UniqueViolation as exc:
+            self._rollback()
+            raise DatasetExistsError(
+                f"dataset name 冲突: {new_name!r}（UNIQUE(org_id, name)）"
+            ) from exc
+        except BaseException:
+            self._rollback()
+            raise
+        return {"id": dataset_id, "name": new_name, "description": new_desc}
+
+    def create_dimension(
+        self, org_id: str, key: str, name: str, *,
+        required: bool = False, enabled: bool = True,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        """新建维度（m3-1 A4——默认 enabled=true/required=false〔D5〕；
+        UNIQUE(org_id, key) 冲突 → DimensionExistsError 409；dimension.created
+        与插入同一事务）。"""
+        import uuid as _uuid
+
+        from psycopg import errors as pg_errors
+
+        from knowledge_lattice.store.backend import DimensionExistsError
+
+        dim_id = f"dim:{org_id}:{key}:{_uuid.uuid4().hex[:8]}"
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "INSERT INTO dimensions(id, org_id, key, name, required, enabled)"
+                " VALUES(%(id)s, %(org)s, %(k)s, %(n)s, %(req)s, %(en)s)",
+                {"id": dim_id, "org": org_id, "k": key, "n": name,
+                 "req": int(bool(required)), "en": int(bool(enabled))},
+            )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except pg_errors.UniqueViolation as exc:
+            self._rollback()
+            raise DimensionExistsError(
+                f"dimension key 冲突: {key!r}（UNIQUE(org_id, key)）"
+            ) from exc
+        except BaseException:
+            self._rollback()
+            raise
+        return {"id": dim_id, "key": key, "name": name,
+                "required": bool(required), "enabled": bool(enabled),
+                "status": "active"}
+
+    def _dimension_row(self, org_id: str, dim_id: str):
+        return self._conn.execute(
+            "SELECT id, key, name, required, enabled, status"
+            " FROM dimensions WHERE id = %(dim)s AND org_id = %(org)s",
+            {"dim": dim_id, "org": org_id},
+        ).fetchone()
+
+    @staticmethod
+    def _dimension_dict(row) -> dict:
+        return {
+            "id": row[0], "key": row[1], "name": row[2],
+            "required": bool(row[3]), "enabled": bool(row[4]),
+            "status": row[5],
+        }
+
+    def update_dimension(
+        self, org_id: str, dim_id: str, *,
+        name: object = ..., required: object = ..., enabled: object = ...,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """修改维度 label/required/enabled（m3-1 A5——status 不触碰〔退役端点
+        管理生命周期〕；retired 维度 → ValueError 409；dimension.updated 同事务）。"""
+        row = self._dimension_row(org_id, dim_id)
+        if row is None:
+            return None
+        if row[5] == "retired":
+            raise ValueError(
+                f"dimension retired: {dim_id!r}——retired 维度不再修改"
+                "（重建维度是唯一路径，T20 对称）"
+            )
+        new_name = row[2] if name is ... else name
+        new_required = bool(row[3]) if required is ... else bool(required)
+        new_enabled = bool(row[4]) if enabled is ... else bool(enabled)
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "UPDATE dimensions SET name = %(n)s, required = %(req)s,"
+                " enabled = %(en)s, updated_at = CURRENT_TIMESTAMP"
+                " WHERE id = %(dim)s AND org_id = %(org)s",
+                {"n": new_name, "req": int(new_required), "en": int(new_enabled),
+                 "dim": dim_id, "org": org_id},
+            )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return {"id": row[0], "key": row[1], "name": new_name,
+                "required": new_required, "enabled": new_enabled,
+                "status": row[5]}
+
+    def get_dimension(self, org_id: str, dim_id: str) -> dict | None:
+        """单维度行（m3-1 A6——retired 如实展示，只读不裁定）。"""
+        row = self._dimension_row(org_id, dim_id)
+        return None if row is None else self._dimension_dict(row)
+
+    def list_dimension_values(
+        self, org_id: str, dim_id: str,
+    ) -> list[dict] | None:
+        """维度取值列表（m3-1 A7——含 disabled：管理面对账数据面）。"""
+        row = self._dimension_row(org_id, dim_id)
+        if row is None:
+            return None
+        values = self._conn.execute(
+            "SELECT id, value, label, status FROM dimension_values"
+            " WHERE dimension_id = %(d)s ORDER BY sort_order, value",
+            {"d": dim_id},
+        ).fetchall()
+        return [
+            {"id": i, "value": v, "label": l, "status": s}
+            for i, v, l, s in values
+        ]
+
+    def get_dimension_value(
+        self, org_id: str, dim_id: str, value_id: str,
+    ) -> dict | None:
+        """单取值行（m3-1 A8——org 归属经维度校验）。"""
+        row = self._dimension_row(org_id, dim_id)
+        if row is None:
+            return None
+        vrow = self._conn.execute(
+            "SELECT id, value, label, status FROM dimension_values"
+            " WHERE id = %(vid)s AND dimension_id = %(d)s",
+            {"vid": value_id, "d": dim_id},
+        ).fetchone()
+        if vrow is None:
+            return None
+        return {"id": vrow[0], "value": vrow[1], "label": vrow[2],
+                "status": vrow[3]}
 
     def find_user_by_token_hash(self, token_hash: str) -> dict | None:
         """静态 token 查 user（sha256 形态直查——D18 仅 dev/test）。"""
@@ -3926,24 +4229,78 @@ class PgBackend:
         ]
 
     def list_all_orgs(self) -> list[dict]:
-        """全部组织 {id, name}（GET /api/orgs sysadmin 面——m2-5 A1）。"""
+        """全部组织 {org_id, name, status}（GET /api/orgs sysadmin 面——m2-5 A1；
+        m3-1 补 status 列：停用组织仍列出、成员关系保留——仅访问面 403）。"""
         return [
-            {"org_id": r[0], "name": r[1]}
+            {"org_id": r[0], "name": r[1], "status": r[2]}
             for r in self._conn.execute(
-                "SELECT id, name FROM orgs ORDER BY id"
+                "SELECT id, name, status FROM orgs ORDER BY id"
             ).fetchall()
         ]
 
     def list_orgs_for_user(self, user_id: str) -> list[dict]:
-        """用户 membership 组织行（GET /api/orgs 普通用户面——m2-5 A1；
-        含过期行如实返回，过滤语义归权限计算）。"""
+        """用户 membership 组织行（GET /api/orgs 普通用户面——m2-5 A1；m3-1
+        补 status；含过期行如实返回，过滤语义归权限计算）。"""
         return [
-            {"org_id": r[0], "name": r[1], "role": r[2], "expires_at": r[3]}
+            {"org_id": r[0], "name": r[1], "role": r[2], "expires_at": r[3],
+             "status": r[4]}
             for r in self._conn.execute(
-                "SELECT m.org_id, o.name, m.role, m.expires_at"
+                "SELECT m.org_id, o.name, m.role, m.expires_at, o.status"
                 " FROM user_org_memberships m JOIN orgs o ON o.id = m.org_id"
                 " WHERE m.user_id = %(u)s ORDER BY m.org_id", {"u": user_id},
             ).fetchall()
+        ]
+
+    def get_org_status(self, org_id: str) -> str | None:
+        """组织状态（停用拦截统一读口——m3-1 issue #14）。"""
+        row = self._conn.execute(
+            "SELECT status FROM orgs WHERE id = %(org)s", {"org": org_id}
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_org_status(
+        self, org_id: str, status: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """组织状态迁移（m3-1 issue #14——与 sqlite 同语义：同值幂等零新审计；
+        翻转时 org.disabled/org.enabled 与 UPDATE 同一事务）。"""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE orgs SET status = %(status)s WHERE id = %(org)s"
+                " AND status != %(status)s",
+                {"status": status, "org": org_id},
+            )
+            applied = cur.rowcount > 0
+            if applied:
+                if audit is not None:
+                    self._outbox_insert(conn, *audit)
+            else:
+                exists = conn.execute(
+                    "SELECT 1 FROM orgs WHERE id = %(org)s", {"org": org_id}
+                ).fetchone()
+                if exists is None:
+                    conn.execute("COMMIT")
+                    return None
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return {"org_id": org_id, "status": status, "applied": applied}
+
+    def list_members(self, org_id: str) -> list[dict]:
+        """组织成员列表（m3-1 A1——含过期行如实返回；username 联查 users）。"""
+        rows = self._conn.execute(
+            "SELECT m.user_id, u.username, m.role, m.expires_at"
+            " FROM user_org_memberships m"
+            " LEFT JOIN users u ON u.id = m.user_id"
+            " WHERE m.org_id = %(org)s ORDER BY m.user_id",
+            {"org": org_id},
+        ).fetchall()
+        return [
+            {"user_id": r[0], "username": r[1], "role": r[2], "expires_at": r[3]}
+            for r in rows
         ]
 
     def create_org(

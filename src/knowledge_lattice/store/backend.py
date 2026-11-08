@@ -55,6 +55,16 @@ class DimensionValueExistsError(Exception):
     """维度取值已存在（m2-6 A4 POST values → 409——(dimension_id, value)
     唯一性语义化，非裸 IntegrityError）。"""
 
+
+class DatasetExistsError(Exception):
+    """知识库 id 已存在（m3-1 A2 POST datasets → 409——组织内 key 冲突；
+    id 全局 PK，跨组织同 id 同拒）。"""
+
+
+class DimensionExistsError(Exception):
+    """维度 key 已存在（m3-1 A4 POST dimensions → 409——UNIQUE(org_id, key)
+    唯一性语义化，非裸 IntegrityError）。"""
+
 # ============ AclPlan：方言无关的维度 ACL 编译产物（D24） ============
 #
 # 由编译器（core/docs/acl.py，M0a-2）产出，各后端 acl_render.py 渲染为目标 SQL。
@@ -706,6 +716,128 @@ class AdminBackend(Protocol):
     def list_orgs_for_user(self, user_id: str) -> list[dict]:
         """用户 membership 组织行 {org_id, name, role, expires_at}（m2-5 A1：
         GET /api/orgs 普通用户面——只列本人组织，含过期行如实返回）。"""
+
+    # ---- 组织停用（m3-1 issue #14——orgs.status 载体 + PATCH /api/orgs/{org}） ----
+
+    def get_org_status(self, org_id: str) -> str | None:
+        """组织状态（'active' | 'disabled'；不存在 → None）——停用拦截统一
+        读口（org_scoped / resolve_request_org / MCP / webhook 的访问面 403
+        判据）。单行主键查询，未停用路径每请求一次直查（POC 规模可接受；
+        缓存失效面不引入）。"""
+
+    def set_org_status(
+        self, org_id: str, status: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """组织状态迁移（sysadmin 专属端点载体）：行不存在 → None（404）；
+        同值幂等（零行生效零新审计——org.disabled/org.enabled 仅实际翻转时
+        与 UPDATE 同事务入 outbox）。返回 {org_id, status, applied}。"""
+
+    # ---- members 列表（m3-1 A1——§6.2 五方法之一：GET /api/orgs/{org}/members） ----
+
+    def list_members(self, org_id: str) -> list[dict]:
+        """组织成员列表 [{user_id, username, role, expires_at}]（org_admin 门控
+        由 api 层承载；含过期行如实返回——过滤语义归权限计算，列表面只作展示；
+        username 联查 users 供管理面展示）。"""
+
+    # ---- datasets 写路径（m3-1 A2/A3——POST/PATCH /api/orgs/{org}/datasets） ----
+
+    def create_dataset(
+        self, org_id: str, dataset_id: str, name: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        """新建知识库（初始空库）：id 全局 PK 冲突（含组织内 key 冲突）→
+        DatasetExistsError（409）；audit（dataset.created）与插入同一事务。
+        返回 {id, name, description}。"""
+
+    def update_dataset(
+        self, org_id: str, dataset_id: str, *,
+        name: object = ..., description: object = ...,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """修改知识库 title/description（key 不可改——引用锚点）：行不存在/
+        跨组织 → None（404）；Ellipsis 哨兵=不变；改名撞 UNIQUE(org_id, name)
+        → DatasetExistsError（409）；audit（dataset.updated）与更新同一事务。
+        返回更新后行 {id, name, description}。"""
+
+    # ---- dimensions 写路径（m3-1 A4/A5——POST/PATCH /api/orgs/{org}/dimensions） ----
+
+    def create_dimension(
+        self, org_id: str, key: str, name: str, *,
+        required: bool = False, enabled: bool = True,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        """新建维度（D5：required 仅影响上传校验、enabled 仅影响上传页展示——
+        均不影响过滤）：UNIQUE(org_id, key) 冲突 → DimensionExistsError（409）；
+        默认 required=False/enabled=True；audit（dimension.created）同事务。
+        返回 {id, key, name, required, enabled, status}。"""
+
+    def update_dimension(
+        self, org_id: str, dim_id: str, *,
+        name: object = ..., required: object = ..., enabled: object = ...,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """修改维度 label/required/enabled（**status 仍由退役端点管理**——
+        本方法不触碰生命周期列；retired 维度 → ValueError（409——与 values
+        create/enable 对称，终态不复活））：行不存在/跨组织 → None（404）；
+        Ellipsis 哨兵=不变；audit（dimension.updated）与更新同一事务。
+        返回更新后行 {id, key, name, required, enabled, status}。"""
+
+    def get_dimension(self, org_id: str, dim_id: str) -> dict | None:
+        """单维度行 {id, key, name, required, enabled, status}（只读——
+        retired 如实展示，只读不裁定；不存在/跨组织 → None）。"""
+
+    def list_dimension_values(
+        self, org_id: str, dim_id: str,
+    ) -> list[dict] | None:
+        """维度取值列表 [{id, value, label, status}]（**含 disabled**——管理面
+        对账与重新启用恢复路径的数据面；维度不存在/跨组织 → None）。"""
+
+    def get_dimension_value(
+        self, org_id: str, dim_id: str, value_id: str,
+    ) -> dict | None:
+        """单取值行 {id, value, label, status}；维度/取值不存在或跨组织 →
+        None（404）。"""
+
+    # ---- 文档列表 D-①（m3-1 issue #20 be-①——GET /api/orgs/{org}/documents） ----
+
+    def list_org_documents(
+        self, org_id: str, *,
+        dataset_id: str | None = None,
+        limit: int = 50, offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        """org_admin 面：本组织全量文档行（不过 ACL——visible 由 api 层按
+        调用者本人 ACL 编译产物回填；管理面对账用）。行含 D-① 契约字段
+        （doc_id/title/dataset/dims——_attach_dims 同源聚合/active·pending
+        双态字段/chunk_count 在用块计数/quality_open open 态 flag 计数/
+        updated_at）；行集不含 tombstone 块的计数面、含 pending 处理中文档
+        与 active_version=0 纯 pending 行；排序 updated_at DESC NULLS LAST+id。
+        返回 (rows, total)——total=过滤后总数（分页前）。"""
+
+    def visible_documents_page(
+        self, plan: AclPlan, *,
+        dataset_ids: Sequence[str] | None = None,
+        limit: int = 50, offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        """member 面：ACL 过滤后可见文档行（visible_docs CTE——与检索路同
+        产物；**只解释不裁定的对偶面：列表行集由编译产物裁定**）。行字段与
+        list_org_documents 同构（visible 恒 true 由 api 层填）；排序/分页
+        同款。返回 (rows, total)。"""
+
+    # ---- explain 数据源（m3-1 D-②——可见性解释，只解释不裁定） ----
+
+    def read_membership_row(self, user_id: str, org_id: str) -> dict | None:
+        """成员关系原始行 {role, expires_at}（**不过滤过期**——read_membership
+        是「有效行」语义；explain 的 membership 第 0 步需要区分无行/过期行：
+        过期即 deny 收口 + detail 注明）。"""
+
+    def read_grant_rows(
+        self, user_id: str, org_id: str,
+    ) -> list[dict]:
+        """用户在该组织的授权行 [{key, value, expires_at}]（active 维度 ×
+        active 取值过滤与 read_grants 同款、**不过滤 expires_at**——explain
+        的「授权已过期 detail 注明等效无授权」数据源；停用取值的授权行与
+        read_grants 同被过滤=等效无授权，不注明）。"""
 
     def create_org(
         self, *, org_id: str, name: str,

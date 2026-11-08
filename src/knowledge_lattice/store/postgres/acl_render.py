@@ -240,6 +240,52 @@ def render_dataset_counts_select(
     return sql, params
 
 
+def render_documents_page_select(
+    plan: AclPlan, *,
+    dataset_ids: list[str] | None = None,
+    limit: int = 50, offset: int = 0,
+) -> tuple[str, dict[str, object], str, dict[str, object]]:
+    """文档清单分页 SQL（m3-1 D-① member 面——与 sqlite 渲染同构）：visible_docs
+    CTE + D-① 契约列（双态字段/chunk_count/quality_open）+ LIMIT/OFFSET 分页
+    + 过滤后 total。返回 (page_sql, page_params, total_sql, total_params)。"""
+    doc_cols = (
+        "d.id AS doc_id, d.dataset_id, d.title, d.active_version,"
+        " d.active_status, d.active_error, d.pending_version, d.pending_status,"
+        " d.updated_at,"
+        " (SELECT count(*) FROM chunks c WHERE c.doc_id = d.id"
+        "   AND c.version = d.active_version AND c.tombstone = 0) AS chunk_count,"
+        " (SELECT count(*) FROM quality_flags qf WHERE qf.doc_id = d.id"
+        "   AND qf.state = 'open') AS quality_open"
+    )
+
+    def _build() -> tuple[_Renderer, str, str]:
+        renderer = _Renderer()
+        cte = f"{_CTE_PREFIX}{renderer.expr(_build_cte_where_neutral(plan))})"
+        body_from = (
+            " FROM visible_docs vd JOIN documents d ON d.id = vd.doc_id"
+        )
+        conds: list[str] = []
+        if dataset_ids:
+            names = ", ".join(f"%(pds{i})s" for i in range(len(dataset_ids)))
+            conds.append(f"d.dataset_id IN ({names})")
+            renderer.params.update(
+                {f"pds{i}": v for i, v in enumerate(dataset_ids)})
+        where = (" WHERE " + " AND ".join(conds)) if conds else ""
+        page = (
+            f"{cte} SELECT {doc_cols}{body_from}{where}"
+            " ORDER BY d.updated_at DESC NULLS LAST, d.id"
+            " LIMIT %(plimit)s OFFSET %(poffset)s"
+        )
+        total = f"{cte} SELECT count(*){body_from}{where}"
+        return renderer, page, total
+
+    renderer_p, page_sql, _ = _build()
+    page_params = {**renderer_p.params, "plimit": limit, "poffset": offset}
+    renderer_t, _, total_sql = _build()
+    total_params = dict(renderer_t.params)
+    return page_sql, page_params, total_sql, total_params
+
+
 def render_vec_recall_select(
     plan: AclPlan, query_vec: str, *, top_k: int
 ) -> tuple[str, dict[str, object]]:

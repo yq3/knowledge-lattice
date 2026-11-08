@@ -83,7 +83,9 @@ def get_auth(request: Request) -> AuthContext:
 
 def org_scoped(request: Request, org: str, auth: AuthContext) -> str:
     """组织作用域统一规则：路径 org 与 X-Org-Id 并存且不一致 → 400；成员关系校验 403
-    （body.code=membership_denied——T12 机器码一致性）。"""
+    （body.code=membership_denied——T12 机器码一致性）；**组织停用 403**
+    （body.code=org_disabled——m3-1 issue #14 fail-closed：token 仍有效但组织
+    上下文拒绝；GET /api/orgs 列表不受影响——停用组织仍列出）。"""
     try:
         resolved = check_path_org(path_org=org, org_header=request.headers.get("x-org-id"))
     except OrgContextError as exc:
@@ -94,13 +96,27 @@ def org_scoped(request: Request, org: str, auth: AuthContext) -> str:
             f"no active membership: user={auth.user_id!r} org={resolved!r}",
             code="membership_denied",
         )
+    _require_org_active(service, resolved)
     return resolved
+
+
+def _require_org_active(service, org: str) -> None:
+    """停用组织访问面拦截（m3-1 issue #14——org_scoped / resolve_request_org /
+    MCP / webhook 共用判据；组织不存在 → None 按 active 放行交由成员校验/
+    404 路径承载——调用点均在成员校验之后）。"""
+    if service.backend.get_org_status(org) == "disabled":
+        raise AclDeniedError(
+            f"org disabled: {org!r}——组织已停用（fail-closed：访问面一律"
+            " 403；恢复走 PATCH /api/orgs/{org} status=active，sysadmin 专属）",
+            code="org_disabled",
+        )
 
 
 def resolve_request_org(request: Request, auth: AuthContext) -> str:
     """非 org 路径端点（/api/uploads、/api/quality-flags 等）的组织上下文：claim
     优先 / X-Org-Id 兜底 / 不一致·缺失 400（D18 统一规则）+ 成员关系 403
-    （body.code=membership_denied）。公开名——api 包内多模块共用（P3-17 卫生）。"""
+    （body.code=membership_denied）+ 停用组织 403（org_disabled——与 org 路径
+    端点同口径，MCP/检索面上传面同拒）。公开名——api 包内多模块共用（P3-17 卫生）。"""
     try:
         org = resolve_org(
             org_claim=auth.org_claim, org_header=request.headers.get("x-org-id")
@@ -113,6 +129,7 @@ def resolve_request_org(request: Request, auth: AuthContext) -> str:
             f"no active membership: user={auth.user_id!r} org={org!r}",
             code="membership_denied",
         )
+    _require_org_active(service, org)
     return org
 
 
