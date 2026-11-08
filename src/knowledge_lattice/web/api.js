@@ -6,8 +6,8 @@
  *   401 → toast + 打开连接设置；403 → toast 服务端 detail；网络异常 → toast。
  * - reissue({org?, userId?})：用 baseToken POST /api/dev/token 重签（dev 形态组织/身份切换）；
  *   给他人代签须系统管理员基 token（403）；生产无 dev 端点（404 → 提示直接粘贴已签 token）。
- * - 领域函数：每端点一函数。四处 contract-first 降级（be-① 文档列表 / m3-1 建库
- *   建维度与组织停用）各收口单函数并注释标记——后端实装后只改此处。
+ * - 领域函数：每端点一函数。原 contract-first 降级四处（be-① 文档列表 /
+ *   建库 / 建维度 / 组织停用）已随 m3-1 后端实装全部接真端点（m3-2 对账）。
  * - pollTask：任务轮询（interval 1.5s / 终态停止 / 超时 120s / shouldStop 回调
  *   感知上下文切换即停——R2 P1-5，返回 null=已弃）。
  */
@@ -335,7 +335,7 @@ function deleteMember(org, userId) {
   return apiJson(`/api/orgs/${enc(org)}/members/${enc(userId)}`, { method: "DELETE" });
 }
 
-/* ---------- 组织管理（ui-2——POST /api/orgs 实装；PATCH 停用 m3-1 contract-first） ---------- */
+/* ---------- 组织管理（ui-2——POST /api/orgs 与 PATCH /api/orgs/{org} 均已实装） ---------- */
 
 function createOrg(body) {
   return apiJson("/api/orgs", { method: "POST", body: JSON.stringify(body) });

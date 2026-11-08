@@ -40,8 +40,15 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "pinyin_norm", "edit_distance_at_most_1", "del_keys",
     "build_fuzzy_terms", "fuzzy_layers_for_fragment",
-    "FUZZY_CONFIDENCE", "EDIT_MIN_TERM_LEN",
+    "FUZZY_CONFIDENCE", "EDIT_MIN_TERM_LEN", "FUZZY_CODE_REV",
 ]
+
+# 构建产物 code versioning（G-23⑤——m3-3）：模糊索引的算法/规范化代码版本。
+# pinyin 键构造（pinyin_norm）、编辑距离（del_keys/edit_distance_at_most_1）、
+# term 集合构造（build_fuzzy_terms）或规范化（norm.normalize_alias）的**行为
+# 变更**时 bump 本常量——入 dict_rev（build._rev_payload）触发全量重建（含
+# 模糊索引），防代码变更后新旧产物混用（与 AC/L0 快照切换同纪律）。
+FUZZY_CODE_REV = 1
 
 # 三层 confidence（「一律低于第 1 层」——AC 层 context 档 0.9，模糊层最高 0.75）
 FUZZY_CONFIDENCE = {"pinyin": 0.75, "edit": 0.65, "vec": 0.55}

@@ -77,13 +77,21 @@ class QueryAuditQueue:
     - ``flush``：批量 ``backend.append_query_events``（batch_size 分批）；失败
       回队头重试（连续 ``max_retries`` 次失败后丢弃计数——防毒丸）；
     - ``start`` / ``stop``：后台线程启停（stop 先停线程再 flush 残留——
-      uvicorn lifespan 关停口径，正常关停零丢失）。
+      uvicorn lifespan 关停口径，正常关停零丢失）；
+    - ``backend_factory``（m3-3 G-28③/P2-1）：可选注入 ``Callable[(),
+      ContextManager[backend]]``——flush 线程经工厂取**独立连接**的 backend
+      写月库（pg 形态：消除与请求线程共享 ``PgBackend._conn`` 单连接的协议
+      错乱风险——psycopg 连接无内建跨线程锁；工厂见 store/postgres/
+      audit_factory.audit_backend_factory）。缺省 None → 直接用共享
+      ``backend``（sqlite 生产形态安全——月库天然独立 mconn 连接）。
     """
 
     def __init__(self, backend, *, flush_interval_s: float = FLUSH_INTERVAL_S,
                  batch_size: int = BATCH_SIZE, max_pending: int = MAX_PENDING,
-                 max_retries: int = MAX_RETRIES) -> None:
+                 max_retries: int = MAX_RETRIES,
+                 backend_factory=None) -> None:
         self._backend = backend
+        self._backend_factory = backend_factory
         self._interval = flush_interval_s
         self._batch = batch_size
         self._max_pending = max_pending
@@ -137,7 +145,14 @@ class QueryAuditQueue:
             if not batch:
                 return total
             try:
-                total += self._backend.append_query_events(batch)
+                # m3-3 G-28③/P2-1：工厂注入形态——本轮 flush 经独立连接写
+                # 月库（pg 消除共享单连接；工厂自管连接生命周期，flush 间
+                # 无并发——_flush_lock 串行化）。缺省直用共享 backend。
+                if self._backend_factory is not None:
+                    with self._backend_factory() as audit_backend:
+                        total += audit_backend.append_query_events(batch)
+                else:
+                    total += self._backend.append_query_events(batch)
                 self._failures = 0
             except Exception:  # noqa: BLE001 —— 写失败不冒泡（后台面）
                 with self._lock:

@@ -48,10 +48,19 @@ OBJECT_TYPES = frozenset({
 
 
 def _concept_line(mention: dict) -> str:
-    """concept/system 注入行：name + brief + 消歧提示（§6.3 ②）。"""
+    """concept/system 注入行：name + brief + 消歧提示（§6.3 ②——三件全）。
+
+    G-24⑦（m3-3）：disambiguation 经 mention 契约携带（可选字段——
+    curated_json {not, hint} 派生），L1 行按 hint 追加消歧句（「注意与…区
+    分」）；无该字段时行内容与旧形态一致（向后兼容）。"""
     parts = [f"[{mention.get('type')}] {mention.get('name')}"]
     if mention.get("brief"):
         parts.append(f"：{mention['brief']}")
+    hints = [str(d.get("hint")).rstrip("。；;，,")
+             for d in (mention.get("disambiguation") or ())
+             if isinstance(d, dict) and d.get("hint")]
+    if hints:
+        parts.append("（注意区分：" + "；".join(hints[:3]) + "）")
     return " ".join(parts)
 
 

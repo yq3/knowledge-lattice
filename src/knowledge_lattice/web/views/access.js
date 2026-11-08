@@ -3,9 +3,10 @@
  *   点格 = 该成员全量 local 行 PUT 替换（expires 沿库内、新授权 null）；
  *   B① 行级到期编辑保留在成员行「详细」抽屉（ui-1 chips 编辑器 + CSV 迁入）。
  *   API 无维度 source 字段——不标 sync 只读格（export=local 口径，诚实差异）。
- * - 成员子标签：真端点（POST/PATCH/DELETE members——m2-6 A3）；名单源 = export
- *   用户名（无 GET members，m3-1 #13）；T23 约束（过期行 409 三步恢复 / 唯一
- *   管理员自锁 / 级联清授权）由服务端守卫如实回显。
+ * - 成员子标签：真端点（GET/POST/PATCH/DELETE members——m2-6 A3 + m3-1 #13）；
+ *   名单源 = GET members 真源 ∪ export 用户名 ∪ 会话注册表（m3-2 真源化）；
+ *   T23 约束（过期行 409 三步恢复 / 唯一管理员自锁 / 级联清授权）由服务端
+ *   守卫如实回显。
  * - 维度子标签：ui-1 既有治理（停用/恢复/新增取值/退役/新建维度†）。
  * - 可见性矩阵：占位空态（待 be-① 文档列表 + be-② explain——前端不演算 ACL，B5）。 */
 "use strict";

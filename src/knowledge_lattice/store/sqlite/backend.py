@@ -2222,9 +2222,13 @@ class SqliteBackend:
             try:
                 mconn.execute("PRAGMA busy_timeout = 5000")
                 mconn.execute("BEGIN IMMEDIATE")
+                # m3-3 G-28④：existed 按本批 id 查询（消 O(当月行数)/次 的
+                # 全月扫描——幂等跳过语义不变：批内已存 id 跳过不推进 prev）
+                batch_ids = [ev["id"] for ev in recs]
                 existed = {
                     x[0] for x in mconn.execute(
-                        "SELECT id FROM audit_events").fetchall()
+                        f"SELECT id FROM audit_events WHERE id IN"
+                        f" ({','.join('?' * len(batch_ids))})", batch_ids)
                 }
                 _tail = mconn.execute(
                     "SELECT row_hash FROM audit_events"

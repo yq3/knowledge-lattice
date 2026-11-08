@@ -314,9 +314,11 @@ def test_r3_p2_2_shrink_and_rename_triggers_repair(repair_env,
 
 
 def test_r3_p2_2_persisted_marker_triggers_repair(repair_env) -> None:
-    """R3 P2-2 附加触发面：current build 行持久化的 fuzzy.index_write_failed
-    / vec_skipped 标记作为触发条件（崩溃场景无内存标记——落库标记是唯一
-    线索；即使内容集合恰好一致也应触发一次对账性整替以清面）。"""
+    """R3 P2-2 持久化标记的观测与清面语义——**m3-3 G-23① 裁定后口径更新**：
+    embed_model 入内容集合 + 内容/向量覆盖对账完备后，``index_write_failed``
+    标记的**触发面整体移除**（健康索引仅标记 True 不再触发幂等整替——
+    「即使内容集合恰好一致也应触发」的 m2s-6 旧口径作废）；标记保留写入
+    与清面语义：真实漂移触发修复时一并清除（见 test_b2——m3-3）。"""
     from knowledge_lattice.core.semantic.build import run_build
 
     env = repair_env
@@ -336,8 +338,9 @@ def test_r3_p2_2_persisted_marker_triggers_repair(repair_env) -> None:
 
     again = env.build(embedder=env.embedder)
     assert again["status"] == "skipped"
-    assert again["stats"].get("fuzzy_repaired"), (
-        "持久化 index_write_failed 标记必须触发修复（崩溃场景的落库线索）")
+    assert not again["stats"].get("fuzzy_repaired"), (
+        "健康索引 + 仅标记 → 不触发整替（标记触发面移除——m3-3 G-23①："
+        "embed_model 入集合后内容/覆盖对账完备，幂等整替的粘滞成本消除）")
 
 
 def test_p2_1_embedder_none_marks_vec_skipped(backend, tmp_path) -> None:

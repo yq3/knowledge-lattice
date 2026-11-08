@@ -553,10 +553,22 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
                 fuzzy=fuzzy,
                 include_restricted=can_restricted,
                 embedder=getattr(service, "embedder", None),
+                # m3-3 G-24⑨：probe gate（探针拒绝关 fuzzy vec 层）+ 有界
+                # 等待/共享熔断/降级审计（scope=annotate——REST 同款接线）
+                gate=getattr(service, "gate", None),
+                breakers=getattr(service, "breakers", None),
+                user_id=auth.user_id,
             )
             if can_restricted:
-                _audit_restricted(
-                    auth, org_id, "annotate", _restricted_hit_ids(org_id, result))
+                # m3-3 D-5：权限事件取数失败跳过（主结果已定不升级错误）
+                try:
+                    restricted_hits = _restricted_hit_ids(org_id, result)
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "annotate restricted-audit ids lookup failed:"
+                        " org=%s（权限事件跳过）", org_id)
+                    restricted_hits = []
+                _audit_restricted(auth, org_id, "annotate", restricted_hits)
             enqueue_query_event(service, build_query_event(
                 EVENT_QUERY_ANNOTATE, org_id=org_id, actor=auth.user_id,
                 detail={"text": text, "fuzzy": bool(fuzzy),
@@ -604,11 +616,17 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
                 can_restricted=can_restricted,
             )
         except EntityNotFound as exc:
-            # 404 = restricted 静默面或真不存在——refused 可回溯（A-16）
-            reason = ("restricted"
-                      if not can_restricted
-                      and _entity_is_restricted(org_id, id, key)
-                      else "not_found")
+            # 404 = restricted 静默面或真不存在——refused 可回溯（A-16）。
+            # m3-3 D-5：回查仅服务审计 reason 判定——取数失败保守记 not_found。
+            reason = "not_found"
+            if not can_restricted:
+                try:
+                    if _entity_is_restricted(org_id, id, key):
+                        reason = "restricted"
+                except Exception:  # noqa: BLE001 —— 审计回查失败保守化
+                    logger.warning(
+                        "get_entity 404 audit reason lookup failed: org=%s"
+                        " id=%s（保守记 not_found）", org_id, id)
             enqueue_query_event(service, build_query_event(
                 EVENT_QUERY_GET_ENTITY, org_id=org_id, actor=auth.user_id,
                 outcome="refused",
@@ -621,13 +639,20 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
             raise ToolError(f"400: {exc}") from exc
         if can_restricted:
             # G-24②①：restricted 根（无 curated 前提——include=['attrs'] 同样
-            # 落）+ ②：展开「看到」的 restricted 端点，并入权限事件 entity_ids
-            restricted_ids: list[int] = []
-            if _entity_is_restricted(org_id, id, key):
-                restricted_ids.append(result["entity"]["id"])
-            node_ids = [n["id"] for n in result.get("nodes") or ()]
-            restricted_ids.extend(
-                service.backend.sem_restricted_ids(org_id, node_ids))
+            # 落）+ ②：展开「看到」的 restricted 端点，并入权限事件
+            # （m3-3 D-5 包裹——取数失败跳过权限事件，不阻断主响应）
+            try:
+                restricted_ids: list[int] = []
+                if _entity_is_restricted(org_id, id, key):
+                    restricted_ids.append(result["entity"]["id"])
+                node_ids = [n["id"] for n in result.get("nodes") or ()]
+                restricted_ids.extend(
+                    service.backend.sem_restricted_ids(org_id, node_ids))
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "get_entity restricted-audit ids lookup failed: org=%s"
+                    " id=%s（权限事件跳过，不影响主响应）", org_id, id)
+                restricted_ids = []
             _audit_restricted(auth, org_id, "get_entity", restricted_ids)
         enqueue_query_event(service, build_query_event(
             EVENT_QUERY_GET_ENTITY, org_id=org_id, actor=auth.user_id,
@@ -658,8 +683,10 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
                 settings=effective_settings(settings, service.embedder),
                 embedder=getattr(service, "embedder", None),
                 # G-24③（m2-5）：vec 档有界超时/熔断/降级审计——共享 embed
-                # 熔断器与 §5.2 检索向量路同一状态
+                # 熔断器与 §5.2 检索向量路同一状态；
+                # G-24⑨前半（m3-3）：probe gate 接线——探针拒绝关向量路
                 breakers=service.breakers, user_id=auth.user_id,
+                gate=getattr(service, "gate", None),
             )
         except ValueError as exc:
             raise ToolError(f"400: {exc}") from exc
