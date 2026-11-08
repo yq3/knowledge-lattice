@@ -53,6 +53,14 @@ EVENT_MEMBER_REMOVE = "member.remove"      # 移出组织（DELETE——级联�
 EVENT_DIMENSION_VALUE_CREATE = "dimension.value_create"  # 新增取值（POST values）
 EVENT_DIMENSION_VALUE_ENABLE = "dimension.value_enable"   # 重新启用（D19 解锁路径）
 
+# ---- 管理面补强（m3-1——issue #13/#14：datasets/dimensions 写路径 + 组织停用） ----
+EVENT_DATASET_CREATED = "dataset.created"    # 新建知识库（POST datasets）
+EVENT_DATASET_UPDATED = "dataset.updated"    # 修改知识库（PATCH datasets）
+EVENT_DIMENSION_CREATED = "dimension.created"  # 新建维度（POST dimensions）
+EVENT_DIMENSION_UPDATED = "dimension.updated"  # 修改维度（PATCH dimensions）
+EVENT_ORG_DISABLED = "org.disabled"          # 组织停用（PATCH orgs——sysadmin 专属）
+EVENT_ORG_ENABLED = "org.enabled"            # 组织恢复（PATCH orgs——幂等翻转审计）
+
 # ---- 认证事件（m2-4 M2.2 生产化认证段——TC-AUTH-03/04/05/T13） ----
 
 EVENT_AUTH_USER_JIT = "auth.user_jit_created"       # SSO 首次登录 JIT 建档（D16）
@@ -89,6 +97,12 @@ __all__ = [
     "EVENT_MEMBER_REMOVE",
     "EVENT_DIMENSION_VALUE_CREATE",
     "EVENT_DIMENSION_VALUE_ENABLE",
+    "EVENT_DATASET_CREATED",
+    "EVENT_DATASET_UPDATED",
+    "EVENT_DIMENSION_CREATED",
+    "EVENT_DIMENSION_UPDATED",
+    "EVENT_ORG_DISABLED",
+    "EVENT_ORG_ENABLED",
     "EVENT_AUTH_USER_JIT",
     "EVENT_AUTH_DELEGATED",
     "EVENT_AUTH_SSO_REFUSED",

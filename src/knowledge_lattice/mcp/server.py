@@ -224,6 +224,13 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
             org = resolve_org(org_claim=auth.org_claim, org_header=org_header)
         except OrgContextError as exc:
             raise ToolError(f"400: {exc}") from exc
+        # ---- 停用组织拦截（m3-1 issue #14——MCP 会话同 403：token 仍有效但
+        #      组织上下文拒绝；与 REST org_scoped 同判据） ----
+        if service.backend.get_org_status(org) == "disabled":
+            raise ToolError(
+                f"403: org disabled: {org!r}——组织已停用（fail-closed：MCP 会话"
+                "一律拒绝；恢复走 PATCH /api/orgs/{org} status=active）"
+            )
         # ---- 工具参数忽略审计（公共块——一切认证形态，R2 P2-1；m2-4
         #      followup ⑤/m2-5：移至 resolve_org **成功后**——org 上下文 400
         #      的请求不写忽略事件（拒绝语义与忽略语义不叠加，与 REST 面

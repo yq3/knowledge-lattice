@@ -254,6 +254,60 @@ def render_dataset_counts_select(
     return sql, params
 
 
+def render_documents_page_select(
+    plan: AclPlan, *,
+    dataset_ids: list[str] | None = None,
+    limit: int = 50, offset: int = 0,
+) -> tuple[str, dict[str, object], str, dict[str, object]]:
+    """文档清单分页 SQL（m3-1 D-① member 面——GET /api/orgs/{org}/documents
+    的 ACL 过滤数据源）：visible_docs CTE（与三路召回同一编译产物——行集由
+    编译产物裁定）+ D-① 契约列（双态字段/chunk_count 在用块计数/quality_open
+    open 态计数）+ LIMIT/OFFSET 分页 + 过滤后 total 计数。
+
+    返回 (page_sql, page_params, total_sql, total_params)——total 与分页共用
+    同一 CTE 构造与 dataset 过滤（分页前计数）。排序 updated_at DESC NULLS
+    LAST（双方言统一——未写 updated_at 的存量行不置顶）+ id 稳定序。"""
+    doc_cols = (
+        "d.id AS doc_id, d.dataset_id, d.title, d.active_version,"
+        " d.active_status, d.active_error, d.pending_version, d.pending_status,"
+        " d.updated_at,"
+        " (SELECT count(*) FROM chunks c WHERE c.doc_id = d.id"
+        "   AND c.version = d.active_version AND c.tombstone = 0) AS chunk_count,"
+        " (SELECT count(*) FROM quality_flags qf WHERE qf.doc_id = d.id"
+        "   AND qf.state = 'open') AS quality_open"
+    )
+
+    def _build() -> tuple[_Renderer, str, str]:
+        renderer = _Renderer()
+        cte = f"{_CTE_PREFIX}{renderer.expr(_build_cte_where_neutral(plan))})"
+        body_from = (
+            " FROM visible_docs vd JOIN documents d ON d.id = vd.doc_id"
+        )
+        conds: list[str] = []
+        if dataset_ids:
+            names = ", ".join(f":pds{i}" for i in range(len(dataset_ids)))
+            conds.append(f"d.dataset_id IN ({names})")
+            renderer.params.update(
+                {f"pds{i}": v for i, v in enumerate(dataset_ids)})
+        where = (" WHERE " + " AND ".join(conds)) if conds else ""
+        page = (
+            f"{cte} SELECT {doc_cols}{body_from}{where}"
+            " ORDER BY d.updated_at DESC NULLS LAST, d.id"
+            " LIMIT :plimit OFFSET :poffset"
+        )
+        total = (
+            f"{cte} SELECT count(*){body_from}{where}"
+        )
+        return renderer, page, total
+
+    # 页 SQL 与 total SQL 各自独立渲染（参数名序列独立，互不污染）
+    renderer_p, page_sql, _ = _build()
+    page_params = {**renderer_p.params, "plimit": limit, "poffset": offset}
+    renderer_t, _, total_sql = _build()
+    total_params = dict(renderer_t.params)
+    return page_sql, page_params, total_sql, total_params
+
+
 def render_fts_select(plan: AclPlan, *, query: str) -> tuple[str, dict[str, object]]:
     """FTS 路召回 SQL：visible_docs CTE + chunks_fts MATCH + 版本条件在 JOIN 上（T9）。"""
     renderer = _Renderer()

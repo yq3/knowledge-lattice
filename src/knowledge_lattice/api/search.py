@@ -51,6 +51,11 @@ async def search(body: SearchRequest, request: Request) -> dict:
     org = resolve_org(
         org_claim=auth.org_claim, org_header=request.headers.get("x-org-id")
     )
+    # 停用组织检索拒绝（m3-1 issue #14——fail-closed；成员校验在编译器第 0
+    # 步，停用拦截前置同 403 语义）
+    from .upload import _require_org_active
+
+    _require_org_active(service, org)
     # 请求体权限字段 → 忽略并记审计、请求正常处理（FR-4/D18 v0.6.1 统一口径
     # ——附录 A-9；计权恒走 token 身份，请求体声明不参与）。审计在 org 上下文
     # 解析成功后落（P3-11——org 缺失/不一致的 400 请求不混入 ignored_fields
