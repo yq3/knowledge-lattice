@@ -87,6 +87,19 @@ sqlite 侧 `chunks.embed_model` 为摄取状态标签：重嵌入批次结束、
 - m2-5 实验复跑：`benchmarks/{bench8_g6_halfvec_50k,calib_m2_5,perf_m2_5}.py` +
   `bench5_slo_perf03.py --scales 50000 --backends pg`（全链 SLO）。
 
+### 1.y 组织停用与恢复（m3-1 起）
+
+- **停用**：`PATCH /api/orgs/{org}` body `{"status": "disabled"}`——**sysadmin 专属**
+  （org_admin 不能停自己的组织）；幂等（同值重复 200、零新审计）；`org.disabled` 审计同事务。
+- **影响面**：该组织全部 `/api/orgs/{org}/...` 端点 + MCP 会话 + webhook（验签后）+
+  resolve_org 端点（`/api/search`、`/api/uploads` 等）一律 403（`org_disabled`）；
+  **进行中任务让跑完**（worker 不查组织态）、新任务由入口拦截不投递；**系统维护链豁免**
+  （日度兜底 sync / semantic_build / 对账 retag / 全库 reembed forced build 照常——
+  保数据一致性，恢复后语义不破缺；用户裁定 2026-11-08）。成员关系与授权全保留
+  （GET /api/orgs 停用组织仍列出、带 `status: disabled`）。
+- **恢复**：`PATCH /api/orgs/{org}` body `{"status": "active"}`（幂等；`org.enabled` 审计）——
+  恢复后全部端点立即回通，无需额外动作。
+
 ## 2. 审计分区回溯（R2-P3-8——deploy 场景注记）
 
 `ensure_month_partition`（`store/postgres/audit.py`）只滚**当月/调用时点月份**分区。
