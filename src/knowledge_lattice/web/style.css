@@ -618,3 +618,11 @@ button:disabled, .btn[disabled] { cursor: not-allowed; }
 
 /* 表脚：条数标注（「最近 N 条」）+ 加载更多 */
 .tbl-foot { display: flex; gap: var(--s3); align-items: center; flex-wrap: wrap; margin-top: var(--s2); }
+
+/* m3-2 ui-be：可见性解释行（docs pane explain 卡 / vis 矩阵下钻）与矩阵格点 */
+.explain-row { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; border-bottom: 1px dashed var(--line, rgba(127,127,127,.18)); }
+.explain-row:last-of-type { border-bottom: 0; }
+.explain-row .pill { flex: none; }
+.vis-lattice .vis-cell { width: 22px; height: 22px; }
+.vis-lattice .vis-cell.ok { background: var(--ok, #16a34a); border-color: var(--ok, #16a34a); }
+.vis-lattice .vis-cell.bad { background: transparent; border: 1.5px solid var(--danger, #dc2626); }

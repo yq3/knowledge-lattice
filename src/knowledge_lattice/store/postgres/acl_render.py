@@ -48,6 +48,7 @@ __all__ = [
     "render_sql", "render_select", "render_vec_recall_select",
     "render_entity_recall_select",
     "render_fts_recall_select", "build_acl_ast", "build_where_ast",
+    "render_documents_page_select",
 ]
 
 # CTE 前缀（MATERIALIZED——PG 计划病理一词修复；与 sqlite 渲染统一加注）

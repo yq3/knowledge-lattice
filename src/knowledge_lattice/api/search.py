@@ -19,13 +19,16 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from knowledge_lattice.core.docs.acl import AclDeniedError
 from knowledge_lattice.core.docs.retrieve import search as run_search
+from knowledge_lattice.domain.audit_events import EVENT_QUERY_SEARCH
 from knowledge_lattice.domain.auth import (
     REQUEST_PERMISSION_FIELD_KEYS,
     AuthContext,
     audit_ignored_permission_fields,
     resolve_org,
 )
+from knowledge_lattice.query_audit import build_query_event, enqueue_query_event
 
 from .upload import get_auth, get_service
 
@@ -52,10 +55,19 @@ async def search(body: SearchRequest, request: Request) -> dict:
         org_claim=auth.org_claim, org_header=request.headers.get("x-org-id")
     )
     # 停用组织检索拒绝（m3-1 issue #14——fail-closed；成员校验在编译器第 0
-    # 步，停用拦截前置同 403 语义）
+    # 步，停用拦截前置同 403 语义）；m3-2 G-22：refused（停用组织）入查询审计
     from .upload import _require_org_active
 
-    _require_org_active(service, org)
+    try:
+        _require_org_active(service, org)
+    except AclDeniedError:
+        enqueue_query_event(service, build_query_event(
+            EVENT_QUERY_SEARCH, org_id=org, actor=auth.user_id,
+            outcome="refused",
+            detail={"query": body.query, "top_k": body.top_k,
+                    "reason": "org_disabled"},
+        ))
+        raise
     # 请求体权限字段 → 忽略并记审计、请求正常处理（FR-4/D18 v0.6.1 统一口径
     # ——附录 A-9；计权恒走 token 身份，请求体声明不参与）。审计在 org 上下文
     # 解析成功后落（P3-11——org 缺失/不一致的 400 请求不混入 ignored_fields
@@ -90,21 +102,38 @@ async def search(body: SearchRequest, request: Request) -> dict:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     # 完整配方同步管线经 to_thread 下放（模型 HTTP 调用绝不阻塞事件循环——
     # NFR-8/TC-RET-04；MCP sync 工具由 FastMCP 线程池同款承接）
-    return await asyncio.to_thread(
-        run_search,
-        service.backend,
-        service.settings,
-        user_id=auth.user_id,
-        org_id=org,
-        query=body.query,
-        top_k=body.top_k,
-        datasets=body.datasets,
-        doc_filter=body.doc_filter,
-        gate=service.gate,
-        embedder=service.embedder,
-        reranker=service.reranker,
-        enhancer=service.enhancer,
-        breakers=service.breakers,
-        entity_ids=(entity_ctx or {}).get("entity_ids"),
-        entity_seeds=(entity_ctx or {}).get("seeds"),
-    )
+    try:
+        result = await asyncio.to_thread(
+            run_search,
+            service.backend,
+            service.settings,
+            user_id=auth.user_id,
+            org_id=org,
+            query=body.query,
+            top_k=body.top_k,
+            datasets=body.datasets,
+            doc_filter=body.doc_filter,
+            gate=service.gate,
+            embedder=service.embedder,
+            reranker=service.reranker,
+            enhancer=service.enhancer,
+            breakers=service.breakers,
+            entity_ids=(entity_ctx or {}).get("entity_ids"),
+            entity_seeds=(entity_ctx or {}).get("seeds"),
+        )
+    except AclDeniedError as exc:
+        # m3-2 G-22：refused（无成员/无权限——编译器第 0 步 403）入查询审计
+        enqueue_query_event(service, build_query_event(
+            EVENT_QUERY_SEARCH, org_id=org, actor=auth.user_id,
+            outcome="refused",
+            detail={"query": body.query, "top_k": body.top_k,
+                    "reason": exc.code},
+        ))
+        raise
+    # m3-2 G-22：accepted 入查询审计（detail=查询词+返回 chunk_id 列表——§4）
+    enqueue_query_event(service, build_query_event(
+        EVENT_QUERY_SEARCH, org_id=org, actor=auth.user_id,
+        detail={"query": body.query, "top_k": body.top_k,
+                "chunk_ids": [r["chunk_id"] for r in result["results"]]},
+    ))
+    return result

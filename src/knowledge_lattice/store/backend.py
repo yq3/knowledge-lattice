@@ -1399,6 +1399,13 @@ class SemanticBackend(Protocol):
         """C.5：表下 restricted 列键集（describe_table 主路径列级过滤面）。"""
         ...
 
+    def sem_restricted_ids(
+        self, org_id: str, entity_ids: Sequence[int]
+    ) -> list[int]:
+        """id 集中 restricted 实体子集（m3-2 G-24②②——持权 get_entity 展开
+        「看到」restricted 端点的审计数据源；空集快速返回）。"""
+        ...
+
 
 @runtime_checkable
 class AuditBackend(Protocol):
@@ -1419,6 +1426,17 @@ class AuditBackend(Protocol):
         方言形态：pg 同库真同事务（BEGIN…COMMIT）；sqlite 跨文件两步幂等
         （月库 INSERT OR IGNORE → 回填）——不丢不重语义等价。
         """
+
+    def append_query_events(self, events: Sequence[dict]) -> int:
+        """查询级审计事件**直写月库** audit_events（m3-2 G-22——FR-6 §5.6：
+        异步弱一致、不走 outbox、不与业务事务绑定；哈希链与搬运道同口径
+        逐行计算）。event 行 = audit_events 全列 dict（id/org_id/actor/action/
+        target_type/target_id/outcome/request_id/detail_json/created_at）。
+
+        返回写入行数。并发纪律：与 ship_outbox 的月库写入互斥（sqlite=
+        BEGIN IMMEDIATE 单写事务〔链基读取含在事务内〕； pg=事务级咨询锁
+        ——防同 prev 分叉破链）。"""
+        ...
 
     def read_monthly_events(self, *, when: str) -> list[dict]:
         """读指定时点所在月的 audit_events 行（m2-3 B2 起为**链遍历序**——

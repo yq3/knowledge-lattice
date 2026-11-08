@@ -1740,10 +1740,24 @@ class PgBackend:
                 {"i": dataset_id, "org": org_id, "n": name},
             )
             if audit is not None:
-                self._outbox_insert(conn, *audit)
+                # P3-2（m3-2，沿 m2-4 followup ④ 先例）：outbox 完整性错误
+                # 不得落入下方 UniqueViolation→DatasetExistsError 宽捕
+                try:
+                    self._outbox_insert(conn, *audit)
+                except pg_errors.UniqueViolation as exc:
+                    raise RuntimeError(
+                        f"audit outbox 写入完整性错误（{exc}）——新建知识库"
+                    ) from exc
             conn.execute("COMMIT")
         except pg_errors.UniqueViolation as exc:
             self._rollback()
+            # P3-5（m3-2）：按约束来源区分 409 文案（同名 name 冲突 vs id 冲突）
+            constraint = getattr(getattr(exc, "diag", None), "constraint_name", "") or ""
+            if "name" in str(constraint):
+                raise DatasetExistsError(
+                    f"dataset name 冲突: {name!r}（UNIQUE(org_id, name)"
+                    "——同名库已存在，title 需唯一）"
+                ) from exc
             raise DatasetExistsError(
                 f"dataset 已存在: {dataset_id!r}（id 全局唯一——组织内 key"
                 " 冲突或跨组织占用）"
@@ -1784,7 +1798,14 @@ class PgBackend:
                 {"n": new_name, "d": new_desc, "ds": dataset_id, "org": org_id},
             )
             if cur.rowcount and audit is not None:
-                self._outbox_insert(conn, *audit)
+                # P3-2（m3-2，沿 m2-4 followup ④ 先例）：outbox 完整性错误
+                # 不得落入下方 UniqueViolation→DatasetExistsError 宽捕
+                try:
+                    self._outbox_insert(conn, *audit)
+                except pg_errors.UniqueViolation as exc:
+                    raise RuntimeError(
+                        f"audit outbox 写入完整性错误（{exc}）——修改知识库"
+                    ) from exc
             conn.execute("COMMIT")
         except pg_errors.UniqueViolation as exc:
             self._rollback()
@@ -1821,7 +1842,14 @@ class PgBackend:
                  "req": int(bool(required)), "en": int(bool(enabled))},
             )
             if audit is not None:
-                self._outbox_insert(conn, *audit)
+                # P3-2（m3-2，沿 m2-4 followup ④ 先例）：outbox 完整性错误
+                # 不得落入下方 UniqueViolation→DimensionExistsError 宽捕
+                try:
+                    self._outbox_insert(conn, *audit)
+                except pg_errors.UniqueViolation as exc:
+                    raise RuntimeError(
+                        f"audit outbox 写入完整性错误（{exc}）——新建维度"
+                    ) from exc
             conn.execute("COMMIT")
         except pg_errors.UniqueViolation as exc:
             self._rollback()
@@ -3312,6 +3340,21 @@ class PgBackend:
             frontier = next_frontier
         return {"nodes": list(nodes.values()), "edges": edges, "truncated": truncated}
 
+    def sem_restricted_ids(self, org_id: str, entity_ids) -> list[int]:
+        """id 集中 restricted 实体子集（m3-2 G-24②②——展开端点审计数据源；
+        ANY(%(keys)s) 数组分片同 _SEM_IN_CHUNK 口径）。"""
+        ids = [i for i in entity_ids if i is not None]
+        out: list[int] = []
+        for chunk in _sem_chunks(ids, self._SEM_IN_CHUNK):
+            rows = self._conn.execute(
+                "SELECT id FROM sem_entities"
+                " WHERE org_id = %(org)s AND sensitivity = 'restricted'"
+                "   AND id = ANY(%(keys)s)",
+                {"org": org_id, "keys": chunk},
+            ).fetchall()
+            out.extend(r[0] for r in rows)
+        return out
+
     def sem_search_entities(
         self, org_id: str, q_norm: str, q_raw: str, *,
         types: Sequence[str] | None, top_k: int,
@@ -3451,6 +3494,7 @@ class PgBackend:
         sqlite 跨文件两步形态的方言对照，接口语义一致：不丢不重）。"""
         from knowledge_lattice.store.taskclock import TS_FMT  # noqa: E402 —— R2 P3-2 常量单源
         from knowledge_lattice.store.audit_chain import (
+            AUDIT_CHAIN_LOCK_KEY,
             compute_row_hash,
             month_of,
             outbox_row_to_event,
@@ -3466,6 +3510,12 @@ class PgBackend:
             conn = self._conn
             conn.execute("BEGIN")
             try:
+                # m3-2 G-22：链追加事务级咨询锁——与查询道直写 append_query_events
+                # 互斥（「读链基→算链→插入」临界区，防同 prev 分叉破链）
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(%(k)s)",
+                    {"k": AUDIT_CHAIN_LOCK_KEY},
+                )
                 rows = conn.execute(
                     "SELECT id, event_type, payload_json, created_at FROM audit_outbox"
                     " WHERE shipped_at IS NULL ORDER BY created_at, id LIMIT %(n)s",
@@ -3533,6 +3583,76 @@ class PgBackend:
             " WHERE id = ANY(%(ids)s) AND shipped_at IS NULL",
             {"now": now, "ids": list(ids)},
         )
+
+    # ---- 查询级审计直写月分区（m3-2 G-22——FR-6 §5.6 异步弱一致，不走 outbox） ----
+
+    def append_query_events(self, events) -> int:
+        """查询级审计事件直写 audit_events 月分区（语义见 backend.py 协议）。
+
+        pg 形态：单事务 BEGIN…COMMIT + **事务级咨询锁**（与 ship_outbox 的
+        链追加互斥——防同 prev 分叉破链；AUDIT_CHAIN_LOCK_KEY 同源）；
+        ON CONFLICT (id, created_at) DO NOTHING + 已存 id 跳过不推进 prev
+        （重试路径幂等，与搬运道同纪律）。
+        """
+        from knowledge_lattice.store.audit_chain import (
+            AUDIT_CHAIN_LOCK_KEY,
+            compute_row_hash,
+            month_of,
+        )
+        from .audit import ensure_month_partition, last_row_hash, month_bounds
+
+        if not events:
+            return 0
+        by_month: dict[str, list[dict]] = {}
+        for ev in events:
+            by_month.setdefault(month_of(str(ev["created_at"])), []).append(ev)
+        written = 0
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(%(k)s)",
+                {"k": AUDIT_CHAIN_LOCK_KEY},
+            )
+            for month, recs in by_month.items():
+                ensure_month_partition(
+                    conn, datetime(int(month[:4]), int(month[4:6]), 1, tzinfo=UTC)
+                )
+                start, end = month_bounds(month)
+                existed = {
+                    r[0] for r in conn.execute(
+                        "SELECT id FROM audit_events"
+                        " WHERE created_at >= %(s)s AND created_at < %(e)s",
+                        {"s": start, "e": end},
+                    ).fetchall()
+                }
+                prev = last_row_hash(conn, month)
+                if prev is None and not existed:
+                    prev = self._chain_start_hash(conn, month)
+                for ev in recs:
+                    if ev["id"] in existed:
+                        continue
+                    row = dict(ev)
+                    row["prev_hash"] = prev
+                    row["row_hash"] = compute_row_hash(row, prev)
+                    conn.execute(
+                        "INSERT INTO audit_events(id, org_id, actor, action,"
+                        " target_type, target_id, outcome, request_id, detail_json,"
+                        " prev_hash, row_hash, created_at)"
+                        " VALUES(%(id)s, %(org_id)s, %(actor)s, %(action)s,"
+                        " %(target_type)s, %(target_id)s, %(outcome)s,"
+                        " %(request_id)s, %(detail_json)s, %(prev_hash)s,"
+                        " %(row_hash)s, %(created_at)s)"
+                        " ON CONFLICT (id, created_at) DO NOTHING",
+                        row,
+                    )
+                    prev = row["row_hash"]
+                    written += 1
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return written
 
     def read_monthly_events(self, *, when: str) -> list[dict]:
         """读指定时点所在月的 audit_events（分区范围查询——m2-3 B2：**链遍历
@@ -4240,12 +4360,14 @@ class PgBackend:
 
     def list_orgs_for_user(self, user_id: str) -> list[dict]:
         """用户 membership 组织行（GET /api/orgs 普通用户面——m2-5 A1；m3-1
-        补 status；含过期行如实返回，过滤语义归权限计算）。"""
+        补 status；含过期行如实返回，过滤语义归权限计算）。P3-1（m3-2）：
+        expires_at 恒为库格式字符串（to_char 归一——B⑦ 双方言 JSON 等价）。"""
         return [
             {"org_id": r[0], "name": r[1], "role": r[2], "expires_at": r[3],
              "status": r[4]}
             for r in self._conn.execute(
-                "SELECT m.org_id, o.name, m.role, m.expires_at, o.status"
+                "SELECT m.org_id, o.name, m.role,"
+                " to_char(m.expires_at, 'YYYY-MM-DD HH24:MI:SS'), o.status"
                 " FROM user_org_memberships m JOIN orgs o ON o.id = m.org_id"
                 " WHERE m.user_id = %(u)s ORDER BY m.org_id", {"u": user_id},
             ).fetchall()
@@ -4290,9 +4412,12 @@ class PgBackend:
         return {"org_id": org_id, "status": status, "applied": applied}
 
     def list_members(self, org_id: str) -> list[dict]:
-        """组织成员列表（m3-1 A1——含过期行如实返回；username 联查 users）。"""
+        """组织成员列表（m3-1 A1——含过期行如实返回；username 联查 users）。
+        P3-1（m3-2）：expires_at 恒为库格式字符串（to_char 归一——B⑦ 双方言
+        JSON 等价，psycopg datetime 不外泄）。"""
         rows = self._conn.execute(
-            "SELECT m.user_id, u.username, m.role, m.expires_at"
+            "SELECT m.user_id, u.username, m.role,"
+            " to_char(m.expires_at, 'YYYY-MM-DD HH24:MI:SS')"
             " FROM user_org_memberships m"
             " LEFT JOIN users u ON u.id = m.user_id"
             " WHERE m.org_id = %(org)s ORDER BY m.user_id",

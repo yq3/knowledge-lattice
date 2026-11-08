@@ -83,5 +83,5 @@ ENTITY_RECALL_MAX_ENTITIES = 50    # 展开后实体集合 E 上限（§5.10 第
 # §6.3 权限口径③；org_admin 不默认兼任——最小面）
 SEM_RESTRICTED_ROLE = "sem_restricted"
 
-# 持权访问 restricted 实体的审计事件（权限事件——A-16 口径持权面）
-EVENT_SEMANTIC_RESTRICTED_ACCESS = "semantic.restricted_access"
+# 持权访问 restricted 实体的审计事件常量已迁单一登记处 domain/audit_events
+# （m3-2 G-24⑧——本模块不再定义，防字符串散落漂移）。

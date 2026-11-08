@@ -41,6 +41,7 @@ from knowledge_lattice.core.docs.credentials import CredentialError, CredentialS
 from knowledge_lattice.core.docs.ingest import IngestService
 from knowledge_lattice.domain.auth import AuthError, OrgContextError
 from knowledge_lattice.mcp.server import build_mcp_server
+from knowledge_lattice.query_audit import QueryAuditQueue
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 
 
 class ServiceContext:
-    """依赖容器（backend/settings/gate/ingest/credentials/quality/embedder/reranker/enhancer/breakers/worker）。"""
+    """依赖容器（backend/settings/gate/ingest/credentials/quality/embedder/reranker/enhancer/breakers/worker/query_audit）。"""
 
     def __init__(
         self,
@@ -66,6 +67,7 @@ class ServiceContext:
         worker=None,
         sso=None,
         trusted=None,
+        query_audit=None,
     ) -> None:
         self.settings = settings
         self.backend = backend
@@ -82,6 +84,9 @@ class ServiceContext:
         # + 可信子系统白名单（含按服务限流器——TC-AUTH-05/T13）
         self.sso = sso
         self.trusted = trusted
+        # m3-2 G-22：查询级异步审计队列（六入口热路径仅入队；后台批量 flush
+        # 直写月库——丢失窗口 ≤5s，FR-6 §5.6）。None=未装配（旧测试壳兼容）
+        self.query_audit = query_audit
 
 
 class InlineWorkerHandle:
@@ -324,6 +329,7 @@ def create_app(
         sso=sso_verifier if sso_verifier is not None
         else build_sso_verifier(settings),
         trusted=TrustedServiceRegistry.from_json(settings.trusted_services_json),
+        query_audit=QueryAuditQueue(backend),
     )
 
     mcp_server = build_mcp_server(service, settings)
@@ -370,6 +376,9 @@ def create_app(
             maintenance_task = asyncio.create_task(_periodic_maintenance())
         worker_handle.start()  # worker：inline 兜底循环 / subprocess 子进程 + 监控
         app.state.worker = worker_handle
+        # m3-2 G-22：查询审计后台 flush 线程（满 5s 或满批先刷；uvicorn 关停
+        # 时 stop→flush 残留——正常关停零丢失）
+        service.query_audit.start()
         try:
             async with mcp_app.lifespan(mcp_app):  # MCP session manager 交给父 app
                 yield
@@ -378,6 +387,7 @@ def create_app(
                 if task is not None:
                     task.cancel()
             worker_handle.stop()
+            service.query_audit.stop()
 
     app = FastAPI(title="knowledge-lattice", lifespan=lifespan)
     app.state.service = service

@@ -25,8 +25,8 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import ORG, ORG_GL
-from helpers import FUTURE_TS, dim_id_for
+from conftest import ORG
+from helpers import dim_id_for
 
 pytestmark = pytest.mark.usefixtures("rest_env")
 
@@ -288,7 +288,8 @@ def test_d8_explain_membership_expired_and_missing(rest_env) -> None:
     compile_acl 同语义——第 0 步收口）；org_admin 给过期成员解释 → membership
     deny（过期行 detail 注明 expires_at）；给无成员关系用户（u_gl）解释 →
     membership deny（无行），维度行照常展开（不泄露他人授权面——仅交集
-    verdict）。"""
+    verdict）。m3-2 边界①（用户裁定选 A）：membership deny 下维度行 detail
+    改「成员关系无效，维度行仅供参考」——不得声称「有效授权 []」。"""
     client, env = rest_env["client"], rest_env
     # 过期成员自解释：org_scoped 成员校验 403（与检索路同口径）
     r = client.get(
@@ -308,6 +309,13 @@ def test_d8_explain_membership_expired_and_missing(rest_env) -> None:
     m_row = body1["rows"][0]
     assert m_row["kind"] == "membership" and m_row["verdict"] == "deny"
     assert "过期" in m_row["detail"]
+    # 边界①：membership deny 下带值维度行 = 参考口径（不声称「有效授权 []」）
+    dim_rows = [row for row in body1["rows"] if row["kind"] == "dimension"]
+    valued = [row for row in dim_rows if row["verdict"] == "deny"]
+    assert valued, "带值维度行应保持展开（裁定 A——管理面对账信息）"
+    for row in valued:
+        assert "成员关系无效" in row["detail"] and "仅供参考" in row["detail"], row
+        assert "有效授权" not in row["detail"], row
 
     # org_admin 给无成员关系用户（u_gl）解释
     r2 = client.get(
@@ -317,6 +325,10 @@ def test_d8_explain_membership_expired_and_missing(rest_env) -> None:
     body2 = r2.json()
     assert body2["rows"][0]["verdict"] == "deny"  # 无成员关系
     assert body2["visible"] is False
+    # 同口径：无成员关系的维度 deny 行也是参考文案
+    for row in body2["rows"]:
+        if row["kind"] == "dimension" and row["verdict"] == "deny":
+            assert "成员关系无效" in row["detail"], row
 
 
 def test_d9_explain_permission_boundaries(rest_env) -> None:
@@ -381,7 +393,7 @@ def test_d11_explain_matches_acl_compiled_verdict(rest_env) -> None:
     }
     from knowledge_lattice.core.docs.acl import compile_acl
 
-    for uid, token_uid in viewers.items():
+    for uid in viewers:
         plan = compile_acl(backend, uid, ORG)
         visible = backend.visible_doc_ids(plan, doc_ids)
         # admin 代他人解释（admin_tax 视角全覆盖 member 面）

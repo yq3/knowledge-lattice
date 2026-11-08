@@ -55,7 +55,9 @@ class ApiError extends Error {
 async function apiFetch(path, opts = {}) {
   const headers = Object.assign({}, opts.headers || {});
   if (cfg.activeToken) headers["Authorization"] = "Bearer " + cfg.activeToken;
-  if (cfg.org) headers["X-Org-Id"] = cfg.org;
+  // X-Org-Id：调用方显式指定（跨组织行操作按路径对齐——D18 路径/头一致性，
+  // m3-2 ui-be：PATCH orgs 等跨组织行不得恒发 cfg.org 头）优先；缺省注入当前组织
+  if (cfg.org && !("X-Org-Id" in headers)) headers["X-Org-Id"] = cfg.org;
   // opts.contentType 覆盖缺省 JSON（R2 P2-4：CSV 等纯文本体走 text/plain）
   if (opts.body != null && !(opts.body instanceof FormData) && !headers["Content-Type"]) {
     headers["Content-Type"] = opts.contentType || "application/json";
@@ -131,10 +133,26 @@ const enc = encodeURIComponent;
 function listOrgs() { return apiJson("/api/orgs"); }
 function listDatasets(org) { return apiJson(`/api/orgs/${enc(org)}/datasets`); }
 
-// m3-1 contract-first：POST /api/orgs/{org}/datasets 未实装（#13）——按自然契约
-// 先行实装（POST JSON {name, description?}）；404 → 调用方降级提示「待 m3-1 后端轮次」。
+// m3-2 ui-be 对账：POST /api/orgs/{org}/datasets 真契约 {key, title?}（m3-1
+// #13 实装——description 仅 PATCH 承载；调用方 docs.js 建库表单 key+title，
+// 描述经 createDatasetThenDesc 补 PATCH）。
 function createDataset(org, body) {
   return apiJson(`/api/orgs/${enc(org)}/datasets`, { method: "POST", body: JSON.stringify(body) });
+}
+/* 建库 + 可选描述（描述走 PATCH description——契约字面） */
+async function createDatasetWithDesc(org, { key, title, description }) {
+  const created = await createDataset(org, { key, title: title || undefined });
+  if (description) {
+    try {
+      await patchDataset(org, created.id || key, { description });
+    } catch (e) { /* 建库已成——描述失败仅 toast，不回滚 */ }
+  }
+  return created;
+}
+function patchDataset(org, id, body) {
+  return apiJson(`/api/orgs/${enc(org)}/datasets/${enc(id)}`, {
+    method: "PATCH", body: JSON.stringify(body),
+  });
 }
 function deleteDataset(org, id) {
   // R2 P1-1：DELETE 收口 apiJson 同款 !ok 抛 ApiError（204 空 body → {} 正常返回）
@@ -142,14 +160,15 @@ function deleteDataset(org, id) {
 }
 function listDimensions(org) { return apiJson(`/api/orgs/${enc(org)}/dimensions`); }
 
-// m3-1 contract-first：POST /api/orgs/{org}/dimensions 未实装（#13）——按自然契约
-// 先行实装（POST JSON {key, name, required?}）；404 → 调用方降级提示。
+// m3-2 ui-be 对账：POST /api/orgs/{org}/dimensions 真契约 {key, label,
+// required?, enabled?}（m3-1 #13 实装——label=显示名；调用方 access.js
+// dimCreate 以表单「名称」作 label）。
 function createDimension(org, body) {
   return apiJson(`/api/orgs/${enc(org)}/dimensions`, { method: "POST", body: JSON.stringify(body) });
 }
 
-// be-1 contract-first：GET /api/orgs/{org}/documents 列表端点未实装——按提议契约先行
-// （?dataset=&limit=&offset= → {documents:[…], total}）；404 → 调用方降级（横幅 + 会话缓存）。
+// be-1 端点已实装（m3-1 #20 D-①）：GET /api/orgs/{org}/documents
+// ?dataset=&limit=&offset= → {documents:[…], total}。
 function listDocuments(org, { dataset, limit = 200, offset = 0 } = {}) {
   const q = new URLSearchParams();
   if (dataset) q.set("dataset", dataset);
@@ -297,7 +316,11 @@ function buildReport(org, buildId) {
   return apiJson(`/api/orgs/${enc(org)}/semantic/builds/${enc(buildId)}/report`);
 }
 
-/* ---------- 成员三方法（m2-6 A3——POST/PATCH/DELETE；无 GET members（m3-1 #13）） ---------- */
+/* ---------- 成员（m2-6 A3 写三方法 + m3-1 #13 GET members——ui-be 真源化） ---------- */
+
+// GET members（org_admin 门控）：{members:[{user_id,username,role,expires_at}]}——
+// 成员名单/身份菜单/成员行 role·到期 的真源（m3-2 ui-be：替换 export-CSV 单源）。
+function listMembers(org) { return apiJson(`/api/orgs/${enc(org)}/members`); }
 
 function addMember(org, body) {
   return apiJson(`/api/orgs/${enc(org)}/members`, { method: "POST", body: JSON.stringify(body) });
@@ -317,10 +340,22 @@ function deleteMember(org, userId) {
 function createOrg(body) {
   return apiJson("/api/orgs", { method: "POST", body: JSON.stringify(body) });
 }
-// m3-1 contract-first：PATCH /api/orgs/{org}（组织停用/恢复 #14）未实装——按自然契约
-// 先行实装（body {status: "active"|"disabled"}）；404/405 → 调用方降级提示「待 m3-1」。
+// m3-2 ui-be 对账：PATCH /api/orgs/{org}（#14 停用/恢复——m3-1 实装）。跨组织
+// 行操作按路径对齐 X-Org-Id（D18 路径/头一致性——不恒发 cfg.org 头）。
 function setOrgStatus(org, status) {
-  return apiJson(`/api/orgs/${enc(org)}`, { method: "PATCH", body: JSON.stringify({ status }) });
+  return apiJson(`/api/orgs/${enc(org)}`, {
+    method: "PATCH",
+    headers: { "X-Org-Id": org },
+    body: JSON.stringify({ status }),
+  });
+}
+
+/* ---------- 可见性解释（m3-1 #20 D-② 实装——m3-2 ui-be 接真端点） ---------- */
+
+// GET explain：user_id 缺省=自解释；给他人解释须 org_admin（403 如实）。
+function explainDocument(org, docId, userId) {
+  const q = userId ? `?user_id=${enc(userId)}` : "";
+  return apiJson(`/api/orgs/${enc(org)}/documents/${enc(docId)}/explain${q}`);
 }
 
 /* ---------- 时间显示（沿原型：UTC 字符串切 MM-DD HH:mm） ---------- */

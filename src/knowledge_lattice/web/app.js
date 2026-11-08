@@ -22,9 +22,9 @@ const state = {
   dims: [],            // GET dimensions（active 维度）
   datasets: [],
   /* 文档视图 */
-  docs: { available: null, probed: false, loadError: null, list: [], session: [] }, // be-①：available null=未探/true/false；session=本会话上传缓存
+  docs: { available: null, probed: false, loadError: null, list: [], session: [], explain: null }, // be-① 已实装；explain=选中文档解释卡 {docId, rows?, visible?, loading?, error?}
   ds: "all", selDoc: null, drawer: null, dsAsk: null, delAsk: null,
-  newDs: { name: "", desc: "" },
+  newDs: { key: "", title: "", desc: "" },
   up: { ds: "", picked: {}, file: "", fileObj: null, overwrite: null }, // overwrite={docId,title,active} = 覆盖上传锁定（ui-3 C2）
   editDims: false, editPicked: {}, quality: null, qualDraft: {},
   /* 质检抽查面板（ui-3 C1——org_admin；GET /api/quality-flags/sample） */
@@ -36,6 +36,8 @@ const state = {
   mem: { addOpen: false, form: { uid: "", role: "member", expires: "" }, ask: null, expAsk: null, expVal: "", expMode: "set", roleSel: null, roleVal: "member", known: {} },
   dimNewOpen: false, dimNew: { key: "", name: "", required: false },
   valAsk: null, valNew: { v: "", l: "" }, govAsk: null, disabledVals: [],
+  /* 可见性矩阵（m3-2 ui-be：org_admin members × documents 逐格 explain 取数） */
+  vis: { rows: null, members: [], docs: [], cells: {}, error: null, detail: null },
   /* 语义视图（ui-2）：probe null=未探 / "ok" / "noperm" / "notbuilt" */
   sem: {
     probe: null, dictRev: null,
@@ -170,28 +172,55 @@ function loadingHTML(key) {
 
 /* ---------- 元数据装载 ---------- */
 
-/* 会话成员注册表（R2 P1-3）：username → {role?, expiresAt?}——POST members 201 /
- * PATCH 响应维护、DELETE 成功移除、resetOrgState 清空；成员名单 = export 用户名
- * ∪ known（零授权新成员加完立即可见、可分配首个授权）。 */
+/* 会话成员注册表（R2 P1-3）：username → {role?, expiresAt?}——m3-2 ui-be 起
+ * **GET members 真源化**：org_admin 面 loadMembers() 以服务端成员行回填
+ * （零授权成员持久可见 + 成员行 role/到期补全）；POST/PATCH 响应仍即时维护
+ * （乐观更新，下次 loadMembers 校正）、DELETE 成功移除、resetOrgState 清空。 */
 function knownMembers() { return Object.keys(state.mem.known || {}); }
 function knownUser(u) { return (state.mem.known || {})[u] || null; }
 function setKnownUser(u, row) { state.mem.known[u] = row; }
 function dropKnownUser(u) { delete state.mem.known[u]; }
 
+/* GET members 真源装载（m3-2 ui-be——org_admin；非管理员静默退化会话注册表）：
+ * 服务端行回填 known（role/expiresAt 如实——成员子标签与身份菜单名单源），
+ * 返回成员 user_id 列表。 */
+async function loadMembers() {
+  const ep = state.epoch;
+  try {
+    const body = await listMembers(cfg.org);
+    if (ep !== state.epoch) return [];
+    const rows = (body && body.members) || [];
+    for (const m of rows) {
+      setKnownUser(m.user_id, {
+        role: m.role != null ? m.role : undefined,
+        expiresAt: m.expires_at != null ? m.expires_at : undefined,
+      });
+    }
+    return rows.map((m) => m.user_id);
+  } catch (e) {
+    if (ep !== state.epoch) return [];
+    return null; // 403（非 org_admin）等——退化 export-CSV 单源
+  }
+}
+
 async function loadUsernames() {
   const ep = state.epoch;
+  const memberIds = await loadMembers();
+  if (ep !== state.epoch) return;
+  let exportNames = [];
   try {
     const text = await exportGrants(cfg.org);
     if (ep !== state.epoch) return;
-    const lines = text.trim().split(/\r?\n/);
-    state.usernames = [...new Set([
-      ...lines.slice(1).filter((l) => l.trim()).map((l) => parseCsvLine(l)[0]),
-      ...knownMembers(), // P1-3：会话新增成员并进身份菜单候选
-    ])].sort();
-  } catch (e) {
-    if (ep !== state.epoch) return;
-    state.usernames = []; // 非 org_admin（或未连接）——菜单退化为「自己 + 手动输入」
-  }
+    exportNames = text.trim().split(/\r?\n/).slice(1).filter((l) => l.trim())
+      .map((l) => parseCsvLine(l)[0]);
+  } catch (e) { /* 非 org_admin——export 不可得 */ }
+  // 名单源 = GET members ∪ export 用户名 ∪ 会话注册表（m3-2：members 真源
+  // + export 合并保留——P1-3 会话新增成员仍即时的兜底面）
+  state.usernames = [...new Set([
+    ...(memberIds || []),
+    ...exportNames,
+    ...knownMembers(),
+  ])].filter(Boolean).sort();
 }
 
 async function loadMeta() {
@@ -214,9 +243,9 @@ async function loadMeta() {
 function resetOrgState() {
   state.epoch += 1;
   state.loading = {};
-  state.docs = { available: null, probed: false, loadError: null, list: [], session: [] };
+  state.docs = { available: null, probed: false, loadError: null, list: [], session: [], explain: null };
   state.ds = "all"; state.selDoc = null; state.drawer = null; state.dsAsk = null; state.delAsk = null;
-  state.newDs = { name: "", desc: "" };
+  state.newDs = { key: "", title: "", desc: "" };
   state.up = { ds: "", picked: {}, file: "", fileObj: null, overwrite: null };
   state.editDims = false; state.editPicked = {}; state.quality = null; state.qualDraft = {};
   state.qs = { flags: null, loading: false, seed: "ui3" };
@@ -225,6 +254,7 @@ function resetOrgState() {
   state.mem = { addOpen: false, form: { uid: "", role: "member", expires: "" }, ask: null, expAsk: null, expVal: "", expMode: "set", roleSel: null, roleVal: "member", known: {} };
   state.dimNewOpen = false; state.dimNew = { key: "", name: "", required: false };
   state.valAsk = null; state.valNew = { v: "", l: "" }; state.govAsk = null; state.disabledVals = [];
+  state.vis = { rows: null, members: [], docs: [], cells: {}, error: null, detail: null };
   state.sem = {
     probe: null, dictRev: null,
     q: "", entSel: "", searching: false, results: null,
@@ -293,7 +323,8 @@ function renderRail() {
     </div>` : `
     <button class="picker-btn" data-act="openConn"><span class="pk-main"><span class="pk-t">${esc(t("rail.offline"))}</span></span><span class="caret">${CARET}</span></button>`;
 
-  /* 身份 picker（export 用户名 ∪ 自己 + 手动输入兜底——无 GET members 端点，m3-1 #13） */
+  /* 身份 picker（名单源 = GET members ∪ export 用户名 ∪ 会话注册表——m3-2
+   * ui-be 真源化；非 org_admin 退化为「自己 + 手动输入」） */
   const lu = lensUser();
   $("#lensPicker").innerHTML = connected() ? `
     <button class="picker-btn" data-act="menu" data-m="lens" aria-haspopup="true">
