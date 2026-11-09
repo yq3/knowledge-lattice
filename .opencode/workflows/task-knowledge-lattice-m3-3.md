@@ -5,7 +5,7 @@ target: /Users/youqi/develop/knowledge-lattice
 coderTaskId: ses_e45c7729dffetMpK9VQEVo53v6
 testerTaskId: ses_e459b63b8ffeUA4Ij22x3p70V1
 committerTaskId: ses_e458e8eb7ffevlru71H1KOOvQ2
-status: approved
+status: done
 round: 1
 maxRounds: 3
 testVerdict: PASS
@@ -40,7 +40,7 @@ filesChanged:
   - tests/test_sem_g24_m33.py
 endReason: null
 createdAt: 2026-11-08T16:08:18+0800
-updatedAt: 2026-11-08T18:10:04+0800
+updatedAt: 2026-11-09T14:13:40+0800
 ---
 
 # task-knowledge-lattice-m3-3: 语义 hardening 批（含 G-28③⑤ 承接）
@@ -98,10 +98,10 @@ m2s-6 R3 登记的收窄动作合并修法（known-gaps G-23）：
 ## 遗留事项（跨任务移交）
 - [x] **本轮清偿**（2026-11-08 双通过，SHA 3a0a214）：m3-2 移交①P2-1 pg 单连接共享修复〔机制+测试：backend_factory+audit_factory 惰性单连接+pg 臂 pid 断言〕②链互斥并发测试收编+qa1b 隔离+refused 断言补③文案 4 键+注释/CSS④未用导入⑤audit 取数包裹+G-28④ existed 按批+G-28⑦ /stats；m3-1 移交 G-24⑥⑦⑨；m2s-6 移交 G-23 残余①~⑤+code versioning；issue #15（G-24⑨）交付材料齐。
 - [ ] **登记部署期（不阻塞——Committer 边界①）**：G-28③ 生产接线残余——app lifespan 工厂注入+audit_backend_factory close() 关停+pg 工厂 broken 连接重连路径（本轮仅机制+测试，生产恒 sqlite 无暴露；RUNBOOK PG 接线段随 docs 批记录）。
-- [ ] **移交 m3-4（顺手批）**：Committer P3-2（test_query_audit_m33 import time）+P3-6（test_r3_p2_2 函数名更名）；建议项 P3-10（A-1 gate 四接线点端点级 e2e 用例——与 TC-EVAL 批同段顺手）。
+- [x] **移交 m3-4（顺手批）**：~~Committer P3-2（test_query_audit_m33 import time）+P3-6（test_r3_p2_2 函数名更名）；建议项 P3-10（A-1 gate 四接线点端点级 e2e 用例——与 TC-EVAL 批同段顺手）~~ → **m3-4 E 组清偿（2026-11-09，SHA 007196c——P3-2/P3-6 清+P3-10 落 tests/test_gate_e2e_m34.py 8 用例端点级）**。
 - [ ] **移交后续 web/语义批（顺手级）**：P3-1（_default_embed_batch 死代码删除）+P3-3（style.css:550 段头注释）+P3-4（sqlite 臂 ThreadLocal 循环外复用）+P3-7（畸形 stats_json 跳过持久化）+P3-8（audit 载荷共用）+P3-9（append_query_events 批上限声明）。
 - [ ] **PG 接线部署期复验**：P3-5（工厂 close/重连）+P3-11（pg 臂链互斥注入实测）+Tester P3-2（DeadlockDetected 复现注记）。
-- [ ] **文档面纪律（随监督侧 docs 批落笔）**：FUZZY_CODE_REV bump 纪律+升级一次性全量重建提示（known-gaps G-23 划销注记/RUNBOOK）。
+- [x] **文档面纪律（随监督侧 docs 批落笔）**：FUZZY_CODE_REV bump 纪律+升级一次性全量重建提示（known-gaps G-23 划销注记/RUNBOOK）——**已随 m3-3 监督侧 docs 批完成（2026-11-08：RUNBOOK §1.z 模糊 code versioning 段+TEST-CASES v1.9.17 两条纪律注记；本条目勾选滞后至 m3-4 收尾回写 2026-11-09）**。
 - [ ] **用户侧（不阻塞）**：TC-UI-01~05 人工走查维持（本段无 UI 形态变化，无需新增走查步骤）。
 （新任务开工时 supervised-coding 读历史检查点的本节 + 轮次记录中"移交/待办"条目；未了结事项默认并入新任务处理并更新相应测试用例；处理完毕回写勾选并注来源任务 ID，继续移交的注明去向）
 
@@ -115,6 +115,11 @@ m2s-6 R3 登记的收窄动作合并修法（known-gaps G-23）：
 - **双通过达成（2026-11-08 17:25，round=1 收敛）**：testVerdict=PASS + reviewVerdict=APPROVED，testedSha=reviewedSha=3a0a214aff9074997caec298d40c7723d8b739a8=当前 HEAD——status=approved，待用户确认交付（交付序列：监督侧 docs 批→coder chore 归档批→push+PR base=develop→committer PR review→manifest→用户合入；#15 随 PR closing 关闭）。
 - **交付裁定（2026-11-08 17:30，用户「同意」——status=approved→归档中）**：范围口径确认——P2-1 代码面已修完（机制+测试），G-28③ docs 批按「机制+测试已交付，残余=生产 lifespan 接线（PG 接线部署期）」改写不整条划销；fuzzy_code_rev 升级一次性重建提示落 RUNBOOK。交付序列启动。
 - **交付执行①：监督侧 docs 批完成（2026-11-08 18:10）**——design **v0.9.12**（版本行非决策声明+§5.8 模糊对账收口注记〔四元组+哈希锚+标记面移除+FUZZY_CODE_REV〕+§6.3② mention disambiguation 实装注记+日期行）；known-gaps **G-23 划销**（概览+条目收口块）、**G-24 v5 注记⑥⑦⑨ 划销（全项清）**、**G-28 v2 注记④⑤⑦ 划销+③机制与测试已交付（残余=生产 lifespan 接线）**；TEST-CASES **v1.9.17**（TC-OPS-12 新组〔38 收集+注入 3 组+两条纪律注记〕+§六 M3 行 m3-3 段）；RUNBOOK **§1.z 扩容**（/stats 暴露+PG 接线四件〔工厂接线点+close()/死锁复现注记/broken 重连评估/DDL 缓存〕+模糊 code versioning 运维纪律+bump 一次性重建）；AGENTS §1 M3 进度更新（m3-3 交付+剩余 2 段）；_m3-plan row3 done+§二 backlog 全勾+§三下段指引 m3-4（基线 1880+1+m3-3 移交顺手批）。工作区 8 文件（7 改+m3-3 检查点新入库）待 coder chore 归档批。issue #15 随 PR closing 关闭。
+- **交付执行②：Coder chore 归档批完成（2026-11-08 18:12 报告，续接会话）**——**chore `eb0eb71`**（8 files +448/−26 doc-only，git diff 3a0a214 -- src/ tests/ scripts/ prototype/ 为空）；origin/develop=2fcf280 无前进确认；**push 成功 d19c9a6..eb0eb71**（R1 3a0a214+chore eb0eb71 两提交）；**PR #25 已开**（base=develop，https://github.com/yq3/knowledge-lattice/pull/25 ，--body-file 正确使用——3077 字符回读双校验通过、`Closes #15` 在位、EVIDENCE-MANIFEST 锚点在位、MERGEABLE）。待办：Committer PR review 留痕 → Coder manifest → 用户合入。
+- **交付执行③：Committer PR 审查留痕完成（2026-11-08 18:14 报告，续接会话）**——`--approve` 自审限制失败（沿 #24 先例），回退 **COMMENTED review 完整留痕**（review id `PRR_kwDOVZ9dhM8AAAABWr_e5A`，anchor eb0eb71，body 3251 字符——APPROVED 结论/双 SHA〔code 3a0a214·delivery eb0eb71·base 2fcf280〕/门禁采信 Tester 1880+1〔committer 未独立复跑注明〕+静态计数复算〔i18n 1320 行=660×2〕/P2-1 范围口径〔机制+测试已交付、残余=生产 lifespan 接线〕/P3×11 去向/manifest 放行条件）；**chore `eb0eb71` doc-only 复核通过**（8 文件清单逐项+代码面零夹带〔src/tests/scripts/prototype/eval/benchmarks 全空〕+full diff 2fcf280..eb0eb71=32 files +2003/−214 对账闭合+终态无代码变更→R1 APPROVED 结论有效继承）。PR #25 终态：OPEN/MERGEABLE/CLEAN，commits=[3a0a214（R1）, eb0eb71（chore）]，base=develop。
+- **交付执行④：Coder manifest 入 PR 完成（2026-11-08 18:16 报告，续接会话）**——manifest 15 键替换占位（head=deliveryHead=eb0eb71、codeSha=testedSha=reviewedSha=3a0a214、rounds=1、双 verdict、gate/gateBaseline、reviewRecord、selectionAdjudication、caveats×3、stale=false）；回读双校验通过（4069 字符、json.loads 可解析、Closes #15/门禁证据/commits 表/各节零丢失、占位已消失）。**PR #25 终态：OPEN/MERGEABLE/CLEAN——待用户合入**（`Closes #15` 合并时生效）。合入后补记 mergeCommit/origin develop 前进条目；该条目之后的工作区改动（检查点）随 m3-4 chore 归档批入库。
+
+- **交付完成（终态）（2026-11-08 18:29，用户确认「合入」，status=done）**：**PR #25 MERGED**——mergeCommit `cd6d7a3fa7f4e367394c6948a26ec39114607534`（mergedAt 2026-11-08T10:20:57Z，merge 形态沿 #24 先例、远端分支保留）；origin/develop 前进至 cd6d7a3，develop_opencode 已 ff 同步。**issue #15 手动关闭**（PR body 含 `Closes #15` 但 merge 未自动关闭——body 曾经 `gh pr edit` 重写 manifest，GitHub 不重新解析 closing keywords〔已知行为，m3-1 #13/#14 同因〕；监督侧关闭并留交付评论：gate 四接线点+有界/熔断/降级+SHA 3a0a214+门禁 1880+1+测试载体+design v0.9.12 注记）。**m3-3 段收官：round=1 一轮收敛（coder→tester PASS→committer APPROVED），门禁 1842+1→1880+1，G-23 划销/G-24 全项清/G-28④⑤⑦ 划销+③机制与测试已交付（残余=生产 lifespan 接线部署期）、issue #15 关闭。M3 进度 3/5（m3-4 评测框架批——下一段，含 m3-3 移交顺手批）；本条目之后的工作区改动（检查点）随 m3-4 chore 归档批入库。**
 
 ## 最新验证意见原文
 （tester/committer 报告逐字保留——恢复时给 coder 的修复依据）

@@ -84,6 +84,10 @@ sqlite 侧 `chunks.embed_model` 为摄取状态标签：重嵌入批次结束、
   （gte-rerank-v2——`parameters.top_n` 生效；m2-5 实测联调，live 探测脚本
   `benchmarks/rerank_dashscope_live.py`）；cohere 档为公司网关 Cohere 风格 `/rerank`
   （部署期联调）。示例见 `.env.example` rerank 段。
+- **评测 LLM（m3-4 起）**：`LATTICE_EVAL_LLM_API_BASE/_KEY/_MODEL`——黄金集合成候选
+  生成与 m3-5 judge 校准的 OpenAI 兼容端点（`scripts/eval_synth_m34.py`，ragas
+  `BaseRagasLLM` 直连；开发态沿 m2-5 百炼先例）。合成生成是一次性离线动作，生成物
+  入 `eval/`、复跑不依赖端点；生成/联调动作**不进门禁**（门禁全离线确定性）。
 - m2-5 实验复跑：`benchmarks/{bench8_g6_halfvec_50k,calib_m2_5,perf_m2_5}.py` +
   `bench5_slo_perf03.py --scales 50000 --backends pg`（全链 SLO）。
 
@@ -242,3 +246,20 @@ LATTICE_PG_DUMP_CMD="docker exec lattice-pg pg_dump"   # .env 注入示例
   pinyin/编辑距离/term 构造/规范化行为变更时**必须 bump**（否则健康索引 skipped 快速通过会保留
   陈旧产物）；bump 或首次升级后各组织 dict_rev 变化→semantic_build 全量重建一次（沿 yaml_rev
   先例属预期行为，构建任务错峰限速照常）。
+
+### 1.aa 评测依赖组与部署同步口径（m3-4 起）
+
+- **依赖分组**：`deepeval` 在主依赖（门禁默认可跑）；`ragas 0.2.15`+langchain 0.3 era 钉版在
+  **eval 依赖组**（`[dependency-groups] eval`——默认环境零 ragas/langchain，D2 最小服务端依赖）。
+  ragas 钉版系上游 `vertexai` import 断裂防御（known-gaps **G-29①**）。
+- **部署/门禁环境同步用 `uv sync --frozen`**（精确同步，与 uv.lock 逐字一致）；**不要用累积
+  `uv run --group eval` 的环境直接部署**——`uv run` 是 inexact sync，eval 组包会残留（声明面
+  无问题，`uv sync` 即还原；Tester P3-3）。统一 lock 副作用：eval 组入 lock 后 docling 系共享
+  依赖 transformers/huggingface-hub 随之锁入降级版本（G-29②——门禁双模式全绿证明兼容；
+  **升级 docling 时必须回归全量门禁**）。
+- **评测门禁（TC-EVAL-04）**：`tests/test_eval_gate_m34.py` 全离线确定性（零 LLM/零外网）；
+  逐 query recall@10 exact 冻结表+聚合 0.05 余量双层；**有意配方变更会红——属预期，须显式重测
+  并同步更新冻结表与 `eval/reports/m3-baseline-*.json`**（两处同源，防漂移）。
+- **基线复跑**：`scripts/eval_baseline.py --label m3 --backend {sqlite,pg}`（**m1 历史档只读，
+  勿覆盖**——不带 label 的旧命令默认 m1，数据已演进到 M3 集）；黄金集合成生成
+  `scripts/eval_synth_m34.py`（需 `LATTICE_EVAL_LLM_*` env，见 §1.x；`--offline` 确定性兜底）。
