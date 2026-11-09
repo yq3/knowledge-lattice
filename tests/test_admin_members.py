@@ -304,7 +304,7 @@ def test_jit_to_grants_full_api_chain(tmp_path) -> None:
         environment="test", data_dir=tmp_path, embed_dim=8,
         embed_model="fake-embed", probe_interval_s=0,
         worker_mode="inline",
-        sso_provider="mock-idp", sso_mock_secret="e2e-sso-secret",
+        sso_provider="mock-idp", sso_mock_secret="e2e-sso-secret-0123456789abcdef012",
     )
     from fake_providers import FakeEmbedder
 
@@ -326,7 +326,7 @@ def test_jit_to_grants_full_api_chain(tmp_path) -> None:
     )
     conn.commit()
 
-    verifier = MockIdpVerifier(secret="e2e-sso-secret")
+    verifier = MockIdpVerifier(secret="e2e-sso-secret-0123456789abcdef012")
     sso_token = verifier.issue_token(sub="u_jit", aud=("knowledge-lattice",))
 
     with TestClient(app) as client:

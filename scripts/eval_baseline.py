@@ -70,6 +70,8 @@ def _seed_matrix(db) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend", choices=["sqlite", "pg"], required=True)
+    parser.add_argument("--label", default="m1",
+                        help="基线标签（m1=M1 小型集 / m3=M3 完整集——文件名与标题）")
     parser.add_argument("--out", default=None, help="报告输出路径（缺省 eval/reports/）")
     args = parser.parse_args()
 
@@ -137,11 +139,12 @@ def main() -> int:
 
     out_path = (
         Path(args.out) if args.out
-        else EVAL_DIR / "reports" / f"m1-baseline-{args.backend}.md"
+        else EVAL_DIR / "reports" / f"{args.label}-baseline-{args.backend}.md"
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
-        f"# M1 黄金集基线——{args.backend}（TC-EVAL-01）",
+        f"# {args.label.upper()} 黄金集基线——{args.backend}"
+        + ("（TC-EVAL-01）" if args.label == "m1" else "（TC-EVAL-02 完整集）"),
         "",
         f"- 生成时间：{time.strftime('%Y-%m-%d %H:%M:%S')}（评测运行 {elapsed:.1f}s）",
         f"- 语料：{report['corpus_docs']} docs（合成——待决-1 未到位先行）/ "
@@ -162,7 +165,16 @@ def main() -> int:
             f"| {q['qid']} | {q['lang']} | {q['n_results']} | {q['recall@10']} | {q['rr']} |"
         )
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    json_path = out_path.with_suffix(".json")
+    json_path.write_text(
+        json.dumps({"label": args.label, "backend": args.backend,
+                    "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    **{k: v for k, v in report.items()}},
+                   ensure_ascii=False, indent=1) + "\n",
+        encoding="utf-8",
+    )
     print(f"baseline written: {out_path}")
+    print(f"baseline json:    {json_path}")
     print(json.dumps({k: v for k, v in report.items() if k != "per_query"}, indent=2))
 
     if schema is not None:

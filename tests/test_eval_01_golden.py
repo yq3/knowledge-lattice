@@ -1,10 +1,14 @@
 """TC-EVAL-01 M1 小型黄金集【评测｜M1——双后端参数化基线】。
 
-- 黄金集（28 条：纯中/纯英/中英混排）+ 合成语料（39 docs，含 GBK 编码样例与
-  多 chunk 文档）批量上线 → Recall@k / MRR 检索层指标（集合运算、零 LLM）；
+- 黄金集（M1 28 条 → **m3-4 扩为 M3 完整集 60 条**：纯中/纯英/中英混排
+  24/18/18——TC-EVAL-02；覆盖断言机检面在 tests/test_eval_m34_complete_set.py、
+  deepeval 门禁在 tests/test_eval_gate_m34.py）+ 合成语料（39 → 73 docs，含
+  GBK 编码样例与多 chunk 文档）批量上线 → Recall@k / MRR 检索层指标（集合
+  运算、零 LLM）；
 - **多 token 场景覆盖**（m1-1 Tester 观察项）：每条 query 的 jieba 切分 ≥2 token；
-- 基线数字归档 eval/reports/m1-baseline-<backend>.md（scripts/eval_baseline.py
-  生成——M1-5 校准实验输入；本用例断言回归下限，防基线无声回退）。
+- 基线数字归档 eval/reports/m{1,3}-baseline-<backend>.md（scripts/eval_baseline.py
+  生成——M1-5 校准实验输入 / m3-4 完整集基线；本用例断言聚合回归下限，防
+  基线无声回退——逐 query 下限在 deepeval 门禁）。
 """
 
 from __future__ import annotations
@@ -30,10 +34,12 @@ _EVAL_DIM = 32
 # 后端差异，G-6/A-17）使含疑问词的中文 query 全词交集不可达 → 召回天然偏低，
 # 双后端基线差异本身即 G-6 的记录对象（M1-5 校准实验输入）
 _FLOORS = {
-    # 实测基线（eval/reports/m1-baseline-*.md）：sqlite r@10=0.8929/MRR=0.8345、
-    # pg r@10=0.7857/MRR=0.7277——下限各留 ~0.05 余量防配方无声回退
-    "sqlite": {"recall10": 0.84, "recall5": 0.79, "mrr": 0.78},
-    "pg": {"recall10": 0.73, "recall5": 0.66, "mrr": 0.67},
+    # m3-4 实测基线（M3 完整集 60q/73docs——eval/reports/m3-baseline-*.md）：
+    # sqlite r@5=0.8417/r@10=0.9167/MRR=0.8031、pg r@5=0.7833/r@10=0.8333/
+    # MRR=0.7213——下限各留 ~0.05 余量防配方无声回退（M1 小型集基线
+    # r@10=0.8929/0.7857 归档于 m1-baseline-*.md，随数据扩容不再复现）
+    "sqlite": {"recall10": 0.87, "recall5": 0.79, "mrr": 0.75},
+    "pg": {"recall10": 0.78, "recall5": 0.73, "mrr": 0.67},
 }
 
 
@@ -71,16 +77,18 @@ def test_eval_01_golden_baseline(matrix, tmp_path) -> None:
 
     corpus = load_corpus(EVAL_DIR / "corpus.jsonl")
     golden = load_golden(EVAL_DIR / "golden.jsonl")
-    assert len(corpus) == 39 and len(golden) == 28
+    # m3-4 扩容后规模（39→73 docs / 28→60 query——TC-EVAL-02 完整集）
+    assert len(corpus) == 73 and len(golden) == 60
 
     # 多 token 覆盖（m1-1 观察项）：全部 query jieba 切分 ≥2 token
     thin = [c.qid for c in golden if len(segment_query(c.query)) < 2]
     assert thin == [], f"单 token query 缺乏多 token 覆盖：{thin}"
-    # 语言三态覆盖
+    # 语言三态覆盖（M3 完整集分布 24/18/18——q27 legacy 标签勘误 mix→zh 见
+    # labeling-notes m3-4 节）
     langs = {c.lang for c in golden}
     assert langs == {"zh", "en", "mix"}
     counts = {lang: sum(1 for c in golden if c.lang == lang) for lang in langs}
-    assert counts["zh"] >= 10 and counts["en"] >= 8 and counts["mix"] >= 8
+    assert counts == {"zh": 24, "en": 18, "mix": 18}
 
     report = run_evaluation(
         backend=env["backend"],
@@ -95,8 +103,8 @@ def test_eval_01_golden_baseline(matrix, tmp_path) -> None:
         ingest_service=env["service"],
     )
 
-    assert report["queries"] == 28
-    assert report["corpus_docs"] == 39
+    assert report["queries"] == 60
+    assert report["corpus_docs"] == 73
     # 语料全量上线（批量摄取链 B-1：searchable_full 全达）
     not_full = db.execute(
         "SELECT count(*) FROM documents WHERE active_status != 'searchable_full'"

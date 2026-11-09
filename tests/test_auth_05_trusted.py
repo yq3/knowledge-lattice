@@ -49,7 +49,7 @@ from knowledge_lattice.domain.auth import (
 )
 from knowledge_lattice.store.sqlite import connect
 
-SECRET = "unit-sso-secret"
+SECRET = "unit-sso-secret-0123456789abcdef012"
 AUD = "knowledge-lattice"
 
 WHITELIST = [
@@ -216,7 +216,7 @@ def test_trusted_missing_user_assertion_rejected(backend, tmp_path) -> None:
 def test_trusted_invalid_user_assertion_rejected(backend, tmp_path) -> None:
     """在场证据验签失败（他方密钥签发）→ 401 + refused。"""
     seed_user(backend, "u_obo")
-    forged = MockIdpVerifier(secret="attacker").issue_token(sub="u_obo", aud=(AUD,))
+    forged = MockIdpVerifier(secret="attacker-0123456789abcdef0123456").issue_token(sub="u_obo", aud=(AUD,))
     try:
         authenticate_trusted(
             _store(backend),

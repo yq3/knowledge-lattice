@@ -46,6 +46,7 @@ _tune_hf_env()
 
 import sqlite3  # noqa: E402  (env 先于任何 docling/huggingface 导入)
 import contextlib  # noqa: E402
+import warnings  # noqa: E402
 from collections.abc import Iterator  # noqa: E402
 
 import psycopg  # noqa: E402
@@ -117,10 +118,41 @@ def backend(request, tmp_path: Path):
         yield db
 
 
+def _drop_pg_schema(raw, schema: str, *, attempts: int = 3) -> bool:
+    """DROP SCHEMA（带重试与显式告警——issue #16：teardown 失败不再静默吞）。
+
+    - 重试 ``attempts`` 次（指数退避 0.2s/0.4s/…——连接瞬断/锁等待的瞬时
+      失败自愈面）；
+    - 持续失败**不抛异常**（teardown 失败不得覆盖用例原始异常——既有纪律），
+      但以 ``warnings.warn`` 显式登记 schema 名与末次错误——残留 schema 可
+      据此手工清理/对账（此前 ``except: pass`` 会静默泄漏 schema）；
+    - 返回是否最终成功（调用方可观测，不改变异常语义）。
+    """
+    import time as _time
+
+    last: Exception | None = None
+    for i in range(attempts):
+        try:
+            raw.execute("SET search_path TO public")
+            raw.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            return True
+        except psycopg.Error as exc:
+            last = exc
+            if i < attempts - 1:
+                _time.sleep(0.2 * (i + 1))
+    warnings.warn(
+        f"pg teardown DROP SCHEMA 失败：schema={schema}"
+        f"（已重试 {attempts} 次，末次错误：{last}）——残留 schema 需手工清理",
+        stacklevel=2,
+    )
+    return False
+
+
 @contextlib.contextmanager
 def _pg_db(dsn: str):
     """pg 臂库的规范上下文：独立 schema 生命周期（CREATE → search_path → 工厂纪律
-    （dumper/版本/pgvector 断言 + 审计分区滚动）→ 迁移 → yield → DROP CASCADE）。"""
+    （dumper/版本/pgvector 断言 + 审计分区滚动）→ 迁移 → yield → DROP CASCADE——
+    teardown 经 ``_drop_pg_schema`` 重试+告警，不静默吞失败〔issue #16〕）。"""
     from knowledge_lattice.store.postgres import migrate_db, setup_connection
 
     schema = f"lattice_test_{uuid.uuid4().hex[:12]}"
@@ -132,13 +164,8 @@ def _pg_db(dsn: str):
         migrate_db(raw)
         yield PgDb(raw, schema, dsn)
     finally:
-        try:
-            raw.execute("SET search_path TO public")
-            raw.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-        except psycopg.Error:
-            pass  # teardown 失败不得覆盖用例原始异常
-        finally:
-            raw.close()
+        _drop_pg_schema(raw, schema)
+        raw.close()
 
 
 @pytest.fixture()

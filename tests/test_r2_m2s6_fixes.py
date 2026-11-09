@@ -313,12 +313,14 @@ def test_r3_p2_2_shrink_and_rename_triggers_repair(repair_env,
     assert have_b == _expected_norms()
 
 
-def test_r3_p2_2_persisted_marker_triggers_repair(repair_env) -> None:
+def test_r3_p2_2_persisted_marker_no_longer_triggers_repair(repair_env) -> None:
     """R3 P2-2 持久化标记的观测与清面语义——**m3-3 G-23① 裁定后口径更新**：
     embed_model 入内容集合 + 内容/向量覆盖对账完备后，``index_write_failed``
     标记的**触发面整体移除**（健康索引仅标记 True 不再触发幂等整替——
     「即使内容集合恰好一致也应触发」的 m2s-6 旧口径作废）；标记保留写入
-    与清面语义：真实漂移触发修复时一并清除（见 test_b2——m3-3）。"""
+    与清面语义：真实漂移触发修复时一并清除（见 test_b2——m3-3）。
+    〔m3-4 P3-6 更名：原名 ``..._persisted_marker_triggers_repair`` 与
+    m3-3 后断言语义相反（标记**不**触发修复）——名称对齐语义。〕"""
     from knowledge_lattice.core.semantic.build import run_build
 
     env = repair_env

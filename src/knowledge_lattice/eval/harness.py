@@ -191,6 +191,9 @@ def run_evaluation(
                 "n_results": len(result_keys),
                 "recall@10": round(recall_at_k(result_keys, labels, k=10), 4),
                 "rr": round(mean_reciprocal_rank([(result_keys, labels)]), 4),
+                # 实际检索命中序（语料键坐标，m3-4 起）——deepeval 门禁逐 query
+                # 指标的真实输入面（此前仅聚合数；命中序可诊断「为什么掉」）
+                "hits": [[doc, seq] for doc, seq in result_keys[:10]],
             }
         )
     n = len(runs)
