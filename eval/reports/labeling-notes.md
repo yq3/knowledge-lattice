@@ -100,3 +100,6 @@
   真实 judge 判定与一致率/κ 出数待配额恢复复跑（路径见 blocked-claims）；
   校准框架与确定性用例已进门禁（tests/test_eval_judge_m35.py）。阈值定数
   归附录 A-6（监督侧 docs 批）。
+- R2（2026-11-10）：`--materials` 增 answersheet 非空拒写保护——已含人工标注
+  （label/rater 任一非空）时默认拒写 rc=1（报错含标注行数），`--force` 显式
+  覆盖；拒写原子化（materials 亦不写）。人工标注前建议备份到 data/eval-judge/。
