@@ -191,3 +191,89 @@ def test_tc_eval_03_materials_lang_state_matches_query() -> None:
     by_qid = {c.qid: c for c in golden}
     assert all(i["lang"] == by_qid[i["qid"]].lang for i in items)
     assert all(i["query"] == by_qid[i["qid"]].query for i in items)
+
+
+# ============ R2 P3-9：answersheet 非空拒写保护（人工标注防静默清空） ============
+
+
+def _load_m35_script():
+    """经路径加载 scripts/eval_judge_m35.py（脚本面单测——cmd_materials 卫）。"""
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "eval_judge_m35", Path(__file__).resolve().parent.parent
+        / "scripts" / "eval_judge_m35.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _write_sheet(path, rows: list[dict]) -> None:
+    import json as _json
+
+    with path.open("w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(_json.dumps(r, ensure_ascii=False) + "\n")
+
+
+def _sheet_rows(path) -> list[dict]:
+    import json as _json
+
+    return [_json.loads(ln) for ln in
+            path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+
+_SHEET_NAME = "judge-human-answersheet-m35.jsonl"
+_MATER_NAME = "judge-materials-m35.jsonl"
+
+
+def test_tc_eval_03_answersheet_blank_template_regenerates(tmp_path, monkeypatch, capsys) -> None:
+    """空模板/缺席路径不破坏：无人工标注（label/rater 全空或无文件）时
+    --materials 正常生成（首次运行路径）。"""
+    mod = _load_m35_script()
+    monkeypatch.setattr(mod, "REPORTS", tmp_path)
+    # 预置一份「全空」旧模板（如上次生成后未标注）
+    _write_sheet(tmp_path / _SHEET_NAME, [
+        {"item_id": "jm-01", "qid": "q42", "lang": "en", "label": "", "rater": ""},
+    ])
+    rc = mod.cmd_materials(n=6)
+    assert rc == 0
+    rows = _sheet_rows(tmp_path / _SHEET_NAME)
+    assert len(rows) == 6 and all(r["label"] == "" and r["rater"] == "" for r in rows)
+    assert (tmp_path / _MATER_NAME).is_file()
+
+
+def test_tc_eval_03_answersheet_annotated_refuses_overwrite(
+        tmp_path, monkeypatch, capsys) -> None:
+    """非空拒写（P3-9 主路径）：answersheet 含人工标注时 --materials 拒写——
+    报错含已检测标注行数与 --force 提示；标注文件原样保留（零清空）。"""
+    mod = _load_m35_script()
+    monkeypatch.setattr(mod, "REPORTS", tmp_path)
+    annotated = [
+        {"item_id": "jm-01", "qid": "q42", "lang": "en", "label": "faithful", "rater": "alice"},
+        {"item_id": "jm-02", "qid": "q18", "lang": "en", "label": "unfaithful", "rater": "alice"},
+        {"item_id": "jm-03", "qid": "q07", "lang": "zh", "label": "", "rater": "bob"},
+    ]
+    _write_sheet(tmp_path / _SHEET_NAME, annotated)
+    rc = mod.cmd_materials(n=6)
+    assert rc != 0, "含人工标注的 answersheet 必须拒写（防静默清空）"
+    err = capsys.readouterr().err
+    assert "3" in err and "--force" in err, (
+        f"报错须含已检测标注行数（3——label 或 rater 任一非空）与 --force 提示：{err}")
+    # 标注原样保留 + 材料文件不写（原子拒写——防 item_id 集合与旧 sheet 错位）
+    assert _sheet_rows(tmp_path / _SHEET_NAME) == annotated
+    assert not (tmp_path / _MATER_NAME).exists()
+
+
+def test_tc_eval_03_answersheet_force_overrides(tmp_path, monkeypatch, capsys) -> None:
+    """--force 显式覆盖路径：标注在档仍可重建（用户显式动作语义）。"""
+    mod = _load_m35_script()
+    monkeypatch.setattr(mod, "REPORTS", tmp_path)
+    _write_sheet(tmp_path / _SHEET_NAME, [
+        {"item_id": "jm-01", "qid": "q42", "lang": "en", "label": "faithful", "rater": "alice"},
+    ])
+    rc = mod.cmd_materials(n=6, force=True)
+    assert rc == 0
+    rows = _sheet_rows(tmp_path / _SHEET_NAME)
+    assert len(rows) == 6 and all(r["label"] == "" and r["rater"] == "" for r in rows)

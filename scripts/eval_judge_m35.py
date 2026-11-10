@@ -46,8 +46,42 @@ def _load_inputs():
     return {d.doc_id: d.text for d in corpus}, golden
 
 
-def cmd_materials(n: int) -> int:
+def _annotated_sheet_rows(path: Path) -> int:
+    """answersheet 中已含人工标注的行数（label 或 rater 任一非空——R2 P3-9
+    防静默清空的检测面；文件缺席/解析失败行不计）。"""
+    import json as _json
+
+    if not path.is_file():
+        return 0
+    n = 0
+    for ln in path.read_text(encoding="utf-8").splitlines():
+        if not ln.strip():
+            continue
+        try:
+            row = _json.loads(ln)
+        except _json.JSONDecodeError:
+            continue
+        if str(row.get("label") or "").strip() or str(row.get("rater") or "").strip():
+            n += 1
+    return n
+
+
+def cmd_materials(n: int, *, force: bool = False) -> int:
     from knowledge_lattice.eval.judge import build_materials
+
+    # R2 P3-9：answersheet 含人工标注时拒写（防复跑静默清空——双轨主路径
+    # 数据丢失面）；--force 显式覆盖。拒写=原子（materials 也不写——防
+    # 新 item_id 集合与旧 sheet 错位）。
+    sheet_path = REPORTS / "judge-human-answersheet-m35.jsonl"
+    annotated = _annotated_sheet_rows(sheet_path)
+    if annotated and not force:
+        print(
+            f"answersheet {sheet_path.name} 已含人工标注 {annotated} 行"
+            "（label/rater 任一非空）——拒写防静默清空；确认放弃标注请加"
+            " --force（或先把该文件备份到 data/eval-judge/ 再重建）",
+            file=sys.stderr,
+        )
+        return 1
 
     texts, golden = _load_inputs()
     items = build_materials(texts, golden, n=n, seed=SEED)
@@ -57,8 +91,7 @@ def cmd_materials(n: int) -> int:
         for it in items:
             fh.write(json.dumps(it, ensure_ascii=False) + "\n")
     # 人工标注回流模板（双评两列——rater 自定标识）
-    sheet = REPORTS / "judge-human-answersheet-m35.jsonl"
-    with sheet.open("w", encoding="utf-8") as fh:
+    with sheet_path.open("w", encoding="utf-8") as fh:
         for it in items:
             fh.write(json.dumps(
                 {"item_id": it["item_id"], "qid": it["qid"], "lang": it["lang"],
@@ -68,7 +101,7 @@ def cmd_materials(n: int) -> int:
     cons = {c: sum(1 for i in items if i["construction"] == c)
             for c in ("faithful", "unfaithful")}
     print(f"materials written: {path}（{len(items)} 条；三态 {langs}；构造 {cons}）")
-    print(f"human answersheet: {sheet}（标注回流格式见脚本 docstring）")
+    print(f"human answersheet: {sheet_path}（标注回流格式见脚本 docstring）")
     return 0
 
 
@@ -157,7 +190,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     mutex = parser.add_mutually_exclusive_group(required=True)
     mutex.add_argument("--materials", action="store_true",
-                       help="构建 ~50 条人工双评材料（离线确定性、seed 固定）")
+                       help="构建 ~50 条人工双评材料（离线确定性、seed 固定；"
+                            "answersheet 含人工标注时拒写——R2 P3-9 防静默清空）")
     mutex.add_argument("--run-judge", action="store_true",
                        help="真实 judge 联调（需 eval 依赖组+端点凭据；不进门禁）")
     mutex.add_argument("--calibrate", action="store_true",
@@ -165,12 +199,15 @@ def main() -> int:
     mutex.add_argument("--self-check", action="store_true",
                        help="确定性核心自检（离线：prompt/判读/κ 数学）")
     parser.add_argument("--n", type=int, default=50, help="材料条数（缺省 50）")
+    parser.add_argument("--force", action="store_true",
+                        help="与 --materials 连用：显式覆盖已含人工标注的"
+                             " answersheet（默认拒写保护——R2 P3-9）")
     parser.add_argument("--judge", type=Path, help="judge 标签文件（--calibrate）")
     parser.add_argument("--human", type=Path, help="人工标签文件（--calibrate）")
     args = parser.parse_args()
 
     if args.materials:
-        return cmd_materials(args.n)
+        return cmd_materials(args.n, force=args.force)
     if args.run_judge:
         return cmd_run_judge()
     if args.calibrate:
