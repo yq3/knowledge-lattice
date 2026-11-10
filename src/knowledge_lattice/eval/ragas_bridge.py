@@ -6,14 +6,16 @@
   运算、零 LLM、进本地门禁）：ragas 的检索面指标（context_precision 等）为
   LLM-judge 形态，与本项目「检索层确定性可离线卡门」的口径不匹配，不引入；
 - **ragas 面向响应层**（faithfulness / answer_relevancy——TC-EVAL-03 judge
-  主面，m3-5）：本段完成依赖引入（pyproject `eval` 依赖组——服务端默认
-  依赖不背 langchain 系全家桶，D2 最小依赖纪律）+ 接入形态（本桥）+ 可运行
-  验证（离线确定性：ragas 非 LLM 指标经 `ragas.evaluate` 全链跑通——见
-  ``offline_self_check``）；
-- **judge 端点只留接口不实现校准**（检查点开工裁定 2026-11-08）：端点形态
-  沿 m2-5 百炼先例（DashScope OpenAI 兼容，``LATTICE_EVAL_LLM_*`` env 零代码
-  切换——``build_openai_compat_ragas_llm``）；真实 judge 校准（~50 条人工
-  双评、阈值标定）归 m3-5；
+  主面）：m3-4 完成依赖引入（pyproject `eval` 依赖组——服务端默认依赖不背
+  langchain 系全家桶，D2 最小依赖纪律）+ 桥本件；**m3-5 固化接入形态**
+  （`response_layer_rows`→`rows_to_ragas_samples`——user_input=query /
+  reference=黄金标注语料文本 / response=被评应答；真实 LLM judge 部分不进
+  门禁）+ 离线确定性可运行验证（`offline_self_check`）；
+- **judge 端点接口已接通**（m3-5 A 组落位）：端点形态沿 m2-5 百炼先例
+  （DashScope OpenAI 兼容，``LATTICE_EVAL_LLM_*`` env 零代码切换——
+  ``build_openai_compat_ragas_llm``）；双语 judge 校准（TC-EVAL-03——双语
+  prompt/判读解析/一致率与 κ/材料构建）核心在 ``eval.judge``，阈值数值归
+  附录 A-6（监督侧 docs 批定数）；
 - **ragas 0.2.15 × langchain 0.3 系钉版**：ragas 全线（0.2~0.4）顶层 import
   ``langchain_community.chat_models.vertexai``，该模块自 langchain-community
   0.3.27 起移除而 ragas 对 langchain 系未钉版本——按最新解析必
@@ -27,6 +29,7 @@ import 在工厂/自检函数内）。
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from pathlib import Path
 
 
@@ -120,23 +123,77 @@ def build_openai_compat_ragas_llm():
     )
 
 
-def retrieval_report_to_samples(report: dict) -> "list":
-    """检索层报告 → ragas SingleTurnSample（响应层评测的数据映射面）。
+def response_layer_rows(
+    report: dict, golden: Sequence, texts: dict[str, str],
+    responses: dict[str, str] | None = None,
+) -> list[dict]:
+    """响应层评测输入行（m3-5 B 组接入形态——纯 python、门禁可测）。
 
-    m3-5 响应层评测的输入形态：``user_input``=query、``retrieved_contexts``
-    =命中序（语料键坐标串）、``reference``=黄金标注键集（judge 对照面）。
-    响应文本（response）由 m3-5 的被评对象（增强器/agent 应答）填充。
+    ``user_input``=query 文本、``retrieved_contexts``=命中序语料文本
+    （坐标 → 文本解析）、``reference``=黄金标注语料文本（多标注换行拼接
+    ——judge 对照面）、``response``=被评应答（``responses[qid]``，缺省
+    None——真实 LLM 指标运行时由 ragas 校验必填面）。元数据 qid/lang 保留
+    （judge 材料/校准对账键）。
+
+    语料键悬空（report/golden 引用语料外 doc）→ ValueError fail-fast
+    （防静默空 context）。reference 的 chunk 边界近似口径：语料全文
+    （单 chunk 文档为主——与 judge 材料同口径，如实登记）。
     """
+    responses = responses or {}
+    by_qid = {c.qid: c for c in golden}
+    rows: list[dict] = []
+    for q in report.get("per_query", []):
+        case = by_qid.get(q["qid"])
+        if case is None:
+            raise ValueError(f"report qid {q['qid']!r} 不在 golden（数据漂移？）")
+        for doc, _seq in case.labels:
+            if doc not in texts:
+                raise ValueError(
+                    f"{q['qid']} 黄金标注语料键悬空：{doc!r}（语料/切分漂移）")
+        for doc, _seq in q.get("hits", []):
+            if doc not in texts:
+                raise ValueError(
+                    f"{q['qid']} 命中语料键悬空：{doc!r}（语料漂移）")
+        label_docs = list(dict.fromkeys(doc for doc, _ in case.labels))
+        rows.append({
+            "qid": q["qid"],
+            "lang": case.lang,
+            "user_input": case.query,
+            "response": responses.get(q["qid"]),
+            "retrieved_contexts": [texts[doc] for doc, _ in q.get("hits", [])],
+            "reference": "\n".join(texts[doc] for doc in label_docs),
+        })
+    return rows
+
+
+def rows_to_ragas_samples(rows: list[dict]) -> "list":
+    """响应层输入行 → ragas SingleTurnSample（惰性 ragas import——默认
+    环境零 ragas 也可导入本模块；字段面 faithfulness/answer_relevancy 直用）。"""
     from ragas.dataset_schema import SingleTurnSample
 
     return [
         SingleTurnSample(
-            user_input=q["qid"],
-            retrieved_contexts=[f"{doc}#{seq}" for doc, seq in q.get("hits", [])],
-            reference=None,
+            user_input=r["user_input"],
+            response=r["response"],
+            retrieved_contexts=list(r["retrieved_contexts"]),
+            reference=r["reference"],
         )
-        for q in report.get("per_query", [])
+        for r in rows
     ]
+
+
+def retrieval_report_to_samples(report: dict, golden: Sequence,
+                                texts: dict[str, str]) -> "list":
+    """检索层报告 + 黄金集 + 语料文本 → ragas SingleTurnSample（响应层输入）。
+
+    m3-5 P3-6 清偿：原签名只收 report，但 per_query 仅 qid/hits——docstring
+    承诺的 user_input=query / reference=黄金标注无法兑现（误导陷阱）。现签名
+    显式接收 golden 与 texts（语料键 → 文本），语义即 ``response_layer_rows``
+    docstring（user_input=query 文本、reference=黄金标注语料文本、
+    retrieved_contexts=命中序文本）；response 由调用方经 ``responses`` 注入
+    （被评对象=增强器/agent 应答——见 ``response_layer_rows``）。
+    """
+    return rows_to_ragas_samples(response_layer_rows(report, golden, texts))
 
 
 def offline_self_check() -> dict:
