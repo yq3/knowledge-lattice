@@ -1,0 +1,54 @@
+{
+ "sessions": 60,
+ "citations_total": 312,
+ "distinct_ids": 74,
+ "existing": 72,
+ "missing": 2,
+ "missing_ratio": 0.027,
+ "missing_ids": [
+  "chk_agent_demo_fabricated_01",
+  "chk_agent_demo_fabricated_02"
+ ],
+ "per_session_missing": {
+  "aud_c0d7914b-230d-4cf0-9b90-fd4de59143c9": [
+   "chk_agent_demo_fabricated_01"
+  ],
+  "aud_898d3ec4-e7a5-4690-a6ac-84d4906f2483": [
+   "chk_agent_demo_fabricated_02"
+  ],
+  "aud_98190ea0-3cb2-4194-83d6-57901df0c61e": [
+   "chk_agent_demo_fabricated_01"
+  ],
+  "aud_927e18f6-f5b6-4aa9-8120-2f814a8f754c": [
+   "chk_agent_demo_fabricated_02"
+  ],
+  "aud_15fa7b8d-63be-43a1-8338-810a932fb75e": [
+   "chk_agent_demo_fabricated_01"
+  ],
+  "aud_847b8991-c95d-4f3a-9a05-593c3ca98847": [
+   "chk_agent_demo_fabricated_02"
+  ],
+  "aud_84e41755-62c9-4c53-a9c7-80b46762d299": [
+   "chk_agent_demo_fabricated_01"
+  ],
+  "aud_4f72e61e-5bc0-4731-a00a-d0e3a0e4ce94": [
+   "chk_agent_demo_fabricated_02"
+  ],
+  "aud_aa3e1d92-7b49-4ffc-81cf-0d7c2ed2c191": [
+   "chk_agent_demo_fabricated_01"
+  ],
+  "aud_18092be4-fc5d-4d23-ac82-391bdeb8355f": [
+   "chk_agent_demo_fabricated_02"
+  ],
+  "aud_fbcee0a6-27d3-4895-8fdb-aae9eca92328": [
+   "chk_agent_demo_fabricated_01"
+  ],
+  "aud_d7e103d7-057a-4315-9cb1-fbd8f198a1e2": [
+   "chk_agent_demo_fabricated_02"
+  ]
+ },
+ "backend": "pg",
+ "form": "constructed_sessions",
+ "fabricated_injected": 12,
+ "corpus_docs": 73
+}

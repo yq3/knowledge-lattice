@@ -82,3 +82,24 @@
 - **deepeval 门禁下限冻结**：逐 query recall@10 exact 值（tests/
   test_eval_gate_m34.py `_R10_FLOORS`——门禁同环境实测，与 m3-baseline-*.json
   逐条一致）+ 聚合 0.05 余量；注入实证见 `m3-4-injection-evidence.md`。
+
+## m3-5（TC-EVAL-03 judge 双语校准材料——2026-11-10）
+
+- **材料**：`judge-materials-m35.jsonl`（50 条）+ 标注回流模板
+  `judge-human-answersheet-m35.jsonl`——构建 `scripts/eval_judge_m35.py
+  --materials`（确定性 seed=20261110，复跑同产物）；三态 zh 20 / en 15 /
+  mix 15（黄金集三态等比抽样），构造 faithful 25 / unfaithful 25
+  （faithful=标注语料连续句片段〔有依据〕；unfaithful=**语料内其他文档**
+  句子〔跨文档真实业务表述、对 reference 无依据——幻觉面〕，非编造噪声）。
+- **reference 近似口径**：标注键 → 语料**全文**（chunk 边界近似为整文档
+  ——语料以单 chunk 文档为主；如实登记不冒充 chunk 精切）。
+- **人工双评双轨**（用户裁定 2026-11-10）：用户侧按 answersheet 模板标注
+  回流（label ∈ faithful|unfaithful + rater 标识）；coder 不代行——本轮
+  chat 端点受阻（见 m3-5-blocked-claims.md）judge 侧无对照面，无代行小样。
+- **judge 联调受阻申报**：chat 端点全档 403/429/404（与 m3-4 同形态）——
+  真实 judge 判定与一致率/κ 出数待配额恢复复跑（路径见 blocked-claims）；
+  校准框架与确定性用例已进门禁（tests/test_eval_judge_m35.py）。阈值定数
+  归附录 A-6（监督侧 docs 批）。
+- R2（2026-11-10）：`--materials` 增 answersheet 非空拒写保护——已含人工标注
+  （label/rater 任一非空）时默认拒写 rc=1（报错含标注行数），`--force` 显式
+  覆盖；拒写原子化（materials 亦不写）。人工标注前建议备份到 data/eval-judge/。
