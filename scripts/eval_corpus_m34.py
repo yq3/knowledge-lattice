@@ -2,7 +2,10 @@
 # -*- coding: utf-8 -*-
 """m3-4 A 组：corpus.jsonl 扩容批（39 → 73 docs——TC-EVAL-02 语料侧成对扩容）。
 
-一次性数据构建脚本（幂等：按 doc_id 去重合并后重写 corpus.jsonl）。新增三组：
+**一次性数据构建脚本**（m3-5 P3-4 勘正：非幂等——目标 doc_id 已在场即拒，
+重复运行会失败；入库数据含人工修正〔gk-en-m05「免抵退/免退」改写为
+exemption-credit-refund/exemption-refund 纯英表述——见下〕，本脚本正文与
+eval/corpus.jsonl 同源）。新增三组：
 - gk-zh-m01..09（纯中 9 篇：电子发票/认证勾选/纳税信用/欠税出境/稽查自查/
   发票挂失/小规模免征/预缴税款/减免备查）；
 - gk-en-m01..12（纯英 12 篇：VAT invoice red-reversal/non-resident withholding/
@@ -20,7 +23,6 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 EVAL_DIR = Path(__file__).resolve().parent.parent / "eval"
@@ -207,14 +209,15 @@ NEW_DOCS: list[dict] = [
         "dataset": "ds:vat_lib", "dims": OS_VAT,
         "text": (
             "Export goods are subject to VAT refund or exemption depending on the trader "
-            "category. Production enterprises apply the免抵退 method under which the input "
-            "VAT attributable to exports offsets output VAT on domestic sales, with any "
-            "excess refunded at the export rebate rate. Foreign trade enterprises apply the "
-            "免退 method and claim refunds based on the purchase invoice amount multiplied by "
-            "the applicable rebate rate. The rebate rate varies by commodity classification "
-            "and is announced by the Ministry of Finance. Exporters must collect the export "
-            "declaration form, sales contract and banking receipt within the prescribed "
-            "period declared for the refund claim, otherwise the claim expires."
+            "category. Production enterprises apply the exemption-credit-refund method "
+            "under which the input VAT attributable to exports offsets output VAT on "
+            "domestic sales, with any excess refunded at the export rebate rate. Foreign "
+            "trade enterprises apply the exemption-refund method and claim refunds based "
+            "on the purchase invoice amount multiplied by the applicable rebate rate. The "
+            "rebate rate varies by commodity classification and is announced by the "
+            "Ministry of Finance. Exporters must collect the export declaration form, "
+            "sales contract and banking receipt within the prescribed period declared "
+            "for the refund claim, otherwise the claim expires."
         ),
     },
     {

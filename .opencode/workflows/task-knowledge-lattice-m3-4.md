@@ -5,7 +5,7 @@ target: /Users/youqi/develop/knowledge-lattice
 coderTaskId: ses_e44b99653ffelr9DJyJkxuRDPi
 testerTaskId: ses_e416cf4bbffeXfKLKQXWnjXgrY
 committerTaskId: ses_e414bce1fffec7il2ErfxdKXr8
-status: approved
+status: done
 round: 1
 maxRounds: 3
 testVerdict: PASS
@@ -47,7 +47,7 @@ filesChanged:
   - uv.lock
 endReason: null
 createdAt: 2026-11-08T18:40:40+0800
-updatedAt: 2026-11-09T14:13:40+0800
+updatedAt: 2026-11-09T14:37:56+0800
 ---
 
 # task-knowledge-lattice-m3-4: 评测框架批
@@ -110,9 +110,9 @@ ragas 接入并给**选型结论**（#38 P2 标注为选型——接入后回写
 
 ## 遗留事项（跨任务移交）
 - [x] **本轮清偿**（2026-11-09 双通过，SHA 007196c）：m3-1 移交 #16 conftest teardown〔重试+schema 名告警+3 用例——随 PR 关闭〕+warnings 治理〔171→0〕；m3-3 移交顺手批 P3-2/P3-6/P3-10〔端点级 e2e 8 用例〕；E 组全清。
-- [ ] **移交 m3-5（Committer P3×11 处置——见 _m3-plan §二 m3-4 移交）**：顺手批候选 P3-2（floor=None fail-open）+P3-7（聚合下限显式 raise 使 -O 等强）+P3-8（per-query RR exact 收紧——G-29③）+P3-9（冻结表 vs 基线 JSON 自动同源校验）+P3-6（ragas_bridge docstring 与实现不符——m3-5 接入时修）；卫生登记 P3-3（eval_baseline 头部用法/默认 label——旧命令覆盖 m1 档风险）+P3-4（eval_corpus 脚本与数据不同源+「幂等」docstring）+P3-10（harness/eval_baseline 自称 M1、.env.example 补 LATTICE_EVAL_LLM_*、eval_synth field 未用、test_auth_03 硬编码密钥）；裁定项 P3-1（deepeval 分组 dev 组建议——维持现择型已注记 RUNBOOK §1.aa/G-29④，m3-5 可裁定）。
-- [ ] **docs 已落（本轮监督侧 docs 批）**：G-29 新增（①ragas 钉版②统一 lock docling 共享依赖降级③RR exact 缺位④deepeval 分组口径）；G-6 v1.4（M3 基线出数+复测载体就位）；RUNBOOK §1.aa（uv sync --frozen/eval 组/冻结表维护口径/基线复跑）+§1.x（LATTICE_EVAL_LLM_*）。
-- [ ] **登记部署期/用户侧（不阻塞）**：G-28③ 生产接线+PG 复验+G-28①②⑥⑧ 沿 m3-3 登记维持；TC-UI-01~05 人工走查维持（本段无 UI 形态变化）；待决-1 真实语料维持未决（LLM 候选复跑/增补 m3-5）。
+- [x] **移交 m3-5（Committer P3×11 处置——见 _m3-plan §二 m3-4 移交）**：~~顺手批候选 P3-2（floor=None fail-open）+P3-7（聚合下限显式 raise 使 -O 等强）+P3-8（per-query RR exact 收紧——G-29③）+P3-9（冻结表 vs 基线 JSON 自动同源校验）+P3-6（ragas_bridge docstring 与实现不符——m3-5 接入时修）；卫生登记 P3-3（eval_baseline 头部用法/默认 label——旧命令覆盖 m1 档风险）+P3-4（eval_corpus 脚本与数据不同源+「幂等」docstring）+P3-10（harness/eval_baseline 自称 M1、.env.example 补 LATTICE_EVAL_LLM_*、eval_synth field 未用、test_auth_03 硬编码密钥）；裁定项 P3-1（deepeval 分组 dev 组建议——维持现择型已注记 RUNBOOK §1.aa/G-29④，m3-5 可裁定）~~ **已清偿：来源 task-knowledge-lattice-m3-5（2026-11-10 双通过，PR 待开）——P3-2/7/8/9/6/3/4/10 代码面全清+P3-1 用户裁定维持主依赖（2026-11-10）+P3-5/P3-11 docs 登记（G-29②/RUNBOOK §1.aa）**。
+- [x] **docs 已落（本轮监督侧 docs 批）**：~~G-29 新增（①ragas 钉版②统一 lock docling 共享依赖降级③RR exact 缺位④deepeval 分组口径）；G-6 v1.4（M3 基线出数+复测载体就位）；RUNBOOK §1.aa（uv sync --frozen/eval 组/冻结表维护口径/基线复跑）+§1.x（LATTICE_EVAL_LLM_*）~~ 已落笔核验（m3-5 开工时监督侧复核；m3-5 追加 G-6 v1.5/G-29 更新/G-30 新增/RUNBOOK §1.aa 扩充）。
+- [ ] **登记部署期/用户侧（不阻塞）**：G-28③ 生产接线+PG 复验+G-28①②⑥⑧ 沿 m3-3 登记维持；TC-UI-01~05 人工走查维持（本段无 UI 形态变化）；待决-1 真实语料维持未决（~~LLM 候选复跑/增补 m3-5~~ → m3-5 复跑仍受阻——配额恢复补跑小批，见 m3-5 检查点遗留节）。
 （新任务开工时 supervised-coding 读历史检查点的本节 + 轮次记录中"移交/待办"条目；未了结事项默认并入新任务处理并更新相应测试用例；处理完毕回写勾选并注来源任务 ID，继续移交的注明去向）
 
 ## 轮次记录
@@ -125,6 +125,11 @@ ragas 接入并给**选型结论**（#38 P2 标注为选型——接入后回写
 - **双通过达成（2026-11-09 13:21，round=1 收敛）**：testVerdict=PASS + reviewVerdict=APPROVED，testedSha=reviewedSha=007196c996c759359508d7ba34e0840fdcd678ba=当前 HEAD——status=approved，待用户确认交付（交付序列：监督侧 docs 批→coder chore 归档批→push+PR base=develop→committer PR review→manifest→用户合入）。**上报裁定点**：①coder 申报①/边界①——TC-EVAL-02 完整收口口径（建议 docs 批明示「三态覆盖已机检达标、真实 query/LLM 占比待 m3-5」）；②Committer 需求边界 N-1/N-2/N-3（docs 批注记项）；③Committer P3-1 deepeval 分组建议（维持主依赖+RUNBOOK 注记 vs 移 dev 组——本轮不改，docs 批注记去向待定）；④P3×11 去向（m3-5 顺手批为主，docs 批登记项：P3-5 lock 副作用/P3-8 known-gaps）。
 - **交付裁定（2026-11-09 13:30 用户「同意」——status=approved→交付中）**：范围口径确认——TC-EVAL-02 收口口径=「三态覆盖达标≠完整收口，LLM 占比待 m3-5」（N-1 落笔）；TC-EVAL-04 维护口径=「有意配方变更=显式重测更新冻结表」（N-2 落笔）；依赖分组注记（N-3 落笔）；P3×11 移交 m3-5 顺手批为主。交付序列启动。
 - **交付执行①：监督侧 docs 批完成（2026-11-09 14:13）**——TEST-CASES **v1.9.18**（TC-EVAL-02 完成态注记〔三态覆盖 ✅+收口口径〕+TC-EVAL-04 完成态注记〔双层卡门+注入双源+维护口径〕+TC-EVAL-01 下限重定注记+TC-SEV-03 v1.9.18 重测注记+§六 M3 行 m3-4 段）；known-gaps **G-29 新增**（ragas 钉版+lock 副作用+RR exact 缺位+deepeval 分位）+**G-6 v1.4 注记**（M3 基线 sqlite 0.9167/0.8031、pg 0.8333/0.7213——重开条件复测载体就位）；RUNBOOK **§1.aa 新增**（uv sync --frozen/eval 组残留/共享依赖锁副作用/冻结表维护口径/基线复跑 m1 档只读）+**§1.x 评测 LLM 段**（LATTICE_EVAL_LLM_*）；AGENTS §1 M3 进度更新（m3-4 交付+剩余 1 段 m3-5）；_m3-plan row4 done+§二挂账更新（#16 划销+m3-3 移交清偿+m3-4 移交登记）+§三下段指引 m3-5（基线 1898+1）；**m3-3 检查点遗留节回写两条勾选**（m3-4 顺手批清偿+文档面纪律滞后勾选）。工作区待 coder chore 归档批：上述 docs 8 文件+m3-3 检查点（回写）+本检查点（新入库）。issue #16 随 PR closing（合入后未自动关则监督侧手动关——沿 #15 先例）。
+- **交付执行②：Coder chore 归档批完成（2026-11-09 14:20 报告，续接会话 ses_e44b99653ffelr9DJyJkxuRDPi）**——前置核验 ✓（HEAD=007196c、origin/develop=cd6d7a3 无前进）；**chore `d6d1618`**（7 files +434/−17 doc-only，git diff src/tests/scripts/prototype=0；工作区净）；**push 成功 eb0eb71..d6d1618**（R1 007196c+chore d6d1618 两提交）；**PR #26 已开**（base=develop，https://github.com/yq3/knowledge-lattice/pull/26 ，--body-file 正确使用——body 3975 chars 回读双校验通过、`Closes #16` 独占行在位、EVIDENCE-MANIFEST 锚点在位、MERGEABLE）。待办：Committer PR review 留痕 → Coder manifest → 用户合入。
+- **交付执行③：Committer PR 审查留痕完成（2026-11-09 14:22 报告，续接会话 ses_e414bce1fffec7il2ErfxdKXr8）**——`--approve` 自审限制失败（沿 #2~#25 先例），回退 **COMMENTED review 完整留痕**（review id `PRR_kwDOVZ9dhM8AAAABWwkuEw`，anchor d6d1618，body 3297 chars——APPROVED 结论/R1 继承〔code 007196c·delivery d6d1618·base cd6d7a3〕/门禁采信 Tester 1898+1〔committer 未独立复跑注明〕+静态对账〔+18=3+4+3+8、冻结表零漂移〕/择型 11 条+P3×3 裁定+边界 5 条复核/P3×11 去向/manifest 放行条件）；**chore `d6d1618` doc-only 复核通过**（7 文件清单+src/tests/scripts/prototype 空 diff+冻结正文零触碰；full diff 38 files +13293/−2838 对账闭合）；**docs 批抽核全落笔**（R1 建议清单逐项 ✅——3 条偏差注记不阻断：①PR body caveat 6 transformers 归因以 G-29② docs 为准②冻结表「同源」当前为人工纪律、自动校验 P3-9 归 m3-5〔前瞻措辞〕③工作区检查点交付条目系后续归档产物不在 PR diff）。PR #26 终态：OPEN/MERGEABLE/CLEAN，commits=[007196c（R1）, d6d1618（chore）]，base=develop。
+- **交付执行④：Coder manifest 入 PR 完成（2026-11-09 14:25 报告，续接会话）**——manifest 15 键替换占位（head=deliveryHead=d6d1618c089e77fd1e00364e18736282bb8f713e、codeSha=testedSha=reviewedSha=007196c、rounds=1、双 verdict、gate{1898+1/基线 1880+1/+18/pg 臂 722/warnings 口径}、reviewRecord{PRR_kwDOVZ9dhM8AAAABWwkuEw}、selectionAdjudication{11/11+P3 3/3+边界 5}、specRulings×4、caveats×7、stale=false）；回读双校验 16 项 ALL PASS（json 可解析/15 键齐全/Closes #16 在位/commits 表/验证节/摘要零丢失/占位消失）。**PR #26 终态：OPEN/MERGEABLE——待用户合入**（`Closes #16` 合并时生效；若 body 经 `gh pr edit` 重写后合并不自动关闭，沿 #15 先例监督侧手动关）。合入后补记 mergeCommit/origin develop 前进条目；该条目之后的工作区改动（检查点交付条目）随 m3-5 chore 归档批入库。
+
+- **交付完成（终态）（2026-11-09 14:37，用户确认「合入」，status=done）**：**PR #26 MERGED**——mergeCommit `8bed157a5dde7111cd3a0e2ea2d8f49696e6dd29`（mergedAt 2026-11-09T06:32:36Z，merge 形态沿 #24/#25 先例、远端分支保留）；origin/develop 前进至 8bed157，本地 develop/develop_opencode 均 ff 同步（develop_opencode 本地含 merge commit 领先远端 1 提交——沿先例不强推）。**issue #16 手动关闭**（PR body 含 `Closes #16` 但 merge 未自动关闭——body 曾经 `gh pr edit` 重写 manifest，GitHub 不重新解析 closing keywords〔已知行为，#13/#14/#15 同因〕；监督侧关闭并留交付评论：_drop_pg_schema 重试+告警+3 用例+SHA 007196c+门禁 1898+1）。**m3-4 段收官：round=1 一轮收敛（coder→tester PASS→committer APPROVED），门禁 1880+1→1898+1，TC-EVAL-02 三态覆盖 ◐（LLM 占比收口 m3-5）/TC-EVAL-04 ✅、双后端完整集基线出数、ragas 接入（G-29 登记）、issue #16 关闭、warnings 171→0、m3-3 移交顺手批清偿。M3 进度 4/5（m3-5 评测收口批——下一段，含 m3-4 移交 P3×11 顺手处置）；本条目之后的工作区改动（检查点交付条目）随 m3-5 chore 归档批入库。**
 
 ## 最新验证意见原文
 （tester/committer 报告逐字保留——恢复时给 coder 的修复依据）

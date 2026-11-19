@@ -1,8 +1,9 @@
-"""黄金集评测 harness（TC-EVAL-01——M1 小型黄金集最小实现）。
+"""黄金集评测 harness（TC-EVAL-01/02——语料与黄金集随里程碑演进：M1 小型集
+28q/39docs → **m3-4 起为 M3 完整集 60q/73docs**）。
 
 流程：合成语料批量摄取（TXT——顺路覆盖 TC-ING-04① 编码探测路径）→ 逐 query
 跑完整检索配方 → 结果 chunk_id 映射 (doc_id, seq) → Recall@k / MRR（检索层、
-零 LLM——响应层指标与 judge 属 M3）。
+零 LLM——响应层指标与 judge 见 eval/ragas_bridge.py、eval/judge.py）。
 
 身份约定：语料/黄金集文件用**稳定语料键**（corpus key，如 `gk-vat-01`）；
 doc_id 是摄取时生成的 ULID（首次上传不带显式 doc_id——「显式 doc_id=覆盖上传」
@@ -17,7 +18,8 @@ doc_id 是摄取时生成的 ULID（首次上传不带显式 doc_id——「显�
   标注命中 chunk（标注记录归档：eval/reports/labeling-notes.md）。
 
 双后端各一份基线（G-6）：run_evaluation 在同一代码下对 sqlite/pg 参数化各跑，
-基线数字归档 eval/reports/m1-baseline-<backend>.md（scripts/eval_baseline.py 生成）。
+基线数字归档 eval/reports/m{1,3}-baseline-<backend>.md（scripts/eval_baseline.py
+生成——m1 档为小型集历史档，现行 m3 档缺省）。
 """
 
 from __future__ import annotations

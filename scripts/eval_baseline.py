@@ -1,14 +1,21 @@
 #!/usr/bin/env python
-"""M1 黄金集基线生成（TC-EVAL-01——双后端各一份基线报告，M1-5 校准实验输入）。
+"""黄金集基线生成（TC-EVAL-01/02——双后端各一份基线报告）。
 
-用法：
-  uv run python scripts/eval_baseline.py --backend sqlite
+用法（m3-5 P3-3 更新——数据已是 M3 完整集 60q/73docs，缺省 label=m3）：
+  uv run python scripts/eval_baseline.py --backend sqlite            # → m3-baseline-sqlite.*
   LATTICE_PG_DSN=postgresql://postgres:lattice@localhost:5432/lattice \\
       uv run python scripts/eval_baseline.py --backend pg
+  uv run python scripts/eval_baseline.py --backend sqlite --label m3 --out /tmp/x.md
 
-产物：eval/reports/m1-baseline-<backend>.md（Recall@1/5/10 + MRR + 逐 query 明细
-+ 语料/运行口径）。运行口径与 tests/test_eval_01_golden.py 同构（FakeEmbedder
-确定性向量、reranker/enhancer none 档——跨后端可比性优先）。
+产物：eval/reports/<label>-baseline-<backend>.md + .json（Recall@1/5/10 + MRR
++ 逐 query 明细 + 语料/运行口径）。运行口径与 tests/test_eval_01_golden.py
+同构（FakeEmbedder 确定性向量、reranker/enhancer none 档——跨后端可比性
+优先）；**矩阵种子与门禁同源**（tests/eval_seed.py seed_clean_eval_matrix——
+P3-8/P3-9 冻结表同源前提）。
+
+**m1 档只读保护**：m1-baseline-*.md/json 为 M1 小型集历史档（28q/39docs，
+随数据扩容不再复现）——label=m1 需显式 ``--allow-m1-overwrite``（防旧命令
+静默覆盖历史档）。
 """
 
 from __future__ import annotations
@@ -24,56 +31,30 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tests"))
 
+from eval_seed import ORG, seed_clean_eval_matrix  # noqa: E402
+
 EVAL_DIR = ROOT / "eval"
-ORG = "org:tax"
-
-
-def _seed_matrix(db) -> None:
-    """org:tax 造数（与 conftest 标准矩阵等价的最小面：org/dims/users/grants）。"""
-    from helpers import (
-        dim_id_for,
-        seed_dataset,
-        seed_dim_value,
-        seed_dimension,
-        seed_grant,
-        seed_membership,
-        seed_org,
-        seed_user,
-        val_id_for,
-    )
-
-    seed_org(db, ORG)
-    seed_dataset(db, ORG, "ds:vat_lib")
-    seed_dataset(db, ORG, "ds:expense_lib")
-    seed_dimension(db, ORG, "region")
-    seed_dim_value(db, dim_id_for(ORG, "region"), "CN")
-    seed_dim_value(db, dim_id_for(ORG, "region"), "OS")
-    seed_dimension(db, ORG, "tax_type")
-    db.execute(
-        "UPDATE dimensions SET required = 0 WHERE org_id = ? AND key = 'tax_type'", (ORG,)
-    )
-    seed_dim_value(db, dim_id_for(ORG, "tax_type"), "VAT")
-    seed_user(db, "u_full")
-    seed_membership(db, "u_full", ORG)
-    for value in ("CN", "OS"):
-        seed_grant(
-            db, user_id="u_full", dim_id=dim_id_for(ORG, "region"),
-            val_id=val_id_for(ORG, "region", value),
-        )
-    seed_grant(  # 语料含 tax_type=VAT 文档——u_full 须有对应授权（FR-4 写校验）
-        db, user_id="u_full", dim_id=dim_id_for(ORG, "tax_type"),
-        val_id=val_id_for(ORG, "tax_type", "VAT"),
-    )
-    db.commit()
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend", choices=["sqlite", "pg"], required=True)
-    parser.add_argument("--label", default="m1",
-                        help="基线标签（m1=M1 小型集 / m3=M3 完整集——文件名与标题）")
+    parser.add_argument("--label", default="m3",
+                        help="基线标签（m3=M3 完整集〔缺省〕/ m1=M1 历史档——"
+                             "m1 需 --allow-m1-overwrite）")
+    parser.add_argument("--allow-m1-overwrite", action="store_true",
+                        help="显式允许覆盖 m1 历史档（m1-baseline-*.md/json——"
+                             "28q/39docs 小型集，随数据扩容不再复现）")
     parser.add_argument("--out", default=None, help="报告输出路径（缺省 eval/reports/）")
     args = parser.parse_args()
+
+    if args.label == "m1" and not args.allow_m1_overwrite:
+        print(
+            "m1 档为历史归档（M1 小型集 28q/39docs，数据已扩容为 M3 完整集）——"
+            "覆盖需显式 --allow-m1-overwrite；当前数据请用 --label m3",
+            file=sys.stderr,
+        )
+        return 1
 
     from fake_providers import TokenBagEmbedder
     from knowledge_lattice.adapters.embedder import EmbeddingGate
@@ -95,7 +76,7 @@ def main() -> int:
         conn = connect(tmp / "lattice.db")
         migrate_db(conn)
         db = SqliteDb(conn)
-        _seed_matrix(db)
+        seed_clean_eval_matrix(db)
         backend = SqliteBackend(conn)
     else:
         import os
@@ -117,7 +98,7 @@ def main() -> int:
         conn.execute(f'SET search_path TO "{schema}", public')
         setup_connection(conn)
         migrate_db(conn)
-        _seed_matrix(PgDb(conn, schema, dsn))
+        seed_clean_eval_matrix(PgDb(conn, schema, dsn))
         backend = PgBackend(conn)
 
     objects_dir = tmp / "objects"

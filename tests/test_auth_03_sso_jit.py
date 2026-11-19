@@ -336,11 +336,12 @@ def test_mock_idp_prod_default_secret_rejected() -> None:
     from knowledge_lattice.adapters.auth_sso import (
         MockIdpVerifier, build_sso_verifier,
     )
+    from knowledge_lattice.config import DEFAULT_SSO_MOCK_SECRET
 
     try:
         build_sso_verifier(Settings(
             environment="prod", sso_provider="mock-idp",
-            sso_mock_secret="dev-mock-idp-secret-0123456789abcdef",  # 公开缺省值
+            sso_mock_secret=DEFAULT_SSO_MOCK_SECRET,  # 公开缺省值（引用常量——P3-10）
         ))
         raise AssertionError("prod + 公开缺省密钥应 fail-closed")
     except ValueError as exc:

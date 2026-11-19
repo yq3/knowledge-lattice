@@ -261,5 +261,26 @@ LATTICE_PG_DUMP_CMD="docker exec lattice-pg pg_dump"   # .env 注入示例
   逐 query recall@10 exact 冻结表+聚合 0.05 余量双层；**有意配方变更会红——属预期，须显式重测
   并同步更新冻结表与 `eval/reports/m3-baseline-*.json`**（两处同源，防漂移）。
 - **基线复跑**：`scripts/eval_baseline.py --label m3 --backend {sqlite,pg}`（**m1 历史档只读，
-  勿覆盖**——不带 label 的旧命令默认 m1，数据已演进到 M3 集）；黄金集合成生成
+  勿覆盖**——不带 label 的旧命令默认 m1，数据已演进到 M3 集；m3-5 起覆盖 m1 档需显式
+  `--allow-m1-overwrite`，否则 exit 1）；黄金集合成生成
   `scripts/eval_synth_m34.py`（需 `LATTICE_EVAL_LLM_*` env，见 §1.x；`--offline` 确定性兜底）。
+- **judge 校准三形态（m3-5 起，TC-EVAL-03）**：`scripts/eval_judge_m35.py`——`--materials`
+  （生成 50 条双评材料+标注回流模板；**answersheet 已含人工标注〔label/rater 任一非空〕时默认
+  拒写 rc=1**〔报错含标注行数〕，防静默清空人工标签——确认放弃标注加 `--force` 显式覆盖；
+  标注前建议先备份到 `data/eval-judge/`）/`--run-judge`（真实联调——judge 端点沿百炼先例
+  `LATTICE_EVAL_LLM_*` env，联调不进门禁）/`--calibrate`（一致率/Cohen's κ 校准报告）。
+  **当前 chat 端点配额受阻**（403/429/404 全档）——复跑路径与受阻记录见
+  `eval/reports/m3-5-blocked-claims.md`；人工标注回流后出数、A-6 阈值随后定数。
+- **响应层指标（m3-5 起）**：`ragas_bridge.response_layer_rows`（harness 基线报告+黄金集→
+  ragas 行）→ `rows_to_ragas_samples`（惰性，需 `--group eval`）→ `ragas evaluate`
+  （faithfulness/answer_relevancy——真实 LLM judge 面不进门禁）。**应答来源口径**：复跑主来源
+  =增强器应答、辅助=judge 材料构造应答（如实标注）。
+- **在线锚点抽样（m3-5 起，TC-EVAL-05）**：`scripts/eval_anchor_m35.py --demo`（构造会话全链：
+  真实检索配方+审计写月库+读回抽样，双后端出数——现库归档
+  `eval/reports/m3-5-anchor-sampling-*`）/`--db`（生产月库抽样——**actor_prefix 现硬编码
+  `agent:`，现网审计 actor 为裸 user_id，生产使用前须按部署 actor 形态配置**，见 G-30）。
+- **MRL 截断复测（m3-5 起，G-8①）**：判据材料 `benchmarks/report-m3-5-g8-mrl-fullset.md`
+  （512/256 两档全 0.00pp、分辨率 1.67pp——「截断开放为可选配置」经 env
+  `LATTICE_EMBED_MODEL/DIM` 零代码）；复测工件在 `data/bench-results/`（**gitignored 不入库，
+  需真实 API key+配额**——不可从仓库复现，m2-5 28q 旧档数字保留于
+  `benchmarks/report-m2-5-g8-real-model.md`）。
