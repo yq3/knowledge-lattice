@@ -5,7 +5,7 @@ target: /Users/youqi/develop/knowledge-lattice
 coderTaskId: ses_e3ab96740ffeWJ5p76jK5CMOdO
 testerTaskId: ses_e3a984a73ffeTlm7yFWdhD04zz
 committerTaskId: ses_e3a5b5156ffeM62rCLNsDxIVtN
-status: approved
+status: done
 round: 2
 maxRounds: 3
 testVerdict: PASS
@@ -41,7 +41,7 @@ filesChanged:
   - tests/test_eval_response_m35.py
 endReason: null
 createdAt: 2026-11-10T19:41:51+0800
-updatedAt: 2026-11-10T22:29:58+0800
+updatedAt: 2026-11-19T20:20:00+0800
 ---
 
 # task-knowledge-lattice-m3-5: 评测收口批（M3 末段）
@@ -135,6 +135,10 @@ m2-5 已有首次真实模型数据（百炼 text-embedding-v4：512/256 两档�
 
 - **R2 双通过达成（2026-11-10 22:20，round=2）**：testVerdict=PASS + reviewVerdict=APPROVED，testedSha=reviewedSha=a96e606776593b00eb3112d967ff75599cf22fcc=当前 HEAD——status=approved；交付序列启动（用户 2026-11-10 21:45 已预先确认「R2 双通过后进交付序列」）：①监督侧 docs 批（R1 §八清单+R2 §四增量）→②coder chore 归档批→③push+PR base=develop→④committer PR review 留痕→⑤coder manifest 入 PR→⑥用户合入。
 - **交付执行①：监督侧 docs 批完成（2026-11-10 22:30）**——TEST-CASES **v1.9.19**（TC-EVAL-03 框架✅/真实校准◐ 受阻注记+TC-EVAL-05 观察项✅〔N-1 返回面口径+G-30〕+TC-EVAL-04 m3-5 增补〔RR exact/同源校验/clean env/fail-open 删除/显式 raise〕+TC-EVAL-01 clean env 澄清+m1 只读保护+TC-EVAL-02 仍受阻注记+A-6 待数〔受阻〕+§六 M3 行 m3-5 段+**M3 达成受限宣告〔N-4 句式〕**+依据行 G-1~G-30）；known-gaps **G-8 v3**（①收口——MRL 判据落笔 512/256 全 0.00pp/②维持）+**G-29 更新**（③划销+④裁定维持主依赖+⑤ judge 判读残余新增）+**G-30 新增**（TC-EVAL-05 数据面四缺口——N-1 裁定载体）+**G-6 v1.5**（真实模型 60q 偏差 3.33pp 维持不关闭）+总览表四行；RUNBOOK **§1.aa 扩充**（judge 三形态+answersheet 保护语义〔R2〕+响应层用法+anchor demo/db+MRL 复跑+data/ 工件不入库）；AGENTS §1 M3 全部交付✅+达成宣告句；_m3-plan row5 done+§二挂账终态+§三 M3 终态指引（配额恢复补跑小批/部署期/顺手批/用户侧四去向）；m3-4 检查点遗留节回写两条勾选（m3-5 P3×11 清偿+docs 已落核验）；labeling-notes R2 保护一句。工作区待 coder chore 归档批：docs 3 文件+AGENTS+RUNBOOK+_m3-plan+m3-4 检查点（回写）+本检查点（含交付条目）+labeling-notes。
+- **交付执行②③：Coder chore 归档批+push+PR 完成（2026-11-10 22:31 报告，续接会话）**——前置核验 ✓（HEAD=a96e606、origin/develop=8bed157 无前进、8 文件清单逐项一致）；**chore `5c0da6e`**（8 files +609/−26 doc-only——git diff a96e606..HEAD -- src/tests/scripts/prototype=0 验证通过；.opencode/ 与 labeling-notes 按 chore 批授权入库沿 m3-4 先例；工作区净）；**push 成功 d6d1618..5c0da6e**（三 commits：R1 05116a4/R2 a96e606/chore 5c0da6e）；**PR #27 已开**（base=develop，https://github.com/yq3/knowledge-lattice/pull/27 ，MERGEABLE/CLEAN，commits=3，title「M3-5 评测收口批：TC-EVAL-03 judge 校准框架/TC-EVAL-05 锚点抽样/MRL 判据收口（M3 末段）」，body 2125 字符含 A~F 组摘要+N-4 受限宣告+commits 表+验证节+`## EVIDENCE-MANIFEST` 锚点占位）。待办：Committer PR review 留痕 → Coder manifest 回填 → 用户合入。
+- **交付执行④：Committer PR 审查留痕完成（2026-11-10 22:35 报告，续接会话）**——`--approve` self-审限制被拒（沿 #2~#26 先例），回退 **COMMENTED review 完整留痕**（review id `PRR_kwDOVZ9dhM8AAAABXE4Mag`，anchor 5c0da6e，submittedAt 2026-11-10T14:35:11Z——正文首行「评审结论=APPROVED（可交用户合入）」+R1→R2 轨迹〔code 05116a4·a96e606 双 APPROVED rounds=2〕+门禁采信 Tester 独立复跑 1918+1/1921+1+chore 5c0da6e doc-only 复核+docs 批抽核+N-1~N-4 裁定落实+6 caveats+**放行条件=EVIDENCE-MANIFEST 补全+双 SHA 复核后方可合入**+合入留所有者）；**chore doc-only 复核通过**（8 files 清单+src/tests/scripts/prototype 0 diff+冻结正文零触碰；**full diff 8bed157..5c0da6e=32 files +2700/−132 对账闭合**——监督侧任务书「27 files」笔误已更正：R1 25∪R2 2 重合+chore 新增 7=32）；**docs 批抽核全落笔**（与 R1 §八建议清单逐项一致——TEST-CASES v1.9.19 五用例注记+N-4 句式/known-gaps 四条/RUNBOOK §1.aa 含 R2 保护/AGENTS 终态/_m3-plan/m3-4 回写/labeling-notes；偏差 3 条记录级：27→32 files 对账更正、manifest 占位待补〔列为合入前置硬条件〕、工作区检查点交付条目系后续归档产物不在 PR diff）。PR #27 状态：OPEN/MERGEABLE/CLEAN，commits=3，未 merge。
+- **交付执行⑤：Coder manifest 回填 PR 完成（2026-11-10 22:37 报告，续接会话）**——前置核验 ✓（HEAD=5c0da6e=PR HEAD、origin/develop=8bed157、锚点+占位在位）；程序化替换（python3 唯一占位→```json 块；manifest json.loads 自证；**round-trip 还原逐字相等——摘要段零丢失**）；`gh pr edit` 成功；**回读三重校验全过**（①JSON 可解析+关键字段断言②摘要关键句 6/6 在位〔N-4 句式/commits 表/验证节/1921+1/锚点〕③占位消失）；body 终态 4707 字符；manifest=监督侧任务书 JSON 逐字（codeSha=testedSha=reviewedSha=a96e606 三同、rounds=2、gate 1921+1、specRulings×6、caveats×6、handover×4、stale=false）。**PR #27 终态：OPEN/MERGEABLE——待用户合入**。合入后补记 mergeCommit/origin develop 前进条目；该条目之后的工作区改动（检查点交付条目）随下批 chore 归档批入库。
+- **交付完成（终态）（2026-11-19 20:20，用户确认「合入」，status=done）**：**PR #27 MERGED**——mergeCommit `6e2d95cc77744c8097c6ee97a1ebd4b88f8977bc`（mergedAt 2026-11-19T12:18:35Z，merge 形态沿 #23~#26 先例，远端分支 develop_opencode 保留不删）；origin/develop 前进 8bed157→**6e2d95c**（PR 三提交 05116a4→a96e606→5c0da6e + merge commit；full diff 32 files +2700/−132，与交付执行④对账一致）。**本地 develop 落后 4 提交，按用户指示切换后先拉远端**：`git fetch` + `git pull --ff-only` 8bed157..6e2d95c（merge 前本地 develop 与 origin/develop 同为 8bed157，无本地分叉）；交付执行②~⑤ 的检查点工作区改动经 stash 暂存/落回后随本终态回写入库（无冲突，内容逐字保留）。**检查点终态回写**（status approved→done、updatedAt 2026-11-19T20:20、本条目+⑤ 待办收口）不再等下批 chore 归档——按用户 2026-11-19 指示直接在 **develop** 提交并 push（doc-only 检查点归档 commit；⑤ 条目末句「随下批 chore 归档批入库」的延后安排由本条替代，workflow 侧「检查点随交付批次归档」口径不变，仅归档落点改为 develop）。**m3-5 段收官**：round=2 两轮收敛（R1→R2，Tester PASS + Committer APPROVED 双轮通过，全程无 FAIL），门禁 1898+1→1918+1→1921+1（+23），TC-EVAL-03 框架 ✅/真实校准 ◐（chat 配额受阻，A-6 待数）、TC-EVAL-05 观察项 ✅（构造会话形态+N-1 返回面裁定+G-30）、TC-EVAL-04 增补（RR exact/同源校验/clean env——G-29③ 划销）、G-8① MRL 判据收口（60q 双后端 512/256 r@10 全 0.00pp、分辨率 1.67pp）、M3 达成受限宣告（N-4 句式）。**M3 主线 5/5 段交付完成**；余项三去向不变（配额恢复补跑小批/部署期 G-30+G-28③+G-6 复标/用户侧 TC-UI 走查+人工双评回流）；PR #27 body 无 closing keyword，无关联 issue 需关闭。收尾同步：本地 develop_opencode 亦 ff 至 develop 终态（领先 origin/develop_opencode 2 提交〔merge+本归档 commit〕——沿先例不强推）。
 
 ## 最新验证意见原文
 （tester/committer 报告逐字保留——恢复时给 coder 的修复依据）
