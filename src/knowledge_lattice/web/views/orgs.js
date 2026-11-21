@@ -71,6 +71,7 @@ function viewOrgs() {
 
 function orgNewHTML() {
   const d = state.orgView.form;
+  const local = cfg.authMode === "local"; // D25：local 按 username 任命（ID 亦兼容）
   const ok = d.id.trim() && d.name.trim() && d.admin.trim();
   return `<div class="upload" style="margin-bottom:16px">
     <div style="grid-column:1/-1"><b style="font-size:15px">${esc(t("orgs.new"))}</b>
@@ -80,13 +81,13 @@ function orgNewHTML() {
     <div class="u-row"><label>${esc(t("orgs.name"))}<span class="req">*</span></label>
       <input class="inp" data-in="orgNewName" placeholder="${esc(t("orgs.namePh"))}" value="${esc(d.name)}"></div>
     <div class="u-row"><label>org_admin<span class="req">*</span></label>
-      <input class="inp" data-in="orgNewAdmin" placeholder="${esc(t("orgs.adminPh"))}" value="${esc(d.admin)}" style="font-family:var(--mono)"></div>
+      <input class="inp" data-in="orgNewAdmin" placeholder="${esc(t(local ? "orgs.adminPhLocal" : "orgs.adminPh"))}" value="${esc(d.admin)}" style="font-family:var(--mono)"></div>
     <div class="u-foot">
       <button class="btn seal-btn" data-act="orgCreate" ${ok ? "" : "disabled"}>${esc(t("common.create"))}</button>
       <button class="btn ghost" data-act="orgNewToggle">${esc(t("common.cancel"))}</button>
       <span class="tiny ${ok ? "" : "muted"}">${ok ? esc(t("orgs.newOk")) : esc(t("orgs.newNeed"))}</span>
       <span style="flex:1"></span>
-      <span class="tiny muted">${t("orgs.newFoot")}</span>
+      <span class="tiny muted">${t(local ? "orgs.newFootLocal" : "orgs.newFoot")}</span>
     </div></div>`;
 }
 
@@ -108,6 +109,7 @@ Object.assign(actions, {
   },
   async orgCreate() {
     const d = state.orgView.form;
+    const local = cfg.authMode === "local";
     const id = d.id.trim(), name = d.name.trim(), admin = d.admin.trim();
     if (!id || !name || !admin) return false;
     let body;
@@ -115,12 +117,17 @@ Object.assign(actions, {
       body = await createOrg({ id, name, org_admin: admin });
     } catch (e) {
       if (e.status === 403) toast(t("orgs.create403"));
-      else if (e.status === 404) toast(t("orgs.create404", { user: esc(admin) }));
-      else if (e.status === 409) toast(t("orgs.create409", { org: esc(id) }));
-      else errToast(e);
+      else if (e.status === 404) {
+        toast(t(local ? "orgs.create404Local" : "orgs.create404", { user: esc(admin) }));
+      } else if (e.status === 409) {
+        const detail = String((e.body && e.body.detail) || "");
+        if (local && detail.includes("active")) {
+          toast(t("orgs.create409Inactive", { user: esc(admin) }));
+        } else toast(t("orgs.create409", { org: esc(id) }));
+      } else errToast(e);
       return false;
     }
-    toast(t("orgs.created", { name: esc(body.name || name), admin: esc(body.org_admin || admin) }));
+    toast(t("orgs.created", { name: esc(body.name || name), admin: esc(body.org_admin_username || body.org_admin || admin) }));
     state.orgView.newOpen = false;
     state.orgView.form = { id: "", name: "", admin: "" };
     state.orgView.list = null;

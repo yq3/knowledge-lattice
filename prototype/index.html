@@ -2496,5 +2496,204 @@ document.addEventListener("keydown", ev => {
 
 render();
 </script>
+
+<!-- ==========================================================================
+     D25（M4 登录/账号）UI 基准 mock —— 只在 body 末尾追加，不改既有五视图默认渲染。
+     入口按钮由下方脚本注入顶栏（不改 topbar 既有标记）；覆盖层纯静态、可关闭，
+     仅演示：setup / login / 邀请接受三屏 + 用户/邀请管理小表 + 邀请链接一次性展示。
+     实现归属：web/views/login.js（m4-3a）+ web/views/users.js（m4-3b）。
+     ========================================================================== -->
+<style>
+  body.d25-open { overflow: hidden; }
+  .d25-mock[hidden] { display: none; }
+  .d25-mock { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; padding: var(--s5); }
+  .d25-backdrop { position: absolute; inset: 0; background: rgba(16, 24, 40, .46); }
+  .d25-panel {
+    position: relative; width: min(1120px, 100%); max-height: calc(100vh - 48px); overflow: auto;
+    background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg); box-shadow: var(--sh-lg);
+  }
+  .d25-head {
+    position: sticky; top: 0; z-index: 2; display: flex; align-items: flex-start; gap: var(--s4);
+    padding: var(--s4) var(--s5); background: var(--paper); border-bottom: 1px solid var(--rule);
+  }
+  .d25-head h2 { font-size: 18px; font-weight: 650; letter-spacing: -.01em; }
+  .d25-kicker { font-size: 11px; font-weight: 600; color: var(--seal); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 2px; }
+  .d25-body { padding: var(--s4) var(--s5) var(--s5); }
+  .d25-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s4); margin-bottom: var(--s4); }
+  .d25-card { border: 1px solid var(--rule); border-radius: var(--r-lg); background: var(--paper-2); padding: var(--s4); display: flex; flex-direction: column; gap: 10px; }
+  .d25-card-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .d25-card-h h3 { font-size: 14px; font-weight: 600; }
+  .d25-card-h .pill { margin-left: auto; }
+  .d25-badge { width: 20px; height: 20px; border-radius: 6px; background: var(--seal-w); color: var(--seal); border: 1px solid var(--seal-b); display: grid; place-items: center; font-size: 11px; font-weight: 700; }
+  .d25-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 500; color: var(--ink-2); }
+  .d25-field .inp { width: 100%; height: 30px; font-size: 12.5px; }
+  .d25-two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .d25-card .btn { justify-content: center; }
+  .d25-meta { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r); font-size: 12px; }
+  .d25-meta > div { display: flex; justify-content: space-between; gap: 10px; }
+  .d25-meta span { color: var(--ink-4); }
+  .d25-mgmt { border: 1px solid var(--rule); border-radius: var(--r-lg); overflow: hidden; background: var(--paper); }
+  .d25-mgmt-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: var(--s4); border-bottom: 1px solid var(--rule); }
+  .d25-mgmt-h h3 { font-size: 14px; font-weight: 600; margin-right: 2px; }
+  .d25-scope { margin: 0 var(--s4); margin-top: var(--s4); }
+  .d25-table { margin-top: var(--s3); }
+  .d25-linkbox { margin: var(--s4); padding: var(--s3) var(--s4); border: 1px solid var(--moss-b); background: var(--moss-w); border-radius: var(--r); }
+  .d25-linkbox-h { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; }
+  .d25-link-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+  .d25-link-row .inp { width: 100%; font-family: var(--mono); font-size: 11.5px; height: 30px; }
+  .d25-foot { padding: 0 var(--s5) var(--s5); font-size: 11.5px; color: var(--ink-4); line-height: 1.7; }
+  @media (max-width: 1000px) { .d25-cards { grid-template-columns: 1fr; } }
+</style>
+
+<div class="d25-mock" id="d25Mock" hidden>
+  <div class="d25-backdrop" data-d25-close></div>
+  <div class="d25-panel" role="dialog" aria-modal="true" aria-labelledby="d25Title">
+    <header class="d25-head">
+      <div style="flex:1">
+        <div class="d25-kicker">D25 · Local accounts · M4</div>
+        <h2 id="d25Title">登录 / 邀请 UI 基准 <span class="tiny muted" style="font-weight:400">（静态 mock）</span></h2>
+        <p class="tiny muted" style="margin-top:4px">默认 <code>LATTICE_AUTH_MODE=sso</code> 形态零变化；本覆盖层只演示 local 形态的信息结构与交互骨架，按钮不连后端。</p>
+      </div>
+      <button class="btn ghost sm" type="button" data-d25-close>关闭 ✕</button>
+    </header>
+
+    <div class="d25-body">
+      <div class="d25-cards">
+        <!-- A · 首启 setup（零用户） -->
+        <section class="d25-card" aria-labelledby="d25Setup">
+          <div class="d25-card-h"><span class="d25-badge">A</span><h3 id="d25Setup">首启设置</h3><span class="pill idle">零用户一次</span></div>
+          <p class="tiny muted">创建首个<b>系统管理员</b>；可选同事务建首个组织并任 org_admin（org_id/名称成对）。</p>
+          <label class="d25-field">用户名<input class="inp" value="admin" placeholder="登录名"></label>
+          <div class="d25-two">
+            <label class="d25-field">密码<input class="inp" type="password" value="password"></label>
+            <label class="d25-field">确认密码<input class="inp" type="password" value="password"></label>
+          </div>
+          <label class="d25-field">初始化口令 <span class="tiny muted" style="font-weight:400">（配置 LATTICE_INIT_PASSWORD 时必填）</span><input class="inp" placeholder="init password"></label>
+          <div class="d25-two">
+            <label class="d25-field">组织 id（可选）<input class="inp" value="org:tax"></label>
+            <label class="d25-field">组织名称（可选）<input class="inp" value="税务知识中心"></label>
+          </div>
+          <button class="btn seal-btn" type="button">创建管理员并进入</button>
+        </section>
+
+        <!-- B · 登录 -->
+        <section class="d25-card" aria-labelledby="d25Login">
+          <div class="d25-card-h"><span class="d25-badge">B</span><h3 id="d25Login">登录</h3><span class="pill run">本地会话</span></div>
+          <p class="tiny muted">username + password → 本地会话 token；失败统一「用户名或密码不正确」，连续失败限流锁定。</p>
+          <label class="d25-field">用户名<input class="inp" value="admin"></label>
+          <label class="d25-field">密码<input class="inp" type="password" value="password"></label>
+          <button class="btn seal-btn" type="button">登录</button>
+          <p class="tiny muted">忘记密码联系系统管理员——可生成一次性重置链接（线下交付）。收到邀请链接？打开即进入右侧接受屏。</p>
+        </section>
+
+        <!-- C · 邀请接受 / 重置 -->
+        <section class="d25-card" aria-labelledby="d25Accept">
+          <div class="d25-card-h"><span class="d25-badge">C</span><h3 id="d25Accept">邀请接受</h3><span class="pill ok">单次有效</span></div>
+          <div class="d25-meta">
+            <div><span>账号</span><b class="mono">wang.li</b></div>
+            <div><span>组织</span><b>税务知识中心 <small class="mono muted">org:tax</small></b></div>
+            <div><span>角色</span><b>成员</b></div>
+            <div><span>用途</span><b class="pill ok">加入组织</b></div>
+            <div><span>有效期至</span><b class="mono">2026-11-22 10:00 UTC</b></div>
+          </div>
+          <label class="d25-field">显示名<input class="inp" value="王立"></label>
+          <div class="d25-two">
+            <label class="d25-field">设置密码<input class="inp" type="password" value="password"></label>
+            <label class="d25-field">确认密码<input class="inp" type="password" value="password"></label>
+          </div>
+          <button class="btn seal-btn" type="button">接受邀请并登录</button>
+          <p class="tiny muted">重置用途同屏但隐藏「显示名」；接受后旧会话立即失效（token_version++）。</p>
+        </section>
+      </div>
+
+      <!-- 用户 / 邀请管理小表 -->
+      <section class="d25-mgmt" aria-labelledby="d25Mgmt">
+        <div class="d25-mgmt-h">
+          <h3 id="d25Mgmt">用户 / 邀请管理</h3>
+          <span class="pill run">sysadmin · 全局账号</span>
+          <span class="pill ok">org_admin · 本组织邀请</span>
+          <span style="flex:1"></span>
+          <button class="btn sm" type="button">＋ 新建用户</button>
+          <button class="btn ghost sm" type="button">＋ 邀请成员</button>
+        </div>
+        <div class="note d25-scope">
+          <b>D25</b>：无 SMTP——邀请/重置链接由管理员复制后线下交付；org_admin 只能管理本组织邀请，sysadmin 可全局建号。
+          链接明文只在创建时显示一次，服务端只存摘要（刷新即消失）。
+        </div>
+        <table class="ledger d25-table">
+          <thead><tr><th>对象</th><th>类型</th><th>角色</th><th>状态</th><th>最近活动 (UTC)</th><th>操作</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><div class="t-title mono">admin</div><div class="t-sub">系统管理员 · 当前账号</div></td>
+              <td>用户</td><td><span class="pill ok">sysadmin</span></td>
+              <td><span class="pill ok">启用</span></td>
+              <td class="tiny mono">11-20 13:02</td>
+              <td><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn ghost sm" type="button">重置链接</button><button class="btn ghost sm" type="button">撤销 sysadmin</button></div></td>
+            </tr>
+            <tr>
+              <td><div class="t-title mono">wang.li</div><div class="t-sub">邀请链接只在创建时可见</div></td>
+              <td>邀请</td><td><span class="pill">member</span></td>
+              <td><span class="pill run">待接受</span></td>
+              <td class="tiny mono">到期 11-22 10:00</td>
+              <td><button class="btn ghost sm" type="button" style="color:var(--danger)">撤销</button></td>
+            </tr>
+            <tr>
+              <td><div class="t-title mono">chen.liu</div><div class="t-sub">已停用 · 会话即时失效</div></td>
+              <td>用户</td><td><span class="pill">member</span></td>
+              <td><span class="pill bad">已停用</span></td>
+              <td class="tiny mono">11-19 17:40</td>
+              <td><button class="btn ghost sm" type="button">恢复</button></td>
+            </tr>
+            <tr>
+              <td><div class="t-title mono">zhao.min</div><div class="t-sub">邀请链接只在创建时可见</div></td>
+              <td>邀请</td><td><span class="pill ok">org_admin</span></td>
+              <td><span class="pill run">待接受</span></td>
+              <td class="tiny mono">到期 11-21 09:30</td>
+              <td><button class="btn ghost sm" type="button" style="color:var(--danger)">撤销</button></td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="d25-linkbox">
+          <div class="d25-linkbox-h"><b>邀请链接（只显示这一次）</b><span class="pill ok">邀请</span><span class="tiny muted">账号 wang.li</span></div>
+          <div class="d25-link-row">
+            <input class="inp" readonly value="http://127.0.0.1:8000/#invite=3lDxQm2vT9pK7cRwYbNfHs4AeZgJ8u">
+            <button class="btn sm" type="button">复制链接</button>
+          </div>
+          <div class="tiny muted" style="margin-top:6px">token 明码：<code>3lDxQm2vT9pK7cRwYbNfHs4AeZgJ8u</code> · #invite= fragment（不进服务端路径/Referer）· 刷新或切换组织后不再显示</div>
+        </div>
+      </section>
+    </div>
+
+    <div class="d25-foot">
+      对应实现：<code>web/views/login.js</code>（setup / login / accept）+ <code>web/views/users.js</code>（用户/邀请管理）；
+      API 契约见 <code>.opencode/workflows/_m4-impl-contract.md</code> §5。按钮为 mock，不触发请求。
+    </div>
+  </div>
+</div>
+
+<script>
+/* D25 mock 入口：把按钮注入顶栏（不动既有 topbar 标记/脚本），Esc / 背景 / 关闭按钮收起。 */
+(function () {
+  var mock = document.getElementById("d25Mock");
+  var bar = document.querySelector(".topbar");
+  if (!mock || !bar) return;
+  var btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "tb-link";
+  btn.setAttribute("data-d25-open", "");
+  btn.title = "D25 登录 / 邀请 UI 基准（静态 mock）";
+  btn.innerHTML = '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3.6 19.5c.6-3.1 2.8-4.9 5.4-4.9s4.8 1.8 5.4 4.9"/><path d="M16 12h6M19 9v6"/></svg><span>登录 / 邀请（D25）</span>';
+  bar.appendChild(btn);
+  function open() { mock.hidden = false; document.body.classList.add("d25-open"); }
+  function close() { mock.hidden = true; document.body.classList.remove("d25-open"); }
+  document.addEventListener("click", function (ev) {
+    if (ev.target.closest("[data-d25-open]")) { open(); return; }
+    if (ev.target.closest("[data-d25-close]")) close();
+  });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape" && !mock.hidden) close();
+  });
+})();
+</script>
 </body>
 </html>

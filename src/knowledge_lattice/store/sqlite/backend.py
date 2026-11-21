@@ -1835,14 +1835,8 @@ class SqliteBackend:
             return None
         return {"id": row[0], "is_system_admin": bool(row[1])}
 
-    def get_user_auth(self, user_id: str) -> dict | None:
-        """认证侧用户态（是否存在 / 是否禁用 / 是否系统管理员）。"""
-        row = self._conn.execute(
-            "SELECT is_system_admin, disabled_at FROM users WHERE id = :id", {"id": user_id}
-        ).fetchone()
-        if row is None:
-            return None
-        return {"is_system_admin": bool(row[0]), "disabled_at": row[1]}
+    # get_user_auth 随 M4（D25）迁 Accounts 域并扩列 status/token_version
+    #（定义见下方 Accounts 域；此处不再保留旧两列实现——后定义覆盖会成死代码）。
 
     def upsert_user_jit(
         self, *, user_id: str, username: str, display_name: str | None,
@@ -4643,6 +4637,627 @@ class SqliteBackend:
         """P3-3/R2 薄适配：sem_expand_graph 多 seed 归并（design §3/NFR-4 命名
         保留给 M2-S3 实体召回路；fanout/node 缺省与 core/expand.py 常量一致）。"""
         return _expand_relations_thin(self, org_id, seed_ids, rels, depth=depth)
+
+    # ============ Accounts 域（M4 / D25 local 账号——m4-1；语义见 store/backend.py） ============
+    #
+    # 事务纪律沿既有 audit= 先例：写路径 BEGIN IMMEDIATE 短事务，审计与业务写
+    # 同事务（outbox 失败整体回滚）；now 一律取 taskclock.utc_now_ts（UTC 库格式，
+    # 与 CURRENT_TIMESTAMP 同源）。唯一冲突先事务内预查、再以 IntegrityError
+    # 消息兜底映射（sqlite message 含 "users.username"/"users.email"）。
+
+    _ACCOUNT_USER_SELECT = (
+        "id, username, display_name, email, password_hash, status,"
+        " token_version, token_hash, is_system_admin, last_login_at, created_by,"
+        " disabled_at, created_at"
+    )
+    _ACCOUNT_INVITATION_SELECT = (
+        "i.id, i.user_id, i.org_id, i.role, i.purpose, i.token_hash, i.invited_by,"
+        " i.expires_at, i.consumed_at, i.revoked_at, i.created_at,"
+        " u.username, u.display_name, u.email, o.name"
+    )
+
+    @staticmethod
+    def _account_user_dict(row, *, with_password_hash: bool = True) -> dict:
+        d = {
+            "id": row[0], "username": row[1], "display_name": row[2],
+            "email": row[3], "password_hash": row[4], "status": row[5],
+            "token_version": row[6], "token_hash": row[7],
+            "is_system_admin": bool(row[8]), "last_login_at": row[9],
+            "created_by": row[10], "disabled_at": row[11], "created_at": row[12],
+        }
+        if not with_password_hash:
+            d.pop("password_hash")
+        return d
+
+    @staticmethod
+    def _account_invitation_dict(row) -> dict:
+        """邀请行（SELECT 固定走 user JOIN + org LEFT JOIN——join 列恒在尾部）。"""
+        return {
+            "id": row[0], "user_id": row[1], "org_id": row[2], "role": row[3],
+            "purpose": row[4], "token_hash": row[5], "invited_by": row[6],
+            "expires_at": row[7], "consumed_at": row[8], "revoked_at": row[9],
+            "created_at": row[10],
+            "username": row[11], "display_name": row[12], "email": row[13],
+            "org_name": row[14],
+        }
+
+    @staticmethod
+    def _norm_account_email(email: str | None) -> str | None:
+        """email 归一（契约 §3：strip().lower() or None；NULL 不参与唯一）。"""
+        return (email or "").strip().lower() or None
+
+    def _account_user(self, user_id: str) -> dict | None:
+        row = self._conn.execute(
+            f"SELECT {self._ACCOUNT_USER_SELECT} FROM users WHERE id = :id",
+            {"id": user_id},
+        ).fetchone()
+        return None if row is None else self._account_user_dict(row)
+
+    def _account_invitation(self, *, invitation_id: str | None = None,
+                            token_hash: str | None = None) -> dict | None:
+        if invitation_id is not None:
+            where, params = "i.id = :v", {"v": invitation_id}
+        else:
+            where, params = "i.token_hash = :v", {"v": token_hash}
+        row = self._conn.execute(
+            f"SELECT {self._ACCOUNT_INVITATION_SELECT}"
+            " FROM user_invitations i JOIN users u ON u.id = i.user_id"
+            " LEFT JOIN orgs o ON o.id = i.org_id"
+            f" WHERE {where}",
+            params,
+        ).fetchone()
+        return None if row is None else self._account_invitation_dict(row)
+
+    @staticmethod
+    def _invitation_reason(row) -> str:
+        """不可用邀请的分类（row = consumed_at/revoked_at/expires_at）。"""
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        consumed_at, revoked_at, expires_at = row[0], row[1], row[2]
+        if revoked_at is not None:
+            return "revoked"
+        if consumed_at is not None:
+            return "consumed"
+        if expires_at is not None and str(expires_at) <= utc_now_ts():
+            return "expired"
+        return "invalid"
+
+    def count_users(self) -> int:
+        return self._conn.execute("SELECT count(*) FROM users").fetchone()[0]
+
+    def get_instance_setup(self) -> dict | None:
+        row = self._conn.execute(
+            "SELECT completed_at, admin_user_id FROM instance_setup WHERE id = 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return {"completed_at": row[0], "admin_user_id": row[1]}
+
+    def setup_instance(
+        self, *, admin_user_id: str, username: str,
+        display_name: str | None, email: str | None, password_hash: str,
+        org_id: str | None, org_name: str | None,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        from knowledge_lattice.store.backend import SetupCompletedError
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        if (org_id is None) != (org_name is None):
+            raise ValueError("org_id/org_name 必须成对提供（首组织同事务创建）")
+        username = username.strip()
+        email_norm = self._norm_account_email(email)
+        now = utc_now_ts()
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if conn.execute("SELECT count(*) FROM users").fetchone()[0] > 0:
+                raise SetupCompletedError("实例已完成首启 setup（库内已有用户）")
+            if conn.execute("SELECT 1 FROM instance_setup WHERE id = 1").fetchone() is not None:
+                raise SetupCompletedError("实例已完成首启 setup（instance_setup 行已在）")
+            try:
+                conn.execute(
+                    "INSERT INTO users(id, username, display_name, email,"
+                    " password_hash, status, is_system_admin, created_at)"
+                    " VALUES(:i, :u, :d, :e, :p, 'active', 1, :ts)",
+                    {"i": admin_user_id, "u": username, "d": display_name,
+                     "e": email_norm, "p": password_hash, "ts": now},
+                )
+                if org_id is not None:
+                    conn.execute(
+                        "INSERT INTO orgs(id, name) VALUES(:i, :n)",
+                        {"i": org_id, "n": org_name},
+                    )
+                    conn.execute(
+                        "INSERT INTO user_org_memberships(user_id, org_id, role)"
+                        " VALUES(:u, :o, 'org_admin')",
+                        {"u": admin_user_id, "o": org_id},
+                    )
+                conn.execute(
+                    "INSERT INTO instance_setup(id, completed_at, admin_user_id)"
+                    " VALUES(1, :ts, :u)",
+                    {"ts": now, "u": admin_user_id},
+                )
+            except sqlite3.IntegrityError as exc:
+                # 并发 setup 或预置同 id/username——一律 409 setup_completed 语义
+                raise SetupCompletedError(
+                    f"首启并发冲突（{exc}）——setup 已整体回滚"
+                ) from exc
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        org = None
+        if org_id is not None:
+            row = conn.execute(
+                "SELECT id, name FROM orgs WHERE id = :o", {"o": org_id}
+            ).fetchone()
+            org = {"id": row[0], "name": row[1]}
+        return {"user": self._account_user(admin_user_id), "org": org}
+
+    def create_user(
+        self, *, user_id: str, username: str, display_name: str | None,
+        email: str | None, password_hash: str | None, status: str,
+        is_system_admin: bool, created_by: str | None,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        from knowledge_lattice.store.backend import (
+            EmailTakenError,
+            UsernameTakenError,
+        )
+
+        username = username.strip()
+        email_norm = self._norm_account_email(email)
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            try:
+                if conn.execute(
+                    "SELECT 1 FROM users WHERE username = :u", {"u": username}
+                ).fetchone() is not None:
+                    raise UsernameTakenError(f"username 已被占用: {username!r}")
+                if email_norm is not None and conn.execute(
+                    "SELECT 1 FROM users WHERE email = :e", {"e": email_norm}
+                ).fetchone() is not None:
+                    raise EmailTakenError(f"email 已被占用: {email_norm!r}")
+                conn.execute(
+                    "INSERT INTO users(id, username, display_name, email,"
+                    " password_hash, status, is_system_admin, created_by)"
+                    " VALUES(:i, :u, :d, :e, :p, :s, :adm, :cb)",
+                    {"i": user_id, "u": username, "d": display_name,
+                     "e": email_norm, "p": password_hash, "s": status,
+                     "adm": 1 if is_system_admin else 0, "cb": created_by},
+                )
+            except sqlite3.IntegrityError as exc:
+                msg = str(exc)
+                if "users.username" in msg:
+                    raise UsernameTakenError(
+                        f"username 已被占用: {username!r}（并发唯一约束兜底）"
+                    ) from exc
+                if "users.email" in msg:
+                    raise EmailTakenError(
+                        f"email 已被占用: {email_norm!r}（并发唯一约束兜底）"
+                    ) from exc
+                raise
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return self._account_user(user_id)
+
+    def create_invited_user(
+        self, *, user_id: str, username: str, display_name: str | None,
+        email: str | None, invitation_id: str, org_id: str | None,
+        role: str | None, token_hash: str, invited_by: str, expires_at: str,
+        is_system_admin: bool, audit: tuple[str, str] | None = None,
+    ) -> dict:
+        from knowledge_lattice.store.backend import (
+            EmailTakenError,
+            UsernameTakenError,
+        )
+        from knowledge_lattice.store.taskclock import normalize_expires_at
+
+        username = username.strip()
+        email_norm = self._norm_account_email(email)
+        expires_norm = normalize_expires_at(expires_at)
+        if expires_norm is None:
+            raise ValueError("create_invited_user 的 expires_at 必填")
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            try:
+                if conn.execute(
+                    "SELECT 1 FROM users WHERE username = :u", {"u": username}
+                ).fetchone() is not None:
+                    raise UsernameTakenError(f"username 已被占用: {username!r}")
+                if email_norm is not None and conn.execute(
+                    "SELECT 1 FROM users WHERE email = :e", {"e": email_norm}
+                ).fetchone() is not None:
+                    raise EmailTakenError(f"email 已被占用: {email_norm!r}")
+                # invited 用户无本地密码（password_hash NULL）；接受邀请时设密
+                conn.execute(
+                    "INSERT INTO users(id, username, display_name, email, status,"
+                    " is_system_admin, created_by)"
+                    " VALUES(:i, :u, :d, :e, 'invited', :adm, :cb)",
+                    {"i": user_id, "u": username, "d": display_name,
+                     "e": email_norm, "adm": 1 if is_system_admin else 0,
+                     "cb": invited_by},
+                )
+                conn.execute(
+                    "INSERT INTO user_invitations(id, user_id, org_id, role,"
+                    " purpose, token_hash, invited_by, expires_at)"
+                    " VALUES(:i, :u, :o, :r, 'invite', :th, :by, :exp)",
+                    {"i": invitation_id, "u": user_id, "o": org_id, "r": role,
+                     "th": token_hash, "by": invited_by, "exp": expires_norm},
+                )
+            except sqlite3.IntegrityError as exc:
+                msg = str(exc)
+                if "users.username" in msg:
+                    raise UsernameTakenError(
+                        f"username 已被占用: {username!r}（并发唯一约束兜底）"
+                    ) from exc
+                if "users.email" in msg:
+                    raise EmailTakenError(
+                        f"email 已被占用: {email_norm!r}（并发唯一约束兜底）"
+                    ) from exc
+                if "user_invitations.token_hash" in msg:
+                    raise ValueError(
+                        "邀请 token 摘要冲突（32B urlsafe 随机源撞库——重新签发）"
+                    ) from exc
+                raise
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return {
+            "user": self._account_user(user_id),
+            "invitation": self._account_invitation(invitation_id=invitation_id),
+        }
+
+    def get_user(self, user_id: str) -> dict | None:
+        return self._account_user(user_id)
+
+    def get_user_by_username(self, username: str) -> dict | None:
+        row = self._conn.execute(
+            f"SELECT {self._ACCOUNT_USER_SELECT} FROM users WHERE username = :u",
+            {"u": username},
+        ).fetchone()
+        return None if row is None else self._account_user_dict(row)
+
+    def get_user_auth(self, user_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT is_system_admin, disabled_at, status, token_version"
+            " FROM users WHERE id = :id",
+            {"id": user_id},
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "is_system_admin": bool(row[0]), "disabled_at": row[1],
+            "status": row[2], "token_version": row[3],
+        }
+
+    def list_users(self) -> list[dict]:
+        rows = self._conn.execute(
+            f"SELECT {self._ACCOUNT_USER_SELECT} FROM users"
+            " ORDER BY created_at, id"
+        ).fetchall()
+        return [
+            self._account_user_dict(r, with_password_hash=False) for r in rows
+        ]
+
+    def update_user_flags(
+        self, *, user_id: str, disabled: bool | None,
+        is_system_admin: bool | None, actor: str,
+        audits: list[str] | None = None,
+    ) -> dict:
+        import json as _json
+
+        from knowledge_lattice.store.backend import LastSysadminError
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT is_system_admin, disabled_at FROM users WHERE id = :id",
+                {"id": user_id},
+            ).fetchone()
+            if row is None:
+                conn.execute("COMMIT")
+                raise KeyError(f"user not found: {user_id!r}")
+            was_admin = bool(row[0])
+            was_disabled = row[1] is not None
+            new_admin = was_admin if is_system_admin is None else bool(is_system_admin)
+            new_disabled = was_disabled if disabled is None else bool(disabled)
+            if new_admin == was_admin and new_disabled == was_disabled:
+                conn.execute("COMMIT")
+                return self._account_user(user_id)  # 幂等：零写入零审计
+            # 末位 active sysadmin 守卫（同事务；BEGIN IMMEDIATE 单写者串行）
+            if was_admin and not was_disabled and (not new_admin or new_disabled):
+                others = conn.execute(
+                    "SELECT count(*) FROM users WHERE is_system_admin = 1"
+                    " AND disabled_at IS NULL AND id != :id",
+                    {"id": user_id},
+                ).fetchone()[0]
+                if others == 0:
+                    conn.execute("COMMIT")
+                    raise LastSysadminError(
+                        f"用户 {user_id!r} 是最后一名 active sysadmin——"
+                        "停用/撤权被拒（先指定继任 sysadmin）"
+                    )
+            now = utc_now_ts()
+            sets: list[str] = []
+            params: dict = {"id": user_id}
+            disabling = new_disabled and not was_disabled
+            enabling = was_disabled and not new_disabled
+            if disabling:
+                sets += ["disabled_at = :now", "token_version = token_version + 1"]
+                params["now"] = now
+            elif enabling:
+                sets += ["disabled_at = NULL"]
+            if new_admin != was_admin:
+                sets += ["is_system_admin = :adm"]
+                params["adm"] = 1 if new_admin else 0
+            conn.execute(
+                f"UPDATE users SET {', '.join(sets)} WHERE id = :id", params
+            )
+            for event in audits or []:
+                # 候选事件名（store 构造 payload）或 (event, payload_json) 二元组
+                #（调用方自带 payload——两种形态都收，跨段契约免漂移）
+                if isinstance(event, tuple):
+                    event_type, fixed_payload = event
+                else:
+                    event_type, fixed_payload = event, None
+                if event_type == "user.disabled" and disabling:
+                    default = {"user_id": user_id, "actor": actor,
+                               "disabled_at": now}
+                elif event_type == "user.enabled" and enabling:
+                    default = {"user_id": user_id, "actor": actor}
+                elif event_type == "user.sysadmin_changed" and new_admin != was_admin:
+                    default = {"user_id": user_id, "actor": actor,
+                               "is_system_admin": new_admin}
+                else:
+                    continue  # 候选事件与本次实际变化不符——不写
+                payload = (
+                    fixed_payload if fixed_payload is not None
+                    else _json.dumps(default)
+                )
+                self._outbox_insert(conn, event_type, payload)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return self._account_user(user_id)
+
+    def set_user_password(
+        self, *, user_id: str, password_hash: str,
+        bump_token_version: bool, audit: tuple[str, str] | None = None,
+    ) -> dict:
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if bump_token_version:
+                cur = conn.execute(
+                    "UPDATE users SET password_hash = :p,"
+                    " token_version = token_version + 1 WHERE id = :id",
+                    {"p": password_hash, "id": user_id},
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE users SET password_hash = :p WHERE id = :id",
+                    {"p": password_hash, "id": user_id},
+                )
+            if cur.rowcount == 0:
+                conn.execute("COMMIT")
+                raise KeyError(f"user not found: {user_id!r}")
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return self._account_user(user_id)
+
+    def record_login(self, user_id: str) -> None:
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        self._conn.execute(
+            "UPDATE users SET last_login_at = :now WHERE id = :id",
+            {"now": utc_now_ts(), "id": user_id},
+        )
+
+    def list_user_orgs(self, user_id: str) -> list[dict]:
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        rows = self._conn.execute(
+            "SELECT m.org_id, o.name, m.role, o.status"
+            " FROM user_org_memberships m JOIN orgs o ON o.id = m.org_id"
+            " WHERE m.user_id = :u"
+            "   AND (m.expires_at IS NULL OR m.expires_at > :now)"
+            " ORDER BY m.org_id",
+            {"u": user_id, "now": utc_now_ts()},
+        ).fetchall()
+        return [
+            {"id": r[0], "name": r[1], "role": r[2], "status": r[3]}
+            for r in rows
+        ]
+
+    def create_invitation(
+        self, *, invitation_id: str, user_id: str, org_id: str | None,
+        role: str | None, purpose: str, token_hash: str, invited_by: str,
+        expires_at: str, revoke_pending: bool,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        from knowledge_lattice.store.taskclock import (
+            normalize_expires_at,
+            utc_now_ts,
+        )
+
+        if purpose not in ("invite", "reset"):
+            raise ValueError(f"purpose 非法: {purpose!r}（须为 invite|reset）")
+        expires_norm = normalize_expires_at(expires_at)
+        if expires_norm is None:
+            raise ValueError("create_invitation 的 expires_at 必填")
+        now = utc_now_ts()
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if revoke_pending:
+                # 重发：同 user/org/purpose 的未消费未撤销行先失效（旧链接作废）
+                conn.execute(
+                    "UPDATE user_invitations SET revoked_at = :now"
+                    " WHERE user_id = :u AND purpose = :p AND org_id IS :o"
+                    "   AND consumed_at IS NULL AND revoked_at IS NULL",
+                    {"now": now, "u": user_id, "p": purpose, "o": org_id},
+                )
+            try:
+                conn.execute(
+                    "INSERT INTO user_invitations(id, user_id, org_id, role,"
+                    " purpose, token_hash, invited_by, expires_at)"
+                    " VALUES(:i, :u, :o, :r, :p, :th, :by, :exp)",
+                    {"i": invitation_id, "u": user_id, "o": org_id, "r": role,
+                     "p": purpose, "th": token_hash, "by": invited_by,
+                     "exp": expires_norm},
+                )
+            except sqlite3.IntegrityError as exc:
+                if "user_invitations.token_hash" in str(exc):
+                    raise ValueError(
+                        "邀请 token 摘要冲突（32B urlsafe 随机源撞库——重新签发）"
+                    ) from exc
+                raise
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return self._account_invitation(invitation_id=invitation_id)
+
+    def find_invitation_by_token_hash(self, token_hash: str) -> dict | None:
+        return self._account_invitation(token_hash=token_hash)
+
+    def get_invitation(self, invitation_id: str) -> dict | None:
+        return self._account_invitation(invitation_id=invitation_id)
+
+    def list_invitations(self, org_id: str) -> list[dict]:
+        rows = self._conn.execute(
+            f"SELECT {self._ACCOUNT_INVITATION_SELECT}"
+            " FROM user_invitations i JOIN users u ON u.id = i.user_id"
+            " LEFT JOIN orgs o ON o.id = i.org_id"
+            " WHERE i.org_id = :org"
+            " ORDER BY i.created_at DESC, i.id DESC",
+            {"org": org_id},
+        ).fetchall()
+        return [self._account_invitation_dict(r) for r in rows]
+
+    def revoke_invitation(
+        self, *, invitation_id: str, org_id: str, actor: str,
+        audit: tuple[str, str] | None = None,
+    ) -> bool:
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        now = utc_now_ts()
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = conn.execute(
+                "UPDATE user_invitations SET revoked_at = :now"
+                " WHERE id = :i AND org_id = :o AND consumed_at IS NULL"
+                "   AND revoked_at IS NULL AND expires_at > :now",
+                {"now": now, "i": invitation_id, "o": org_id},
+            )
+            applied = cur.rowcount > 0
+            if applied and audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return applied
+
+    def accept_invitation(
+        self, *, token_hash: str, password_hash: str,
+        display_name: str | None, audit_event: str, actor_label: str,
+    ) -> dict:
+        import json as _json
+
+        from knowledge_lattice.store.backend import InvitationInvalidError
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        now = utc_now_ts()
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            inv = self._account_invitation(token_hash=token_hash)
+            if inv is None:
+                raise InvitationInvalidError(
+                    "邀请 token 无效（不存在）", reason="invalid"
+                )
+            if inv["revoked_at"] is not None:
+                raise InvitationInvalidError("邀请已被撤销", reason="revoked")
+            if inv["consumed_at"] is not None:
+                raise InvitationInvalidError("邀请已被使用（单次）", reason="consumed")
+            if inv["expires_at"] <= now:
+                raise InvitationInvalidError("邀请已过期", reason="expired")
+            cur = conn.execute(
+                "UPDATE user_invitations SET consumed_at = :now"
+                " WHERE id = :i AND consumed_at IS NULL AND revoked_at IS NULL"
+                "   AND expires_at > :now",
+                {"now": now, "i": inv["id"]},
+            )
+            if cur.rowcount == 0:
+                # 并发双消费：条件 UPDATE 零行——重查按现状分类（单次语义）
+                row2 = conn.execute(
+                    "SELECT consumed_at, revoked_at, expires_at"
+                    " FROM user_invitations WHERE id = :i",
+                    {"i": inv["id"]},
+                ).fetchone()
+                if row2 is None:
+                    raise InvitationInvalidError(
+                        "邀请 token 无效（不存在）", reason="invalid"
+                    )
+                reason = self._invitation_reason(row2)
+                raise InvitationInvalidError(
+                    f"邀请不可用（{reason}）——并发消费单次语义", reason=reason
+                )
+            sets = [
+                "password_hash = :p", "status = 'active'",
+                "token_version = token_version + 1",
+            ]
+            params: dict = {"p": password_hash, "id": inv["user_id"]}
+            if display_name is not None and display_name.strip():
+                sets.append("display_name = :d")
+                params["d"] = display_name.strip()
+            conn.execute(
+                f"UPDATE users SET {', '.join(sets)} WHERE id = :id", params
+            )
+            if inv["purpose"] == "invite" and inv["org_id"] and inv["role"]:
+                # 补成员关系：已存在不降级（INSERT OR IGNORE 保留原角色）
+                conn.execute(
+                    "INSERT OR IGNORE INTO user_org_memberships"
+                    "(user_id, org_id, role) VALUES(:u, :o, :r)",
+                    {"u": inv["user_id"], "o": inv["org_id"], "r": inv["role"]},
+                )
+            payload = {
+                "actor": actor_label, "user_id": inv["user_id"],
+                "invitation_id": inv["id"], "org_id": inv["org_id"],
+                "role": inv["role"], "purpose": inv["purpose"],
+            }
+            self._outbox_insert(conn, audit_event, _json.dumps(payload))
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return {
+            "user": self._account_user(inv["user_id"]),
+            "invitation": self._account_invitation(invitation_id=inv["id"]),
+        }
 
 
 def _month_upper(month: str) -> str:

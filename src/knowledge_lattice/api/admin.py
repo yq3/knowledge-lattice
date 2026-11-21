@@ -144,7 +144,9 @@ async def create_org(
     成员关系，不在此开通则新组织无人可管）；id/name 非空非纯空白；用户
     不存在 404 组织零残留（D16 不建账号）；重复组织 409（含并发窗口——
     store 撞 UNIQUE 映射 OrgExistsError；组织不可删只能停用——P1-1）；
-    审计同事务。"""
+    审计同事务。local 形态（D25）``org_admin`` 按「用户 ID → username」
+    解析（本地账号的人类可读键是 username；ID 仍兼容），membership/审计
+    落解析后的稳定 ID，响应附 ``org_admin_username``。"""
     if not auth.is_system_admin:
         raise HTTPException(status_code=403, detail="系统管理员专属操作（design §6.2）")
     org_id = body.id.strip()
@@ -156,29 +158,62 @@ async def create_org(
             detail="id/name/org_admin 均不得为空或纯空白（R2/P3-8a）",
         )
     service = get_service(request)
+    local_mode = service.settings.auth_mode == "local"
+    admin_username: str | None = None
+    if local_mode:
+        # D25/m4-2：local 形态的组织管理员必须是 active 用户——invited（未接受
+        # 邀请）或 disabled（停用）用户不可任管理员（否则组织建出即无人可管）；
+        # 用户不存在仍走下方 404 路径（存在性敏感）。sso 形态现有行为不变。
+        #
+        # local 形态按「用户 ID → username」解析：本地账号的人类可读键是
+        # username（ID 为不透明 u_<hex>，与 /api/users 列表/邀请面一致）；
+        # 已按 ID 传入的调用方不受影响。membership/审计落解析后的稳定 ID。
+        admin_user = service.backend.get_user(org_admin)
+        if admin_user is None:
+            admin_user = service.backend.get_user_by_username(org_admin)
+        if admin_user is not None:
+            if (
+                admin_user["status"] != "active"
+                or admin_user["disabled_at"] is not None
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="org_admin 必须为 active 用户（invited/disabled 不可任管理员）",
+                )
+            org_admin = admin_user["id"]
+            admin_username = admin_user["username"]
     from knowledge_lattice.domain.audit_events import EVENT_ORG_CREATED
 
+    audit_payload = {
+        "org_id": org_id, "name": name,
+        "org_admin": org_admin, "actor": auth.user_id,
+    }
+    if admin_username is not None:
+        audit_payload["org_admin_username"] = admin_username
     try:
         service.backend.create_org(
             org_id=org_id, name=name,
             org_admin_user_id=org_admin,
             audit=(
                 EVENT_ORG_CREATED,
-                json.dumps({
-                    "org_id": org_id, "name": name,
-                    "org_admin": org_admin, "actor": auth.user_id,
-                }, ensure_ascii=False),
+                json.dumps(audit_payload, ensure_ascii=False),
             ),
         )
     except KeyError as exc:
-        raise HTTPException(
-            status_code=404,
-            detail=f"用户不存在: {org_admin!r}（管理员不建账号——建档走"
-            " SSO JIT，D16）",
-        ) from exc
+        detail = (
+            f"用户不存在: {org_admin!r}（local 模式按用户名或用户 ID 指定；"
+            "先建号并接受邀请激活）"
+            if local_mode
+            else f"用户不存在: {org_admin!r}（管理员不建账号——建档走"
+            " SSO JIT，D16）"
+        )
+        raise HTTPException(status_code=404, detail=detail) from exc
     except OrgExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"org_id": org_id, "name": name, "org_admin": org_admin}
+    payload = {"org_id": org_id, "name": name, "org_admin": org_admin}
+    if admin_username is not None:
+        payload["org_admin_username"] = admin_username
+    return payload
 
 
 class OrgStatusRequest(BaseModel):

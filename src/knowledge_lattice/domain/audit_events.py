@@ -91,6 +91,22 @@ EVENT_AUTH_PERMISSIONS_IGNORED = "auth.request_permissions_ignored"  # 请求体
                                                     #  字段忽略并记审计（FR-4/D18
                                                     #  v0.6.1 统一口径——附录 A-9）
 
+# ---- 本地账号事件（M4/D25/FR-9——m4-2 API 接入；密码/token 永不进 payload） ----
+
+EVENT_AUTH_LOGIN = "auth.login"                    # 本地登录成功（username 登录键）
+EVENT_AUTH_LOGIN_REFUSED = "auth.login_refused"    # 本地登录拒绝（错密/停用/锁定）
+EVENT_AUTH_LOGOUT = "auth.logout"                  # 登出（客户端清 token；无服务端撤销）
+EVENT_AUTH_PASSWORD_CHANGED = "auth.password_changed"  # 用户自改密码（tv++ 撤销旧会话）
+EVENT_AUTH_PASSWORD_RESET = "auth.password_reset"  # 重置完成（一次性链接/管理员重置）
+EVENT_AUTH_INVITE_CREATED = "auth.invite_created"  # 邀请创建/重发（旧链接失效）
+EVENT_AUTH_INVITE_ACCEPTED = "auth.invite_accepted"  # 邀请接受（invited→active）
+EVENT_AUTH_INVITE_REVOKED = "auth.invite_revoked"  # 邀请撤销（管理员操作）
+EVENT_USER_CREATED = "user.created"                # 管理员建号/预登记（sysadmin）
+EVENT_USER_DISABLED = "user.disabled"              # 用户停用（即时 401；tv++）
+EVENT_USER_ENABLED = "user.enabled"                # 用户启用（tv 不回退——旧会话不复活）
+EVENT_USER_SYSADMIN_CHANGED = "user.sysadmin_changed"  # sysadmin 授/撤（末位守卫）
+EVENT_INSTANCE_SETUP = "instance.setup"            # 首启 setup 完成（建首管理员）
+
 __all__ = [
     "EVENT_DOCUMENT_UPLOAD",
     "EVENT_DOCUMENT_OVERWRITE",
@@ -128,4 +144,17 @@ __all__ = [
     "EVENT_AUTH_SSO_REFUSED",
     "EVENT_AUTH_TRUSTED_SUBSYSTEM",
     "EVENT_AUTH_PERMISSIONS_IGNORED",
+    "EVENT_AUTH_LOGIN",
+    "EVENT_AUTH_LOGIN_REFUSED",
+    "EVENT_AUTH_LOGOUT",
+    "EVENT_AUTH_PASSWORD_CHANGED",
+    "EVENT_AUTH_PASSWORD_RESET",
+    "EVENT_AUTH_INVITE_CREATED",
+    "EVENT_AUTH_INVITE_ACCEPTED",
+    "EVENT_AUTH_INVITE_REVOKED",
+    "EVENT_USER_CREATED",
+    "EVENT_USER_DISABLED",
+    "EVENT_USER_ENABLED",
+    "EVENT_USER_SYSADMIN_CHANGED",
+    "EVENT_INSTANCE_SETUP",
 ]

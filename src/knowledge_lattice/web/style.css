@@ -619,3 +619,104 @@ button:disabled, .btn[disabled] { cursor: not-allowed; }
 .vis-lattice .vis-cell { width: 22px; height: 22px; }
 .vis-lattice .vis-cell.ok { background: var(--ok, #16a34a); border-color: var(--ok, #16a34a); }
 .vis-lattice .vis-cell.bad { background: transparent; border: 1.5px solid var(--danger, #dc2626); }
+
+/* ==========================================================================
+   m4-3a additions（2026-11-20，D25 local：boot 门 + setup/login/invite 三屏 +
+   用户菜单）。默认 sso 形态不命中任何选择器（body 无 auth-local/auth-screen），
+   视觉零回归；类名/变量沿用既有设计系统。
+   ========================================================================== */
+
+/* local：隐藏 sso 专属入口（连接设置 / 身份 lens / MCP 接入）；用户菜单见 #userPicker */
+body.auth-local #connPicker,
+body.auth-local .tb-lens,
+body.auth-local #mcpPicker { display: none; }
+
+/* 认证屏：单列骨架（topbar 保留品牌 + 语言 + API 参考），rail 隐去 */
+body.auth-screen .app {
+  grid-template-columns: 1fr;
+  grid-template-rows: var(--top) 1fr;
+  grid-template-areas: "top" "main";
+}
+body.auth-screen .rail { display: none; }
+body.auth-screen #orgPicker,
+body.auth-screen #userPicker,
+body.auth-screen .tb-lens,
+body.auth-screen #connPicker,
+body.auth-screen #mcpPicker,
+body.auth-screen .tb-sep,
+body.auth-screen .tb-div { display: none !important; }
+body.auth-screen main { display: grid; place-items: center; padding: var(--s6) var(--s4); }
+body.auth-screen main > .auth-view { width: 100%; display: grid; place-items: center; }
+
+/* 认证卡 */
+.auth-shell { width: 100%; max-width: 520px; }
+.auth-card { width: 100%; background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg); box-shadow: var(--sh-lg); padding: var(--s6) var(--s6) var(--s5); }
+.auth-brand { display: flex; align-items: center; gap: 10px; margin-bottom: var(--s5); }
+.auth-title { font-size: 22px; line-height: 30px; font-weight: 650; letter-spacing: -0.01em; color: var(--ink); }
+.auth-lede { color: var(--ink-3); font-size: 13px; line-height: 1.7; margin-top: 6px; }
+.auth-lede b { color: var(--ink-2); font-weight: 600; }
+.auth-form { display: flex; flex-direction: column; gap: 12px; margin-top: var(--s5); }
+.af-row { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; font-weight: 500; color: var(--ink-2); }
+.af-row .inp { width: 100%; height: 38px; }
+.af-sec { margin-top: 6px; padding-top: 10px; border-top: 1px dashed var(--rule); font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+.af-hint { margin-top: -6px; font-size: 12px; line-height: 1.6; color: var(--ink-3); }
+.af-hint code { font-size: 11px; }
+.auth-submit { width: 100%; height: 40px; margin-top: 6px; }
+.auth-back { width: 100%; height: 34px; }
+.auth-err { margin-top: var(--s4); padding: 10px 12px; border: 1px solid var(--danger-b); border-radius: var(--r); background: var(--danger-w); color: var(--danger-2); font-size: 12.5px; line-height: 1.6; }
+.auth-note { margin-top: var(--s5); padding-top: var(--s4); border-top: 1px solid var(--rule); color: var(--ink-3); font-size: 12px; line-height: 1.7; }
+.auth-note code { font-size: 11px; }
+.auth-note-sub { margin-top: 6px; }
+.auth-meta { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--rule); border-radius: var(--r); background: var(--paper-2); }
+.auth-meta > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 12.5px; }
+.auth-meta span { color: var(--ink-4); flex: none; }
+.auth-meta b { font-weight: 550; color: var(--ink); text-align: right; word-break: break-all; }
+.auth-meta b.mono { font-size: 11.5px; }
+.auth-meta small { display: block; margin-left: 8px; font-size: 11px; color: var(--ink-4); font-weight: 400; text-align: right; word-break: break-all; }
+.auth-actions { margin-top: var(--s4); }
+
+/* 顶栏用户菜单（#userPicker——local 已登录才显示） */
+#userPicker .menu { left: auto; right: 0; min-width: 320px; }
+#userPicker .picker-btn .pk-s { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#userPicker .menu-form .mf-row { grid-template-columns: 92px 1fr; }
+#userPicker .menu-form .menu-item { margin-top: 6px; }
+
+/* ==========================================================================
+   m4-3b additions（2026-11-20，D25 local：用户/邀请管理页 views/users.js）
+   仅命中 #users（sso 形态不渲染该视图——零回归）与本地账号表单；类名/变量
+   沿用既有设计系统（.ledger/.pill/.btn/.note/.inp）。
+   ========================================================================== */
+#users .users-note { margin: 0 0 10px; max-width: 92ch; }
+#users .users-scope { margin: 0 0 var(--s4); }
+
+/* 邀请链接卡（只读链接 + 复制按钮 + token 明码） */
+#users .invite-card { margin: 0 0 var(--s4); }
+#users .invite-head { display: flex; align-items: center; gap: var(--s2); margin-bottom: 6px; }
+#users .invite-meta { display: flex; align-items: baseline; gap: var(--s2); font-size: 12.5px; color: var(--ink-3); }
+#users .invite-meta b { color: var(--ink); font-weight: 600; }
+#users .invite-link { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s2); align-items: center; margin-top: var(--s2); }
+#users .invite-link .inp { width: 100%; font-family: var(--mono); font-size: 12px; }
+#users .invite-token { margin-top: 6px; font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); word-break: break-all; }
+
+/* 表单网格（sysadmin 建号 / org_admin 邀请共用） */
+#users .users-form {
+  display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 10px 14px;
+  background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg);
+  padding: var(--s4); margin: 0 0 var(--s4); box-shadow: var(--sh-sm);
+}
+#users .users-form .uf-field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; font-weight: 500; color: var(--ink-2); min-width: 0; }
+#users .users-form .uf-field .inp, #users .users-form .uf-field .sel { width: 100%; height: 32px; }
+#users .users-form .uf-field select:disabled { opacity: .55; cursor: not-allowed; }
+#users .users-form .uf-check { flex-direction: row; align-items: center; gap: 8px; font-weight: 400; padding-top: 18px; }
+#users .users-form .uf-check input { width: 15px; height: 15px; accent-color: var(--seal); }
+#users .users-form .uf-actions { grid-column: 1 / -1; display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; padding-top: 4px; border-top: 1px dashed var(--rule); }
+
+/* 行内操作按钮（不换行；窄屏可折行） */
+#users .users-status { white-space: nowrap; }
+#users .users-rowact { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+#users .users-rowact .btn.sm { white-space: nowrap; }
+
+@media (max-width: 860px) {
+  #users .users-form { grid-template-columns: 1fr; }
+  #users .invite-link { grid-template-columns: 1fr; }
+}

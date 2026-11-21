@@ -326,6 +326,7 @@
 - **问题**：邀请/重置 token 只能由管理员经聊天/邮件/口头转发；链接可能落入非目标人/群/日志；过期/撤销/重发依赖人工；无自动通知与投递回执。
 - **触发场景**：POC 或内网部署无 SMTP；管理员批量邀请；token 被转发到公开群。
 - **设计现状与对冲**：token 32B urlsafe、库中只存 sha256、单次、72h、可撤销/重发；URL fragment + accept body 传 token（不进访问日志/Referer）；邀请成功弹窗只显示一次可复制链接；accept 校验 token/成员关系/状态；审计 `auth.invite_*`。
+- **m4 实现状态（2026-11-20）**：邀请/重置链接、单次/72h/撤销重发、URL fragment + accept body 传 token、审计已实装（TC-AUTH-07/08 双后端）；**仍然无 SMTP/自动通知**——链接线下交付、过期/撤销后人工重发；`scripts/reset_admin.py` break-glass 覆盖管理员失联（需 shell 权限）。**不划销**（接 notifier 前残留不变）。
 - **收窄动作（未排期）**：接 SMTP/企业微信 notifier（接口留缝）；邀请列表显示已交付/已接受/已过期；管理员可在页面重发/撤销。
 - **重开条件**：真实企业部署需要自动通知，或发生 token 泄露事件。
 
@@ -334,6 +335,7 @@
 - **来源**：D25 安全基线（2026-11-19，POC 接受）。
 - **问题（分项）**：①无 MFA/二次验证；②无口令泄露库/常见弱口令校验（仅最小长度）；③登录限流与锁定为进程内（多实例/多 worker 不共享，G-25 族）；④登录失败审计可被未认证方触发（写放大，G-26 族）；⑤若采用「管理员设初始密码」兜底而无法强制改密，管理员长期知晓用户口令。
 - **设计现状与对冲**：stdlib scrypt（n=2^14,r=8,p=1）+ 随机 salt + 常数时间比较；username+IP 限流（5 次/15min 锁 10min）；`tv` 撤销；失败审计含 reason（不记口令）；邀请制优先（用户自设密码，管理员不知晓）；`must_change_password` 列为 phase 2 兜底。
+- **m4 实现状态（2026-11-20）**：stdlib scrypt、username+IP 限流（5 次/15min 锁 10min）、`tv` 撤销、失败审计（reason 区分、不含口令）、break-glass 重置审计（`auth.password_reset`）已实装；**残留**：无 MFA/泄露库校验、限流进程内（多实例不共享）、登录失败审计写放大、`must_change_password` 未做。**不划销**。
 - **收窄动作（未排期）**：MFA（TOTP/WebAuthn）；弱口令库；共享限流（Redis/DB 计数）；失败审计采样/限流前置。
 - **重开条件**：公网/多实例部署，或安全评审要求 MFA。
 
@@ -342,6 +344,7 @@
 - **来源**：D25 phase 1 决策（2026-11-19，同实例二选一、不做账号绑定）。
 - **问题**：①同一实例不能同时用 local 密码与 SSO 登录（`auth_mode` 二选一），企业切换期需整体切换；②存量 SSO/JIT 用户无本地密码，local 模式下需管理员发「设密码」邀请/重置；③local 模式未配 SSO 时 MCP 无委托 token 来源（D18 供数链路不可用）；④不做按 email 自动合并（防账号劫持）。
 - **设计现状与对冲**：`auth_mode` 显式配置、默认 sso；local 模式 JIT 关闭；本地 token 仅 Web/REST；存量用户以 `status/password_hash` 区分；RUNBOOK 写清切换与 MCP 边界。
+- **m4 实现状态（2026-11-20）**：`auth_mode` 默认 sso、local 关闭 JIT、local session 在 MCP 被拒（`via=local`）已实装（TC-AUTH-06/10）；**残留**：同实例仍二选一、存量 JIT 用户需邀请/重置设密、local 无 SSO 时 MCP 不可用——phase 2 `sso_sub` 未做。**不划销**。
 - **收窄动作（未排期）**：phase 2 预登记 `sso_sub`（IdP sub）显式绑定；或同实例 hybrid（需账号绑定/合并策略与审计）。
 - **重开条件**：企业同时需要本地与 SSO 登录，或 local 模式必须供 agent 使用。
 
@@ -350,5 +353,6 @@
 - **来源**：D25 会话设计（2026-11-19，phase 1 沿用 localStorage Bearer）。
 - **问题**：①token 存 localStorage，XSS 可窃取；②无 refresh token，12h TTL 到期需重登；③登出仅清客户端，服务端无状态；④`tv` 只覆盖改密/重置，被盗 token 在 TTL 内仍有效；⑤无服务端会话列表/强制下线。
 - **设计现状与对冲**：独立 `LATTICE_SESSION_SECRET`、`aud=knowledge-lattice-web`、`typ=session`；停用即时 401（每请求查 `disabled_at`）；`tv++` 撤销改密/重置前会话；CSP/转义沿现有薄壳纪律；local token 不进 MCP。
+- **m4 实现状态（2026-11-20）**：localStorage Bearer、无 refresh、登出仅清客户端已实装；停用即时 401、改密/重置 `tv++`、`LATTICE_SESSION_SECRET` 轮换全失效；**残留**：XSS 面、被盗 token 在 12h TTL 内有效、无服务端会话列表/强制下线。**不划销**。
 - **收窄动作（未排期）**：HttpOnly cookie + CSRF（替代 localStorage）；refresh token；服务端会话表/强制下线；短 TTL + 滑动续期。
 - **重开条件**：公网暴露/XSS 风险评估升级，或需要强制下线能力。

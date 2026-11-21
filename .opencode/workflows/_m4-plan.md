@@ -1,6 +1,6 @@
 # M4 段计划：内置账号与邀请制登录（D25 / issue #28）
 
-> **状态**：已立项（2026-11-19，用户裁定按 V2 完整版）；**文档已落，代码未开工**。
+> **状态**：**实现完成（2026-11-20；工作树未提交，待用户授权 commit/PR）**——m4-1~m4-4 全段落交付，双后端双模式 gate **2090+1** 全绿 0 skipped（pg 臂 776）；TC-UI-06·07 待用户走查；真实 IdP/G-33 挂部署期。
 > **决策**：D25（requirements v0.10）——`LATTICE_AUTH_MODE=local/sso` 双形态，默认 `sso` 零变化；local = 内置账号 + 邀请制 + 首启 setup + 本地会话（Web/REST only）。
 > **评估依据**：`.opencode/workflows/_auth-local-login-proposal.md`（含 Dify 源码索引、方案对比、冲击/工作量）。
 > **问题单**：https://github.com/yq3/knowledge-lattice/issues/28
@@ -23,10 +23,10 @@
 
 | 段 | 范围 | 验收 | 预估 |
 |---|---|---|---|
-| **m4-1** 账号底座 | 0012 迁移双方言（users 扩列/邀请表/setup 单例）；store 协议 + 双方言实现（create_user/find/list/status/token_version/invitation CRUD/setup 单例/count_sysadmins）；`domain/accounts.py`（scrypt/session JWT/JIT gate/限流/tv）；audit 常量；store/domain 级双后端用例 | 迁移水位 11→12；约束/并发 setup 单例；scrypt/session 单测；现有门禁不降 | 3~4 人日 |
-| **m4-2** 认证 API | `/api/setup`、`/api/auth/login|me|password|logout|invitations lookup·accept`、`/api/users`、`/api/orgs/{org}/invitations`；错误码/审计/限流；app 装配；prod 守卫 | 双后端 API 用例；setup 二次/并发 409；邀请单次/过期/撤销/重发；登录/锁定/`tv` 撤销；末位 sysadmin 409 | 3~4 人日 |
-| **m4-3** Web | boot 门（auth_mode/setup_needed）；Setup/登录/邀请接受三屏；用户/邀请管理页；组织切换改 header；隐藏 dev lens；i18n；prototype 登录/邀请屏更新（UI 双基准） | 壳资产/键集；手动走查 TC-UI-06·07；local e2e REST 闭环 | 3~4 人日 |
-| **m4-4** 收口 | `scripts/reset_admin.py`（break-glass）；RUNBOOK §1.ab 实操复核；`.env.example`；requirements/design/TEST-CASES 完成态回写；全量 gate + 复审 | 双后端双模式 0 skipped；文档版本/检查点闭合；issue #28 验收评论 | 2~3 人日 |
+| **m4-1** ✅ 完成（2026-11-20） 账号底座 | 0012 迁移双方言（users 扩列/邀请表/setup 单例）；store 协议 + 双方言实现（create_user/find/list/status/token_version/invitation CRUD/setup 单例/count_sysadmins）；`domain/accounts.py`（scrypt/session JWT/JIT gate/限流/tv）；audit 常量；store/domain 级双后端用例 | 迁移水位 11→12；约束/并发 setup 单例；scrypt/session 单测；现有门禁不降 | 3~4 人日 |
+| **m4-2** ✅ 完成（2026-11-20） 认证 API | `/api/setup`、`/api/auth/login|me|password|logout|invitations lookup·accept`、`/api/users`、`/api/orgs/{org}/invitations`；错误码/审计/限流；app 装配；prod 守卫 | 双后端 API 用例；setup 二次/并发 409；邀请单次/过期/撤销/重发；登录/锁定/`tv` 撤销；末位 sysadmin 409 | 3~4 人日 |
+| **m4-3** ✅ 完成（2026-11-20） Web | boot 门（auth_mode/setup_needed）；Setup/登录/邀请接受三屏；用户/邀请管理页；组织切换改 header；隐藏 dev lens；i18n；prototype 登录/邀请屏更新（UI 双基准） | 壳资产/键集；手动走查 TC-UI-06·07；local e2e REST 闭环 | 3~4 人日 |
+| **m4-4** ✅ 完成（2026-11-20） 收口 | `scripts/reset_admin.py`（break-glass）；RUNBOOK §1.ab 实操复核；`.env.example`；requirements/design/TEST-CASES 完成态回写；全量 gate + 复审 | 双后端双模式 0 skipped；文档版本/检查点闭合；issue #28 验收评论 | 2~3 人日 |
 
 > 总计约 **13~17 人日**；按本仓多 Agent 段节奏约 **9~13 个工作日**。各段可独立评审/合入，PR base `develop`。
 
@@ -59,7 +59,7 @@
 | `RUNBOOK.md` | §1.ab 内置账号与邀请（首启/邀请/重置/撤销/MCP 边界） |
 | `AGENTS.md` | M4 立项状态 + 模块清单 |
 | `.env.example` | AUTH_MODE / SESSION_SECRET / INIT_PASSWORD / TTL / 限流 |
-| `prototype/index.html` | **待 m4-3 更新**（登录/setup/邀请屏）——本批不改 |
+| `prototype/index.html` | **已随 m4-3 更新**（登录/setup/邀请屏）；本批（m4-0）未改 |
 
 ---
 
@@ -72,6 +72,14 @@
 - 壳用例 `tests/test_e2e_07_shell.py` 资产/视图清单随 m4-3 更新；TC-UI 手动走查不进门禁。
 
 ---
+
+### 实测（m4-4 收口，2026-11-20）
+
+- **定向**：`test_reset_admin_m4` + `test_auth_06/07/08` + `test_e2e_07_shell` = **54 passed**（pg 臂 20 条实跑）。
+- **全量 gate**：`LATTICE_PG_DSN=... UV_CACHE_DIR="$PWD/.uv-cache" scripts/test_gate.sh` → 常规模式 **2088 passed, 1 deselected** / `python -O` **2088 passed, 1 deselected**；**0 failed / 0 skipped**；pg 臂收集 **775**（`[pg]` 参数化 738 + PG 专用 37）。基线 1921+1 → **2088+1**（+167；评审修正后 **2090+1**/+169，见下条）。
+- **新增用例 166（评审修正后 168：+2）**：store 42（`test_auth_store_m4.py`，pg 21）+ domain 73（`test_auth_domain_m4.py`，pg 10）+ API 44（`test_auth_06` 20 / `test_auth_07` 14 / `test_auth_08` 10，pg 22）+ break-glass CLI 9（`test_reset_admin_m4.py`，sqlite——CLI 走 factory 恒 sqlite）；另 `test_backend_contract.py` 新增协议面 1 用例。
+- **残留**：TC-UI-06·07 待用户走查（手动组不进门禁）；TC-EVAL 相关不在本里程碑；真实 IdP 联调/G-33 挂部署期；G-31~G-34 不划销；**工作树未 commit/push**（用户未授权）。
+- **评审修正复跑（2026-11-20 晚）**：local `POST /api/orgs` 的 `org_admin` 接受 username（ID 兼容）——修「sysadmin 建组织任命 `y00668221` 报用户不存在」的可用性缺陷（此前只按不透明 `u_<hex>` 用户 ID 解析）；新增 `test_create_org_accepts_username_in_local_mode`（双后端 +2）。定向 `test_auth_06/07/08 + test_orgs_admin + test_e2e_07_shell` = **58 passed**（pg 实跑）；全量 gate **2090+1**（pg 臂 **776**：739 参数化 + 37）双模式 0 skipped；直播服务重启后 404 路径实测。
 
 ## 六、风险 / 挂账
 
@@ -100,3 +108,5 @@
 | 日期 | 事项 |
 |---|---|
 | 2026-11-19 | 立项：用户裁定 V2 完整版；issue #28；requirements v0.10 / design v0.10 / TEST-CASES v1.10.0 / known-gaps G-31~G-34 / RUNBOOK §1.ab / AGENTS / `.env.example` 落笔（doc-only） |
+| 2026-11-20 | **m4-1~m4-4 实现完成（工作树未提交）**：迁移 0012 双方言 + store/domain/API/Web/break-glass CLI；gate 2088+1 双后端双模式 0 skipped（pg 臂 775）；requirements/design v0.10.1、TEST-CASES v1.11.0、known-gaps G-31~G-34 状态注记、RUNBOOK §1.ab、AGENTS、本计划回写；m4-4 检查点入库；TC-UI 待用户走查 |
+| 2026-11-20 | **评审修正（工作树未提交）**：local `POST /api/orgs` 的 `org_admin` 接受 username（先 ID、未命中再 username；membership/审计落规范 ID，响应附 `org_admin_username`）——修 sysadmin 建组织任命用户时 404；Web 组织页 local 文案与 409 未激活提示同步；新增 1 测试（双后端 +2）→ gate **2090+1**（pg 臂 776）；直播服务重启验证 |

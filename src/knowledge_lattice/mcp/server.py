@@ -229,6 +229,15 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
             raise ToolError(f"{exc.code}: {exc}") from exc
         except OrgContextError as exc:
             raise ToolError(f"400: {exc}") from exc
+        # ---- D25（m4-2）：本地 session token 只用于 Web/REST——MCP 边界拒绝 ----
+        # 认证已通过（via=local）但本地会话不是 D18 委托/可信身份；位置在
+        # resolve_org 之前（org 上下文不参与该拒绝，且不写 org 忽略审计）。
+        # sso/委托/可信/dev JWT 路径零改动。
+        if auth.via == "local":
+            raise ToolError(
+                "401: local session token 不能用于 MCP（D25——MCP 仍走 D18 委托"
+                " token / 可信子系统；local 模式无 SSO 时 MCP 不可用）"
+            )
         # ---- 组织上下文统一规则（trusted 路径 claim=已校验的 X-Org-Id，直通） ----
         org_header = request.headers.get("x-org-id") if request is not None else None
         try:

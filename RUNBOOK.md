@@ -285,22 +285,64 @@ LATTICE_PG_DUMP_CMD="docker exec lattice-pg pg_dump"   # .env 注入示例
   需真实 API key+配额**——不可从仓库复现，m2-5 28q 旧档数字保留于
   `benchmarks/report-m2-5-g8-real-model.md`）。
 
-### 1.ab 内置账号与邀请（m4 起，D25）
+### 1.ab 内置账号与邀请（m4 起，D25——实现完成 2026-11-20）
 
 - **模式切换**：`LATTICE_AUTH_MODE=sso`（默认，现状 D16/D18）| `local`（内置账号 + 邀请制）。生产 local 必须显式配 `LATTICE_SESSION_SECRET`（无默认值，缺失/公开缺省值启动即拒）；建议配 `LATTICE_INIT_PASSWORD` 作为首启门禁。`sso` 形态下本地登录端点 404，现有 SSO/JIT/委托/可信行为不变。
-- **首启 setup**：`GET /api/setup/status` 确认 `setup_needed=true` → `POST /api/setup`
-  （`{username,password,display_name?,org_id?,org_name?,init_password?}`）建首 `sysadmin`
-  （可同事务建首组织并任 `org_admin`）；二次/并发 409。`sso` 形态该端点 404——首管用
-  `scripts/reset_admin.py` 指定（m4 实现后可用；需 shell 访问，写审计）。
-- **邀请**：`org_admin` 在「用户与邀请」页建邀请（`username/email?/role`）→ 复制链接/码
-  **线下交付**（72h、单次、可撤销/重发）；被邀请人打开链接（fragment token）设密码激活。
+- **首次 setup（Web 流程）**：`export LATTICE_AUTH_MODE=local`、
+  `export LATTICE_SESSION_SECRET="$(python -c 'import secrets;print(secrets.token_urlsafe(48))')"`，
+  按需 `export LATTICE_INIT_PASSWORD=...` → `uv run uvicorn "knowledge_lattice.app:create_app" --factory --port 8000`
+  → 打开 <http://127.0.0.1:8000/>，boot 门进入 **Setup 屏**（空库）建首 `sysadmin`
+  （可同事务建首组织并任 `org_admin`）；二次/并发 409。无浏览器时等价 REST：
+  `curl -s -X POST http://127.0.0.1:8000/api/setup -H 'content-type: application/json' -d '{"username":"admin","password":"<新密码>","init_password":"<LATTICE_INIT_PASSWORD>"}'`
+  （`GET /api/setup/status` 先确认 `setup_needed=true`）。`sso` 形态该端点 404。
+- **建组织并任命首任管理员**：sysadmin 在「组织」页 `POST /api/orgs`（`id/name/org_admin` 三必填）。local 形态 `org_admin` 填**用户名**（兼容用户 ID）——目标用户须已接受邀请/处于 active（invited/disabled → 409；建组织只挂 membership，不建账号）；sso 形态仍按既有用户 ID。
+- **邀请（链接线下交付）**：`org_admin` 在「用户与邀请」页建邀请（`username/email?/role`）
+  → 页面**只显示一次**可复制链接（形如 `http://<host>/#invite=<token>`，token 在 fragment、
+  不进访问日志）→ **线下交付**（72h、单次、可撤销/重发）；被邀请人打开链接设密码激活并自动登录。
   **链接含 token，勿贴公开渠道**；过期/撤销后在页面重发。无 SMTP——不会自动发邮件（G-31）。
-- **重置/停用**：sysadmin 生成一次性重置链接（`POST /api/users/{id}/reset`）；接受后 `tv++`
-  使旧会话失效；停用即时 401（每请求查 `disabled_at`）；`org_admin` 不能重置他人密码。
-  break-glass：`uv run python scripts/reset_admin.py --username <u>`（m4 实现后可用）。
+- **重置/停用**：sysadmin 生成一次性重置链接（`POST /api/users/{id}/reset`；停用用户先恢复）；
+  接受后 `tv++` 使旧会话失效；停用即时 401（每请求查 `disabled_at`）；`org_admin` 不能重置他人密码。
+- **break-glass CLI（`scripts/reset_admin.py`——须 shell + 数据目录访问权限）**：
+
+  ```bash
+  # ① 已有用户：从 stdin 读新密码（推荐——不落 shell history；stdout 不打印密码/hash）
+  printf '%s\n' "$NEW_PASSWORD" | uv run python scripts/reset_admin.py --username alice --password-stdin
+
+  # ② 已有用户：生成 24 字符随机密码（只打印一次，立即保存）
+  uv run python scripts/reset_admin.py --username alice --generate
+
+  # ③ 交互式（TTY）：getpass 两次；非 TTY 会报错并提示 --password-stdin
+  uv run python scripts/reset_admin.py --username alice
+
+  # ④ 用户不存在时创建（active + sysadmin）——不加 --create 则退出码 2 并提示
+  uv run python scripts/reset_admin.py --username alice --create --password-stdin
+
+  # ⑤ 已有用户：重置口令 + 授予 sysadmin + 启用（清 disabled_at；tv 不回退）
+  uv run python scripts/reset_admin.py --username alice --password-stdin --promote
+
+  # 可选 --data-dir（缺省 LATTICE_DATA_DIR，再缺省 data/）
+  uv run python scripts/reset_admin.py --username alice --generate --data-dir /srv/lattice/data
+  ```
+
+  - 密码来源三选一：`--password-stdin`（推荐）、`--generate`、无参数交互式 `getpass`；
+    **没有 `--no-password`**——重置必设密码。强度用 `LATTICE_PASSWORD_MIN_LEN`（默认 10、最小 8）。
+  - 退出码：0 成功；2 用户不存在且未 `--create` / 密码不合规 / 参数错误；1 配置或数据库错误。
+  - 审计（与写同事务）：已有用户 `auth.password_reset`；`--promote` 按实际变化补
+    `user.enabled`/`user.sysadmin_changed`；新建 `user.created`。payload 只含
+    user_id/username/actor——**密码/hash 不进审计、stdout、错误消息**。
+  - **sqlite 限制**：CLI 走 `store.factory.build_backend`（当前与 app 一致=sqlite）；若环境
+    设置了 `LATTICE_PG_DSN`，工厂只告警并仍用 sqlite——已切 PG 的部署暂不能用本 CLI，
+    待 factory PG 接线后执行等价操作。`--data-dir` 目录不存在会自动创建。
 - **会话/撤销**：本地 session 为 HS256 JWT（12h，localStorage Bearer）；改密/重置 `tv++`；
   登出仅清客户端 token；`LATTICE_SESSION_SECRET` 轮换=所有本地会话失效（需重新登录）。
 - **MCP 边界**：local session 只用于 Web/REST；MCP 仍走 D18 委托/可信 token；local 模式未配
   SSO 时 MCP 不可用——需要 agent 供数时切 `sso` 模式（或等 phase 2 `sso_sub` 绑定，G-33）。
 - **审计**：`auth.login`/`auth.login_refused`/`auth.invite_*`/`user.*`/`instance.setup`；
   密码/token 不入审计；登录失败限流与写放大见 G-32。
+- **门禁**（M4 完成基线，双后端双模式 0 skipped）：
+
+  ```bash
+  docker start lattice-pg
+  export LATTICE_PG_DSN=postgresql://postgres:lattice@localhost:5432/lattice
+  UV_CACHE_DIR="$PWD/.uv-cache" scripts/test_gate.sh   # 常规 + python -O；2088 passed / pg 臂 775
+  ```
