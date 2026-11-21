@@ -968,7 +968,7 @@ const FLAG_CN = { vector_crowding: "向量拥挤", low_idf: "低信息量", both
 const state = {
   orgId: ORGS[0].id,
   lens: { "01JORGTAX": "u1", "01JORGFIN": "f1" },
-  view: "docs",
+  view: "semantic",   // 默认落地视图（与实现对齐：登录后先落业务语义）
   sub: { access: "grants", sem: "entities" },
   ds: "all", selDoc: null, drawer: null, newDs: { name: "", desc: "" }, up: { ds: "", picked: {}, file: "" },
   q: "", qDs: "all", entRoute: true, lastSearch: null,
