@@ -7,6 +7,12 @@
 > **旧清单作废声明**：m1-5 批次（report-m1-5-tc-ui-walkthrough.md，含 m2-5 B① 4/4）基于旧薄壳
 > 形态，走查状态一律作废——M1+M2 里程碑达成宣告的唯一待勾项按本清单新形态重新执行。
 
+> **2026-11-21 运维视图布局修正（非决策变更）**：任务与审计页原四块内容纵向堆叠，
+> 覆盖率 / maintenance 计数两卡沿用侧栏 `.pane`（sticky）致滚动时相互覆盖，且
+> maintenance 键值列重叠；现改**四子标签**（任务 / 嵌入覆盖率 / maintenance 计数 / 审计，
+> 仿「维度与权限」页 `.sub-tabs`），各分区互斥渲染、按需装载，卡片改静态 `.card`。
+> 本清单涉运维视图各步按标签逐一切换执行；原型对照口径（同类名/同视觉语言）不变。
+
 ## 走查环境指引
 
 ```bash
@@ -55,7 +61,7 @@ EN 态逐项走查（zh 态反向抽查同项）：
 | 3 | 文档视图：标题/lede、知识库 seg、列表表头（含「Updated (UTC)」）、空态卡、上传抽屉全部标签与提示、新建知识库表单、**质检抽查面板**（标题/表头/按钮/空态）、详情 pane（版本/维度/质检/删除确认）、**覆盖上传锁定横幅** | EN |
 | 4 | 检索视图：qbar placeholder、知识库下拉、实体召回路开关、命中卡 meta、无结果空态、403 拒绝卡、右 pane notice/管线说明/当前连接 | EN |
 | 5 | 权限视图：四子标签、只读降级横幅、授权格表头/图例/底注、详细抽屉（预填/行内到期/CSV 区）、成员表（角色/改过期/移除确认）、维度治理（停用/恢复/退役确认/新建维度）、可见性占位卡 | EN |
-| 6 | 运维视图：任务表头与「Tasks return in full…」注记、覆盖率面板、stats、审计双泳道标题与空态、**「最近 N 条」脚注与「Load more」按钮** | EN |
+| 6 | 运维视图（四子标签逐一切换：Tasks / Embedding coverage / Maintenance stats / Audit）：任务表头与「Tasks return in full…」注记、覆盖率面板、stats、审计双泳道标题与空态、**「最近 N 条」脚注与「Load more」按钮** | EN |
 | 7 | 语义视图：探针空态（未构建/403）、搜索与 facet、结果表、详情（定义/别名/关系/SVG 注记）、术语识别、同步与构建（五源表/运行历史/构建表/L0） | EN |
 | 8 | 组织视图：列表、建组织表单、停用确认条 | EN |
 | 9 | 全局：toast 文案（上传/保存/403 detail 回显）、按钮 title 悬停、时间悬停 title（`… UTC` 后缀原文） | EN |
@@ -92,7 +98,7 @@ EN 态逐项走查（zh 态反向抽查同项）：
 | 2 | 文档：seg 分段、ledger 列表、split 双栏、pane 详情、上传抽屉（.upload/.u-row/.u-foot） | 同结构与交互口径；真实数据形态（空态/加载/截断/UTC）按附录 A 约定 |
 | 3 | 检索：qbar、qopts、.hits/.hit 卡（rank 徽标/snippet/meta 行/score bar） | 同结构；notice 面板与管线说明口径一致 |
 | 4 | 权限：.lattice 授权格（.cellbtn 三态+过期虚线）、图例底注、成员 ledger、维度治理行、可见性占位 | 同结构；点格 PUT 语义底注一致 |
-| 5 | 运维：任务 ledger、覆盖率漏斗 bars、审计 .lanes 双泳道（.ev 事件行） | 同结构 |
+| 5 | 运维：四子标签（.sub-tabs）——任务 ledger、覆盖率漏斗 bars、maintenance 计数 kv 网格（.ops-stats）、审计 .lanes 双泳道（.ev 事件行） | 同结构；分区互斥渲染（不再纵向堆叠） |
 | 6 | 语义：类型 tiles 落地页、facet chips、结果表、对象图 SVG（.graph/.node/.edge）、术语识别（.ann-in/.annot mark 下划线+浮标）、同步与构建表 | 同结构与配色（类型色/关系色）；fanout 截断 +N 占位口径一致 |
 | 7 | 组织：ledger、建组织表单、停用确认 | 同结构 |
 | — | 全视图 | **诚实差异清单外差异即不通过**（豁免清单见附录 B，以 ui-2 检查点落档为基线） |
@@ -103,10 +109,10 @@ EN 态逐项走查（zh 态反向抽查同项）：
 
 | 形态 | 约定 | 主要触发位 |
 |---|---|---|
-| 空态 | 「说明 + 下一步动作」卡片（.empty）；各视图已备：docs 无库/空库/be-① 降级横幅、search 无结果/403、access 无授权行/无维度（含新建入口）/矩阵占位、ops 无任务/无审计/maintenance null、semantic 未接入/403/无命中/404 零泄露、orgs 无组织 | docs 空库（ds:cit_lib）、staff_wang 检索无结果、org:fin 未建词典 |
+| 空态 | 「说明 + 下一步动作」卡片（.empty）；各视图已备：docs 无库/空库/be-① 降级横幅、search 无结果/403、access 无授权行/无维度（含新建入口）/矩阵占位、ops 各分区空态（任务空/覆盖率无库/审计双道空/maintenance null）、semantic 未接入/403/无命中/404 零泄露、orgs 无组织 | docs 空库（ds:cit_lib）、staff_wang 检索无结果、org:fin 未建词典 |
 | 加载态 | 各视图首装必有 loading 指示（.loading 复用）；**二次刷新不闪空**（缓存先行、原位更新）——ops 刷新保留旧表、semantic 同步子标签数据未到显示加载条、orgs 首装无缓存不闪「无组织」 | ops 反复点「刷新」；semantic 切「同步与构建」子标签 |
-| 错误态 | 401 统一 toast + 自动打开连接设置（坏 token 即触发）；403 toast 服务端 detail + 视图内降级面（只读横幅/面板不可用注记）；404 视图内空态（语义详情 404 零泄露 / be-① 横幅）；网络异常 toast | 连接设置粘贴坏 token 后任一操作；staff_wang 开运维视图（覆盖率/stats/审计 403 面板） |
-| 条数与分页 | 审计 = 「最近 N 条」脚注 + 「加载更多」（limit 50→100→200，上限 200 停）；语义同步运行历史同款；任务列表全量返回（无分页参数——表下注记如实）；docs be-① 未定不处理 | 运维审计脚注连点三次（50→100→200 后按钮消失）；semantic 运行历史同验 |
+| 错误态 | 401 统一 toast + 自动打开连接设置（坏 token 即触发）；403 toast 服务端 detail + 视图内降级面（只读横幅/面板不可用注记）；404 视图内空态（语义详情 404 零泄露 / be-① 横幅）；网络异常 toast | 连接设置粘贴坏 token 后任一操作；staff_wang 开运维视图各分区（覆盖率/stats/审计 403 面板） |
+| 条数与分页 | 审计 = 「最近 N 条」脚注 + 「加载更多」（limit 50→100→200，上限 200 停）；语义同步运行历史同款；任务列表全量返回（无分页参数——表下注记如实）；docs be-① 未定不处理 | 运维「审计」标签脚注连点三次（50→100→200 后按钮消失）；semantic 运行历史同验 |
 | 长文截断 | 列表位 CSS 截断（title/.t-sub/brief/别名等，hover title 看全文）；详情位全文；审计 detail_json 240 字符截断 + title 全文；任务 error 60 字符 + title | 造一份长标题文档看列表行；审计看长 detail 行 |
 | UTC 时间 | 显示 `MM-DD HH:mm`（short()）+ **hover title 完整 UTC 原文**（`原文 UTC`）；时间列表头/pane 时间行标注 **(UTC)**（docs/ops/audit/sem runs/builds/orgs expires） | 任意时间位悬停；对照表头标注 |
 

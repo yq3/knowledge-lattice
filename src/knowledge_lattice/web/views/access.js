@@ -283,7 +283,8 @@ function visHTML() {
 
 /* 点格下钻：该 (member, doc) 的 explain 行集（逐维度结论——服务端解释） */
 function visDetailHTML(detail) {
-  return `<div class="pane" style="margin-top:16px;padding:14px 16px">
+  // 静态全宽卡片（.card）：不用 .pane——sticky 侧栏面板在纵向流程里会吸附覆盖上方矩阵
+  return `<div class="card" style="margin-top:16px;padding:14px 16px">
     <div class="lane-h"><h3>${esc(t("access.vis.detailTitle", { user: detail.user, doc: detail.doc }))}</h3>
       <button class="link tiny" data-act="visDetailClose">${esc(t("common.collapse"))}</button></div>
     ${(detail.rows || []).map((r) => `<div class="explain-row">
