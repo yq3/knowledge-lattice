@@ -1380,7 +1380,7 @@ local 模式下 `POST /api/orgs` 的 `org_admin` 须 `status='active'`（拒绝 
 4. 在线引用锚点抽样
 5. 验收：门禁能卡住一次人为注入的检索层回归；judge-人一致性达标；黄金集覆盖中英三态 query
 
-**M4（登录/账号，D25——2026-11-19 立项；2026-11-20 实现完成，工作树未提交）**
+**M4（登录/账号，D25——2026-11-19 立项；2026-11-20 实现完成；2026-11-21 PR #29 合入 develop，mergeCommit df8344a）**
 1. 决策与文档：D25 + FR-9 + requirements/design/TEST-CASES/known-gaps/RUNBOOK 回写（本批）
 2. 账号底座：迁移 0012 双方言（users 扩列 + user_invitations + instance_setup）+ store 协议与双方言 + domain/accounts.py（scrypt/session/JIT gate/tv/限流）
 3. 认证 API：/api/setup + /api/auth/* + /api/users + /api/orgs/{org}/invitations；错误码/审计/限流
@@ -1388,7 +1388,7 @@ local 模式下 `POST /api/orgs` 的 `org_admin` 须 `status='active'`（拒绝 
 5. 收口：break-glass CLI、RUNBOOK/.env、全量 gate、文档回写
 验收：local 端到端 + sso 回归 + 双后端 0 skipped；详见 requirements §8 M4。
 
-> **m4 完成态（2026-11-20，工作树未提交）**：5/5 项实装——迁移 0012 双方言、`AccountsBackend` + `domain/accounts.py`、`api/auth.py`/`api/users.py`、Web boot 门与 setup/login/invite/用户邀请页、`scripts/reset_admin.py` break-glass；**双后端双模式 gate 2090+1 全绿 0 skipped（pg 臂 776）**；local 端到端（setup→login→org_admin 邀请→accept→登录→建组织/加成员/授权→检索）闭环；`sso` 形态 TC-AUTH-01~05 回归全绿、默认零变化。残留：TC-UI-06·07 待用户走查（手动组不进门禁）、真实 IdP/G-33 挂部署期；工作树未 commit/push（用户未授权）。实现口径注记见 §5.5/§6.2。
+> **m4 完成态（2026-11-20；2026-11-21 PR #29 合入 develop，mergeCommit df8344a）**：5/5 项实装——迁移 0012 双方言、`AccountsBackend` + `domain/accounts.py`、`api/auth.py`/`api/users.py`、Web boot 门与 setup/login/invite/用户邀请页、`scripts/reset_admin.py` break-glass；**双后端双模式 gate 2090+1 全绿 0 skipped（pg 臂 776）**；local 端到端（setup→login→org_admin 邀请→accept→登录→建组织/加成员/授权→检索）闭环；`sso` 形态 TC-AUTH-01~05 回归全绿、默认零变化。残留：TC-UI-06·07 待用户走查（手动组不进门禁）、真实 IdP/G-33 挂部署期；已随 PR #29 合入 develop（mergeCommit df8344a），分支 develop_opencode 保留。实现口径注记见 §5.5/§6.2。
 
 依赖：M1.2/1.3 依赖 M0a.3；M1.4 依赖 M1.2；M0b 结论回写后方可进 M1；M3 扩量依赖待决-1。**语义轨道（D23）**：M2-S1 依赖 M2.1 的 worker 子进程化与迁移框架就位；M2-S2 依赖 M2-S1 的模板/字段节点作关系端点；M2-S3 依赖 M2-S2 词典质量稳定（否则重标风暴扩散到 docs 检索）与 M2.4 的删除级联（untag 挂接点）；语义轨道任何一步延期**不阻塞 M2 / M3 主线验收**。
 
