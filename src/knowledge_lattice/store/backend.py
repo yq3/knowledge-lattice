@@ -65,6 +65,54 @@ class DimensionExistsError(Exception):
     """维度 key 已存在（m3-1 A4 POST dimensions → 409——UNIQUE(org_id, key)
     唯一性语义化，非裸 IntegrityError）。"""
 
+
+# ---- M4（D25 local 账号）异常：API 层统一映射 409/401（m4-2） ----
+
+
+class UsernameTakenError(Exception):
+    """username 已被占用（m4-1——users.username UNIQUE 的语义化；API
+    POST /api/users → 409 username_taken）。事务内预查 + 唯一约束兜底双保险；
+    消息不得回显占用者 id（fail-closed，沿 upsert_user_jit P3-7 口径）。"""
+
+
+class EmailTakenError(Exception):
+    """email 已被占用（m4-1——部分唯一索引 ux_users_email 的语义化；API →
+    409 email_taken）。email 写入前统一 strip().lower()（NULL 不参与唯一）。"""
+
+
+class SetupCompletedError(Exception):
+    """实例已完成首启 setup / 并发 setup 竞争失败（m4-1——instance_setup 单例
+    id=1 与 COUNT(users)==0 同事务判定；API POST /api/setup → 409
+    setup_completed）。并发唯一冲突（用户/组织/setup 行）一律映射本异常。"""
+
+
+class LastSysadminError(Exception):
+    """最后一名 active sysadmin 的停用/撤权被拒（m4-1 → 409 last_sysadmin
+    防自锁；守卫与写操作同一事务——sqlite BEGIN IMMEDIATE 单写者、PG 事务级
+    advisory lock 串行化跨行并发）。"""
+
+
+class InvitationInvalidError(Exception):
+    """邀请/重置 token 不可用（m4-1——单一异常携带分类 reason，API 映射
+    404/400 invite_invalid|invite_expired|invite_consumed|invite_revoked）。
+
+    ``reason`` 取值固定为 ``invalid``（不存在/格式非法）/ ``expired``（已过期）/
+    ``consumed``（已消费，单次语义）/ ``revoked``（管理员撤销）。构造形态
+    ``InvitationInvalidError(message, *, reason=...)``；reason 非法直接
+    ValueError（调用方 bug，fail-fast）。消息不包含 token 明文/摘要。
+    """
+
+    _REASONS = frozenset({"invalid", "expired", "consumed", "revoked"})
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        if reason not in self._REASONS:
+            raise ValueError(
+                f"InvitationInvalidError.reason 非法: {reason!r}"
+                "（须为 invalid|expired|consumed|revoked）"
+            )
+        super().__init__(message)
+        self.reason = reason
+
 # ============ AclPlan：方言无关的维度 ACL 编译产物（D24） ============
 #
 # 由编译器（core/docs/acl.py，M0a-2）产出，各后端 acl_render.py 渲染为目标 SQL。
@@ -885,9 +933,8 @@ class AdminBackend(Protocol):
         """静态 token 查 user（sha256——仅 dev/test，D18）。"""
         ...
 
-    def get_user_auth(self, user_id: str) -> dict | None:
-        """认证侧用户态（存在 / 禁用 / 系统管理员）。"""
-        ...
+    # get_user_auth 已随 M4（D25）迁 AccountsBackend 并扩列 status/token_version
+    # （读口语义不变，组合进 StorageBackend 后既有 SSO 调用方零改动）。
 
     def upsert_user_jit(
         self, *, user_id: str, username: str, display_name: str | None,
@@ -950,6 +997,235 @@ class AdminBackend(Protocol):
 
     def delete_upload_credential(self, upload_id: str) -> None:
         """凭证行删除（清理任务回收——已消费凭证保留供追溯，不进本方法）。"""
+        ...
+
+
+@runtime_checkable
+class AccountsBackend(Protocol):
+    """本地账号域（D25 / FR-9 / m4-1——`LATTICE_AUTH_MODE=local` 的账号底座）。
+
+    设计口径（design §4 users/user_invitations/instance_setup + §5.5 D25 块）：
+
+    - **用户**：全局账号（跨组织唯一）；`status ∈ {invited, active}` 表达邀请态，
+      停用继续用既有 `disabled_at`（不引第二套语义）；`password_hash` 为 scrypt
+      编码串（NULL=未设本地密码）；`token_version` 为本地会话撤销版本；
+    - **邀请/重置**：`user_invitations` 单表两用途（purpose=invite/reset），库内
+      **只存 token sha256**、单次（consumed_at）、可撤销/重发（revoked_at）、
+      有 TTL（expires_at）；**明文 token 永不进 store**（调用方只传 sha256）；
+    - **首启**：`instance_setup` 单例（id=1）+ COUNT(users)==0 同事务判定，
+      防并发 setup 建出第二个首管理员。
+
+    事务与审计纪律（与既有 audit= 先例一致）：带 `audit=` 的写方法与业务写
+    **同一事务**（sqlite `BEGIN IMMEDIATE` / PG `BEGIN`），审计失败即整体回滚；
+    审计 payload 由调用方构造时**不得含密码/token/密文**。`now` 一律取
+    `store/taskclock.py::utc_now_ts`（UTC 库格式字符串，双方言同源）。
+
+    返回 dict 的字段口径：`get_user`/`get_user_by_username` 含全列（**含
+    password_hash**——供认证面校验）；`list_users` **不含 password_hash**；
+    `get_user_auth` 只回认证判据列（status/token_version 供本地会话 tv 校验）。
+    调用方（API 层）负责裁剪对外响应字段。
+    """
+
+    # ---- 首启与计数（instance_setup 单例） ----
+
+    def count_users(self) -> int:
+        """users 总行数（setup 前置判定面——零用户才允许首启）。"""
+        ...
+
+    def get_instance_setup(self) -> dict | None:
+        """首启完成态 {completed_at, admin_user_id}；未 setup → None。"""
+        ...
+
+    def setup_instance(
+        self, *, admin_user_id: str, username: str,
+        display_name: str | None, email: str | None, password_hash: str,
+        org_id: str | None, org_name: str | None,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        """首启建首管理员（FR-9 首启；D25）。
+
+        **同一事务**：COUNT(users)==0 且 instance_setup 无行，否则
+        :class:`SetupCompletedError`；建 status='active' 的 system admin 用户；
+        org_id/org_name **成对**给定时同事务建组织 + 该用户 org_admin 成员关系
+        （单参 → ValueError——API 层校验 400 可后置，store fail-fast 兜底）；
+        写 instance_setup(id=1) 行；``audit=(event_type, payload_json)`` 同事务
+        （调用方传 ``instance.setup``）。并发唯一冲突（users/orgs/instance_setup）
+        一律映射 :class:`SetupCompletedError`。
+
+        返回 {user, org|None}——user 为全列 dict（含 password_hash），
+        org 为 {id, name} 或 None。
+        """
+        ...
+
+    # ---- 用户写路径 ----
+
+    def create_user(
+        self, *, user_id: str, username: str, display_name: str | None,
+        email: str | None, password_hash: str | None, status: str,
+        is_system_admin: bool, created_by: str | None,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        """管理员直接建号（POST /api/users 兜底；不设密码时 password_hash=None）。
+
+        username `strip()`（不 lower——登录键精确）；email 统一
+        `strip().lower() or None`（NULL 不参与部分唯一）。username/email 冲突
+        → :class:`UsernameTakenError` / :class:`EmailTakenError`（事务内预查 +
+        唯一约束兜底）。`status ∈ {invited, active}` 由迁移 CHECK 约束。
+        user_id 由调用方生成（store 不生成）；``audit`` 与插入**同一事务**。
+        返回全列 user dict（含 password_hash）。
+        """
+        ...
+
+    def create_invited_user(
+        self, *, user_id: str, username: str, display_name: str | None,
+        email: str | None, invitation_id: str, org_id: str | None,
+        role: str | None, token_hash: str, invited_by: str, expires_at: str,
+        is_system_admin: bool, audit: tuple[str, str] | None = None,
+    ) -> dict:
+        """建 invited 用户 + 邀请行（org_admin 邀本组织新用户/全局预登记；
+        FR-9 邀请制）。
+
+        原子性：user(status='invited', password_hash=NULL) 插入 + invitation
+        插入 + ``audit`` **同一事务**，任一失败全回滚（不产生孤儿用户/邀请）。
+        username/email 冲突同 :class:`UsernameTakenError` /
+        :class:`EmailTakenError`；expires_at 经 normalize_expires_at 归一；
+        org_id/role/reset 可空（org_id 空=全局邀请，reset 用途走
+        create_invitation 的 purpose='reset'）。返回 {user, invitation}。
+        """
+        ...
+
+    # ---- 用户读路径 ----
+
+    def get_user(self, user_id: str) -> dict | None:
+        """按 id 取全列 user（**含 password_hash**）；不存在 → None。"""
+        ...
+
+    def get_user_by_username(self, username: str) -> dict | None:
+        """按 username 取全列 user（**含 password_hash**——本地登录键精确匹配；
+        不做 lower/模糊）。不存在 → None。"""
+        ...
+
+    def get_user_auth(self, user_id: str) -> dict | None:
+        """认证侧用户态（SSO/委托/静态/本地会话共用读口）：
+        {is_system_admin, disabled_at, status, token_version}；不存在 → None。
+        status/token_version 为 D25 扩列（既有 SSO 调用方只读前两键、零回归）。"""
+        ...
+
+    def list_users(self) -> list[dict]:
+        """全部用户（管理面 GET /api/users）：**不含 password_hash**；按
+        created_at, id 升序（稳定序供分页/展示）。"""
+        ...
+
+    # ---- 用户状态写路径 ----
+
+    def update_user_flags(
+        self, *, user_id: str, disabled: bool | None,
+        is_system_admin: bool | None, actor: str,
+        audits: list[str | tuple[str, str]] | None = None,
+    ) -> dict:
+        """停用/启用/授撤 sysadmin（PATCH /api/users/{id}；D25 管理面）。
+
+        disabled/is_system_admin 为 None = 不改；无实际变化 → 幂等返回当前行
+        且**零审计**。停用：disabled_at=now 且 token_version+1（旧会话不复活）；
+        启用：清 disabled_at（token_version **不回退**——重新启用旧 session 仍
+        失效）。**末位 sysadmin 守卫**：目标当前是 active sysadmin 且本次操作
+        终结其 active sysadmin 身份（撤权/停用）而库内再无其他 active sysadmin
+        → :class:`LastSysadminError`（同一事务判定；PG 事务级 advisory lock
+        串行化，sqlite BEGIN IMMEDIATE 单写者）。``audits`` 为候选事件名清单
+        （user.disabled/user.enabled/user.sysadmin_changed；元素亦可为
+        ``(event_type, payload_json)`` 二元组以自带 payload），store 按**实际
+        变化**择一/多写入（事件名为字符串时 payload 由 store 构造，含 actor；
+        无变化则一个都不写）。
+        用户不存在 → KeyError（404）。返回更新后全列 user dict。
+        """
+        ...
+
+    def set_user_password(
+        self, *, user_id: str, password_hash: str,
+        bump_token_version: bool, audit: tuple[str, str] | None = None,
+    ) -> dict:
+        """设置密码 hash（改密/重置/break-glass CLI 共用写口）。
+
+        bump_token_version=True 时 token_version+1（改密/重置撤销旧会话）；False
+        用于管理员建号时预置初始密码（无旧会话可撤销）。用户不存在 → KeyError。
+        ``audit`` 与 UPDATE **同一事务**。返回更新后全列 user dict。
+        """
+        ...
+
+    def record_login(self, user_id: str) -> None:
+        """登录成功时写 last_login_at=now（失败不写——限流/拒绝面归 API）。"""
+        ...
+
+    def list_user_orgs(self, user_id: str) -> list[dict]:
+        """用户**有效**成员关系的组织行 [{id, name, role, status}]（status=组织
+        状态 active/disabled；过期成员关系过滤——与权限计算第 0 步同口径。
+        登录响应 orgs 用本方法；管理面含过期行的展示走 list_orgs_for_user）。"""
+        ...
+
+    # ---- 邀请/重置 ----
+
+    def create_invitation(
+        self, *, invitation_id: str, user_id: str, org_id: str | None,
+        role: str | None, purpose: str, token_hash: str, invited_by: str,
+        expires_at: str, revoke_pending: bool,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        """新建邀请/重置 token（库内只存 sha256；重发=revoke_pending=True）。
+
+        revoke_pending=True 时先将同 user/org/purpose 的未消费未撤销行置
+        revoked_at=now（旧链接失效）再插入新行——与插入、``audit`` 同一事务。
+        purpose ∈ {invite, reset}（迁移 CHECK）；expires_at 归一到库格式。
+        返回邀请行 dict（含 token_hash；**不含明文 token**——明文只在 API 响应
+        创建时回给调用方一次）。
+        """
+        ...
+
+    def find_invitation_by_token_hash(self, token_hash: str) -> dict | None:
+        """按 token sha256 **精确**查邀请（join user/org：username/display_name/
+        email/org_name）——接受/查找页数据源；不存在 → None（分类由 accept
+        统一给出 invalid）。"""
+        ...
+
+    def get_invitation(self, invitation_id: str) -> dict | None:
+        """按 id 取邀请（join user/org 同 find——管理面/重发对账）。"""
+        ...
+
+    def list_invitations(self, org_id: str) -> list[dict]:
+        """本组织邀请列表（GET /api/orgs/{org}/invitations）——含 username，
+        按 created_at DESC（最新在前）；status 由调用方按 consumed/revoked/
+        expires_at 计算。"""
+        ...
+
+    def revoke_invitation(
+        self, *, invitation_id: str, org_id: str, actor: str,
+        audit: tuple[str, str] | None = None,
+    ) -> bool:
+        """撤销 pending 邀请（DELETE → 204）：仅未消费、未撤销、未过期的行
+        生效（rowcount 判 False=404 invite_invalid）；``audit`` 仅在实际撤销时
+        同事务写入。actor 供调用方构造审计 payload（本方法不改行外状态）。"""
+        ...
+
+    def accept_invitation(
+        self, *, token_hash: str, password_hash: str,
+        display_name: str | None, audit_event: str, actor_label: str,
+    ) -> dict:
+        """接受邀请/重置密码（匿名端点载体；单次+原子）。
+
+        事务内：按 token_hash 查邀请（join user/org）→ 分类不可用状态（不存在
+        invalid / 已撤销 revoked / 已消费 consumed / 已过期 expired）→
+        **条件 UPDATE**（consumed_at IS NULL AND revoked_at IS NULL AND
+        expires_at > now）防双消费（rowcount=0 时重查再分类）→ 设
+        password_hash、status='active'、token_version+1（旧会话撤销）、可选
+        display_name → purpose='invite' 且 org/role 非空时补成员关系
+        （已存在不降级：INSERT OR IGNORE / ON CONFLICT DO NOTHING）→
+        审计事件 = 入参 ``audit_event``（invite→auth.invite_accepted /
+        reset→auth.password_reset），payload 由 store 构造（含 actor_label，
+        不含密码/token）→ 返回 {user, invitation}。
+
+        失败抛 :class:`InvitationInvalidError`（reason 分类）；user 行含全列
+        （含新 password_hash），invitation 含 consumed_at。并发双消费只有一方
+        成功，另一方 consumed。
+        """
         ...
 
 
@@ -1466,6 +1742,7 @@ class StorageBackend(
     IngestBackend,
     AclBackend,
     AdminBackend,
+    AccountsBackend,
     QualityBackend,
     SemanticBackend,
     AuditBackend,

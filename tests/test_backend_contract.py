@@ -34,6 +34,7 @@ def test_acl_plan_structure() -> None:
 
 def test_storage_backend_composed_of_domain_protocols() -> None:
     from knowledge_lattice.store.backend import (
+        AccountsBackend,
         AdminBackend,
         AclBackend,
         AuditBackend,
@@ -43,11 +44,44 @@ def test_storage_backend_composed_of_domain_protocols() -> None:
         StorageBackend,
     )
 
-    for domain in (SearchBackend, IngestBackend, AclBackend, AdminBackend, SemanticBackend, AuditBackend):
+    for domain in (
+        SearchBackend, IngestBackend, AclBackend, AdminBackend,
+        AccountsBackend, SemanticBackend, AuditBackend,
+    ):
         assert issubclass(StorageBackend, domain)
     # 方法种子存在（清单非穷举——design §3 store/backend.py）
     for method in ("recall_fts", "recall_vec", "insert", "read_membership", "read_grants"):
         assert hasattr(StorageBackend, method)
+
+
+def test_accounts_backend_protocol_surface() -> None:
+    """M4（D25）账号域协议面：19 方法 + 分类异常（契约 §3）。"""
+    from knowledge_lattice.store.backend import (
+        AccountsBackend,
+        InvitationInvalidError,
+        StorageBackend,
+    )
+
+    methods = (
+        "count_users", "get_instance_setup", "setup_instance",
+        "create_user", "create_invited_user",
+        "get_user", "get_user_by_username", "get_user_auth", "list_users",
+        "update_user_flags", "set_user_password", "record_login",
+        "list_user_orgs",
+        "create_invitation", "find_invitation_by_token_hash", "get_invitation",
+        "list_invitations", "revoke_invitation", "accept_invitation",
+    )
+    assert len(methods) == 19
+    for method in methods:
+        assert hasattr(AccountsBackend, method), f"AccountsBackend 缺方法 {method}"
+        assert hasattr(StorageBackend, method), f"StorageBackend 缺组合方法 {method}"
+
+    # InvitationInvalidError(reason) 分类构造（契约 §3）
+    for reason in ("invalid", "expired", "consumed", "revoked"):
+        exc = InvitationInvalidError("nope", reason=reason)
+        assert exc.reason == reason
+    with pytest.raises(ValueError):
+        InvitationInvalidError("nope", reason="bogus")
 
 
 def test_embedder_protocol_shape() -> None:

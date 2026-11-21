@@ -232,7 +232,10 @@ def test_list_dimensions_datasets_and_user_auth(pg_env) -> None:
         "id": "u1", "is_system_admin": False,
     }
     assert backend.find_user_by_token_hash("nope") is None
-    assert backend.get_user_auth("u1") == {"is_system_admin": False, "disabled_at": None}
+    assert backend.get_user_auth("u1") == {
+        "is_system_admin": False, "disabled_at": None,
+        "status": "active", "token_version": 0,
+    }  # M4/D25 扩列：status/token_version（本地会话 tv 校验）
     assert backend.get_user_auth("ghost") is None
 
 

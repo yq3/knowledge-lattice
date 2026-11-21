@@ -473,6 +473,75 @@ def app_env(tmp_path):
     conn.close()
 
 
+# ============ M4/D25 local 形态 REST 壳（m4-2——setup/login/邀请/用户管理） ============
+
+
+@pytest.fixture(params=["sqlite", "pg"])
+def local_env(request, tmp_path):
+    """local 认证形态 REST 壳（**双后端参数化**——m4-2；不污染 ``app_env``）。
+
+    - sqlite 臂：默认工厂建 app（``settings.db_path``）+ 另开一条
+      ``connect(settings.db_path)`` 直连（app 启动后迁移已完成）供断言/造数；
+    - PG 臂：``pg_db`` 独立 schema 经 ``create_app(settings, backend=
+      pg_db.make_backend())`` 注入（与 ``rest_env`` 同款纪律）；
+    - 每用例**空库启动**（管理员由用例经 ``POST /api/setup`` 造出——首启语义
+      真实覆盖）；fake embedder + ``run_startup_probe=False`` +
+      ``probe_interval_s/maintenance_interval_s=0``（无周期任务）。
+
+    yield ``{client, app, settings, db, backend}``；PG 的 db 生命周期归 ``pg_db``
+    fixture（teardown DROP SCHEMA），sqlite 直连在此关闭。
+    """
+    from fastapi.testclient import TestClient
+
+    from knowledge_lattice.adapters.embedder import EmbeddingGate
+    from knowledge_lattice.app import create_app
+    from knowledge_lattice.config import Settings
+    from fake_providers import FakeEmbedder
+
+    settings = Settings(
+        environment="test",
+        data_dir=tmp_path,
+        auth_mode="local",
+        session_secret="test-session-secret-0123456789abcdef",
+        password_min_len=10,
+        probe_interval_s=0,
+        maintenance_interval_s=0,
+        worker_mode="inline",
+    )
+    kwargs = dict(
+        embedder=FakeEmbedder(dim=2560),
+        gate=EmbeddingGate(),
+        run_startup_probe=False,
+    )
+    if request.param == "sqlite":
+        app = create_app(settings, **kwargs)
+        from knowledge_lattice.store.sqlite import connect
+
+        db = connect(settings.db_path)
+        try:
+            with TestClient(app) as client:
+                yield {
+                    "client": client,
+                    "app": app,
+                    "settings": settings,
+                    "db": db,
+                    "backend": app.state.service.backend,
+                }
+        finally:
+            db.close()
+        return
+    db = request.getfixturevalue("pg_db")
+    app = create_app(settings, backend=db.make_backend(), **kwargs)
+    with TestClient(app) as client:
+        yield {
+            "client": client,
+            "app": app,
+            "settings": settings,
+            "db": db,
+            "backend": app.state.service.backend,
+        }
+
+
 # ============ M3-1 管理面 REST 壳（test_admin_m31_* / test_org_disable_m31 /
 #              test_docs_explain_m31 / test_az_m31_scan 共用） ============
 

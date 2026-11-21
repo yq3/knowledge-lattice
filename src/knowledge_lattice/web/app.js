@@ -1,7 +1,9 @@
 /* app.js —— 应用框架（ui-1）：状态 / 渲染循环 / 顶栏与侧栏 / 组织与身份切换 /
  * 连接设置 / 语言切换接线。视图实现见 views/*.js（VIEWS 注册表 + actions/INPUTS 扩展）。
- * 脚本协同（经典脚本，无模块）：i18n.js → api.js → 本文件 → views/*.js；
- * boot 在 DOMContentLoaded 才执行（晚于全部 script 注册）。
+ * 脚本协同（经典脚本，无模块）：i18n.js → api.js → 本文件 → views/login.js →
+ * views/*.js；boot 在 DOMContentLoaded 才执行（晚于全部 script 注册）。
+ * D25 local（m4-3a）：boot 门 → setup/login/invite 三屏（views/login.js，VIEWS.auth）
+ * + 用户菜单/本地组织切换；默认 sso 形态沿用原连接设置/身份 lens 路径。
  */
 "use strict";
 
@@ -54,6 +56,17 @@ const state = {
   orgView: { list: null, askOrg: null, newOpen: false, form: { id: "", name: "", admin: "" }, loadErr: null },
   /* 运维视图（ops 平移；auditLimit 递增 50→100→200——ui-3 条数与分页） */
   ops: { tasks: null, tasksErr: null, coverage: null, audit: null, auditLimit: 50, stats: null, reembedDoc: "", reembedModel: "" },
+  /* 用户/邀请管理视图（m4-3b，D25 local；sysadmin 用户表 + org_admin 本组织邀请） */
+  users: {
+    list: null,                 // GET /api/users（sysadmin）→ [{id,username,...}]
+    invites: null,              // GET /api/orgs/{org}/invitations（org_admin）
+    err: null,                  // 装载/动作失败文案（普通文案——消费点 esc）
+    lastInvite: null,           // {token, username, kind:"invite"|"reset"}——只驻内存（刷新消失）
+    busy: false,                // 创建/动作在途
+    createOpen: false, invOpen: false,
+    form: { username: "", display_name: "", email: "", is_system_admin: false, org_id: "", role: "member" },
+    invForm: { username: "", role: "member", display_name: "", email: "" },
+  },
   loading: {},
 };
 
@@ -63,6 +76,25 @@ let booted = false;
 
 const VIEWS = {};   // views/*.js 注册：VIEWS.docs = { render, onEnter }
 const INPUTS = {};  // views/*.js 注册：INPUTS.q = (v) => { … }
+
+/* D25 local 认证状态（m4-3a；默认 sso = screen:null、mode:"sso"——零视觉变化）。
+ * screen 非空时 render() 只渲染 VIEWS.auth（登录/首启/邀请接受三屏），不渲染 rail。
+ * form 跨重渲染保留输入（INPUTS 写这里）；pw* 为用户菜单改密表单。 */
+const AUTH = {
+  mode: "sso",                 // "sso" | "local"（boot 门按 GET /api/auth/config）
+  screen: null,                // null | "setup" | "login" | "accept"
+  setupNeeded: false,
+  user: null,                  // public_user 投影（id/username/display_name/email/status/is_system_admin/...）
+  orgs: [],                    // [{org_id,name,role,status}]（local session payload）
+  error: "",                   // 屏幕内联错误（已由 authErrorText 映射为普通文案）
+  busy: false,
+  form: {
+    username: "", password: "", confirm: "", display_name: "",
+    org_id: "", org_name: "", init_password: "",
+    pwOld: "", pwNew: "", pwConfirm: "",
+  },
+  invite: null,                // {token, loading, info}（accept 屏）
+};
 
 function toast(html) {
   const el = document.createElement("div");
@@ -79,6 +111,34 @@ function errToast(e) {
   toast((e && e.status ? e.status + " · " : "") + esc(String((e && e.message) || e || "")));
 }
 
+/* D25 local 错误文案：优先 body.code（契约 §5 冻结错误码）→ i18n auth.err.*；
+ * 未知 code 用服务端 message；离线（status 0）用网络文案；其余 generic。
+ * 返回值是普通文案（消费点 esc——authErrorText 不做 HTML 转义）。 */
+function authErrorText(err) {
+  const body = (err && err.body) || {};
+  const code = body.code || "";
+  const byCode = {
+    invalid_credentials: "auth.err.invalid_credentials",
+    login_locked: "auth.err.login_locked",
+    invalid_init_password: "auth.err.invalid_init_password",
+    weak_password: "auth.err.weak_password",
+    invalid_username: "auth.err.invalid_username",
+    invalid_org: "auth.err.invalid_org",
+    setup_completed: "auth.err.setup_completed",
+    invite_invalid: "auth.err.invite_invalid",
+    invite_expired: "auth.err.invite_expired",
+    invite_consumed: "auth.err.invite_consumed",
+    invite_revoked: "auth.err.invite_revoked",
+    username_taken: "auth.err.username_taken",
+    email_taken: "auth.err.email_taken",
+  };
+  if (code && byCode[code]) return t(byCode[code]);
+  if (!err || !err.status) return t("auth.err.network");
+  if (err.status === 429) return t("auth.err.login_locked");
+  const msg = err.message ? String(err.message) : "";
+  return msg || t("auth.err.generic");
+}
+
 /* ---------- 共享片段（视图复用） ---------- */
 
 const ICONS = {
@@ -88,6 +148,7 @@ const ICONS = {
   semantic: '<circle cx="6" cy="6" r="2.4"/><circle cx="18" cy="8" r="2.4"/><circle cx="9" cy="18" r="2.4"/><path d="M8.2 7 15.7 7.6M7 8.2l1.4 7.5M16.6 10 10.8 16.3"/>',
   ops: '<path d="M3 12h4l3-7 4 14 3-7h4"/>',
   orgs: '<path d="M3 21h18M5 21V5a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v16M14 9h4a1 1 0 0 1 1 1v11"/><path d="M8 8h3M8 12h3M8 16h3M17 13h.01M17 17h.01"/>',
+  users: '<circle cx="9" cy="8" r="3.2"/><path d="M3.6 19.5c.6-3.1 2.8-4.9 5.4-4.9s4.8 1.8 5.4 4.9"/><circle cx="17.4" cy="10.6" r="2.2"/><path d="m19 12.1 2.4 2.4M15.4 14.8l3.9 3.9"/><path d="M17.4 8.4v2.2"/>',
 };
 const ic = (k) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[k]}</svg>`;
 const CARET = `<svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>`;
@@ -150,7 +211,11 @@ function parseCsvLine(line) {
 /* ---------- 身份与角色（展示口径——服务端仍是权限唯一权威） ---------- */
 
 function roleOf(orgId) {
-  const o = state.orgs.find((x) => x.org_id === orgId);
+  /* D25 local：角色真源 = 会话 payload 的成员关系（GET /api/orgs 对 sysadmin 是
+   * 全部组织、无 role 列——直接读 state.orgs 会丢掉 setup 管理员的 org_admin）。
+   * AUTH.orgs 为空时回落 state.orgs；sso 形态始终 state.orgs（零变化）。 */
+  const source = AUTH.mode === "local" && (AUTH.orgs || []).length ? AUTH.orgs : state.orgs;
+  const o = source.find((x) => x.org_id === orgId);
   return o && o.role ? o.role : null;
 }
 function roleLabel(orgId) {
@@ -225,6 +290,30 @@ async function loadUsernames() {
 
 async function loadMeta() {
   if (!connected()) return;
+  /* D25 local：会话成员关系会漂移（sysadmin 在组织页新建组织后 GET /api/orgs
+   * 返回无 role 的全量组织，不能作 AUTH.orgs 真源）——每次装载前用
+   * /api/auth/me 刷新 AUTH.user/AUTH.orgs，组织 picker 与 roleOf/isAdmin 即时
+   * 可见新组织/新角色，不必重新登录。401 → 会话失效回登录屏；网络/其他错误
+   * 忽略（沿用现有 AUTH 缓存降级）。sso 形态不进入本分支（零变化）。 */
+  if (AUTH.mode === "local") {
+    try {
+      const me = await authMe();
+      AUTH.user = (me && me.user) || AUTH.user;
+      AUTH.orgs = (me && me.orgs) || [];
+    } catch (e) {
+      if (e && e.status === 401) { handleAuthExpired(); return; }
+      /* 网络/其它错误：沿用当前会话缓存，不阻塞元数据装载 */
+    }
+  }
+  /* D25 local 无组织：只同步会话里的组织清单，清空 org 路径缓存（datasets/dims/
+   * 成员名单），绝不发 /api/orgs//... 请求。有组织时走 sso 同款装载。 */
+  if (AUTH.mode === "local" && !cfg.org) {
+    state.orgs = AUTH.orgs || [];
+    state.datasets = [];
+    state.dims = [];
+    state.usernames = [];
+    return;
+  }
   const ep = state.epoch;
   const [orgsRes, dsRes, dimRes] = await Promise.all([
     listOrgs().catch(() => ({ orgs: [] })),
@@ -267,6 +356,12 @@ function resetOrgState() {
   };
   state.orgView = { list: null, askOrg: null, newOpen: false, form: { id: "", name: "", admin: "" }, loadErr: null };
   state.ops = { tasks: null, tasksErr: null, coverage: null, audit: null, auditLimit: 50, stats: null, reembedDoc: "", reembedModel: "" };
+  state.users = {
+    list: null, invites: null, err: null, lastInvite: null, busy: false,
+    createOpen: false, invOpen: false,
+    form: { username: "", display_name: "", email: "", is_system_admin: false, org_id: "", role: "member" },
+    invForm: { username: "", role: "member", display_name: "", email: "" },
+  };
 }
 
 async function reloadAfterIdentityChange() {
@@ -277,9 +372,21 @@ async function reloadAfterIdentityChange() {
   render();
 }
 
-/* 组织切换 = reissue({org})（本人身份进新组织）+ 元数据与视图数据重载 */
+/* 组织切换（D25 local：成员关系已在会话 orgs——只换当前组织，不重签/不 reissue）；
+ * sso 形态 = reissue({org})（本人身份进新组织）+ 元数据与视图数据重载。 */
 async function switchOrg(orgId) {
   if (!orgId || orgId === cfg.org) return;
+  if (AUTH.mode === "local") {
+    /* local session 绑定用户身份；组织仅决定 X-Org-Id 与可见成员关系，
+     * 切换零服务端重签（不 reissue、不依赖 baseToken/dev 端点）。 */
+    closeMenus();
+    cfg.org = orgId;
+    saveCfg();
+    resetOrgState();
+    toast(t("org.switched", { org: esc(orgId), user: esc(AUTH.user ? AUTH.user.username : "") }));
+    await reloadAfterIdentityChange();
+    return;
+  }
   if (!cfg.baseToken) { toast(esc(t("org.switch.needBase"))); openConn(); return; }
   closeMenus();
   try {
@@ -292,8 +399,9 @@ async function switchOrg(orgId) {
   await reloadAfterIdentityChange();
 }
 
-/* 身份切换 = reissue({userId, org})；userId 空 = 回本人 */
+/* 身份切换 = reissue({userId, org})；userId 空 = 回本人。D25 local 无代签面——直接忽略。 */
 async function switchLens(userId) {
+  if (AUTH.mode === "local") return;
   if (!cfg.baseToken) { toast(esc(t("org.switch.needBase"))); openConn(); return; }
   closeMenus();
   try {
@@ -306,27 +414,45 @@ async function switchLens(userId) {
 
 /* ---------- 侧栏与顶栏渲染 ---------- */
 
-function orgName(orgId) { const o = state.orgs.find((x) => x.org_id === orgId); return o ? o.name : orgId; }
+function orgName(orgId) {
+  /* D25 local：优先会话成员关系里的组织名（AUTH.orgs）；未命中再回落 GET /api/orgs
+   * 列表（sysadmin 的全部组织）；sso 形态仍只读 state.orgs（零变化）。 */
+  let o = null;
+  if (AUTH.mode === "local") o = (AUTH.orgs || []).find((x) => x.org_id === orgId) || null;
+  if (!o) o = state.orgs.find((x) => x.org_id === orgId);
+  return o ? o.name : orgId;
+}
 
 function renderRail() {
-  /* 组织 picker（GET /api/orgs 菜单） */
-  $("#orgPicker").innerHTML = connected() ? `
+  /* 组织 picker（GET /api/orgs 菜单；D25 local 无组织 → 「未加入组织」引导入口） */
+  if (AUTH.mode === "local" && AUTH.user && !cfg.org) {
+    $("#orgPicker").innerHTML = `
+    <button class="picker-btn" data-act="view" data-v="orgs">
+      <span class="pk-main"><span class="pk-t">${esc(t("org.none"))}</span><span class="pk-s">${esc(t("org.noneHint"))}</span></span><span class="caret">${CARET}</span>
+    </button>`;
+  } else {
+    /* local 菜单源 = 会话成员关系（AUTH.orgs）——sysadmin 的 GET /api/orgs 是
+     * 「全部组织」口径（含无成员关系的组织），直接作工作空间切换会切进无权限组织；
+     * sso 形态保持 state.orgs（GET /api/orgs 现有语义）不变。 */
+    const menuOrgs = AUTH.mode === "local" ? (AUTH.orgs || []) : state.orgs;
+    $("#orgPicker").innerHTML = connected() ? `
     <button class="picker-btn" data-act="menu" data-m="org" aria-haspopup="true">
       <span class="pk-main"><span class="pk-t">${esc(orgName(cfg.org))}</span><span class="pk-s mono">${esc(cfg.org)}</span></span><span class="caret">${CARET}</span>
     </button>
     <div class="menu" id="menu-org">
       <div class="tiny muted" style="padding:6px 10px 4px;font-weight:500">${esc(t("org.menuTitle"))}</div>
-      ${state.orgs.map((x) => `<button class="menu-item ${x.org_id === cfg.org ? "on" : ""}" data-act="org" data-id="${esc(x.org_id)}">
+      ${menuOrgs.map((x) => `<button class="menu-item ${x.org_id === cfg.org ? "on" : ""}" data-act="org" data-id="${esc(x.org_id)}">
         <span>${esc(x.name)}<span class="mono tiny muted" style="display:block;font-weight:400">${esc(x.org_id)}</span></span>
         <small>${esc(roleLabel(x.org_id))}${x.expires_at ? ` · <span title="${esc(x.expires_at)} UTC">${esc(short(x.expires_at))}</span>` : ""}</small></button>`).join("")}
       <div class="menu-note">${t("org.menuNote")}</div>
     </div>` : `
     <button class="picker-btn" data-act="openConn"><span class="pk-main"><span class="pk-t">${esc(t("rail.offline"))}</span></span><span class="caret">${CARET}</span></button>`;
+  }
 
   /* 身份 picker（名单源 = GET members ∪ export 用户名 ∪ 会话注册表——m3-2
    * ui-be 真源化；非 org_admin 退化为「自己 + 手动输入」） */
   const lu = lensUser();
-  $("#lensPicker").innerHTML = connected() ? `
+  $("#lensPicker").innerHTML = AUTH.mode === "local" ? "" : connected() ? `
     <button class="picker-btn" data-act="menu" data-m="lens" aria-haspopup="true">
       ${avatar(lu)}<span class="pk-main"><span class="pk-t">${esc(lu)}</span><span class="pk-s">${esc(roleLabel(cfg.org))}</span></span><span class="caret">${CARET}</span>
     </button>
@@ -342,18 +468,24 @@ function renderRail() {
       <div class="menu-note">${t("lens.note")}</div>
     </div>` : "";
 
-  /* 导航（带计数）——知识组语义第一项（ui-2），运维组含组织 */
+  /* 导航（带计数）——知识组语义第一项（ui-2），运维组含组织。
+   * D25 local（m4-3b）：用户/邀请管理仅对 sysadmin 或当前组织 org_admin 显示
+   * （sso 形态恒不出现——AUTH.mode/AUTH.user 双重门，零视觉变化）。 */
   const docsN = state.docs.available ? state.docs.list.length : state.docs.session.length;
   const runN = (state.ops.tasks || []).filter((x) => ["pending", "leased", "running"].includes(x.status)).length;
+  const adminItems = [
+    ["access", t("nav.access"), state.dims.length ? t("nav.accessCount", { n: state.dims.length }) : ""],
+  ];
+  if (AUTH.mode === "local" && AUTH.user && (AUTH.user.is_system_admin || isAdmin())) {
+    adminItems.push(["users", t("nav.users"), state.users.list ? String(state.users.list.length) : ""]);
+  }
   const groups = [
     [t("nav.group.knowledge"), [
       ["semantic", t("nav.semantic"), state.sem.dictRev ? "rev " + state.sem.dictRev : ""],
       ["docs", t("nav.docs"), String(docsN || "")],
       ["search", t("nav.search"), ""],
     ]],
-    [t("nav.group.admin"), [
-      ["access", t("nav.access"), state.dims.length ? t("nav.accessCount", { n: state.dims.length }) : ""],
-    ]],
+    [t("nav.group.admin"), adminItems],
     [t("nav.group.ops"), [
       ["ops", t("nav.ops"), runN ? t("nav.opsCount", { n: runN }) : ""],
       ["orgs", t("nav.orgs"), state.orgs.length ? t("nav.orgsCount", { n: state.orgs.length }) : ""],
@@ -362,17 +494,80 @@ function renderRail() {
   $("#nav").innerHTML = groups.map(([g, items]) => `<div class="nav-group">${esc(g)}</div>` + items.map(([k, name, c]) =>
     `<button class="nav-item ${state.view === k ? "on" : ""}" data-act="view" data-v="${k}"><span class="ni-k">${ic(k)}</span><span>${esc(name)}</span><span class="ni-c">${esc(c)}</span></button>`).join("")).join("");
 
+  renderUserMenu();
+
   $("#railFoot").innerHTML = connected()
-    ? `<div class="rf-h"><i></i>${t("rail.connected", { org: esc(cfg.org) })}</div>${t("rail.note")}`
+    ? `<div class="rf-h"><i></i>${t("rail.connected", { org: esc(cfg.org || t("org.none")) })}</div>${t("rail.note")}`
     : `<div class="rf-h" style="color:var(--danger)"><i style="background:var(--danger);box-shadow:0 0 0 3px var(--danger-w)"></i>${esc(t("rail.offline"))}</div>${t("rail.note")}`;
 }
 
+/* D25 local 用户菜单（#userPicker）：头像/username/角色 + 改密表单 + 退出登录；
+ * sso 形态恒隐藏（连接设置/身份 lens 原路径不变）。菜单表单值存 AUTH.form.pw*；
+ * INPUTS 返回 false 不触发整壳重渲（否则弹层 innerHTML 重建即收起）。 */
+function renderUserMenu() {
+  const el = $("#userPicker");
+  if (!el) return;
+  const show = AUTH.mode === "local" && !!AUTH.user && !!cfg.activeToken;
+  if (!show) { el.style.display = "none"; el.innerHTML = ""; return; }
+  el.style.display = "";
+  const u = AUTH.user;
+  const uname = u.username || "?";
+  const dname = u.display_name || uname;
+  const role = u.is_system_admin ? t("user.menu.sysadmin")
+    : (cfg.org ? roleLabel(cfg.org) : t("org.none"));
+  const f = AUTH.form;
+  el.innerHTML = `
+    <button class="picker-btn" data-act="menu" data-m="user" aria-haspopup="true">
+      ${avatar(uname)}<span class="pk-main"><span class="pk-t">${esc(dname)}</span><span class="pk-s">${esc(role)}${u.is_system_admin ? ` · <span class="mono">${esc(uname)}</span>` : ""}</span></span><span class="caret">${CARET}</span>
+    </button>
+    <div class="menu" id="menu-user">
+      <div class="tiny muted" style="padding:6px 10px 4px;font-weight:500">${esc(t("user.menu.title"))}</div>
+      <div class="menu-item"><span>${avatar(uname, 24)}<span style="display:block;font-weight:600">${esc(dname)}</span><span class="mono tiny muted" style="display:block;font-weight:400">${esc(uname)}</span></span><small>${esc(role)}</small></div>
+      <div class="menu-form">
+        <div class="mf-sec">${esc(t("user.menu.password"))}</div>
+        <div class="mf-row"><label for="userPwOld">${esc(t("user.menu.oldPassword"))}</label>
+          <input class="inp" id="userPwOld" type="password" autocomplete="current-password" data-in="userPwOld" placeholder="${esc(t("user.menu.oldPasswordPh"))}" value="${esc(f.pwOld)}"></div>
+        <div class="mf-row"><label for="userPwNew">${esc(t("user.menu.newPassword"))}</label>
+          <input class="inp" id="userPwNew" type="password" autocomplete="new-password" data-in="userPwNew" placeholder="${esc(t("user.menu.newPasswordPh"))}" value="${esc(f.pwNew)}"></div>
+        <div class="mf-row"><label for="userPwConfirm">${esc(t("user.menu.confirmPassword"))}</label>
+          <input class="inp" id="userPwConfirm" type="password" autocomplete="new-password" data-in="userPwConfirm" placeholder="${esc(t("user.menu.confirmPasswordPh"))}" value="${esc(f.pwConfirm)}"></div>
+        <div class="mf-act">
+          <button class="btn sm" data-act="userPassword">${esc(t("user.menu.changePassword"))}</button>
+        </div>
+        <div class="menu-note">${esc(t("user.menu.passwordNote"))}</div>
+        <button class="menu-item" data-act="userLogout" style="color:var(--danger)">${esc(t("user.menu.logout"))}</button>
+      </div>
+    </div>`;
+}
+
 /* ---------- 主渲染循环 ---------- */
+
+/* 输入焦点/光标恢复（每次 INPUTS 触发重渲染后按 data-in 找回输入框；auth 屏同用） */
+function restoreInputFocus(key, sel) {
+  if (!key) return;
+  const el = document.querySelector(`[data-in="${key}"]`);
+  if (el && el.type !== "checkbox" && el.tagName !== "SELECT") {
+    el.focus();
+    if (sel) { try { el.setSelectionRange(sel[0], sel[1]); } catch (_) { /* number 等 input 不支持 */ } }
+  }
+}
 
 function render() {
   const a = document.activeElement;
   const key = a && a.dataset && a.dataset.in;
   const sel = key && "selectionStart" in a ? [a.selectionStart, a.selectionEnd] : null;
+  /* D25 local：认证屏只渲染 VIEWS.auth 到 #main（rail/topbar 交互件由 body.auth-screen
+   * CSS 隐藏），不渲染 rail；登录成功 applySession 清 screen 后回到整壳。 */
+  if (AUTH.screen) {
+    const authView = VIEWS.auth;
+    const authKey = "auth/" + AUTH.screen;
+    /* 同一屏的输入重渲染不加 .view（避免每次击键重放 viewIn 动画——闪烁） */
+    const cls = authKey !== lastViewKey ? "view auth-view" : "auth-view";
+    $("#main").innerHTML = `<section class="${cls}">${authView ? authView.render() : ""}</section>`;
+    lastViewKey = authKey;
+    restoreInputFocus(key, sel);
+    return;
+  }
   renderRail();
   const vk = state.view + "/" + (state.view === "access" ? state.sub.access
     : state.view === "semantic" ? state.sub.sem : "");
@@ -380,13 +575,7 @@ function render() {
   const body = view ? view.render() : "";
   $("#main").innerHTML = `<section class="${vk !== lastViewKey ? "view" : ""}">${body}</section>`;
   lastViewKey = vk;
-  if (key) {
-    const el = document.querySelector(`[data-in="${key}"]`);
-    if (el && el.type !== "checkbox" && el.tagName !== "SELECT") {
-      el.focus();
-      if (sel) { try { el.setSelectionRange(sel[0], sel[1]); } catch (_) { /* number 等 input 不支持 */ } }
-    }
-  }
+  restoreInputFocus(key, sel);
 }
 
 /* ---------- 连接设置 ---------- */
@@ -401,6 +590,168 @@ function refreshConnStatus() {
   if (!el) return;
   if (!connected()) { el.textContent = t("settings.status.offline"); return; }
   el.textContent = t("settings.status.on", { user: lensUser(), org: cfg.org, role: roleLabel(cfg.org) });
+}
+
+/* ---------- D25 local 认证状态机（m4-3a） ----------
+ * boot 门（GET /api/auth/config 匿名）→ setup / invite / login / resume 四路；
+ * 认证屏复用 VIEWS.auth（views/login.js），render() 在 AUTH.screen 非空时只渲染该视图。
+ * sso 形态完全不进入本区（AUTH.mode="sso"、screen 恒 null），原有连接设置路径零变化。 */
+
+/* 邀请 token 只从 URL fragment/query 取（不放路径、不进 Referer——D25 线下交付口径）：
+ * `#invite=<token>` 优先，其次 `?invite=<token>`。 */
+function parseInviteToken() {
+  try {
+    const h = new URLSearchParams(String(location.hash || "").replace(/^#/, ""));
+    if (h.get("invite")) return h.get("invite");
+    const q = new URLSearchParams(String(location.search || "").replace(/^\?/, ""));
+    return q.get("invite") || "";
+  } catch (e) { return ""; }
+}
+
+/* 切到认证屏（不渲染 rail）。kind: "setup" | "login" | "accept"；error 为普通文案。 */
+function showAuthScreen(kind, { error } = {}) {
+  AUTH.mode = "local";
+  AUTH.screen = kind;
+  AUTH.busy = false;
+  AUTH.error = error || "";
+  if (kind !== "accept") AUTH.invite = null;
+  AUTH.form.password = "";
+  AUTH.form.confirm = "";
+  document.body.classList.add("auth-screen", "auth-local");
+  closeMenus();
+  booted = true;
+  render();
+  return false;
+}
+
+/* 邀请接受屏：先 lookup（匿名）再出表单；lookup 失败（无效/过期/已用/撤销/
+ * 网络错）→ 错误文案 + 回登录屏。 */
+async function openInvite(token) {
+  AUTH.mode = "local";
+  AUTH.screen = "accept";
+  AUTH.busy = false;
+  AUTH.error = "";
+  AUTH.invite = { token, loading: true, info: null };
+  AUTH.form.password = "";
+  AUTH.form.confirm = "";
+  AUTH.form.display_name = "";
+  document.body.classList.add("auth-screen", "auth-local");
+  closeMenus();
+  booted = true;
+  render();
+  try {
+    const info = await lookupInvitation(token);
+    if (!AUTH.invite || AUTH.invite.token !== token) return; // 屏幕已被替换/取消
+    AUTH.invite = { token, loading: false, info };
+    AUTH.form.display_name = info.display_name || "";
+    render();
+  } catch (e) {
+    showAuthScreen("login", { error: authErrorText(e) });
+  }
+}
+
+/* 选组织：preferred（当前/登录前组织）→ 现有 cfg.org → 首个 active → 首个；
+ * 无成员关系 → cfg.org 置空（local 允许未加入组织，renderRail 给引导入口）。 */
+function pickSessionOrg(orgs, preferred) {
+  const list = orgs || [];
+  const byId = (id) => (id ? list.find((o) => o.org_id === id) : null);
+  return byId(preferred) || byId(cfg.org) ||
+    list.find((o) => o.status !== "disabled") || list[0] || null;
+}
+
+/* 登录/首启/邀请接受成功 → 本地会话落地：token/baseUserId/lensUserId、AUTH、orgs
+ * 与组织选择、saveCfg、清缓存、整壳渲染 + 元数据/当前视图装载。
+ * data 形如 {token, expires_at, user, orgs}（authMe 调用时由 bootLocal 补 token）。 */
+async function applySession(data, preferredOrg) {
+  const user = (data && data.user) || {};
+  const orgs = (data && data.orgs) || [];
+  cfg.authMode = "local";
+  cfg.activeToken = (data && data.token) || cfg.activeToken || "";
+  cfg.baseToken = ""; // 本地会话无基 token/重签面（dev lens 入口在 local 隐藏）
+  cfg.baseUserId = user.id || "";
+  cfg.lensUserId = user.id || "";
+  AUTH.user = user;
+  AUTH.orgs = orgs;
+  AUTH.screen = null;
+  AUTH.error = "";
+  AUTH.busy = false;
+  AUTH.invite = null;
+  AUTH.form.password = "";
+  AUTH.form.confirm = "";
+  AUTH.form.init_password = "";
+  AUTH.form.pwOld = "";
+  AUTH.form.pwNew = "";
+  AUTH.form.pwConfirm = "";
+  state.orgs = orgs;
+  const picked = pickSessionOrg(orgs, preferredOrg);
+  cfg.org = picked ? picked.org_id : "";
+  saveCfg();
+  resetOrgState();
+  state.orgs = orgs;
+  state.usernames = [];
+  state.dims = [];
+  state.datasets = [];
+  if (!cfg.org && user.is_system_admin) state.view = "orgs"; // 首启未建组织 → 先落组织页
+  document.body.classList.remove("auth-screen");
+  document.body.classList.add("auth-local");
+  booted = true;
+  render();
+  try { await loadMeta(); } catch (e) { /* 已按视图降级/403 toast */ }
+  const view = VIEWS[state.view];
+  if (view && view.onEnter) { try { await view.onEnter(); } catch (e) { /* 已 toast */ } }
+  render();
+}
+
+/* 会话失效（401/登出）：清 token 与用户态、缓存；local → 登录屏（默认「已过期」文案，
+ * 登出用普通文案），sso → 原连接设置弹层。 */
+function handleAuthExpired(reason) {
+  const local = AUTH.mode === "local";
+  cfg.activeToken = "";
+  cfg.baseToken = "";
+  cfg.org = "";
+  cfg.lensUserId = "";
+  cfg.baseUserId = "";
+  saveCfg();
+  AUTH.user = null;
+  AUTH.orgs = [];
+  AUTH.busy = false;
+  AUTH.invite = null;
+  state.orgs = [];
+  state.usernames = [];
+  state.dims = [];
+  state.datasets = [];
+  resetOrgState();
+  if (!local) {
+    AUTH.screen = null;
+    document.body.classList.remove("auth-screen", "auth-local");
+    render();
+    openConn();
+    return;
+  }
+  AUTH.form.username = "";
+  AUTH.form.pwOld = "";
+  AUTH.form.pwNew = "";
+  AUTH.form.pwConfirm = "";
+  showAuthScreen("login", { error: reason || t("auth.err.expired") });
+}
+
+/* local boot：setup 屏 → 邀请接受 → 无 token 登录屏 → 有 token 恢复会话（/api/auth/me）。 */
+async function bootLocal(config) {
+  AUTH.mode = "local";
+  AUTH.setupNeeded = !!(config && config.setup_needed);
+  document.body.classList.add("auth-local");
+  if (AUTH.setupNeeded) { showAuthScreen("setup"); return; }
+  const invite = parseInviteToken();
+  if (invite) { await openInvite(invite); return; }
+  showAuthScreen("login"); // 先出登录屏，避免恢复会话期间空白；成功后整壳替换
+  if (!cfg.activeToken) return;
+  try {
+    const me = await authMe();
+    await applySession({ token: cfg.activeToken, user: me.user, orgs: me.orgs }, cfg.org);
+  } catch (e) {
+    if (e && e.status === 401) { handleAuthExpired(); return; }
+    showAuthScreen("login", { error: authErrorText(e) });
+  }
 }
 
 /* ---------- 动作基表（views/*.js 经 Object.assign 扩展） ---------- */
@@ -502,7 +853,54 @@ const actions = {
     openConn();
     return false;
   },
+
+  /* D25 local 用户菜单：改密（旧密错 401 不清会话——只提示；会话过期才回登录屏） */
+  async userPassword() {
+    const f = AUTH.form;
+    const domVal = (id) => { const el = $("#" + id); return el && typeof el.value === "string" ? el.value : ""; };
+    const oldPw = domVal("userPwOld") || f.pwOld || "";
+    const newPw = domVal("userPwNew") || f.pwNew || "";
+    const confirmPw = domVal("userPwConfirm") || f.pwConfirm || "";
+    if (!oldPw || !newPw) { toast(esc(t("user.menu.pwNeed"))); return false; }
+    if (newPw !== confirmPw) { toast(esc(t("user.menu.pwMismatch"))); return false; }
+    let body;
+    try {
+      body = await changePassword(oldPw, newPw);
+    } catch (e) {
+      if (e && e.status === 401 && e.body && e.body.code === "invalid_credentials") {
+        toast(esc(t("user.menu.pwOldWrong")));
+      } else if (e && e.status === 401) {
+        handleAuthExpired(); // 会话本身失效（非旧密错——AuthError 体无 code）
+      } else if (e && e.status === 400) {
+        toast(esc(authErrorText(e)));
+      } else {
+        errToast(e);
+      }
+      return false;
+    }
+    cfg.activeToken = body.token || cfg.activeToken;
+    saveCfg();
+    AUTH.form.pwOld = ""; AUTH.form.pwNew = ""; AUTH.form.pwConfirm = "";
+    toast(t("user.menu.pwDone"));
+    closeMenus();
+    render();
+    return false;
+  },
+  async userLogout() {
+    try { await authLogout(); } catch (e) { /* 无状态登出——服务端失败忽略（G-34） */ }
+    closeMenus();
+    handleAuthExpired(t("user.menu.loggedOut"));
+    return false;
+  },
 };
+
+Object.assign(INPUTS, {
+  /* 用户菜单在顶栏动态渲染：改密输入不触发整壳重渲（返回 false），否则菜单
+   * innerHTML 重建会收起弹层/丢焦点；值仍写 AUTH.form 供动作读取。 */
+  userPwOld: (v) => { AUTH.form.pwOld = v; return false; },
+  userPwNew: (v) => { AUTH.form.pwNew = v; return false; },
+  userPwConfirm: (v) => { AUTH.form.pwConfirm = v; return false; },
+});
 
 /* ---------- 事件委托 ---------- */
 
@@ -546,9 +944,12 @@ document.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape") closeMenus();
 });
 
-/* ---------- boot（DOMContentLoaded——晚于全部 views/*.js 注册） ---------- */
-
-function boot() {
+/* ---------- boot（DOMContentLoaded——晚于全部 views/*.js 注册） ----------
+ * D25 local（m4-3a）：先取匿名 /api/auth/config 过 boot 门——
+ *  - local_login_enabled/auth_mode=local → AUTH.mode=local → bootLocal
+ *    （setup 屏 / 邀请接受 / 登录屏 / 已存 token 恢复会话）；
+ *  - 否则（sso，含 config 不可达/404 的 fail-safe）→ 原 sso boot 逻辑零变化。 */
+async function boot() {
   loadCfg();
   if (!cfg.baseUserId && cfg.baseToken) cfg.baseUserId = (decodeJwt(cfg.baseToken) || {}).sub || "";
   if (!cfg.lensUserId && cfg.activeToken) cfg.lensUserId = (decodeJwt(cfg.activeToken) || {}).sub || "";
@@ -566,6 +967,24 @@ function boot() {
     if (booted) render(); // 全视图重渲染——缓存数据复用，仅文案换
   });
 
+  let config = null;
+  try { config = await authConfig(); } catch (e) { config = null; /* 失败/404 → sso 分支 */ }
+  const local = !!(config && (config.local_login_enabled === true || config.auth_mode === "local"));
+  if (local) {
+    AUTH.mode = "local";
+    cfg.authMode = "local";
+    saveCfg();
+    document.body.classList.add("auth-local");
+    await bootLocal(config);
+    return;
+  }
+
+  /* sso 形态（默认）——原有路径原样保留：render + loadMeta/onEnter 或 openConn。 */
+  AUTH.mode = "sso";
+  AUTH.screen = null;
+  cfg.authMode = "sso";
+  saveCfg();
+  document.body.classList.remove("auth-local", "auth-screen");
   render();
   booted = true;
   if (connected()) {

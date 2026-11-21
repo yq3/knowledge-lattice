@@ -1,20 +1,31 @@
 /* api.js —— REST 适配层（ui-1）：全部 fetch 收口。
- * - 连接状态 cfg = {baseToken, activeToken, org, lensUserId}，localStorage `lattice.cfg` 持久化；
- *   baseToken = 连接时粘贴的基 token（重签用）；activeToken = 实际请求用的 token（视角身份）。
+ * - 连接状态 cfg = {baseToken, activeToken, org, lensUserId, baseUserId, authMode}，
+ *   localStorage `lattice.cfg` 持久化（D25：旧值无 authMode 仍兼容，boot 门按服务端
+ *   /api/auth/config 校正）；baseToken = 连接时粘贴的基 token（重签用）；
+ *   activeToken = 实际请求用的 token（视角身份）；authMode = sso|local（本地会话时
+ *   connected() 还要求 AUTH.user 在场）。
  * - apiFetch(path, opts)：注入 Authorization / X-Org-Id / Content-Type；统一错误解析
  *   （body.detail || body.error——HTTPException 与 JSONResponse 两种错误体形态）；
- *   401 → toast + 打开连接设置；403 → toast 服务端 detail；网络异常 → toast。
+ *   401：sso → toast + 打开连接设置（原逻辑）；local → handleAuthExpired()（清会话回登录屏，
+ *   见 app.js——不 toast/openConn）；403 → toast 服务端 detail；网络异常 → toast。
+ * - apiPublic(path, opts)：匿名端点（auth config/setup/login/invite lookup·accept）专用——
+ *   不带 Authorization / X-Org-Id、不触发 401 连接设置；错误统一抛 ApiError。
  * - reissue({org?, userId?})：用 baseToken POST /api/dev/token 重签（dev 形态组织/身份切换）；
  *   给他人代签须系统管理员基 token（403）；生产无 dev 端点（404 → 提示直接粘贴已签 token）。
  * - 领域函数：每端点一函数。原 contract-first 降级四处（be-① 文档列表 /
  *   建库 / 建维度 / 组织停用）已随 m3-1 后端实装全部接真端点（m3-2 对账）。
+ * - D25 local（m4-3a）：authConfig/setupStatus/setupInstance/authLogin/authMe/
+ *   changePassword/authLogout/lookupInvitation/acceptInvitation——本地会话只 Web/REST。
+ * - D25 local（m4-3b）：listUsers/createUser/patchUser/resetUser +
+ *   listInvitations/createInvitation/revokeInvitation——用户/邀请管理页（views/users.js）；
+ *   邀请链接统一 inviteLink(token)（#invite= fragment——token 不进路径/Referer）。
  * - pollTask：任务轮询（interval 1.5s / 终态停止 / 超时 120s / shouldStop 回调
  *   感知上下文切换即停——R2 P1-5，返回 null=已弃）。
  */
 "use strict";
 
 const CFG_KEY = "lattice.cfg";
-const cfg = { baseToken: "", activeToken: "", org: "", lensUserId: "", baseUserId: "" };
+const cfg = { baseToken: "", activeToken: "", org: "", lensUserId: "", baseUserId: "", authMode: "" };
 
 function loadCfg() {
   try {
@@ -24,6 +35,7 @@ function loadCfg() {
     cfg.org = saved.org || "";
     cfg.lensUserId = saved.lensUserId || "";
     cfg.baseUserId = saved.baseUserId || "";
+    cfg.authMode = saved.authMode === "local" ? "local" : saved.authMode === "sso" ? "sso" : "";
   } catch (e) { /* 损坏配置忽略——视为未连接 */ }
 }
 function saveCfg() {
@@ -40,7 +52,15 @@ function decodeJwt(token) {
   } catch (e) { return null; }
 }
 
-function connected() { return !!(cfg.activeToken && cfg.org); }
+/* 连接判定：sso = 已粘贴 token + 组织；local = 本地会话 token + AUTH.user 已恢复
+ * （D25——组织可为空，由用户菜单/组织页引导；AUTH 在 app.js 定义，脚本按序加载，
+ * 调用时恒已就绪，typeof 防御仅防加载顺序意外）。 */
+function connected() {
+  if (typeof AUTH !== "undefined" && AUTH.mode === "local") {
+    return !!(cfg.activeToken && AUTH.user);
+  }
+  return !!(cfg.activeToken && cfg.org);
+}
 
 /* ---------- 统一请求与错误语义 ---------- */
 
@@ -70,10 +90,60 @@ async function apiFetch(path, opts = {}) {
     throw new ApiError(0, t("err.network"));
   }
   if (resp.status === 401) {
-    toast(t("err.auth401"));
-    if (typeof openConn === "function") openConn();
+    if (typeof AUTH !== "undefined" && AUTH.mode === "local") {
+      // D25 local：会话过期/被撤销 → 清 token 回登录屏（不弹连接设置——local 无粘贴 token 路径）
+      if (typeof handleAuthExpired === "function") handleAuthExpired();
+    } else {
+      toast(t("err.auth401"));
+      if (typeof openConn === "function") openConn();
+    }
   }
   return resp;
+}
+
+/* 匿名请求（D25 auth config / setup / login / invite）：不带 Authorization 与
+ * X-Org-Id，不触发 401 连接设置；错误只抛 ApiError（登录屏自行内联展示——
+ * 不 toast，避免与表单错误条重复）。 */
+async function apiPublic(path, opts = {}) {
+  const headers = Object.assign({}, opts.headers || {});
+  if (opts.body != null && !(opts.body instanceof FormData) && !headers["Content-Type"]) {
+    headers["Content-Type"] = opts.contentType || "application/json";
+  }
+  let resp;
+  try {
+    resp = await fetch(path, Object.assign({}, opts, { headers }));
+  } catch (e) {
+    throw new ApiError(0, t("err.network"));
+  }
+  const body = await _parseBody(resp);
+  if (!resp.ok) {
+    const msg = body.error || body.detail || resp.statusText || String(resp.status);
+    throw new ApiError(resp.status, String(msg), body);
+  }
+  return body;
+}
+
+/* 本地会话请求（带当前 activeToken，不带 X-Org-Id）：401 只抛 ApiError——
+ * 调用方决定是「改密旧密码错」（不清会话）还是「会话过期」（handleAuthExpired）。
+ * authMe / changePassword / authLogout 三处共用。 */
+async function _authedJson(path, opts = {}) {
+  const headers = Object.assign({}, opts.headers || {});
+  if (cfg.activeToken) headers["Authorization"] = "Bearer " + cfg.activeToken;
+  if (opts.body != null && !(opts.body instanceof FormData) && !headers["Content-Type"]) {
+    headers["Content-Type"] = opts.contentType || "application/json";
+  }
+  let resp;
+  try {
+    resp = await fetch(path, Object.assign({}, opts, { headers }));
+  } catch (e) {
+    throw new ApiError(0, t("err.network"));
+  }
+  const body = await _parseBody(resp);
+  if (!resp.ok) {
+    const msg = body.error || body.detail || resp.statusText || String(resp.status);
+    throw new ApiError(resp.status, String(msg), body);
+  }
+  return body;
 }
 
 async function _parseBody(resp) {
@@ -91,6 +161,86 @@ async function apiJson(path, opts = {}) {
     throw new ApiError(resp.status, String(msg), body);
   }
   return body;
+}
+
+/* ---------- D25 local：boot 门 / 首启 / 会话 / 邀请接受（m4-3a） ----------
+ * 契约见 `_m4-impl-contract.md` §5：错误体 {error, code}；setup/login/accept 返回
+ * {token, expires_at, user, orgs}；me 返回 {user, orgs}；改密返回 {token, expires_at}。
+ * 用户/邀请管理（GET/POST /api/users、/api/orgs/{org}/invitations）归 m4-3b。 */
+
+function authConfig() { return apiPublic("/api/auth/config"); }
+function setupStatus() { return apiPublic("/api/setup/status"); }
+
+function setupInstance(body) {
+  return apiPublic("/api/setup", { method: "POST", body: JSON.stringify(body) });
+}
+
+function authLogin(username, password) {
+  return apiPublic("/api/auth/login", {
+    method: "POST", body: JSON.stringify({ username, password }),
+  });
+}
+
+/* 恢复本地会话：带当前 activeToken 的 fetch；401/网络错误都只抛 ApiError
+ * （bootLocal 自行分流：401 → handleAuthExpired；网络错 → 登录屏错误文案）。 */
+function authMe() { return _authedJson("/api/auth/me"); }
+
+function changePassword(oldPassword, newPassword) {
+  return _authedJson("/api/auth/password", {
+    method: "POST",
+    body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
+  });
+}
+
+function authLogout() { return _authedJson("/api/auth/logout", { method: "POST" }); }
+
+function lookupInvitation(token) {
+  return apiPublic("/api/auth/invitations/lookup", {
+    method: "POST", body: JSON.stringify({ token }),
+  });
+}
+
+function acceptInvitation({ token, password, display_name }) {
+  const body = { token, password };
+  if (display_name) body.display_name = display_name;
+  return apiPublic("/api/auth/invitations/accept", {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
+
+/* ---------- D25 local：用户 / 邀请管理（m4-3b，契约 §5） ----------
+ * sysadmin：GET/POST /api/users、PATCH /api/users/{id}、POST /api/users/{id}/reset；
+ * org_admin：GET/POST /api/orgs/{org}/invitations、DELETE …/{id}。
+ * 邀请明文 token 只在创建响应中出现一次（库内只存 sha256）——调用方立即展示、
+ * 不落 localStorage（刷新即消失）。 */
+
+function listUsers() { return apiJson("/api/users"); }
+
+function createUser(body) {
+  return apiJson("/api/users", { method: "POST", body: JSON.stringify(body) });
+}
+function patchUser(id, body) {
+  return apiJson(`/api/users/${enc(id)}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+function resetUser(id) {
+  return apiJson(`/api/users/${enc(id)}/reset`, { method: "POST" });
+}
+function listInvitations(org) {
+  return apiJson(`/api/orgs/${enc(org)}/invitations`);
+}
+function createInvitation(org, body) {
+  return apiJson(`/api/orgs/${enc(org)}/invitations`, {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
+function revokeInvitation(org, id) {
+  return apiJson(`/api/orgs/${enc(org)}/invitations/${enc(id)}`, { method: "DELETE" });
+}
+
+/* 邀请链接唯一生成口径（login.js parseInviteToken 吃 #invite=<token>）：
+ * origin + pathname + fragment——token 不进服务端路径/查询串/Referer。 */
+function inviteLink(token) {
+  return location.origin + location.pathname + "#invite=" + encodeURIComponent(token || "");
 }
 
 /* ---------- reissue：dev 形态组织/身份切换（POST /api/dev/token） ---------- */
