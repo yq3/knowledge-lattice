@@ -6,10 +6,19 @@
 
 ## 1. 项目状态与边界
 
-- POC 阶段，2026-10-28 自 lab 仓拆仓独立演进（拆仓前的 issue 评审 #31~#42 指向 lab 仓；仓内携带的历史 PR #47~#55 为迁移前合并记录）。
-- M0a / M0b / M1 已交付（M1 收尾归档见检查点 m1-5，TC-UI 手动走查待用户执行）；**M2 全部交付 ✅（2026-11-02 m2-5 收口段双通过——主线 6/6 + 语义轨道 6/6：m2-1 worker 框架 PR #2、m2-2 审计/备份 PR #3、m2-3 管理面 PR #5、m2-4 生产化认证 PR #11、m2-6 管理面补全与嵌入执行体 PR #12、m2-5 收口段〔跨组织隔离全绿 TC-OPS-09/T15/TC-AZ-04+REST-PG 残项+G-6 halfvec 复测〔不引入〕+全链 SLO 复跑 1361.6ms PASS+G-7 rerank 百炼联调〔DashScopeReranker provider〕+G-8 首次真实模型数据〔百炼 text-embedding-v4：真实基线/MRL/指纹阈值〕+TC-PERF-05 真实边图全达标+P3-7 hardening+配置切换便利性〔换供应商仅 env 零代码〕+B① 4/4——门禁 1651+1→1715+1 双后端双模式 0 skipped，2026-11-02 双通过〕、m2s-1~m2s-6 语义轨道〔M2-S1/S2/S3 整行收口——PR #4/#6/#7/#8/#9/#10〕；G-2/15/16/17/18/19/21 收口，G-22~G-27 登记含 m2-5 新增语义 gate ⑨），段序总表/进度/挂账见 [.opencode/workflows/_m2-plan.md](.opencode/workflows/_m2-plan.md)（M2 终态档案）；**M3 全部交付 ✅（2026-11-10 m3-5 收口段双通过 round=2——m3-1/m3-2/m3-3 段 2026-11-08、m3-4 段 2026-11-09、m3-5 段 2026-11-10——m3-1 管理面补强批：#13 §6.2 五方法+GET 单维度/单取值、#14 组织停用〔orgs.status+PATCH orgs sysadmin 专属+fail-closed 六处 403+维护链豁免〕、G-24① sem_restricted 授予入口、issue #20 be-①②〔GET documents 列表+explain——契约冻结评论逐条+矩阵漂移红线〕；m3-2 查询级审计批：G-22 六入口查询级异步审计〔query_audit.py 月库直写/≤5s/链防叉互斥/refused/sysadmin 脱敏〕+T-S9⑥+A-16 收口+G-24②⑧ 划销+T-S7·T-S8 显式断言三补收官+ui-be 前端对账〔**#20 收尾——M3-UI 线收官**〕+m3-1 移交 P3 全清；TC-OPS-10/11 组；门禁 1715+1→1791+1→1842+1；m3-3 语义 hardening 批：#15/G-24⑨ 语义查询面随 probe gate 关闭〔四接线点探针拒绝零嵌入+probe_reject〕+annotate fuzzy vec 有界/共享熔断/降级审计+G-24⑥ 超长降级+⑦ mention 可选 disambiguation〔design §6.3② 自然落位〕+G-23 残余①~⑤全收口〔embed_model 入对账集合/标记触发面整体移除/内容哈希快速通过/repaired 注记/FUZZY_CODE_REV 入 dict_rev〕+G-28③ P2-1 pg 单连接共享修复〔机制+测试：backend_factory+audit_factory 惰性单连接+pg 臂 pid 断言——残余=生产 lifespan 接线部署期〕+G-28⑤ 并发用例收编+④⑦+文案 4 键清扫；TC-OPS-12 组；门禁 1842+1→**1880+1**；G-23 划销/G-24 全项清/G-28④⑤⑦ 划销、issue #15 关闭；m3-4 评测框架批：**TC-EVAL-02 三态覆盖**〔60q/73docs zh 24/en 18/mix 18 全机检——真实端点配额受阻 offline+人工修正入库，LLM 占比收口待 m3-5〕+双后端完整集基线〔sqlite r@10 0.9167/MRR 0.8031、pg 0.8333/0.7213〕+**TC-EVAL-04 deepeval 门禁**〔逐 query exact 冻结 60×2+聚合 0.05 余量双层、注入实证双源含 -O〕+ragas 选型接入〔eval 依赖组钉版——G-29 登记〕+issue #16 关闭+warnings 171→0+m3-3 移交 P3-2/P3-6/P3-10 清偿；门禁 1880+1→**1898+1**；m3-5 评测收口批：**TC-EVAL-03 框架 ✅/真实校准 ◐ 受阻**〔judge.py 三态双语+两级判读+κ、50 条材料+回流模板、chat 全档受阻申报+A-6 待数〕+响应层固化 ✅/真实基线 ◐〔response_layer_rows→ragas 60 条全链〕+**TC-EVAL-05 观察项 ✅**〔记录级构造会话：store 层读月库+存在性+打标双后端出数；N-1 裁定=接受 search 返回面+**G-30 登记**〕+**G-8① MRL 判据收口**〔60q 真实 API 512/256 全 0.00pp、分辨率 1.67pp〕+TC-EVAL-04 增补〔RR exact=G-29③ 关闭+同源校验+eval_seed clean env〕+m3-4 移交 11 项全清+answersheet 非空拒写保护〔R2〕；门禁 1898+1→**1921+1**；**M3 达成宣告（N-4 用户裁定 2026-11-10 受限句式）：M3 除 ①TC-EVAL-03 真实校准+A-6 定数、②TC-EVAL-02 LLM 占比（同因 chat 配额受阻——配额恢复补跑）、③TC-UI 人工走查（用户侧）外全部完成——主线 5/5 段交付**；部署期：真实 IdP/rerank 网关联调+G-28③ 生产接线+G-28①②⑥⑧触发时处置+G-30 四项〔真实 agent 部署时〕；配额恢复补跑小批：judge 真实校准+A-6 定数+响应层真实基线+LLM 候选增补；用户侧：TC-UI 手动走查——M1+M2+M3 达成宣告共同待勾）——段序总表/挂账/口径裁定预告见 [.opencode/workflows/_m3-plan.md](.opencode/workflows/_m3-plan.md)**（M3 终态档案）；M2 之前 agent 侧以「同 schema 的 Git YAML + 本地 AC 自动机」过渡。
-- **M4（登录/账号）已交付（D25，issue #28；2026-11-20 实现，2026-11-21 PR #29 合入 develop，mergeCommit `df8344a`）**：`LATTICE_AUTH_MODE=local/sso` 双形态（**默认 sso，SSO/JIT/委托/可信既有语义零变化**）；local=内置账号 + 邀请制 + 首启 setup + 本地会话（Web/REST only）+ 用户/邀请管理 + break-glass。模块：`domain/accounts.py`、`api/auth.py`/`api/users.py`、迁移 0012 双方言（users 扩列 + user_invitations + instance_setup）、`web/views/login.js`/`users.js`、`scripts/reset_admin.py`；测试：M4 新增 168 用例（store 42/domain 73/API 44/CLI 9；store/API 双后端参数化，domain 以纯单测为主含 10 条 pg 臂）；**双后端双模式 gate 2090+1 全绿 0 skipped（pg 臂 776）**；local e2e 闭环；非目标 hybrid 账号绑定/SMTP/MFA/refresh/多实例限流（G-31~G-34 不划销）。文档：requirements/design v0.10.1（非决策变更）、TEST-CASES v1.11.0（TC-AUTH-06~10 实现登记、TC-UI-06·07 待用户走查）、RUNBOOK §1.ab、`.env.example`；段计划见 `.opencode/workflows/_m4-plan.md`，检查点 `.opencode/workflows/task-knowledge-lattice-m4-4.md`。
-- 文档版本随实现高频勘误（多数批次为非决策变更）——引用时以各文档头部版本行为准，不要背版本号。
+- POC 阶段，2026-10-28 自 lab 仓拆仓独立演进：拆仓前的设计评审 issue #31~#42、以及 M0a~M1 的 PR #44~#55 都在 lab 仓；本仓 PR 自 #1 起。
+- **里程碑全部交付 ✅**：M0a / M0b / M1 / M2 / M3 / M4 均已完成（M4 于 2026-11-21 经 PR #29 合入 `develop`，mergeCommit `df8344a`）。
+  - M2（2026-11-02 收口）：worker 框架、审计与备份、管理面、生产化认证、语义轨道（M2-S1~S3）。
+  - M3（2026-11-10 收口）：管理面补强、查询级审计、语义 hardening、评测框架与评测收口（受限宣告见档案）。
+  - M4：D25 内置账号 / 邀请制 local 形态；默认 sso 形态（SSO/JIT/委托/可信）零变化。
+- **逐段交付证据、门禁数、裁定与挂账不在本文件复述**：M2 / M3 / M4 终态档案分别在 [.opencode/workflows/_m2-plan.md](.opencode/workflows/_m2-plan.md)、[.opencode/workflows/_m3-plan.md](.opencode/workflows/_m3-plan.md)、[.opencode/workflows/_m4-plan.md](.opencode/workflows/_m4-plan.md)（M4 另有检查点 `.opencode/workflows/task-knowledge-lattice-m4-4.md`）；验收完成态以 [docs/TEST-CASES.md](docs/TEST-CASES.md) §六对照表为准。
+- **仍未勾的验收项**（用户侧 / 部署期，不阻塞已交付代码）：
+  - TC-UI 人工走查（`manual` 组不进门禁）：M1 / M2 / M3 达成宣告共同待勾 + M4 TC-UI-06·07。
+  - 评测真实数据（chat 端点配额受阻）：TC-EVAL-02 LLM 候选占比、TC-EVAL-03 真实 judge 校准与 A-6 阈值、响应层真实基线——配额恢复后补跑。
+  - 部署期：真实 IdP / 公司 rerank 网关联调、G-28③ 生产 PG 接线、G-28①②⑥⑧ 触发时处置、G-30（真实 agent 部署时）。
+- **开放待决项**（[requirements §9](docs/requirements.md)）：待决-1（真实样例语料与业务问题）/ 2（企业 SSO 协议与 token 属性）/ 3（agent 侧 token 换取或可信子系统）未决；待决-4/5/6 已关闭。
+- **当前门禁基线**：2090+1 用例（+1 = `manual` 组 deselected），sqlite + pg 双后端 × 常规 / `python -O` 双模式 0 skipped（pg 臂 776）——数字随批次变化，以最近检查点为准。
+- D25 非目标（G-31~G-34 不划销）：hybrid 账号绑定、SMTP、MFA、refresh token、多实例共享限流。
 - 明确不做：GraphRAG / 图数据库（业务语义 = 类型化对象图，关系展开 SQL 可达）；ES 召回引擎、指标栈监控等只登记为演进缝（NFR-5）；不绑云厂（模型端点中立）。
 
 ## 2. 文档地图与设计冻结纪律（最重要）
@@ -21,9 +30,9 @@
 | [docs/TEST-CASES.md](docs/TEST-CASES.md) | 验收用例展开层：design §9 冻结 T / T-S 编号的展开 + 模块 TC-* 用例 + 里程碑验收对照表；**活文档** |
 | [docs/known-gaps.md](docs/known-gaps.md) | 已预见问题登记（G-n，对策之后仍残留的缺口与开放点）；**活文档** |
 | [prototype/index.html](prototype/index.html) | 交互原型（mock 数据）：信息结构与 UI 风格**双基准**（含语义层视图） |
-| [RUNBOOK.md](RUNBOOK.md) | 运维手册（重嵌入蓝绿 / 审计分区回溯 / 双方言迁移注意）——运行侧活文档 |
+| [RUNBOOK.md](RUNBOOK.md) | 运维手册（重嵌入蓝绿与供应商切换 / 组织停用 / 查询审计 / 评测 / 内置账号 / 审计分区 / 迁移 / 备份恢复）——运行侧活文档 |
 | `benchmarks/` | 实验 / 压测脚本与报告（report-*.md 归档，结论回写 known-gaps 或正文） |
-| `eval/` | 评测语料（corpus.jsonl）与黄金集（golden.jsonl） |
+| `eval/` | 评测语料（corpus.jsonl / semantic_golden.jsonl）、黄金集（golden.jsonl）与报告归档（reports/） |
 
 **设计冻结纪律**：
 
@@ -38,14 +47,16 @@
 src/knowledge_lattice/
 ├── app.py            # FastAPI 装配（api 各 router + MCP mount + 静态页壳）
 ├── config.py / log.py
+├── query_audit.py    # 查询级审计异步队列（m3-2）
 ├── core/docs/        # 文档域业务（ingest / chunking / retrieve / acl / quality / credentials…）
 ├── core/semantic/    # 业务语义域（D23 并入）——与 core/docs 包级互斥
+├── domain/           # 身份 / 账号 / 审计事件域模型（auth / accounts / audit_events / models）
 ├── store/            # StorageBackend 协议 + sqlite/ postgres/ 双方言包（migrations / fts / vec / acl_render / audit）
-├── adapters/         # 外置依赖适配（embedder / reranker / parser_docling / tokenizer / breaker…）
+├── adapters/         # 外置依赖适配（embedder / reranker / auth_sso / parser_docling / tokenizer / breaker…）
 ├── api/              # REST 端点（upload / documents / tasks / search / quality / admin / auth / users——D25）
 ├── mcp/              # MCP server（docs + semantic 两组工具）
 ├── web/              # 前端薄壳（原生 HTML/JS/CSS + i18n.js 中英双语——FR-8；D25 登录/用户视图）
-└── worker/           # 任务子进程（ingest / reindex / reembed / delete + maintenance）
+└── worker/           # 任务子进程（ingest / reindex / reembed / semantic_sync·build·retag + maintenance；delete 预留）
 ```
 
 - **D25（M4）新增模块**：`domain/accounts.py`（本地账号域）、`api/auth.py` / `api/users.py`、迁移 0012（`users` 扩列 + `user_invitations` + `instance_setup`）、`web/views/login.js` / `users.js`。
@@ -65,7 +76,7 @@ src/knowledge_lattice/
   语义（fail-closed）：未设 DSN 直接失败，绝不静默绿；pg 臂收集数 >0（防参数化被删的假绿）；常规 + `python -O` 双模式全量；**skip = 失败**。
 - 日常单测 `uv run pytest`（sqlite 默认后端，无需容器）；筛选用 `-m "not manual"`（manual = TC-UI 浏览器人工走查，不进门禁；`pdf_models` = 需 docling 模型权重，首次运行联网下载）。
 - 无独立 lint / typecheck 工具链（未配置）——质量门禁 = pytest 门禁 + review。
-- 配置走环境变量（`LATTICE_*`，模板见 .env.example）；`.env`、`data/` 不入库，密钥只走 .env / 环境变量。
+- 配置走环境变量（`LATTICE_*`，模板见 .env.example）；`.env`、`data/` 不入库，密钥只走 .env / 环境变量。**服务不自动读取 `.env`**——本地用 `uvicorn --env-file .env` 注入，部署侧由进程管理器注入。
 
 ## 5. Git 与多 Agent 工作流
 
@@ -83,7 +94,7 @@ src/knowledge_lattice/
 
 ## 7. PlantUML 渲染（流程图）
 
-仓库内文档（如 `.opencode/README.md`）用 ```puml 代码块嵌图。已验证可用的本地渲染流程（在线服务不可用，别用）：
+仓库内文档（如 `.opencode/README.md`）用 `puml` 代码块嵌图。已验证可用的本地渲染流程（在线服务不可用，别用）：
 
 - **下载 jar**（本机有 java，无需 brew/graphviz；api.github.com 下载会超时，用阿里云 maven 镜像）：
   ```bash
