@@ -10,10 +10,10 @@ round: 1
 maxRounds: 3
 testVerdict: PASS
 reviewVerdict: PASS
-testedSha: null
-reviewedSha: null
-# 注意：本轮为**工作树未提交**交付（用户未授权 commit/push）——testedSha/reviewedSha 无 commit 可指，
-# 一律 null；门禁与评审证据绑定当前工作树（分支 develop_opencode，HEAD=b73366d + 未提交改动）。
+testedSha: 1cc223eb9139f29820b1a5fe32e8fc1921df6e71
+reviewedSha: 1cc223eb9139f29820b1a5fe32e8fc1921df6e71
+# 交付 commit 1cc223e 经 PR #29 合入 develop（mergeCommit df8344a，2026-11-21）；
+# 门禁/评审证据绑定该 commit；分支 develop_opencode 保留。
 filesChanged:
   - .opencode/workflows/_m4-impl-contract.md
   - .opencode/workflows/_m4-plan.md
@@ -63,7 +63,7 @@ filesChanged:
   - tests/test_v11_schema.py
 endReason: null
 createdAt: 2026-11-20T21:56:45+0800
-updatedAt: 2026-11-20T22:58:00+0800
+updatedAt: 2026-11-21T14:35:00+0800
 ---
 
 # task-knowledge-lattice-m4-4: M4 收口段（break-glass CLI + 文档完成态回写 + 全量门禁）
@@ -105,7 +105,7 @@ M4 第 4 段收口（`.opencode/workflows/_m4-plan.md` row4）：
 - `docs/TEST-CASES.md` v1.11.0：TC-AUTH-06~10 摘「计划」→ 实现登记（tests/test_auth_06/07/08 + store/domain m4，双后端）；TC-UI-06·07 →「实现，待用户走查」；§六 M4 行完成态+门禁数；依据 requirements/design v0.10.1。
 - `docs/known-gaps.md`：G-31~G-34 各补 m4 实现状态/残留，**不划销**。
 - `RUNBOOK.md` §1.ab：首启 Web 流程、邀请链接复制（`#invite=<token>`）、break-glass 五种用法/密码来源/退出码/审计/sqlite 限制、gate 命令。
-- `AGENTS.md`：M4 状态行改实现完成（工作树未提交）+ 模块/测试/门禁数；保留 sso 默认零变化口径。
+- `AGENTS.md`：M4 状态行改实现完成（交付时工作树未提交；2026-11-21 归档回写 PR #29/mergeCommit）+ 模块/测试/门禁数；保留 sso 默认零变化口径。
 - `.opencode/workflows/_m4-plan.md`：状态改实现完成（待提交）、段表四行完成态、实测 gate/用例数/残留、变更记录。
 
 ## 三、门禁结果（实测）
@@ -138,15 +138,24 @@ UV_CACHE_DIR="$PWD/.uv-cache" scripts/test_gate.sh
 ## 四、残留 / 偏差
 
 - **TC-UI-06·07 待用户走查**（手动组不进门禁）——M4 的唯一未勾验收项；其余 TC-AUTH-06~10 已转实现登记。
-- **工作树未 commit / 未 push**（用户未授权）——`testedSha`/`reviewedSha` 均 null，门禁/评审证据绑定工作树（HEAD=b73366d + 未提交改动）。
+- **已提交并合入**：`1cc223e` → PR #29 → develop mergeCommit `df8344a`（2026-11-21）；`testedSha`/`reviewedSha` 均指向交付 commit；分支 `develop_opencode` 保留。
 - **break-glass CLI 仅 sqlite**（`store.factory` 当前恒 sqlite；PG 接线属部署期）——已在脚本 docstring/RUNBOOK 写清；不影响双后端测试门禁。
 - **真实 IdP / G-33**：sso 形态真实 IdP 联调仍挂部署期；local 无 SSO 时 MCP 不可用未改变；G-31~G-34 均不划销。
 - 无决策变更：D25/FR-9 与冻结结论未动；`auth_mode` 默认仍 `sso`，TC-AUTH-01~05 回归全绿。
 
-## 五、评审修正（2026-11-20 晚——工作树未提交）
+## 五、评审修正（2026-11-20 晚；已随 PR #29 合入）
 
 - **发现**（用户实测账号 `y00668221`）：sysadmin 建组织填 username → 404「用户不存在」。根因：`POST /api/orgs` 沿 sso 语义只按 `users.id` 解析 `org_admin`；local 用户 ID 为不透明 `u_<hex>`，而 `/api/users`/邀请面的人类可读键是 username。附：local 的 409（invited/disabled）在 Web 被误报成「组织已存在」。
 - **修正**：`api/admin.py` local 分支「ID → username」解析（先 ID、未命中再 username；membership/审计落规范 ID；响应附 `org_admin_username`；404 文案 local 化）；`web/views/orgs.js` local 占位/脚注/404/409 未激活提示；`web/i18n.js` +4 键/语言；契约/design/TEST-CASES 注记。
 - **测试**：`tests/test_auth_08_users_admin.py::test_create_org_accepts_username_in_local_mode`（username 201 + membership + 审计落 ID + invited 409 + ghost 404 零残留）；双后端参数化（+2）。
 - **门禁**：定向 `test_auth_06/07/08 + test_orgs_admin + test_e2e_07_shell` = **58 passed**（pg 实跑）；全量 gate **2090+1**（pg 臂 **776**：739 参数化 + 37）常规/`-O` 双模式 0 skipped；直播服务重启后实测 404 文案与零残留。
-- **结论**：`reviewVerdict=PASS`；仍不 commit/push（用户未授权）。
+- **结论**：`reviewVerdict=PASS`；已随 PR #29 提交并合入 develop（见 §六）。
+
+## 六、交付（2026-11-21）
+
+- **commit**：`1cc223eb9139f29820b1a5fe32e8fc1921df6e71`（`[task-knowledge-lattice-m4-4] feat: M4 交付——D25 内置账号/邀请制本地登录（local/sso 双形态，默认 sso 零变化）`；47 files，+9715/−191）。
+- **push**：`origin/develop_opencode`（SSH，fast-forward `5c0da6e..1cc223e`）。
+- **PR**：[#29](https://github.com/yq3/knowledge-lattice/pull/29) —— base `develop`，`MERGEABLE`/`CLEAN`；`gh pr merge --merge` 合入。
+- **merge commit**：`df8344a031f8796f6e7cd73449ac579d508a39f1`（2026-11-21T06:25:31Z）。
+- **分支**：`develop_opencode` 保留；本地 `develop` 已 fast-forward 至 `df8344a`。
+- **交付后状态**：TC-UI-06·07 仍待用户走查；G-31~G-34 不划销；issue #28 以 `Refs` 关联未关闭。
