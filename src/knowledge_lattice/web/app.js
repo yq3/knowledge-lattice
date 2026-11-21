@@ -21,7 +21,7 @@ const state = {
   /* epoch（R2 P1-5）：组织/身份切换即自增——异步装载函数启动时捕获、写状态与
    * render 前比对，不等即弃（防旧响应写入新视图）；pollTask 感知即停轮询。 */
   epoch: 0,
-  sub: { access: "grants", sem: "entities" },
+  sub: { access: "grants", sem: "entities", ops: "tasks" },
   /* 元数据缓存（组织/身份切换与语言切换时复用，不重取） */
   orgs: [],            // GET /api/orgs（activeToken 视角）——含 role（普通用户面）
   usernames: [],       // grants/export 首列（org_admin 可得）——身份菜单候选
@@ -577,8 +577,8 @@ function render() {
     return;
   }
   renderRail();
-  const vk = state.view + "/" + (state.view === "access" ? state.sub.access
-    : state.view === "semantic" ? state.sub.sem : "");
+  const sub = state.sub[state.view];
+  const vk = state.view + "/" + (typeof sub === "string" ? sub : "");
   const view = VIEWS[state.view];
   const body = view ? view.render() : "";
   $("#main").innerHTML = `<section class="${vk !== lastViewKey ? "view" : ""}">${body}</section>`;
@@ -799,7 +799,21 @@ const actions = {
     if (view && view.onEnter) view.onEnter().then(() => render()).catch(() => { /* 已 toast */ });
     return false;
   },
-  sub(el) { state.sub[el.dataset.s] = el.dataset.v; render(); return false; },
+  /* 子分区 tab：切换即重渲；视图可注册 onSub 钩子做懒装载（ops 四分区即此形态：
+   * 首次进入该分区才取数，已缓存的切回不重复请求）。onSub 完成后补一次渲染。
+   * 注：access / semantic 的同类懒装载是更早的 actions.sub 包装写法（历史批次），
+   * 二者目的相同、互不冲突；新增视图走 onSub 即可。 */
+  sub(el) {
+    const k = el.dataset.s, v = el.dataset.v;
+    if (state.sub[k] === v) return false;
+    state.sub[k] = v;
+    render();
+    const view = VIEWS[state.view];
+    if (view && view.onSub) {
+      Promise.resolve(view.onSub(v)).then(() => render()).catch(() => { /* 装载失败在分区内显式呈现 */ });
+    }
+    return false;
+  },
 
   org(el) { switchOrg(el.dataset.id); return false; },
   lens(el) { switchLens(el.dataset.id); return false; },

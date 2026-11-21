@@ -52,6 +52,21 @@ logger = logging.getLogger(__name__)
 WEB_DIR = Path(__file__).resolve().parent / "web"
 
 
+class _NoStaleStaticFiles(StaticFiles):
+    """静态页壳资产恒要求回源重验证（Cache-Control: no-cache）。
+
+    无构建链 → 资产 URL 不带内容哈希；StaticFiles 默认不发缓存头，浏览器会按
+    Last-Modified 做**启发式缓存**（约 10% 文件年龄内直接命中本地副本）——升级或
+    改前端后普通刷新仍可能跑到旧 JS/CSS（"改了看不到"）。no-cache **不禁止缓存**、
+    只要求每次回源验证：文件未变回 304（零体传输），变了立即拿到新版。
+    """
+
+    async def get_response(self, path: str, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
 class ServiceContext:
     """依赖容器（backend/settings/gate/ingest/credentials/quality/embedder/reranker/enhancer/breakers/worker/query_audit）。"""
 
@@ -488,11 +503,13 @@ def create_app(
         app.include_router(users_api.router)
 
     if WEB_DIR.is_dir():
-        app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+        app.mount("/static", _NoStaleStaticFiles(directory=WEB_DIR), name="static")
 
         @app.get("/", include_in_schema=False)
         async def index() -> FileResponse:
-            return FileResponse(WEB_DIR / "index.html")
+            # 页壳 HTML 同款口径：重验证（防升级后旧壳引用旧资产）
+            return FileResponse(WEB_DIR / "index.html",
+                                headers={"Cache-Control": "no-cache"})
 
     # MCP 挂最后（path="/mcp" 由内层 app 处理；未匹配路径落入其 404）
     app.mount("/", mcp_app)

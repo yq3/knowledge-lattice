@@ -80,9 +80,11 @@ svg.ic { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none
   background: var(--paper); border-bottom: 1px solid var(--rule);
 }
 .brand { display: flex; align-items: center; gap: 10px; min-width: calc(var(--rail) - var(--s4)); flex: none; padding-right: var(--s3); }
-.seal { width: 28px; height: 28px; flex: none; display: grid; place-items: center; border-radius: 8px;
+.brand-seal { width: 28px; height: 28px; flex: none; display: grid; place-items: center; border-radius: 8px;
   background: linear-gradient(140deg, #2970FF 0%, #155EEF 55%, #004EEB 100%); box-shadow: var(--sh-xs), inset 0 0 0 1px rgba(255,255,255,.12); }
-.seal svg { width: 26px; height: 26px; }
+.brand-seal svg { width: 26px; height: 26px; }
+/* 注：品牌标原类名 .seal 与提示卡 .note.seal / 标签 .tag.seal 撞名——.seal 的
+ * 28×28/grid 会把红提示压成小方块（upstream 原型既有缺陷），故改为 .brand-seal。 */
 .brand-name { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; color: var(--ink); white-space: nowrap; }
 .brand-sub { font-size: 10.5px; font-weight: 600; color: var(--seal); background: var(--seal-w); border: 1px solid var(--seal-b);
   padding: 0 6px; border-radius: 5px; line-height: 17px; letter-spacing: .02em; }
@@ -719,4 +721,52 @@ body.auth-screen main > .auth-view { width: 100%; display: grid; place-items: ce
 @media (max-width: 860px) {
   #users .users-form { grid-template-columns: 1fr; }
   #users .invite-link { grid-template-columns: 1fr; }
+}
+
+/* ==========================================================================
+   ops 分区（2026-11-21，用户走查修正：任务与审计页）
+   四个子分区（任务 / 嵌入覆盖率 / maintenance 计数 / 审计）各占一个 tab，
+   卡片不再纵向堆叠。内容卡片不用 .pane —— 那是侧栏详情面板（sticky + 固定
+   top + 内滚动），纵向堆叠时会等偏移吸附、逐块相互覆盖；maintenance 计数的
+   键是 mono 长技术名，固定窄键列会溢出压值，故用内容自适应网格。
+   ========================================================================== */
+
+/* 静态内容卡（.lane-h 作卡头）：与侧栏 sticky 面板 .pane 相对——用于纵向
+ * 堆叠的全宽区块（不吸附、不内滚动，故不会相互覆盖） */
+.card {
+  background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg);
+  box-shadow: var(--sh-xs); padding: var(--s5); min-width: 0;
+}
+.card .lane-h { margin-bottom: var(--s3); }
+
+/* maintenance 计数：内容自适应 key/value 网格（长键折行、长值折行，绝不压列） */
+.ops-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 0 var(--s6); }
+.ops-stat { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, auto); gap: var(--s3);
+  align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--rule); min-width: 0; }
+.ops-stat .os-k { font-family: var(--mono); font-size: 11.5px; line-height: 1.5; color: var(--ink-3); overflow-wrap: anywhere; }
+.ops-stat .os-v { margin: 0; font-size: 13px; color: var(--ink); text-align: right; min-width: 0; overflow-wrap: anywhere; }
+/* 嵌套 dict / 对象数组占整行：键左、子键行右（长值有地方放，不与标量行错位） */
+.ops-stat.wide { grid-column: 1 / -1; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); align-items: start; padding: 9px 0; }
+.ops-stat.wide .os-v { text-align: left; }
+
+/* 嵌套 dict 的子键行（缩进一条竖线——层级可读、不另起卡片） */
+.ops-sub { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); gap: 2px var(--s3);
+  padding: 2px 0 2px 10px; border-left: 2px solid var(--rule); min-width: 0; }
+.ops-sub dt { font-family: var(--mono); font-size: 11px; line-height: 1.6; color: var(--ink-4); overflow-wrap: anywhere; }
+.ops-sub dd { margin: 0; min-width: 0; font-size: 12.5px; line-height: 1.6; color: var(--ink-2); overflow-wrap: anywhere; }
+.ops-sub .ops-sub { margin-top: 2px; }
+
+/* 分区内错误清单（maintenance stats.errors——失败是可行动信息，不只计数） */
+.card .note.seal { margin: 0 0 var(--s4); }
+.ops-errs { margin: 6px 0 0 1.1em; padding: 0; font-family: var(--mono); font-size: 11.5px; line-height: 1.65; word-break: break-word; }
+
+/* 通用健壮性：任意 key/value 列表的键列都允许长键折行（原 .kv 固定列遇长
+ * mono 键——如 semantic 实体属性名——会溢出压住值列） */
+.kv dt { overflow-wrap: anywhere; }
+/* 泳道卡头标题不折行（长注释让位：注记可折行，标题保持一行） */
+.lane-h h3 { white-space: nowrap; }
+
+@media (max-width: 860px) {
+  .ops-stats { grid-template-columns: 1fr; gap: 0; }
+  .ops-stat.wide { grid-template-columns: 1fr; gap: 2px; }
 }
