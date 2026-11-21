@@ -11,9 +11,13 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+/* 默认落地视图：登录 / 会话恢复 / 首启后落在「业务语义」（知识组第一项）。
+ * 首启未建组织的 sysadmin 例外仍先落组织页（applySession 内覆盖）。 */
+const DEFAULT_VIEW = "semantic";
+
 /* ---------- 全局状态 ---------- */
 const state = {
-  view: "docs",
+  view: DEFAULT_VIEW,
   /* epoch（R2 P1-5）：组织/身份切换即自增——异步装载函数启动时捕获、写状态与
    * render 前比对，不等即弃（防旧响应写入新视图）；pollTask 感知即停轮询。 */
   epoch: 0,
@@ -76,6 +80,10 @@ let booted = false;
 
 const VIEWS = {};   // views/*.js 注册：VIEWS.docs = { render, onEnter }
 const INPUTS = {};  // views/*.js 注册：INPUTS.q = (v) => { … }
+
+/* 密码规则提示值（前端仅展示——真正校验在服务端 `LATTICE_PASSWORD_MIN_LEN`：
+ * 缺省 10、下限 8；部署调整后本提示的「默认策略」措辞即为此留口）。 */
+const PASSWORD_MIN_LEN_HINT = 10;
 
 /* D25 local 认证状态（m4-3a；默认 sso = screen:null、mode:"sso"——零视觉变化）。
  * screen 非空时 render() 只渲染 VIEWS.auth（登录/首启/邀请接受三屏），不渲染 rail。
@@ -534,7 +542,7 @@ function renderUserMenu() {
         <div class="mf-act">
           <button class="btn sm" data-act="userPassword">${esc(t("user.menu.changePassword"))}</button>
         </div>
-        <div class="menu-note">${esc(t("user.menu.passwordNote"))}</div>
+        <div class="menu-note">${esc(t("auth.policy.password", { n: PASSWORD_MIN_LEN_HINT }))}<br>${esc(t("user.menu.passwordNote"))}</div>
         <button class="menu-item" data-act="userLogout" style="color:var(--danger)">${esc(t("user.menu.logout"))}</button>
       </div>
     </div>`;
@@ -691,6 +699,7 @@ async function applySession(data, preferredOrg) {
   state.usernames = [];
   state.dims = [];
   state.datasets = [];
+  state.view = DEFAULT_VIEW; // 登录/恢复会话后回默认落地视图（不沿用上一会话停留的视图）
   if (!cfg.org && user.is_system_admin) state.view = "orgs"; // 首启未建组织 → 先落组织页
   document.body.classList.remove("auth-screen");
   document.body.classList.add("auth-local");

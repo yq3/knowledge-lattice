@@ -46,6 +46,7 @@ function authSetupHTML() {
   const body = `<form class="auth-form" id="authForm-setup" data-auth="setup">
     ${authRow({ id: "authUsername", key: "authUsername", label: t("auth.setup.username"), value: f.username, ph: t("auth.setup.usernamePh"), autocomplete: "username", required: true })}
     ${authRow({ id: "authPassword", key: "authPassword", label: t("auth.setup.password"), type: "password", value: f.password, ph: t("auth.setup.passwordPh"), autocomplete: "new-password", required: true })}
+    <p class="af-hint">${esc(t("auth.policy.password", { n: PASSWORD_MIN_LEN_HINT }))}</p>
     ${authRow({ id: "authConfirm", key: "authConfirm", label: t("auth.setup.confirm"), type: "password", value: f.confirm, ph: t("auth.setup.confirmPh"), autocomplete: "new-password", required: true })}
     ${authRow({ id: "authDisplayName", key: "authDisplayName", label: t("auth.setup.displayName"), value: f.display_name, ph: t("auth.setup.displayNamePh"), autocomplete: "nickname" })}
     <div class="af-sec">${esc(t("auth.setup.orgSection"))}</div>
@@ -78,7 +79,9 @@ function authLoginHTML() {
     title: t("auth.login.title"),
     lede: t("auth.login.lede"),
     body,
-    note: `<div>${t("auth.login.note")}</div><div class="auth-note-sub">${t("auth.login.inviteHint")}</div>`,
+    note: `<div>${t("auth.login.note")}</div>
+      <div class="auth-note-sub">${t("auth.login.inviteHint")}</div>
+      <div class="auth-note-sub">${esc(t("auth.policy.password", { n: PASSWORD_MIN_LEN_HINT }))}</div>`,
   });
 }
 
@@ -114,6 +117,7 @@ function authAcceptHTML() {
     ${meta}
     ${isReset ? "" : authRow({ id: "authDisplayName", key: "authDisplayName", label: t("auth.invite.displayName"), value: f.display_name, ph: t("auth.invite.displayNamePh"), autocomplete: "nickname" })}
     ${authRow({ id: "authPassword", key: "authPassword", label: t("auth.invite.password"), type: "password", value: f.password, ph: t("auth.invite.passwordPh"), autocomplete: "new-password", required: true })}
+    <p class="af-hint">${esc(t("auth.policy.password", { n: PASSWORD_MIN_LEN_HINT }))}</p>
     ${authRow({ id: "authConfirm", key: "authConfirm", label: t("auth.invite.confirm"), type: "password", value: f.confirm, ph: t("auth.invite.confirmPh"), autocomplete: "new-password", required: true })}
     ${authSubmitHTML("accept", busy, isReset ? t("auth.invite.submitReset") : t("auth.invite.submit"), t("auth.invite.busy"))}
     <button class="btn ghost auth-back" type="button" data-act="authToLogin">${esc(t("auth.invite.back"))}</button>
