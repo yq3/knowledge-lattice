@@ -180,6 +180,15 @@ class Settings:
     log_level: str = "INFO"
     log_format: str = "json"  # json | human
 
+    # 控制台时间显示时区（2026-11-22 用户走查——**只影响展示，不碰存储**）：
+    # 库内时间恒 UTC（taskclock.TS_FMT）；本项决定前端把 UTC 渲染成哪个区。
+    #   ""（缺省）= 前端用浏览器时区（谁看谁的本地时间）
+    #   IANA 名    = 固定该区（如 Asia/Shanghai）
+    #   server/auto= 取服务器（进程）时区——TZ → /etc/localtime → /etc/timezone
+    # 解析与探测实现在 tzdisplay.py；非法名 WARNING 后回落探测（展示层不
+    # fail-closed——不因时区名写错就起不来）。
+    display_tz: str = ""
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "lattice.db"
@@ -328,6 +337,7 @@ def get_settings() -> Settings:
         semantic_fuzzy_vec_top=int(_num("LATTICE_SEM_FUZZY_VEC_TOP", 3)),
         log_level=env("LATTICE_LOG_LEVEL", "INFO"),
         log_format=env("LATTICE_LOG_FORMAT", "json"),
+        display_tz=env("LATTICE_DISPLAY_TZ", ""),
     )
     _validate(settings)
     return settings

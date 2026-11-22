@@ -174,12 +174,14 @@ const ICONS = {
 const ic = (k) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[k]}</svg>`;
 const CARET = `<svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>`;
 
-/* UTC 时间显示约定（ui-3）：列表位一律 short()（MM-DD HH:mm）+ title 悬停完整
- * UTC 原文；时间列表头/pane 时间行在 i18n 值上标注 (UTC)。服务端时间串本身即
- * UTC（SQLite CURRENT_TIMESTAMP 同款格式），short()/title 均为纯展示截取。 */
+/* 时间显示约定（2026-11-22 起）：库内/接口一律 UTC，展示层换算到显示时区
+ * （LATTICE_DISPLAY_TZ 或浏览器时区——见 api.js 时间显示段）。
+ * 列表位 short() = MM-DD HH:mm，title 悬停给**显示区完整时间 + 区名**；
+ * 时间列表头不再写 (UTC)（区名在 tooltip 里，避免每个列头挂一串时区噪声）。 */
 function tsHTML(ts, cls) {
-  const raw = ts ? String(ts) : "";
-  return `<span class="${cls || ""}" title="${esc(raw ? raw + " UTC" : "")}">${esc(short(ts))}</span>`;
+  const parsed = tsToEpoch(ts) != null;
+  const title = parsed ? `${fmtTs(ts)} · ${tzName()}` : "";
+  return `<span class="${cls || ""}" title="${esc(title)}">${esc(short(ts))}</span>`;
 }
 
 const AV_COLOR = ["#2970FF", "#7A5AF8", "#EE46BC", "#0E9384", "#F79009", "#16B364", "#6172F3"];
@@ -486,7 +488,7 @@ function renderRail() {
       <div class="tiny muted" style="padding:6px 10px 4px;font-weight:500">${esc(t("org.menuTitle"))}</div>
       ${menuOrgs.map((x) => `<button class="menu-item ${x.org_id === cfg.org ? "on" : ""}" data-act="org" data-id="${esc(x.org_id)}">
         <span>${esc(x.name)}<span class="mono tiny muted" style="display:block;font-weight:400">${esc(x.org_id)}</span></span>
-        <small>${esc(roleLabel(x.org_id))}${x.expires_at ? ` · <span title="${esc(x.expires_at)} UTC">${esc(short(x.expires_at))}</span>` : ""}</small></button>`).join("")}
+        <small>${esc(roleLabel(x.org_id))}${x.expires_at ? ` · ${tsHTML(x.expires_at, "tiny")}` : ""}</small></button>`).join("")}
       <div class="menu-note">${t("org.menuNote")}</div>
     </div>` : `
     <button class="picker-btn" data-act="openConn"><span class="pk-main"><span class="pk-t">${esc(t("rail.offline"))}</span></span><span class="caret">${CARET}</span></button>`;
@@ -1019,6 +1021,9 @@ async function boot() {
 
   let config = null;
   try { config = await authConfig(); } catch (e) { config = null; /* 失败/404 → sso 分支 */ }
+  /* 时间显示时区（2026-11-22）：服务端只回答"渲染到哪个区"，缺省 null = 浏览器区。
+   * 必须在任何 render 之前设好，否则首屏会先按旧口径渲染一次。 */
+  setDisplayTz(config && config.display_tz);
   const local = !!(config && (config.local_login_enabled === true || config.auth_mode === "local"));
   if (local) {
     AUTH.mode = "local";

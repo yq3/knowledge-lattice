@@ -50,20 +50,12 @@ function mcpSnippets() {
         },
       },
     }, null, 2),
-    cursor: JSON.stringify({
-      mcpServers: {
-        "knowledge-lattice": {
-          url: ep,
-          headers: { Authorization: "Bearer lka_xxxxxxxx..." },
-        },
-      },
-    }, null, 2),
     python: [
       "from fastmcp import Client",
       "from fastmcp.client.transports import StreamableHttpTransport",
       "",
       `URL = "${ep}"`,
-      'KEY = "lka_xxxxxxxx..."  # 从环境变量/密钥管理读取，不要写进代码库',
+      'KEY = "lka_xxxxxxxx..."  # 从环境变量或密钥管理读取',
       "",
       "async def main() -> None:",
       "    transport = StreamableHttpTransport(",
@@ -71,7 +63,8 @@ function mcpSnippets() {
       "    async with Client(transport) as client:",
       "        tools = await client.list_tools()",
       "        print([t.name for t in tools])",
-      '        await client.call_tool("search", {"query": "增值税留抵退税", "top_k": 5})',
+      "        await client.call_tool(",
+      '            "search", {"query": "增值税留抵退税", "top_k": 5})',
     ].join("\n"),
     bridge: JSON.stringify({
       mcpServers: {
@@ -112,7 +105,7 @@ function mcpCopyBtn(k) {
   return `<button class="btn ghost sm" data-act="mcpCopy" data-k="${esc(k)}">${esc(t("mcpPage.copy"))}</button>`;
 }
 
-/* 代码块：标题 + 复制 + pre（.sql 既有代码块样式复用）。 */
+/* 代码面板：卡头皮（标题 + 复制）+ 代码体。.sql 既有代码块样式复用。 */
 function mcpCodeBlock(k, titleKey) {
   const text = mcpSnippets()[k] || "";
   return `<div class="mcp-code">
@@ -121,29 +114,35 @@ function mcpCodeBlock(k, titleKey) {
   </div>`;
 }
 
-function mcpKvRow(labelKey, value) {
-  return `<div class="mcp-kv-row"><span>${esc(t(labelKey))}</span><code>${esc(value)}</code></div>`;
-}
-
 function mcpBullets(keys) {
   return `<ul class="mcp-bullets">${keys.map((k) => `<li>${t(k)}</li>`).join("")}</ul>`;
+}
+
+/* 分区卡：与运维页共用 .card + .lane-h（卡头带序号圆标，标题与正文以分隔线断开）。
+ * 序号由渲染顺序生成（sso 形态没有「上传」，写死编号会出现跳号）。 */
+function mcpSec(n, titleKey, bodyHTML, hint) {
+  return `<section class="card mcp-sec">
+    <div class="lane-h">
+      <span class="mcp-n">${n}</span>
+      <h3>${esc(t(titleKey))}</h3>
+      ${hint ? `<span class="mcp-sec-hint">${esc(hint)}</span>` : ""}
+    </div>
+    ${bodyHTML}
+  </section>`;
 }
 
 /* ---------- 分区片段 ---------- */
 
 function mcpBasicsHTML() {
   const cred = mcpIsLocal() ? t("mcpPage.cred.local") : t("mcpPage.cred.sso");
-  return `<div class="sec-title">${esc(t("mcpPage.sec.basics"))}</div>
-    <div class="mcp-kv">
-      ${mcpKvRow("mcpPage.endpoint", mcpEndpoint())}
-      ${mcpKvRow("mcpPage.cred", cred)}
-      ${mcpKvRow("mcpPage.org", cfg.org || "—")}
-      ${mcpKvRow("mcpPage.transport", "Streamable HTTP")}
-    </div>
-    <div class="mcp-row">
-      ${mcpCopyBtn("endpoint")}
-      <span class="tiny muted">${esc(t("mcpPage.transportHint"))}</span>
-    </div>`;
+  return `<dl class="mcp-kv">
+    <div class="mcp-kv-row"><dt>${esc(t("mcpPage.endpoint"))}</dt>
+      <dd><code>${esc(mcpEndpoint())}</code>${mcpCopyBtn("endpoint")}</dd></div>
+    <div class="mcp-kv-row"><dt>${esc(t("mcpPage.cred"))}</dt><dd>${esc(cred)}</dd></div>
+    <div class="mcp-kv-row"><dt>${esc(t("mcpPage.org"))}</dt><dd>${esc(cfg.org || "—")}</dd></div>
+    <div class="mcp-kv-row"><dt>${esc(t("mcpPage.transport"))}</dt><dd>Streamable HTTP</dd></div>
+  </dl>
+  <p class="mcp-hint">${t("mcpPage.transportHint")}</p>`;
 }
 
 /* local：Agent Key 签发路径（admin 可直达签发页；member 给申请口径）。 */
@@ -151,68 +150,62 @@ function mcpKeyHTML() {
   const admin = !!(AUTH.user && (AUTH.user.is_system_admin || isAdmin()));
   const cta = admin
     ? `<button class="btn seal-btn sm" data-act="view" data-v="agent_keys">${esc(t("mcpPage.key.go"))}</button>`
-    : `<span class="tiny muted">${esc(t("mcpPage.key.member"))}</span>`;
-  return `<div class="sec-title">${esc(t("mcpPage.sec.key"))}</div>
-    <ol class="mcp-steps">
+    : `<span class="mcp-hint">${esc(t("mcpPage.key.member"))}</span>`;
+  return `<ol class="mcp-steps">
       <li>${t("mcpPage.key.step1")}</li>
       <li>${t("mcpPage.key.step2")}</li>
       <li>${t("mcpPage.key.step3")}</li>
     </ol>
-    <div class="mcp-row">${cta}
-      <span class="mono tiny muted">lka_…（每把 key 绑定组织 + 用户 + label）</span></div>
-    <div class="note amber mcp-note">${t("mcpPage.key.warn")}</div>`;
+    <div class="mcp-row">${cta}</div>
+    <div class="note amber">${t("mcpPage.key.warn")}</div>`;
 }
 
 /* sso：D18 委托/可信凭据（无 agent key）。 */
 function mcpSsoHTML() {
-  return `<div class="sec-title">${esc(t("mcpPage.sec.key"))}</div>
-    ${mcpBullets(["mcpPage.sso.b1", "mcpPage.sso.b2", "mcpPage.sso.b3"])}
-    <div class="note amber mcp-note">${t("mcpPage.sso.warn")}</div>`;
+  return `${mcpBullets(["mcpPage.sso.b1", "mcpPage.sso.b2", "mcpPage.sso.b3"])}
+    <div class="note amber">${t("mcpPage.sso.warn")}</div>`;
 }
 
 function mcpOrgHTML() {
-  return `<div class="sec-title">${esc(t("mcpPage.sec.org"))}</div>
-    ${mcpBullets(["mcpPage.org.b1", "mcpPage.org.b2", "mcpPage.org.b3", "mcpPage.org.b4", "mcpPage.org.b5"])}`;
+  return mcpBullets(["mcpPage.org.b1", "mcpPage.org.b2", "mcpPage.org.b3", "mcpPage.org.b4", "mcpPage.org.b5"]);
 }
 
 function mcpClientsHTML() {
   if (!mcpIsLocal()) {
-    return `<div class="sec-title">${esc(t("mcpPage.sec.clients"))}</div>
-      <p class="mcp-p">${t("mcpPage.clients.ssoHint")}</p>
+    return `<p class="mcp-hint">${t("mcpPage.clients.ssoHint")}</p>
       ${mcpCodeBlock("sso", "mcpPage.client.sso")}`;
   }
-  return `<div class="sec-title">${esc(t("mcpPage.sec.clients"))}
-      <small>${esc(t("mcpPage.clients.hint"))}</small></div>
-    ${mcpCodeBlock("claudeCode", "mcpPage.client.claudeCode")}
-    ${mcpCodeBlock("desktop", "mcpPage.client.desktop")}
-    ${mcpCodeBlock("cursor", "mcpPage.client.cursor")}
-    ${mcpCodeBlock("python", "mcpPage.client.python")}
-    ${mcpCodeBlock("bridge", "mcpPage.client.bridge")}`;
+  /* 竖排一段一种配置：命令行（CLI）→ 代码（Python）→ JSON 配置文件（Desktop，
+   * 其余 JSON 客户端同构改用此片段）→ stdio 桥接兜底。不做双列混排（用户
+   * 2026-11-22：子卡片保持竖排，不要混着排列）。 */
+  return `<p class="mcp-hint">${t("mcpPage.clients.hint")}</p>
+    <div class="mcp-clients">
+      ${mcpCodeBlock("claudeCode", "mcpPage.client.claudeCode")}
+      ${mcpCodeBlock("python", "mcpPage.client.python")}
+      ${mcpCodeBlock("desktop", "mcpPage.client.desktop")}
+      ${mcpCodeBlock("bridge", "mcpPage.client.bridge")}
+    </div>`;
 }
 
 function mcpToolsHTML() {
-  const rows = MCP_TOOLS.map(([name, descKey, params]) => `<tr>
-      <td><code class="mono mcp-tool-name">${esc(name)}</code></td>
-      <td>${esc(t(descKey))}</td>
-      <td><code class="mono mcp-params">${esc(params)}</code></td>
-    </tr>`).join("");
-  return `<div class="sec-title">${esc(t("mcpPage.sec.tools"))}
-      <small>${esc(t("mcpPage.tools.count", { n: MCP_TOOLS.length }))}</small></div>
-    <table class="ledger mcp-tools">
-      <thead><tr>
-        <th>${esc(t("mcpPage.tools.col.name"))}</th>
-        <th>${esc(t("mcpPage.tools.col.purpose"))}</th>
-        <th>${esc(t("mcpPage.tools.col.params"))}</th>
-      </tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-    <div class="tiny muted mcp-note-plain">${t("mcpPage.tools.note")}</div>`;
+  const rows = MCP_TOOLS.map(([name, descKey, params]) => `<div class="mcp-row-item">
+      <code class="mcp-name">${esc(name)}</code>
+      <span>${esc(t(descKey))}</span>
+      <code class="mcp-args">${esc(params)}</code>
+    </div>`).join("");
+  return `<div class="mcp-rows mcp-tools">
+      <div class="mcp-row-head">
+        <span>${esc(t("mcpPage.tools.col.name"))}</span>
+        <span>${esc(t("mcpPage.tools.col.purpose"))}</span>
+        <span>${esc(t("mcpPage.tools.col.params"))}</span>
+      </div>
+      ${rows}
+    </div>
+    <p class="mcp-hint">${t("mcpPage.tools.note")}</p>`;
 }
 
 function mcpUploadHTML() {
-  return `<div class="sec-title">${esc(t("mcpPage.sec.upload"))}
-      <small>${esc(t("mcpPage.upload.hint"))}</small></div>
-    ${mcpCodeBlock("upload", "mcpPage.upload.title")}
+  return `${mcpCodeBlock("upload", "mcpPage.upload.title")}
     ${mcpBullets(["mcpPage.upload.b1", "mcpPage.upload.b2"])}`;
 }
 
@@ -231,43 +224,43 @@ const MCP_TROUBLE = [
 ];
 
 function mcpTroubleHTML() {
-  const rows = MCP_TROUBLE.map(([sym, fixKey]) => `<tr>
-      <td><code class="mono">${esc(sym)}</code></td>
-      <td>${esc(t(fixKey))}</td>
-    </tr>`).join("");
-  return `<div class="sec-title">${esc(t("mcpPage.sec.trouble"))}</div>
-    <table class="ledger mcp-trouble">
-      <thead><tr>
-        <th>${esc(t("mcpPage.trouble.col.sym"))}</th>
-        <th>${esc(t("mcpPage.trouble.col.fix"))}</th>
-      </tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
+  const rows = MCP_TROUBLE.map(([sym, fixKey]) => `<div class="mcp-row-item">
+      <code class="mcp-sym">${esc(sym)}</code>
+      <span>${esc(t(fixKey))}</span>
+    </div>`).join("");
+  return `<div class="mcp-rows mcp-trouble">
+      <div class="mcp-row-head">
+        <span>${esc(t("mcpPage.trouble.col.sym"))}</span>
+        <span>${esc(t("mcpPage.trouble.col.fix"))}</span>
+      </div>
+      ${rows}
+    </div>`;
 }
 
 function mcpSecurityHTML() {
-  return `<div class="sec-title">${esc(t("mcpPage.sec.security"))}</div>
-    ${mcpBullets(["mcpPage.sec.b1", "mcpPage.sec.b2", "mcpPage.sec.b3", "mcpPage.sec.b4"])}`;
+  return mcpBullets(["mcpPage.sec.b1", "mcpPage.sec.b2", "mcpPage.sec.b3", "mcpPage.sec.b4"]);
 }
 
 /* ---------- 视图 ---------- */
 
 function viewMcp() {
   const local = mcpIsLocal();
+  let n = 0;
+  const sec = (titleKey, bodyHTML, hint) => mcpSec(++n, titleKey, bodyHTML, hint);
   return `<div id="mcp-guide" class="mcp-guide">
     <header class="head">
       <h1>${esc(t("mcpPage.title"))}</h1>
       <p class="lede">${t(local ? "mcpPage.lede.local" : "mcpPage.lede.sso")}</p>
       <div class="head-act"><span class="tag ${local ? "moss" : ""}">${esc(t(local ? "mcpPage.mode.local" : "mcpPage.mode.sso"))}</span></div>
     </header>
-    ${mcpBasicsHTML()}
-    ${local ? mcpKeyHTML() : mcpSsoHTML()}
-    ${mcpOrgHTML()}
-    ${mcpClientsHTML()}
-    ${mcpToolsHTML()}
-    ${local ? mcpUploadHTML() : ""}
-    ${mcpTroubleHTML()}
-    ${mcpSecurityHTML()}
+    ${sec("mcpPage.sec.basics", mcpBasicsHTML())}
+    ${local ? sec("mcpPage.sec.key", mcpKeyHTML()) : sec("mcpPage.sec.key", mcpSsoHTML())}
+    ${sec("mcpPage.sec.org", mcpOrgHTML())}
+    ${sec("mcpPage.sec.clients", mcpClientsHTML())}
+    ${sec("mcpPage.sec.tools", mcpToolsHTML(), t("mcpPage.tools.count", { n: MCP_TOOLS.length }))}
+    ${local ? sec("mcpPage.sec.upload", mcpUploadHTML(), t("mcpPage.upload.hint")) : ""}
+    ${sec("mcpPage.sec.trouble", mcpTroubleHTML())}
+    ${sec("mcpPage.sec.security", mcpSecurityHTML())}
     <div class="tiny muted mcp-foot">${t("mcpPage.foot")}</div>
   </div>`;
 }

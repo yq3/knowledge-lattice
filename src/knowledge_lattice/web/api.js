@@ -526,5 +526,109 @@ function explainDocument(org, docId, userId) {
   return apiJson(`/api/orgs/${enc(org)}/documents/${enc(docId)}/explain${q}`);
 }
 
-/* ---------- 时间显示（沿原型：UTC 字符串切 MM-DD HH:mm） ---------- */
-function short(ts) { return ts ? String(ts).slice(5, 16) : "—"; }
+/* ---------- 时间显示（库内恒 UTC；此处转**显示时区**渲染） ----------
+ * 分工（design §3 PG 连接纪律 + tests/test_pg_scaff R2 P2-1）：
+ *   后端只吐 UTC（`YYYY-MM-DD HH:MM:SS`，与 CURRENT_TIMESTAMP 同格式）；
+ *   展示层负责本地化——本段就是那"展示层"的唯一实现。
+ *
+ * 显示时区（DISPLAY_TZ）来自启动时 GET /api/auth/config 的 display_tz
+ * （服务端 LATTICE_DISPLAY_TZ 解析，见 src/knowledge_lattice/tzdisplay.py）：
+ *   给了   → 固定该区（部署可用它把控制台钉在某个区，如 Asia/Shanghai）
+ *   没给   → 浏览器时区（缺省：谁看谁的本地时间）
+ *
+ * 三个方向：
+ *   fmtTs(utcStr)      → 显示区完整串（列表 tooltip / 明细）
+ *   short(utcStr)      → 显示区 MM-DD HH:mm（列表位）
+ *   toUtcStr(localStr) → 显示区墙钟 → UTC 库格式（expires_at 输入面提交前换算）
+ * CSV 导入导出**不走换算**（交换格式保持 UTC，防导出→导入漂移——见 access.js）。 */
+let DISPLAY_TZ = null;
+let _tsFmt = null;
+let _tsFmtKey = "";
+
+function setDisplayTz(tz) { DISPLAY_TZ = tz ? String(tz) : null; }
+
+/* 显示时区名（tooltip 用；无显式配置时给浏览器区）。 */
+function tzName() {
+  if (DISPLAY_TZ) return DISPLAY_TZ;
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; }
+  catch (e) { return "UTC"; }
+}
+
+/* 显示区格式化器（en-CA 出 YYYY-MM-DD HH:mm:ss 部件，逐部件取用更稳）。 */
+function tsFormatter() {
+  const key = DISPLAY_TZ ? String(DISPLAY_TZ) : "";
+  if (_tsFmt && _tsFmtKey === key) return _tsFmt;
+  const opts = {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  };
+  if (key) opts.timeZone = key;
+  _tsFmt = new Intl.DateTimeFormat("en-CA", opts);
+  _tsFmtKey = key;
+  return _tsFmt;
+}
+
+/* 库里/接口的 UTC 串 → epoch ms。接受 `YYYY-MM-DD HH:MM[:SS]`（无后缀=UTC
+ * 墙钟）与带显式偏移的 ISO 8601（`Z` / `+08:00`——凭证 expires_at 那条口径）。
+ * 解析不了返回 null（调用方原样透出，不猜）。 */
+function tsToEpoch(ts) {
+  const text = String(ts == null ? "" : ts).trim();
+  if (!text) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/.exec(text);
+  if (!m) return null;
+  const wall = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+  const off = /^([+-])(\d{2}):?(\d{2})$/.exec(text.slice(m[0].length));
+  if (off) {
+    const minutes = (+off[2]) * 60 + (+off[3]);
+    return wall - (off[1] === "-" ? -minutes : minutes) * 60000;
+  }
+  return wall; // 无偏移后缀 = UTC（库格式）
+}
+
+const _pad2 = (n) => String(n).padStart(2, "0");
+
+function _wallParts(epochMs) {
+  const out = {};
+  for (const part of tsFormatter().formatToParts(new Date(epochMs))) out[part.type] = part.value;
+  if (out.hour === "24") out.hour = "00"; // 个别 ICU 的 h24 陷阱
+  return out;
+}
+
+/* 显示区在 epochMs 时刻的偏移（东正，毫秒）。 */
+function tzOffsetMs(epochMs) {
+  if (!DISPLAY_TZ) return -new Date(epochMs).getTimezoneOffset() * 60000;
+  const p = _wallParts(epochMs);
+  const wall = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
+  return wall - Math.floor(epochMs / 1000) * 1000;
+}
+
+/* UTC 串 → 显示区 `YYYY-MM-DD HH:mm:ss`；解析不了原样返回（空 → ""）。 */
+function fmtTs(ts) {
+  const ms = tsToEpoch(ts);
+  if (ms == null) return ts ? String(ts) : "";
+  const p = _wallParts(ms);
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
+}
+
+/* 列表位：显示区 MM-DD HH:mm（原口径保留，只是先换算过）。
+ * 非时间串（"—"、占位符）原样透出——不能对透传结果再切字符。 */
+function short(ts) {
+  if (tsToEpoch(ts) == null) return ts ? String(ts) : "—";
+  return fmtTs(ts).slice(5, 16);
+}
+
+/* 显示区墙钟串 → UTC `YYYY-MM-DD HH:mm:ss`（expires_at 输入面提交前用）。
+ * 空 → ""；解析不了原样返回（交服务端校验并如实报 400，不静默改写）。
+ * 时区偏移按目标时刻取两次（DST 边界上第一次估算的日可能差一天）。 */
+function toUtcStr(input) {
+  const text = String(input == null ? "" : input).trim();
+  if (!text) return "";
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(text);
+  if (!m) return text;
+  const wall = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+  let ms = wall - tzOffsetMs(wall);
+  ms = wall - tzOffsetMs(ms);
+  const d = new Date(ms);
+  return `${d.getUTCFullYear()}-${_pad2(d.getUTCMonth() + 1)}-${_pad2(d.getUTCDate())}`
+    + ` ${_pad2(d.getUTCHours())}:${_pad2(d.getUTCMinutes())}:${_pad2(d.getUTCSeconds())}`;
+}

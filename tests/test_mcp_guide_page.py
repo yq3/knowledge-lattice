@@ -132,3 +132,37 @@ def test_all_page_i18n_keys_exist_both_languages() -> None:
         assert f'"{key}"' in en, f"en 缺 {key}"
     orphans = set(re.findall(r'"(mcpPage\.[a-zA-Z.]+)":', zh)) - used
     assert not orphans, f"字典里的孤儿键（页面已不用）：{sorted(orphans)}"
+
+
+def test_section_numbers_are_generated_not_baked_into_copy() -> None:
+    """分区序号由渲染顺序生成，不写进 i18n 文案。
+
+    历史：首版把「① 拿到凭据」…「⑦ 安全清单」写死进字典值，sso 形态没有「上传」
+    一节，直接显示会跳号（⑤ 后接 ⑦）。现状 = viewMcp 里的计数器 + mcpSec(++n)。
+    """
+    i18n = I18N.read_text(encoding="utf-8")
+    baked = [
+        (key, value) for key, value in re.findall(
+            r'"(mcpPage\.sec\.[a-z]+)": "([^"]*)"', i18n)
+        if re.search(r"[\u2460-\u2473]", value)  # ①..⑳
+    ]
+    assert not baked, f"分区标题仍写死圈号（会随形态跳号）：{baked}"
+    src = VIEW.read_text(encoding="utf-8")
+    assert "let n = 0;" in src and "mcpSec(++n" in src, "分区序号未由渲染计数器生成"
+
+
+def test_sections_render_as_cards_not_flat_document_flow() -> None:
+    """分区一律走 mcpSec()（.card + .lane-h 卡头）。
+
+    2026-11-22 用户走查：首版是扁平文档流——裸标题 + 无边代码块 + 段落全落在同一层
+    灰底上，标题/代码块/段落揉在一起读不出分区边界。改为一节一卡：卡头分隔线断开
+    标题与正文，卡内只放一种内容。本断言防止退回扁平流（.sec-title 裸标题 + 无边
+    代码块）。
+    """
+    src = VIEW.read_text(encoding="utf-8")
+    assert 'class="sec-title"' not in src, "又回到裸标题的文档流（分区应用 mcpSec 卡片）"
+    n_sections = len(re.findall(r"mcpSec\(|sec\(\"mcpPage\.sec\.", src))
+    assert n_sections >= 7, f"分区卡数量异常（{n_sections}）"
+    css = CSS.read_text(encoding="utf-8")
+    for rule in ("#mcp-guide .mcp-sec", "#mcp-guide .mcp-n", "#mcp-guide .mcp-code-h"):
+        assert rule in css, f"style.css 缺 {rule}（分区卡/序号/代码面板头皮）"

@@ -111,7 +111,7 @@ function authAcceptHTML() {
     ${(info.org_name || info.org_id) ? `<div><span>${esc(t("auth.invite.org"))}</span><b>${esc(info.org_name || info.org_id)}</b>${info.org_id ? `<small class="mono">${esc(info.org_id)}</small>` : ""}</div>` : ""}
     ${roleText ? `<div><span>${esc(t("auth.invite.role"))}</span><b>${esc(roleText)}</b></div>` : ""}
     <div><span>${esc(t("auth.invite.purpose"))}</span><b class="pill ${isReset ? "idle" : "ok"}">${esc(isReset ? t("auth.invite.purpose.reset") : t("auth.invite.purpose.invite"))}</b></div>
-    ${info.expires_at ? `<div><span>${esc(t("auth.invite.expires"))}</span><b class="mono">${esc(info.expires_at)}</b></div>` : ""}
+    ${info.expires_at ? `<div><span>${esc(t("auth.invite.expires"))}</span><b class="mono" title="${esc(`${fmtTs(info.expires_at)} · ${tzName()}`)}">${esc(fmtTs(info.expires_at))}</b></div>` : ""}
   </div>`;
   const body = `<form class="auth-form" id="authForm-accept" data-auth="accept">
     ${meta}

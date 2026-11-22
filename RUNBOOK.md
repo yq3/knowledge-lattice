@@ -272,6 +272,37 @@ sqlite 侧 `chunks.embed_model` 为摄取状态标签：重嵌入批次结束、
 - **已知缺口**：G-35（永不过期/无轮转/无细粒度 scope/失败认证不写审计/sysadmin
   跨组织管理——仅 local/POC，生产回 sso）。
 
+### 1.ad 控制台时间显示与时区（2026-11-22 用户走查）
+
+**一句话**：库内和接口一律 UTC，控制台按"显示时区"渲染；显示时区不对 → 改
+`LATTICE_DISPLAY_TZ`，**不要动存储**。
+
+- **存储口径（不改，也不许改）**：库内时间恒为 UTC `YYYY-MM-DD HH:MM:SS`
+  （`store/taskclock.py` 的 `TS_FMT`；SQLite `CURRENT_TIMESTAMP` 与 PG 连接工厂
+  `SET TIME ZONE 'UTC'` 同源）。审计月库分区（按 UTC 月份滚）、备份文件名
+  （`-<UTC 时间戳>Z`）、凭证/成员 `expires_at` 契约都建立在这个前提上——把存储改成本地
+  时间会同时改掉对账、跨时区部署与既有数据语义。
+- **展示口径**：`GET /api/auth/config` 下发 `display_tz`，前端据此把 UTC 换算到该区
+  再渲染（分工见 design §3「PG 连接纪律」）。`display_tz = null` 表示"用浏览器时区"。
+- **配置**：`LATTICE_DISPLAY_TZ`（`config.py`，模板见 `.env.example`）
+
+  | 取值 | 行为 |
+  |---|---|
+  | 留空（缺省） | 前端用**浏览器时区**——谁看谁的本地时间 |
+  | `Asia/Shanghai` 等 IANA 名 | 固定该区，所有浏览器一致（**容器里部署推荐显式钉死**：容器默认往往是 UTC） |
+  | `server` / `auto` | 探测服务器时区：`TZ` 环境变量 → `/etc/localtime` 符号链接 → `/etc/timezone` |
+
+  非法 IANA 名 → WARNING（日志里可见）并回落到探测结果，不阻断启动（展示层
+  fail-open：时区名写错不该让服务起不来）。
+- **验证**：`curl -s localhost:8000/api/auth/config | jq .display_tz`；页面上悬停任一
+  时间单元格，tooltip 形如 `2026-11-22 09:52:26 · Asia/Shanghai`（前为完整时间、后为
+  生效时区）。时间列**表头不再标 `(UTC)`**——区名统一在 tooltip 里给。
+- **输入面（到期时间）**：成员/授权 `expires_at` 输入框填的是**显示时区**的墙钟，提交
+  前前端换算回 UTC 再落库；表格与 tooltip 显示的是显示时区。**CSV 导入导出保持 UTC**
+  （交换格式，导出→导入原样往返，不做换算——CSV 区的提示里已写明）。
+- **接 MCP / REST 的 agent 侧**：接口时间仍是 UTC（`expires_at` 序列化为 ISO 8601 Z），
+  时区只影响控制台渲染。agent 按 UTC 解释即可。
+
 ## 2. 审计分区回溯（R2-P3-8——deploy 场景注记）
 
 `ensure_month_partition`（`store/postgres/audit.py`）只滚**当月/调用时点月份**分区。

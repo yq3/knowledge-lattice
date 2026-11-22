@@ -823,48 +823,105 @@ body.auth-screen main > .auth-view { width: 100%; display: grid; place-items: ce
 
 /* ==========================================================================
    MCP 接入页（2026-11-22，views/mcp.js——docs/MCP-INTEGRATION.md 的用户面）
-   仅命中 #mcp-guide；版式=文档型（分区序号 + 代码块 + 表格）。类名与变量沿用
-   既有设计系统（.sec-title/.ledger/.note/.sql/.btn），不另起视觉语言。
+   版式：分区卡（.card + .lane-h 卡头，序号圆标一列到底）+ 代码面板 + 键值行。
+   首版是"文档流"（裸标题 + 无边代码块），标题/代码/段落全落在同一层灰底上，
+   用户读不出分区边界（2026-11-22 走查：内容看上去很乱，标题、代码块、段落揉在
+   一起）。改为一节一卡：卡头分隔线把标题与正文断开，正文只放一种内容（说明 /
+   代码 / 键值行），节间留白固定 s4。类名与变量沿用既有设计系统
+   （.card/.lane-h/.ledger 口径的排版、.note/.sql/.btn），不另起视觉语言。
    ========================================================================== */
-#mcp-guide { max-width: 1080px; }
-#mcp-guide .mcp-kv {
-  display: grid; background: var(--paper); border: 1px solid var(--rule);
-  border-radius: var(--r-lg); box-shadow: var(--sh-sm); overflow: hidden;
+#mcp-guide { display: flex; flex-direction: column; gap: var(--s4); }
+#mcp-guide .head { margin-bottom: var(--s2); }
+
+/* 分区卡 */
+#mcp-guide .mcp-sec { padding: var(--s5); }
+#mcp-guide .mcp-sec > .lane-h { align-items: center; gap: var(--s2); margin-bottom: var(--s4); }
+#mcp-guide .mcp-n {
+  flex: none; width: 20px; height: 20px; border-radius: 50%; background: var(--seal-w);
+  color: var(--seal); font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums;
+  display: inline-flex; align-items: center; justify-content: center;
 }
+#mcp-guide .mcp-sec-hint { margin-left: auto; font-size: 12px; color: var(--ink-3); font-weight: 400; }
+
+/* 键值行（端点 / 凭据 / 组织 / 传输） */
+#mcp-guide .mcp-kv { display: grid; }
 #mcp-guide .mcp-kv-row {
-  display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: var(--s3);
-  align-items: baseline; padding: 10px var(--s4); font-size: 13px;
-  border-bottom: 1px solid var(--rule);
+  display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: var(--s4);
+  align-items: center; padding: 9px 0; border-bottom: 1px solid var(--rule); font-size: 13px;
 }
-#mcp-guide .mcp-kv-row:last-child { border-bottom: 0; }
-#mcp-guide .mcp-kv-row > span { color: var(--ink-3); font-size: 12.5px; }
+#mcp-guide .mcp-kv-row:first-child { padding-top: 0; }
+#mcp-guide .mcp-kv-row:last-child { border-bottom: 0; padding-bottom: 0; }
+#mcp-guide .mcp-kv-row > dt { color: var(--ink-3); font-size: 12.5px; }
+#mcp-guide .mcp-kv-row > dd { display: flex; align-items: center; gap: var(--s3); min-width: 0; }
 #mcp-guide .mcp-kv-row code {
   font-family: var(--mono); font-size: 12.5px; word-break: break-all;
   color: var(--ink); background: transparent; padding: 0;
 }
-#mcp-guide .mcp-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin-top: var(--s2); }
 
-#mcp-guide .mcp-code { margin-top: var(--s2); }
-#mcp-guide .mcp-code-h {
-  display: flex; align-items: center; justify-content: space-between; gap: var(--s2);
-  font-size: 12px; font-weight: 600; color: var(--ink-2); margin-bottom: 2px;
-}
-#mcp-guide .mcp-code-h .btn { font-weight: 500; }
-#mcp-guide .mcp-code .sql { margin-top: 0; max-height: 320px; }
-
+/* 说明文字 / 列表 / 提示行 */
+#mcp-guide .mcp-hint { font-size: 12.5px; line-height: 1.7; color: var(--ink-3); margin-top: var(--s3); }
 #mcp-guide .mcp-steps, #mcp-guide .mcp-bullets {
   padding-left: 20px; color: var(--ink-2); font-size: 13px; line-height: 1.75;
 }
-#mcp-guide .mcp-steps li, #mcp-guide .mcp-bullets li { margin: 2px 0; }
+/* 列表跟在代码面板后面时留出与"面板→段落"一致的间隙 */
+#mcp-guide .mcp-code + .mcp-bullets, #mcp-guide .mcp-code + .mcp-steps { margin-top: var(--s4); }
+#mcp-guide .mcp-steps li, #mcp-guide .mcp-bullets li { margin: 4px 0; }
 #mcp-guide .mcp-steps li::marker { color: var(--seal); font-weight: 600; }
-#mcp-guide .mcp-p { font-size: 13px; color: var(--ink-2); line-height: 1.7; margin-bottom: var(--s2); }
-#mcp-guide .mcp-note { margin-top: var(--s3); }
-#mcp-guide .mcp-note-plain { margin-top: var(--s2); }
-#mcp-guide .mcp-tools code.mcp-tool-name { color: var(--ink); background: var(--paper-3); padding: 1px 6px; white-space: nowrap; }
-#mcp-guide .mcp-tools code.mcp-params { color: var(--ink-3); background: transparent; padding: 0; font-size: 11.5px; word-break: break-word; }
-#mcp-guide .mcp-trouble code { background: transparent; padding: 0; color: var(--ink); font-size: 11.5px; }
-#mcp-guide .mcp-foot { margin-top: var(--s6); padding-top: var(--s3); border-top: 1px solid var(--rule); }
+#mcp-guide .mcp-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); margin-top: var(--s4); }
+#mcp-guide .mcp-row .mcp-hint { margin-top: 0; }
+#mcp-guide .mcp-sec > .note { margin-top: var(--s4); }
 
-@media (max-width: 860px) {
-  #mcp-guide .mcp-kv-row { grid-template-columns: 1fr; gap: 2px; }
+/* 代码面板：卡头皮（标题 + 复制）与代码体是一个整体，便于"认领"到某个客户端 */
+#mcp-guide .mcp-code {
+  border: 1px solid var(--rule); border-radius: var(--r); overflow: hidden;
+  background: var(--paper-2); break-inside: avoid;
+}
+#mcp-guide .mcp-code-h {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s2);
+  padding: 3px 6px 3px 12px; background: var(--paper-3); border-bottom: 1px solid var(--rule);
+  font-size: 12px; font-weight: 600; color: var(--ink-2);
+}
+#mcp-guide .mcp-code-h .btn { height: 24px; padding: 0 9px; font-size: 11.5px; font-weight: 500; }
+#mcp-guide .mcp-code > pre {
+  margin: 0; border: 0; border-radius: 0; background: var(--paper-2); max-height: 300px;
+}
+#mcp-guide .mcp-clients { display: flex; flex-direction: column; gap: var(--s4); margin-top: var(--s4); }
+#mcp-guide .mcp-sec > .mcp-code { margin-top: var(--s4); }
+
+/* 参考行（工具清单 / 排错）：卡内网格行，不另用表格（避免卡内再套边框） */
+#mcp-guide .mcp-rows { display: grid; }
+#mcp-guide .mcp-row-head, #mcp-guide .mcp-row-item {
+  display: grid; grid-template-columns: 124px minmax(0, 1fr) 354px; gap: var(--s4);
+  padding: 9px 0; border-bottom: 1px solid var(--rule); align-items: baseline;
+}
+#mcp-guide .mcp-row-head { padding-top: 0; font-size: 12px; color: var(--ink-3); }
+#mcp-guide .mcp-row-item { font-size: 13px; color: var(--ink-2); }
+#mcp-guide .mcp-row-item:last-child { border-bottom: 0; padding-bottom: 0; }
+#mcp-guide .mcp-trouble .mcp-row-head, #mcp-guide .mcp-trouble .mcp-row-item {
+  grid-template-columns: 232px minmax(0, 1fr);
+}
+#mcp-guide .mcp-tools code.mcp-name {
+  color: var(--ink); background: var(--paper-3); padding: 1px 6px;
+  font-weight: 500; white-space: nowrap; justify-self: start;
+}
+#mcp-guide .mcp-tools code.mcp-args { color: var(--ink-3); background: transparent; padding: 0; font-size: 11.5px; word-break: break-word; }
+#mcp-guide .mcp-trouble code.mcp-sym { background: transparent; padding: 0; color: var(--ink); font-size: 12px; word-break: break-word; }
+
+#mcp-guide .mcp-foot { margin-top: var(--s2); }
+
+/* 窄屏：工具清单改成"名称 | 用途"上行 + 参数下行，隐藏列名行（列名在上下排里
+ * 对不上号）。代码面板本身已是竖排全文，不再有单列/双列之分。 */
+@media (max-width: 1100px) {
+  #mcp-guide .mcp-tools .mcp-row-head { display: none; }
+  #mcp-guide .mcp-tools .mcp-row-item { grid-template-columns: 116px minmax(0, 1fr); row-gap: 2px; }
+  #mcp-guide .mcp-tools .mcp-row-item > code.mcp-args { grid-column: 2; }
+}
+@media (max-width: 700px) {
+  #mcp-guide .mcp-sec { padding: var(--s4); }
+  #mcp-guide .mcp-kv-row,
+  #mcp-guide .mcp-trouble .mcp-row-head, #mcp-guide .mcp-trouble .mcp-row-item {
+    grid-template-columns: minmax(0, 1fr); row-gap: 2px;
+  }
+  #mcp-guide .mcp-trouble .mcp-row-head { display: none; }
+  #mcp-guide .mcp-sec-hint { display: none; }
 }
