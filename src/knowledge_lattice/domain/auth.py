@@ -60,7 +60,7 @@ class OrgContextError(Exception):
 class AuthContext:
     user_id: str
     org_claim: str | None  # token org claim（单值——按组织签发）
-    via: str  # jwt | static | sso | trusted | local（D25 本地会话）
+    via: str  # jwt | static | sso | trusted | local（D25 本地会话）| agent_key（D26）
     is_system_admin: bool
     act: str | None = None  # 服务身份（委托 token act / 可信子系统 service_id；
     #  开发 JWT 同名 claim 承载；静态 token 无服务身份 → None=直连）
@@ -241,6 +241,10 @@ def _authenticate_sso_claims(backend, settings: Settings, claims) -> AuthContext
 def authenticate(backend, settings: Settings, token: str, *, sso=None) -> AuthContext:
     """Bearer token → AuthContext（用户须存在且未禁用）。
 
+    - **agent key**（D26 / issue #34——``lka_`` 前缀）：**顶部专道分流**到
+      ``authenticate_agent_key``（local-only，失败一律 401 且**不 fallback**
+      到 dev JWT/静态 token——长寿命凭据不得被开发形态兜底放大）；见
+      domain/agent_keys.py；
     - ``auth_mode=="local"``（D25/FR-9）：**先**尝试本地会话 token
       （``authenticate_session``——HS256 独立 secret/aud/typ/tv）；失败继续
       后续分支（dev/test 便利与兼容：开发 JWT/静态 token 仍可用；prod local
@@ -255,6 +259,16 @@ def authenticate(backend, settings: Settings, token: str, *, sso=None) -> AuthCo
       生产拒绝——D18）；
     - 验签失败/未知用户/禁用 → 401。
     """
+    # D26：agent key 专道分流——前缀即可判定形态，先于一切开发形态分支；失败
+    # 不 fallback（未知 lka_ token 不得落回 dev JWT/静态 token）。局部 import
+    # 化解循环导入（domain/agent_keys 依赖本模块的 AuthContext/AuthError）。
+    from knowledge_lattice.domain.agent_keys import (
+        AGENT_KEY_PREFIX,
+        authenticate_agent_key,
+    )
+
+    if token.startswith(AGENT_KEY_PREFIX):
+        return authenticate_agent_key(backend, settings, token)
     if settings.auth_mode == "local":
         # D25：local 会话优先；任何失败（过期/tv 撤销/停用/邀请态/非会话 token）
         # 均落回既有 dev JWT/静态分支——dev/test 便利（TC-AUTH-01~05 回归），

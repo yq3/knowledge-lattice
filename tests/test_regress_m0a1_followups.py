@@ -19,9 +19,9 @@ from pathlib import Path
 from helpers import table_names
 
 REGRESS_V3_SQL = (
-    # 0001~0012 均被 builtin 占用（含 m4-1 0012 local_accounts）——
-    # 回归探针取下一个空号 0013
-    "-- 0013 回归用最小迁移（触发 _apply_one 完整路径即可）\n"
+    # 0001~0013 均被 builtin 占用（含 m4-1 0012 local_accounts + D26 0013
+    # agent_keys）——回归探针取下一个空号 0014
+    "-- 0014 回归用最小迁移（触发 _apply_one 完整路径即可）\n"
     "CREATE TABLE regress_probe(x INTEGER);\n"
 )
 
@@ -32,7 +32,7 @@ def regress_dirs(tmp_path: Path) -> list[Path]:
 
     extra = tmp_path / "regress_migrations"
     extra.mkdir()
-    (extra / "0013_regress_probe.sql").write_text(REGRESS_V3_SQL, encoding="utf-8")
+    (extra / "0014_regress_probe.sql").write_text(REGRESS_V3_SQL, encoding="utf-8")
     return [BUILTIN_DIRS["docs"], BUILTIN_DIRS["semantic"], extra]
 
 
@@ -55,7 +55,7 @@ def test_fk_off_in_transaction_raises_migration_error(conn, regress_dirs) -> Non
         conn.execute("ROLLBACK")
     assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1  # 仍为 ON
     assert "regress_probe" not in table_names(conn)  # 迁移未生效
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 12  # builtin 水位（迁移失败未应用——…+0008 sem_build_snapshots〔m2s-5〕+0009 semantic_fuzzy〔m2s-6〕+0010 task_seq〔m2-6〕+0011 org_status〔m3-1〕+0012 local_accounts〔m4-1〕；本用例自造的故障迁移未生效）
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 13  # builtin 水位（迁移失败未应用——…+0008 sem_build_snapshots〔m2s-5〕+0009 semantic_fuzzy〔m2s-6〕+0010 task_seq〔m2-6〕+0011 org_status〔m3-1〕+0012 local_accounts〔m4-1〕+0013 agent_keys〔D26〕；本用例自造的故障迁移未生效）
 
 
 # ============ ② P3-2：`:memory:` journal 失败 → RuntimeError + 连接关闭 ============

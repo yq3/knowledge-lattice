@@ -464,6 +464,7 @@ def create_app(
 
     from knowledge_lattice.api import (
         admin,
+        agent_keys as agent_keys_api,
         auth as auth_api,
         documents,
         quality,
@@ -501,6 +502,8 @@ def create_app(
         # M4/D25（m4-2）：本地登录/邀请接受 + 用户/邀请管理（sso 形态 404）
         app.include_router(auth_api.local_router)
         app.include_router(users_api.router)
+        # D26（issue #34 阶段 2B）：agent key 管理面（local 专属——sso 形态 404）
+        app.include_router(agent_keys_api.router)
 
     if WEB_DIR.is_dir():
         app.mount("/static", _NoStaleStaticFiles(directory=WEB_DIR), name="static")

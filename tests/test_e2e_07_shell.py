@@ -11,6 +11,11 @@ m4-3a 段（D25 local）：资产/注册断言扩 views/login.js（VIEWS.auth）
 boot 门（AUTH/bootLocal）；契约 bundle 扩登录/首启/邀请接受端点。
 m4-3b 段（D25 local）：资产/bundle 扩 views/users.js（VIEWS.users——用户/邀请管理），
 契约端点扩 /api/users 与 /invitations；zh/en 键集相等断言覆盖新增 users.* 键。
+D26 段（issue #34 local agent key）：资产/注册断言扩 views/agent_keys.js
+（VIEWS.agent_keys + onEnterAgentKeys——按序在 users.js 之后）；bundle 契约扩
+/agent-keys；zh/en 键集断言覆盖 nav.agent_keys / agentKeys.title /
+agentKeys.key.title；视图数八→九（login/users/agent_keys/docs/search/access/ops/
+semantic/orgs）。
 """
 
 from __future__ import annotations
@@ -24,7 +29,7 @@ def _auth(app_env):
 
 
 def test_shell_served_with_app_frame_and_i18n(app_env) -> None:
-    """GET / 返回应用壳：app 骨架 + 语言切换 + i18n 机制资产 + 八视图脚本注册。"""
+    """GET / 返回应用壳：app 骨架 + 语言切换 + i18n 机制资产 + 九视图脚本注册。"""
     client = app_env["client"]
     resp = client.get("/")
     assert resp.status_code == 200
@@ -34,7 +39,7 @@ def test_shell_served_with_app_frame_and_i18n(app_env) -> None:
     assert 'id="userPicker"' in html  # D25 local 用户菜单挂载点（sso 隐藏）
     assert 'data-i18n=' in html and 'lang="zh-CN"' in html  # i18n 机制 + 默认中文
     assert 'id="orgPicker"' in html and 'id="main"' in html  # 挂载点（组织 picker / 主区）
-    # 资产清单（框架 + i18n + REST 适配层 + 八视图，按序经典脚本）
+    # 资产清单（框架 + i18n + REST 适配层 + 九视图，按序经典脚本）
     assets = (
         "/static/style.css",
         "/static/i18n.js",
@@ -42,6 +47,7 @@ def test_shell_served_with_app_frame_and_i18n(app_env) -> None:
         "/static/app.js",
         "/static/views/login.js",
         "/static/views/users.js",
+        "/static/views/agent_keys.js",
         "/static/views/docs.js",
         "/static/views/search.js",
         "/static/views/access.js",
@@ -51,10 +57,11 @@ def test_shell_served_with_app_frame_and_i18n(app_env) -> None:
     )
     for asset in assets:
         assert client.get(asset).status_code == 200, asset
-    # 资产按序引入（i18n → api → app → views/login → views/users → docs → views）
+    # 资产按序引入（i18n → api → app → views/login → views/users → agent_keys → docs → views）
     pos = [html.index(src) for src in (
         "/static/i18n.js", "/static/api.js", "/static/app.js",
-        "/static/views/login.js", "/static/views/users.js", "/static/views/docs.js",
+        "/static/views/login.js", "/static/views/users.js",
+        "/static/views/agent_keys.js", "/static/views/docs.js",
     )]
     assert pos == sorted(pos)
     i18n = client.get("/static/i18n.js").text
@@ -70,11 +77,15 @@ def test_shell_served_with_app_frame_and_i18n(app_env) -> None:
                 "auth.err.expired", "user.menu.password",
                 # m4-3b：用户/邀请管理页键集（nav + 页面/表单/链接/错误）
                 "nav.users", "users.title", "users.link.title", "users.inv.title",
-                "users.err.last_sysadmin"):
+                "users.err.last_sysadmin",
+                # D26：agent 长期凭据管理页（导航 + 页面标题 + 明文签发弹窗标题）
+                "nav.agent_keys", "agentKeys.title", "agentKeys.key.title",
+                # D26：签发后接入配置块（端点/请求头/复制）
+                "agentKeys.key.endpoint", "agentKeys.key.copyConfig"):
         assert key in zh_keys, key
     # 视图注册断言：app.js 定义注册表，六个视图文件各自注册；m4-3a 的 auth 视图
     # 注册在 login.js，boot 门状态机（AUTH/bootLocal）在 app.js；m4-3b 的 users
-    # 视图注册在 views/users.js。
+    # 视图注册在 views/users.js；D26 的 agent_keys 视图注册在 views/agent_keys.js。
     app_js = client.get("/static/app.js").text
     assert "VIEWS" in app_js
     assert "AUTH" in app_js and "bootLocal" in app_js
@@ -83,6 +94,9 @@ def test_shell_served_with_app_frame_and_i18n(app_env) -> None:
     users_js = client.get("/static/views/users.js").text
     assert "VIEWS.users" in users_js
     assert "onEnterUsers" in users_js  # epoch/connected 守卫的装载入口
+    agent_keys_js = client.get("/static/views/agent_keys.js").text
+    assert "VIEWS.agent_keys" in agent_keys_js
+    assert "onEnterAgentKeys" in agent_keys_js  # 明文集只显示一次 + 撤销入口
     for name in ("docs", "search", "access", "ops", "semantic", "orgs"):
         view_js = client.get(f"/static/views/{name}.js").text
         assert f"VIEWS.{name}" in view_js, name
@@ -97,6 +111,7 @@ def test_shell_uses_api_contract(app_env) -> None:
             "/static/api.js",
             "/static/views/login.js",
             "/static/views/users.js",
+            "/static/views/agent_keys.js",
             "/static/views/docs.js",
             "/static/views/search.js",
             "/static/views/access.js",
@@ -112,6 +127,8 @@ def test_shell_uses_api_contract(app_env) -> None:
         "/api/auth/login", "/api/setup", "/api/auth/invitations/accept",
         # D25 local（m4-3b）：用户/邀请管理
         "/api/users", "/invitations",
+        # D26（issue #34）：agent 长期凭据管理（local 专属）
+        "/agent-keys",
     ):
         assert endpoint in bundle, f"页壳未使用契约端点 {endpoint}"
 

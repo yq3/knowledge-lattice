@@ -36,7 +36,7 @@ def test_migration_0012_accounts_schema(backend) -> None:
             "email", "password_hash", "status", "token_version", "created_by",
             "last_login_at",
         } <= cols
-        assert backend.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert backend.execute("PRAGMA user_version").fetchone()[0] >= 12
         idx = backend.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'index'"
             " AND name = 'ux_users_email'"
@@ -61,7 +61,7 @@ def test_migration_0012_accounts_schema(backend) -> None:
         } <= cols
         from knowledge_lattice.store.postgres.migrate import applied_versions
 
-        assert applied_versions(backend.raw)[-1] == 12
+        assert 12 in applied_versions(backend.raw)
         assert backend.execute(
             "SELECT name FROM schema_migrations WHERE version = ?", (12,)
         ).fetchone() == ("local_accounts",)

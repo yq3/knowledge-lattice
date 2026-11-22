@@ -68,7 +68,7 @@ from knowledge_lattice.store.backend import (
 )
 from knowledge_lattice.store.taskclock import utc_now_ts
 
-from .upload import get_auth, get_service, org_scoped
+from .upload import enforce_agent_key_org, get_auth, get_service, org_scoped
 
 router = APIRouter()
 dev_token_router = APIRouter()  # 仅 dev/test 注册（app.py 门控——生产 404）
@@ -257,6 +257,7 @@ async def patch_org_status(
             detail=f"invalid status: {body.status!r}（active | disabled）",
         )
     resolved = check_path_org(path_org=org, org_header=request.headers.get("x-org-id"))
+    enforce_agent_key_org(auth, resolved)  # D26：sysadmin key 亦受组织绑定约束
     service = get_service(request)
     event = EVENT_ORG_DISABLED if body.status == "disabled" else EVENT_ORG_ENABLED
     result = service.backend.set_org_status(
@@ -916,6 +917,7 @@ async def reindex_document(
       fail-closed 兜底）。
     """
     resolved = check_path_org(path_org=org, org_header=request.headers.get("x-org-id"))
+    enforce_agent_key_org(auth, resolved)  # D26：先于文档存在性（不泄露他组织面）
     service = get_service(request)
     doc = service.backend.get_document(doc_id)
     if doc is None or doc["org_id"] != resolved:
@@ -1051,6 +1053,7 @@ async def query_audit(
     同一事件不重复出现）。
     """
     resolved = check_path_org(path_org=org, org_header=request.headers.get("x-org-id"))
+    enforce_agent_key_org(auth, resolved)  # D26：sysadmin key 亦不得跨组织读审计
     service = get_service(request)
     membership = service.backend.read_membership(auth.user_id, resolved)
     if membership is not None and membership["role"] == "org_admin":

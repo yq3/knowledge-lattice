@@ -1230,6 +1230,77 @@ class AccountsBackend(Protocol):
 
 
 @runtime_checkable
+class AgentKeyBackend(Protocol):
+    """Agent 长寿命凭据域（D26 / issue #34——`local` 形态下 agent key 的库底座）。
+
+    设计口径：
+
+    - **key 明文永不入库**：库内只存 sha256 摘要 `token_hash`（全库 UNIQUE）与
+      展示前缀 `prefix`；明文 key 仅由调用方在创建响应返回一次；
+    - **归属**：`(org_id, user_id)` 双绑定，org/user 删除级联清理；`created_by` /
+      `revoked_by` 为操作者 user_id，**不设 FK**（操作者停用/离职不连带删 key——
+      同 0012 `invited_by` 口径）；
+    - **生命周期**：`expires_at` 为 NULL = 永不过期（当前恒 NULL、字段预留，
+      判定归调用方）；`revoked_at` 非空 = 软撤销（即时生效、行保留供追溯，
+      列表含已撤销行）。
+
+    事务与审计纪律（与既有 `audit=` 先例一致）：带 `audit=` 的写方法与业务写
+    **同一事务**（sqlite `BEGIN IMMEDIATE` / PG `BEGIN`），审计失败即整体回滚；
+    audit payload 由调用方构造，**不得含明文 key**。`expires_at` 经
+    `normalize_expires_at` 归一；`now` 一律取 `store/taskclock.py::utc_now_ts`
+    （UTC 库格式字符串，双方言同源）。
+    """
+
+    def create_agent_key(
+        self, *, key_id: str, org_id: str, user_id: str, label: str,
+        token_hash: str, prefix: str, created_by: str,
+        expires_at: str | None, audit: tuple[str, str] | None = None,
+    ) -> dict:
+        """写 key 行 + ``audit`` **同一事务**；返回全列 dict。
+
+        `expires_at=None` = 永不过期（当前恒 NULL）；非空按库格式归一。
+        `token_hash` 冲突（全库 UNIQUE）→ ValueError（fail-closed，不静默顶替）。
+        返回行含 id/org_id/user_id/label/token_hash/prefix/created_by/created_at/
+        last_used_at/revoked_at/revoked_by/expires_at。
+        """
+        ...
+
+    def get_agent_key_by_hash(self, token_hash: str) -> dict | None:
+        """按 token sha256 **精确**取行（含 revoked_at/expires_at）；无 → None。
+
+        读口语义：**不隐藏已撤销行**——撤销/过期判定归调用方（认证面统一拒绝，
+        审计面可按行状态分类）。
+        """
+        ...
+
+    def list_agent_keys(self, org_id: str) -> list[dict]:
+        """本组织全部 key 行（**含已撤销**），按 created_at DESC, id DESC 排序
+        （最新在前；同秒创建以 id 稳定定序）。"""
+        ...
+
+    def revoke_agent_key(
+        self, *, key_id: str, org_id: str, revoked_by: str,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """撤销 key（软撤销：revoked_at=now + revoked_by）。
+
+        按 `(id, org_id)` 定位；不存在或跨组织 → None（不泄露他组织 key）。
+        幂等：已撤销 → 原样返回既有行且**不重复审计**（revoked_at/revoked_by
+        保持首次撤销值）；实际撤销时 ``audit`` 与 UPDATE **同一事务**。
+        返回撤销后全列 dict。
+        """
+        ...
+
+    def touch_agent_key_last_used(
+        self, key_id: str, *, now: str, cutoff: str,
+    ) -> bool:
+        """节流回写 `last_used_at`（认证热路径，≥60s 窗口由调用方经 cutoff 承载）：
+        `WHERE id=? AND (last_used_at IS NULL OR last_used_at < cutoff)` 时写 now。
+        返回是否实际更新（False=窗口内节流跳过或行不存在）。"""
+        ...
+
+
+@runtime_checkable
 class QualityBackend(Protocol):
     """区分度反馈环（design §5.4 / FR-3——M1-4）：近邻扫描 / 词频统计 / flags CRUD。
 
@@ -1743,6 +1814,7 @@ class StorageBackend(
     AclBackend,
     AdminBackend,
     AccountsBackend,
+    AgentKeyBackend,
     QualityBackend,
     SemanticBackend,
     AuditBackend,

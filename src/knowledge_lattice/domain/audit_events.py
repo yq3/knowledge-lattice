@@ -107,6 +107,11 @@ EVENT_USER_ENABLED = "user.enabled"                # 用户启用（tv 不回退
 EVENT_USER_SYSADMIN_CHANGED = "user.sysadmin_changed"  # sysadmin 授/撤（末位守卫）
 EVENT_INSTANCE_SETUP = "instance.setup"            # 首启 setup 完成（建首管理员）
 
+# ---- agent 长寿命凭据（D26 / issue #34——与写行同事务；payload 不含明文 key） ----
+
+EVENT_AGENT_KEY_CREATED = "agent_key.created"      # 创建 agent key（org_admin/sysadmin 代签）
+EVENT_AGENT_KEY_REVOKED = "agent_key.revoked"      # 撤销 agent key（幂等：重复撤销零新审计）
+
 __all__ = [
     "EVENT_DOCUMENT_UPLOAD",
     "EVENT_DOCUMENT_OVERWRITE",
@@ -157,4 +162,6 @@ __all__ = [
     "EVENT_USER_ENABLED",
     "EVENT_USER_SYSADMIN_CHANGED",
     "EVENT_INSTANCE_SETUP",
+    "EVENT_AGENT_KEY_CREATED",
+    "EVENT_AGENT_KEY_REVOKED",
 ]

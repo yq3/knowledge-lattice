@@ -16,6 +16,7 @@
 | [docs/known-gaps.md](docs/known-gaps.md) | 已预见问题登记（G-n）：对策之后仍残留的缺口与规格开放点；活文档 |
 | [prototype/index.html](prototype/index.html) | 交互原型（浏览器直接打开、mock 数据）：信息结构与 UI 风格**双基准** |
 | [RUNBOOK.md](RUNBOOK.md) | 运维手册（重嵌入蓝绿与供应商切换 / 组织停用 / 查询审计 / 评测 / 内置账号 / 审计分区 / 迁移 / 备份恢复）；运行侧活文档 |
+| [docs/MCP-INTEGRATION.md](docs/MCP-INTEGRATION.md) | Agent 侧 MCP 接入指南（端点 / 认证 / 客户端配置 / 工具清单 / 上传 / 排错）；运行侧活文档 |
 | [AGENTS.md](AGENTS.md) | 工作规范（冻结纪律 / 分层纪律 / 工具链 / 多 Agent 工作流与提交约定） |
 | `benchmarks/` | 实验 / 压测脚本与报告归档（report-\*.md，结论回写 known-gaps 或正文） |
 | `eval/` | 评测语料（corpus.jsonl / semantic_golden.jsonl）、黄金集（golden.jsonl）与报告归档（reports/） |
@@ -81,7 +82,7 @@ uv run uvicorn "knowledge_lattice.app:create_app" --factory --env-file .env
 ```
 
 - 页面壳：Setup / 登录 + 检索与上传 + 组织·成员·授权 + 用户/邀请 + 运维视图（中/英双语切换）
-- REST API 文档 `http://127.0.0.1:8000/docs`；MCP 端点 `/mcp`（MCP 只走 D18 委托/可信 token，本地会话不可用——需 agent 供数时切 `sso` 形态）
+- REST API 文档 `http://127.0.0.1:8000/docs`；MCP 端点 `/mcp`（Streamable HTTP）——`local` 形态用「Agent 密钥」、`sso` 形态走 D18 委托/可信 token；接入端点/客户端配置/工具/排错见 **[docs/MCP-INTEGRATION.md](docs/MCP-INTEGRATION.md)**
 - 认证模式切换、邀请 / 重置 / break-glass 细节见 [RUNBOOK §1.ab](RUNBOOK.md)
 - 开发 JWT：dev/test 下 `POST /api/dev/token` 以现有 Bearer 重签或代签（生产 404）
 

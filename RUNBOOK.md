@@ -4,7 +4,7 @@
 > 依据：`benchmarks/report-m0b-2.md`（三项拍板实验报告）、`docs/design.md` §5.3、
 > schema v1.1 迁移（`store/<dialect>/migrations/docs/0002_schema_v1_1.sql`）。
 > 章节：§1 运行侧（重嵌入蓝绿 / §1.x 供应商切换 / §1.y 组织停用 / §1.z 查询审计 /
-> §1.aa 评测依赖 / §1.ab 内置账号）· §2 审计分区 · §3 迁移 · §4 备份恢复。
+> §1.aa 评测依赖 / §1.ab 内置账号 / §1.ac Agent 密钥）· §2 审计分区 · §3 迁移 · §4 备份恢复。
 
 ## 1. 运行侧操作（重嵌入蓝绿为主；§1.x 起为专题）
 
@@ -231,9 +231,46 @@ sqlite 侧 `chunks.embed_model` 为摄取状态标签：重嵌入批次结束、
   ```bash
   docker start lattice-pg
   export LATTICE_PG_DSN=postgresql://postgres:lattice@localhost:5432/lattice
-  scripts/test_gate.sh        # 常规 + python -O；M4 基线 2090+1（pg 臂 776）
+  scripts/test_gate.sh        # 常规 + python -O；M4 基线 2090+1 → D26 批后 2158+1（pg 臂 808）
   # 本机 uv 缓存不可写时：UV_CACHE_DIR="$PWD/.uv-cache" scripts/test_gate.sh
   ```
+
+### 1.ac Agent 密钥（D26，local 形态——issue #34）
+
+> `LATTICE_AUTH_MODE=local` 专属：每 agent 长期凭据（**永不过期、软撤销即时生效**）。
+> `sso` 形态管理端点 404、key 认证 401（sso 长期凭据仍走 D18 委托 token）。
+> 管理面仅 `org_admin`/`sysadmin` 可见；**明文只显示一次**（库内只存 sha256+前缀）。
+> **Agent 侧接入**（端点 `/mcp`、客户端配置、工具清单、上传三步、排错）见
+> [docs/MCP-INTEGRATION.md](docs/MCP-INTEGRATION.md)。
+
+- **签发（Web）**：local 登录 → 左侧导航 **「Agent 密钥」** → 选择本组织 active 成员
+  （member/org_admin 均可）→ 填 label（agent 标识，1..64，进审计 `act`）→ 创建 →
+  弹窗显示 `lka_...` 明文**一次**，立即复制——关闭后不可再查看。等价 REST：
+
+  ```bash
+  curl -s -X POST http://127.0.0.1:8000/api/orgs/org:tax/agent-keys \
+    -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+    -d '{"user_id":"u_xxx","label":"agent-a"}'
+  ```
+
+  响应 `{key, id, org_id, user_id, user_username, label, prefix, created_by, created_at,
+  last_used_at, revoked_at, revoked_by, expires_at}`；`expires_at` 恒 `null`（永不过期）。
+- **使用**：明文配给 agent 客户端作 Bearer（`Authorization: Bearer lka_...`）；MCP/REST
+  均可用（key 不绕过用户状态/成员关系/ACL）。REST 路径 org 必须等于 key 绑定组织
+  （越界 403 `org_mismatch`，sysadmin 的 key 同样受限）；MCP `X-Org-Id` 与 key claim
+  不一致 → 400。审计：查询级 `act`=label、`via=agent_key`、`entry=mcp|rest`
+  （不同 agent 可区分；`agent_key.created`/`agent_key.revoked` 载荷无明文/摘要）。
+- **撤销（泄露应急）**：管理页列表 → 对应 key「撤销」（软撤销，即时生效——下一次请求
+  401 `agent key revoked`；行保留供对账，二次撤销幂等 204）。等价
+  `DELETE /api/orgs/{org}/agent-keys/{key_id}`。**轮换 = 撤销旧 key + 新建 key**
+  （无自动轮转，G-35）。`sysadmin` 可管理任意组织（含停用组织——撤销泄露 key 的应急
+  路径）；`org_admin` 仅本组织、不能管停用组织（403 `org_disabled`）。
+- **安全建议**：①key 视同口令——不贴群、不进日志、不写代码库；泄露立即撤销；
+  ②按 agent 独立签发（不同 label），勿多 agent 共用（审计无法区分）；③定期轮换
+  （无强制过期）；④key 继承绑定用户全部权限（**无 key 级 scope**，G-35）——为 agent
+  建专门低权成员账号；⑤切 `LATTICE_AUTH_MODE=sso` 后 key 全部失效，改用 D18 委托 token。
+- **已知缺口**：G-35（永不过期/无轮转/无细粒度 scope/失败认证不写审计/sysadmin
+  跨组织管理——仅 local/POC，生产回 sso）。
 
 ## 2. 审计分区回溯（R2-P3-8——deploy 场景注记）
 

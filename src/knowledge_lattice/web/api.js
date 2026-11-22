@@ -19,6 +19,9 @@
  * - D25 local（m4-3b）：listUsers/createUser/patchUser/resetUser +
  *   listInvitations/createInvitation/revokeInvitation——用户/邀请管理页（views/users.js）；
  *   邀请链接统一 inviteLink(token)（#invite= fragment——token 不进路径/Referer）。
+ * - D26（issue #34 阶段 3）：listAgentKeys/createAgentKey/revokeAgentKey——Agent
+ *   长期凭据管理页（views/agent_keys.js，local 专属）；明文 key 只在创建响应出现
+ *   一次（库内只存 sha256 + 展示前缀），调用方立即展示、不落 localStorage。
  * - pollTask：任务轮询（interval 1.5s / 终态停止 / 超时 120s / shouldStop 回调
  *   感知上下文切换即停——R2 P1-5，返回 null=已弃）。
  */
@@ -483,6 +486,21 @@ function patchMember(org, userId, body) {
 function deleteMember(org, userId) {
   // R2 P1-1：同 deleteDataset——!ok 抛 ApiError（409 最后管理员 / 404 如实）
   return apiJson(`/api/orgs/${enc(org)}/members/${enc(userId)}`, { method: "DELETE" });
+}
+
+/* ---------- Agent 长期凭据（D26 / issue #34 阶段 3——views/agent_keys.js） ----------
+ * local 专属（app.py 仅在 auth_mode=local 注册 router；sso 形态不渲染本页）：
+ * GET/POST /api/orgs/{org}/agent-keys、DELETE …/{key_id}（软撤销）。
+ * 明文 key 只在创建响应出现一次（库内只存 sha256 + 前缀）——调用方立即展示、
+ * 不落 localStorage；列表行含 user_username（用户缺失回 None）。 */
+function listAgentKeys(org) { return apiJson(`/api/orgs/${enc(org)}/agent-keys`); }
+function createAgentKey(org, body) {
+  return apiJson(`/api/orgs/${enc(org)}/agent-keys`, {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
+function revokeAgentKey(org, keyId) {
+  return apiJson(`/api/orgs/${enc(org)}/agent-keys/${enc(keyId)}`, { method: "DELETE" });
 }
 
 /* ---------- 组织管理（ui-2——POST /api/orgs 与 PATCH /api/orgs/{org} 均已实装） ---------- */

@@ -71,6 +71,17 @@ const state = {
     form: { username: "", display_name: "", email: "", is_system_admin: false, org_id: "", role: "member" },
     invForm: { username: "", role: "member", display_name: "", email: "" },
   },
+  /* Agent 长期凭据管理视图（D26 / issue #34 阶段 3——local 专属） */
+  agentKeys: {
+    list: null,                 // GET /api/orgs/{org}/agent-keys → [{id,label,prefix,user_id,user_username,…}]
+    err: null,                  // 列表/动作失败文案（普通文案——消费点 esc）
+    busy: false,                // 创建/撤销在途
+    createOpen: false,
+    lastKey: null,              // {key,label,user_username}——明文只驻内存（刷新/切组织即消失）
+    members: null,              // GET members（成员选择器；失败不阻塞列表）
+    membersErr: null,
+    form: { user_id: "", label: "" },
+  },
   loading: {},
 };
 
@@ -157,6 +168,7 @@ const ICONS = {
   ops: '<path d="M3 12h4l3-7 4 14 3-7h4"/>',
   orgs: '<path d="M3 21h18M5 21V5a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v16M14 9h4a1 1 0 0 1 1 1v11"/><path d="M8 8h3M8 12h3M8 16h3M17 13h.01M17 17h.01"/>',
   users: '<circle cx="9" cy="8" r="3.2"/><path d="M3.6 19.5c.6-3.1 2.8-4.9 5.4-4.9s4.8 1.8 5.4 4.9"/><circle cx="17.4" cy="10.6" r="2.2"/><path d="m19 12.1 2.4 2.4M15.4 14.8l3.9 3.9"/><path d="M17.4 8.4v2.2"/>',
+  agent_keys: '<circle cx="8" cy="15" r="4.2"/><path d="m11.2 11.8 8.3-8.3M16.2 4.8l3 3M18.8 7.4l2.2 2.2"/>',
 };
 const ic = (k) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[k]}</svg>`;
 const CARET = `<svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>`;
@@ -370,6 +382,11 @@ function resetOrgState() {
     form: { username: "", display_name: "", email: "", is_system_admin: false, org_id: "", role: "member" },
     invForm: { username: "", role: "member", display_name: "", email: "" },
   };
+  state.agentKeys = {
+    list: null, err: null, busy: false, createOpen: false, lastKey: null,
+    members: null, membersErr: null,
+    form: { user_id: "", label: "" },
+  };
 }
 
 async function reloadAfterIdentityChange() {
@@ -486,6 +503,9 @@ function renderRail() {
   ];
   if (AUTH.mode === "local" && AUTH.user && (AUTH.user.is_system_admin || isAdmin())) {
     adminItems.push(["users", t("nav.users"), state.users.list ? String(state.users.list.length) : ""]);
+    /* D26（issue #34 阶段 3）：Agent 长期凭据管理页（local 专属；紧随 users）。
+     * 与后端 router 同门：sso 形态不出现；org_admin/sysadmin 可见。 */
+    adminItems.push(["agent_keys", t("nav.agent_keys"), state.agentKeys.list ? String(state.agentKeys.list.length) : ""]);
   }
   const groups = [
     [t("nav.group.knowledge"), [
