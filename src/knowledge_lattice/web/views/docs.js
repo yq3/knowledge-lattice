@@ -171,8 +171,7 @@ function emptyDocsHTML() {
 function dsDelConfirmHTML() {
   return `<div class="confirm"><b>${esc(t("docs.ds.del.confirm", { name: dsName(state.dsAsk) }))}</b> ${t("docs.ds.del.body")}
     <div class="cf-act"><button class="btn danger-btn sm" data-act="dsDelOk" data-id="${esc(state.dsAsk)}">${esc(t("common.confirm"))}</button>
-    <button class="btn ghost sm" data-act="dsDelCancel">${esc(t("common.cancel"))}</button>
-    <span class="tiny muted" style="align-self:center"><code>DELETE /api/orgs/${esc(cfg.org)}/datasets/${esc(state.dsAsk)}</code></span></div></div>`;
+    <button class="btn ghost sm" data-act="dsDelCancel">${esc(t("common.cancel"))}</button></div></div>`;
 }
 
 function newDsHTML() {

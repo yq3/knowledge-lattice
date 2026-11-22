@@ -16,6 +16,9 @@ D26 段（issue #34 local agent key）：资产/注册断言扩 views/agent_keys
 /agent-keys；zh/en 键集断言覆盖 nav.agent_keys / agentKeys.title /
 agentKeys.key.title；视图数八→九（login/users/agent_keys/docs/search/access/ops/
 semantic/orgs）。
+2026-11-22 段（MCP 接入页）：资产/注册断言扩 views/mcp.js（VIEWS.mcp——用户在系统
+页面即可读到接入指南，不必进代码仓）；顶栏 MCP 弹层并入该页（单一内容来源，改快捷
+链接 + title）；zh/en 键集断言覆盖 nav.mcp / mcpPage.title / mcpPage.endpoint。
 """
 
 from __future__ import annotations
@@ -48,6 +51,7 @@ def test_shell_served_with_app_frame_and_i18n(app_env) -> None:
         "/static/views/login.js",
         "/static/views/users.js",
         "/static/views/agent_keys.js",
+        "/static/views/mcp.js",
         "/static/views/docs.js",
         "/static/views/search.js",
         "/static/views/access.js",
@@ -61,7 +65,8 @@ def test_shell_served_with_app_frame_and_i18n(app_env) -> None:
     pos = [html.index(src) for src in (
         "/static/i18n.js", "/static/api.js", "/static/app.js",
         "/static/views/login.js", "/static/views/users.js",
-        "/static/views/agent_keys.js", "/static/views/docs.js",
+        "/static/views/agent_keys.js", "/static/views/mcp.js",
+        "/static/views/docs.js",
     )]
     assert pos == sorted(pos)
     i18n = client.get("/static/i18n.js").text
@@ -81,7 +86,9 @@ def test_shell_served_with_app_frame_and_i18n(app_env) -> None:
                 # D26：agent 长期凭据管理页（导航 + 页面标题 + 明文签发弹窗标题）
                 "nav.agent_keys", "agentKeys.title", "agentKeys.key.title",
                 # D26：签发后接入配置块（端点/请求头/复制）
-                "agentKeys.key.endpoint", "agentKeys.key.copyConfig"):
+                "agentKeys.key.endpoint", "agentKeys.key.copyConfig",
+                # 2026-11-22：MCP 接入页（导航 + 页面标题 + 端点行 + 工具清单分区）
+                "nav.mcp", "mcpPage.title", "mcpPage.endpoint", "mcpPage.sec.tools"):
         assert key in zh_keys, key
     # 视图注册断言：app.js 定义注册表，六个视图文件各自注册；m4-3a 的 auth 视图
     # 注册在 login.js，boot 门状态机（AUTH/bootLocal）在 app.js；m4-3b 的 users
@@ -89,6 +96,8 @@ def test_shell_served_with_app_frame_and_i18n(app_env) -> None:
     app_js = client.get("/static/app.js").text
     assert "VIEWS" in app_js
     assert "AUTH" in app_js and "bootLocal" in app_js
+    # 2026-11-22（用户要求）：左栏导航不挂实时计数——计数属页面内容，不属导航
+    assert "ni-c" not in app_js, "导航又挂回计数位（ni-c）"
     login_js = client.get("/static/views/login.js").text
     assert "VIEWS.auth" in login_js
     users_js = client.get("/static/views/users.js").text
@@ -97,9 +106,44 @@ def test_shell_served_with_app_frame_and_i18n(app_env) -> None:
     agent_keys_js = client.get("/static/views/agent_keys.js").text
     assert "VIEWS.agent_keys" in agent_keys_js
     assert "onEnterAgentKeys" in agent_keys_js  # 明文集只显示一次 + 撤销入口
+    mcp_js = client.get("/static/views/mcp.js").text
+    assert "VIEWS.mcp" in mcp_js
+    assert "MCP_TOOLS" in mcp_js  # 工具清单（与 mcp/server.py 注册一致——见 test_mcp_guide_page）
     for name in ("docs", "search", "access", "ops", "semantic", "orgs"):
         view_js = client.get(f"/static/views/{name}.js").text
         assert f"VIEWS.{name}" in view_js, name
+
+
+def test_member_identity_displays_username_not_id(app_env) -> None:
+    """成员标识：界面显示 username，内部键仍是 user_id。
+
+    local 形态 user_id 是不透明的 u_<hex>（2026-11-22 用户走查：成员表只有 ID，
+    看不出谁是谁）。GET members 已联查 users 返回 username——前端必须留存并以
+    user_id 为键、username 为显示名；授权导出行的 username 也要归一到 user_id，
+    否则同一人会出现两行（一行 username 带授权、一行 id 无授权）。
+    """
+    app_js = app_env["client"].get("/static/app.js").text
+    acc = app_env["client"].get("/static/views/access.js").text
+    assert "function userLabel(" in app_js and "function userIdOf(" in app_js
+    assert "username: m.username" in app_js, "GET members 的 username 未被留存"
+    assert "userLabel(u)" in acc, "成员表未用 username 显示"
+    assert "userIdOf(r.username)" in acc, "授权导出行未归一到 user_id"
+
+
+def test_org_lifecycle_controls_gated_by_sysadmin(app_env) -> None:
+    """组织级操作（建组织 / 停用 / 恢复）按身份门控。
+
+    local 形态：会话 payload 带 is_system_admin → 非系统管理员不渲染这些控件
+    （2026-11-22 修：此前 org_admin 看得到无权按钮）；
+    sso 形态：该字段不在 token 里、前端无法预判 → 维持控件常显 + 服务端 403 兜底。
+    """
+    src = app_env["client"].get("/static/views/orgs.js").text
+    assert "function canManageOrgLifecycle()" in src
+    assert 'AUTH.mode === "local"' in src and "AUTH.user.is_system_admin" in src
+    # 头部按钮 / 新建表单 / 行内启停 / 确认行 + 5 个动作入口（防绕过 DOM 直调）
+    assert src.count("canManageOrgLifecycle()") >= 10
+    head = src.split('data-act="orgNewToggle"', 1)[0].rsplit('class="head-act"', 1)[-1]
+    assert "canManageOrgLifecycle()" in head, "头部建组织按钮未在门控内"
 
 
 def test_shell_uses_api_contract(app_env) -> None:
@@ -112,6 +156,7 @@ def test_shell_uses_api_contract(app_env) -> None:
             "/static/views/login.js",
             "/static/views/users.js",
             "/static/views/agent_keys.js",
+            "/static/views/mcp.js",
             "/static/views/docs.js",
             "/static/views/search.js",
             "/static/views/access.js",

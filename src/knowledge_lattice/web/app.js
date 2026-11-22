@@ -169,6 +169,7 @@ const ICONS = {
   orgs: '<path d="M3 21h18M5 21V5a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v16M14 9h4a1 1 0 0 1 1 1v11"/><path d="M8 8h3M8 12h3M8 16h3M17 13h.01M17 17h.01"/>',
   users: '<circle cx="9" cy="8" r="3.2"/><path d="M3.6 19.5c.6-3.1 2.8-4.9 5.4-4.9s4.8 1.8 5.4 4.9"/><circle cx="17.4" cy="10.6" r="2.2"/><path d="m19 12.1 2.4 2.4M15.4 14.8l3.9 3.9"/><path d="M17.4 8.4v2.2"/>',
   agent_keys: '<circle cx="8" cy="15" r="4.2"/><path d="m11.2 11.8 8.3-8.3M16.2 4.8l3 3M18.8 7.4l2.2 2.2"/>',
+  mcp: '<path d="M9 7H6a3 3 0 0 0 0 6h3m6-6h3a3 3 0 0 1 0 6h-3M8 10h8"/>',
 };
 const ic = (k) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[k]}</svg>`;
 const CARET = `<svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>`;
@@ -263,7 +264,23 @@ function loadingHTML(key) {
  * （乐观更新，下次 loadMembers 校正）、DELETE 成功移除、resetOrgState 清空。 */
 function knownMembers() { return Object.keys(state.mem.known || {}); }
 function knownUser(u) { return (state.mem.known || {})[u] || null; }
-function setKnownUser(u, row) { state.mem.known[u] = row; }
+/* 合并写：保留 username 等既有字段（role/expires 的 undefined 仍覆盖——与原语义一致） */
+function setKnownUser(u, row) { state.mem.known[u] = Object.assign({}, state.mem.known[u] || {}, row); }
+
+/* 成员标识显示口径（2026-11-22 用户走查）：local 形态 user_id 是不透明的 u_<hex>，
+ * 界面必须显示 username（后端 GET members 已联查 users 返回）。**内部键一律 user_id**
+ * ——roster / PATCH / DELETE / explain 都只认 id，不要拿显示名当键。 */
+function userLabel(uid) {
+  const k = knownUser(uid);
+  return (k && k.username) || uid;
+}
+/* username → user_id（授权导出行只有 username）；未知或已是 id → 原样返回。 */
+function userIdOf(name) {
+  if (!name) return name;
+  if (knownUser(name)) return name;
+  const hit = knownMembers().find((u) => (knownUser(u) || {}).username === name);
+  return hit || name;
+}
 function dropKnownUser(u) { delete state.mem.known[u]; }
 
 /* GET members 真源装载（m3-2 ui-be——org_admin；非管理员静默退化会话注册表）：
@@ -277,6 +294,7 @@ async function loadMembers() {
     const rows = (body && body.members) || [];
     for (const m of rows) {
       setKnownUser(m.user_id, {
+        username: m.username || undefined,
         role: m.role != null ? m.role : undefined,
         expiresAt: m.expires_at != null ? m.expires_at : undefined,
       });
@@ -302,9 +320,9 @@ async function loadUsernames() {
   // 名单源 = GET members ∪ export 用户名 ∪ 会话注册表（m3-2：members 真源
   // + export 合并保留——P1-3 会话新增成员仍即时的兜底面）
   state.usernames = [...new Set([
-    ...(memberIds || []),
+    ...(memberIds || []).map(userLabel),
     ...exportNames,
-    ...knownMembers(),
+    ...knownMembers().map(userLabel),
   ])].filter(Boolean).sort();
 }
 
@@ -493,40 +511,36 @@ function renderRail() {
       <div class="menu-note">${t("lens.note")}</div>
     </div>` : "";
 
-  /* 导航（带计数）——知识组语义第一项（ui-2），运维组含组织。
+  /* 导航（纯条目，2026-11-22 起不再挂实时计数——用户要求：计数属页面内容，
+   * 不属导航；原计数位（维度数/文档数/进行任务/组织数/key 数/semantic rev）移除）。
+   * 知识组语义第一项（ui-2），运维组含组织与 MCP 接入。
    * D25 local（m4-3b）：用户/邀请管理仅对 sysadmin 或当前组织 org_admin 显示
    * （sso 形态恒不出现——AUTH.mode/AUTH.user 双重门，零视觉变化）。 */
-  const docsN = state.docs.available ? state.docs.list.length : state.docs.session.length;
-  const runN = (state.ops.tasks || []).filter((x) => ["pending", "leased", "running"].includes(x.status)).length;
-  const adminItems = [
-    ["access", t("nav.access"), state.dims.length ? t("nav.accessCount", { n: state.dims.length }) : ""],
-  ];
+  const adminItems = [["access", t("nav.access")]];
   if (AUTH.mode === "local" && AUTH.user && (AUTH.user.is_system_admin || isAdmin())) {
-    adminItems.push(["users", t("nav.users"), state.users.list ? String(state.users.list.length) : ""]);
+    adminItems.push(["users", t("nav.users")]);
     /* D26（issue #34 阶段 3）：Agent 长期凭据管理页（local 专属；紧随 users）。
      * 与后端 router 同门：sso 形态不出现；org_admin/sysadmin 可见。 */
-    adminItems.push(["agent_keys", t("nav.agent_keys"), state.agentKeys.list ? String(state.agentKeys.list.length) : ""]);
+    adminItems.push(["agent_keys", t("nav.agent_keys")]);
   }
   const groups = [
     [t("nav.group.knowledge"), [
-      ["semantic", t("nav.semantic"), state.sem.dictRev ? "rev " + state.sem.dictRev : ""],
-      ["docs", t("nav.docs"), String(docsN || "")],
-      ["search", t("nav.search"), ""],
+      ["semantic", t("nav.semantic")],
+      ["docs", t("nav.docs")],
+      ["search", t("nav.search")],
     ]],
     [t("nav.group.admin"), adminItems],
     [t("nav.group.ops"), [
-      ["ops", t("nav.ops"), runN ? t("nav.opsCount", { n: runN }) : ""],
-      ["orgs", t("nav.orgs"), state.orgs.length ? t("nav.orgsCount", { n: state.orgs.length }) : ""],
+      ["ops", t("nav.ops")],
+      ["orgs", t("nav.orgs")],
+      /* MCP 接入指南（2026-11-22）：供数给 agent 的用户面入口——放在导航最后一项。 */
+      ["mcp", t("nav.mcp")],
     ]],
   ];
-  $("#nav").innerHTML = groups.map(([g, items]) => `<div class="nav-group">${esc(g)}</div>` + items.map(([k, name, c]) =>
-    `<button class="nav-item ${state.view === k ? "on" : ""}" data-act="view" data-v="${k}"><span class="ni-k">${ic(k)}</span><span>${esc(name)}</span><span class="ni-c">${esc(c)}</span></button>`).join("")).join("");
+  $("#nav").innerHTML = groups.map(([g, items]) => `<div class="nav-group">${esc(g)}</div>` + items.map(([k, name]) =>
+    `<button class="nav-item ${state.view === k ? "on" : ""}" data-act="view" data-v="${k}"><span class="ni-k">${ic(k)}</span><span>${esc(name)}</span></button>`).join("")).join("");
 
   renderUserMenu();
-
-  $("#railFoot").innerHTML = connected()
-    ? `<div class="rf-h"><i></i>${t("rail.connected", { org: esc(cfg.org || t("org.none")) })}</div>${t("rail.note")}`
-    : `<div class="rf-h" style="color:var(--danger)"><i style="background:var(--danger);box-shadow:0 0 0 3px var(--danger-w)"></i>${esc(t("rail.offline"))}</div>${t("rail.note")}`;
 }
 
 /* D25 local 用户菜单（#userPicker）：头像/username/角色 + 改密表单 + 退出登录；
@@ -794,13 +808,6 @@ const actions = {
     if (el.dataset.m === "conn") refreshConnStatus();
     return false;
   },
-  mcpMenu() {
-    const mn = $("#menu-mcp");
-    const open = mn.classList.contains("open");
-    closeMenus();
-    if (!open) mn.classList.add("open");
-    return false;
-  },
   connMenu() {
     const mn = $("#menu-conn");
     const open = mn.classList.contains("open");
@@ -954,7 +961,7 @@ document.addEventListener("click", (ev) => {
     return;
   }
   if (el.disabled) return;
-  if (!el.closest(".menu") && el.dataset.act !== "mcpMenu" && el.dataset.act !== "menu" && el.dataset.act !== "connMenu") closeMenus();
+  if (!el.closest(".menu") && el.dataset.act !== "menu" && el.dataset.act !== "connMenu") closeMenus();
   const fn = actions[el.dataset.act];
   if (!fn) return;
   const out = fn(el);

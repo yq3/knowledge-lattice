@@ -397,3 +397,35 @@ def test_create_org_accepts_username_in_local_mode(local_env) -> None:
     assert ghost.status_code == 404
     assert local_env["backend"].get_org_status("org:pending") is None
     assert local_env["backend"].get_org_status("org:ghost") is None
+
+
+def test_add_member_accepts_username_in_local_mode(local_env) -> None:
+    """local：加成员可按 username 指定（2026-11-22 UI 走查）。
+
+    org_admin 侧没有用户目录（u_<hex> ID 既查不到也记不住），此前只能手输 ID，
+    实际不可用。解析口径与建组织一致：先按 id 查、再按 username 换 id；未知仍 404。
+    """
+    admin = _setup(local_env)
+    client = local_env["client"]
+    made = _create_user(local_env, admin["token"], username="y00668221")
+    user = made["user"]
+    assert _accept(
+        local_env, made["invitation"]["token"], "y00668221-password"
+    ).status_code == 200
+
+    resp = client.post(
+        "/api/orgs/org:tax/members", headers=_h(admin["token"]),
+        json={"user_id": "y00668221", "role": "member"},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["user_id"] == user["id"], "username 解析为稳定 ID"
+    assert body["username"] == "y00668221"
+    assert local_env["backend"].read_membership(user["id"], "org:tax") is not None
+
+    # 未知 username 仍 404（与 ID 路径同分类，消息回显输入值）
+    missing = client.post(
+        "/api/orgs/org:tax/members", headers=_h(admin["token"]),
+        json={"user_id": "no-such-user", "role": "member"},
+    )
+    assert missing.status_code == 404

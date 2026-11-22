@@ -82,7 +82,7 @@ uv run uvicorn "knowledge_lattice.app:create_app" --factory --env-file .env
 ```
 
 - 页面壳：Setup / 登录 + 检索与上传 + 组织·成员·授权 + 用户/邀请 + 运维视图（中/英双语切换）
-- REST API 文档 `http://127.0.0.1:8000/docs`；MCP 端点 `/mcp`（Streamable HTTP）——`local` 形态用「Agent 密钥」、`sso` 形态走 D18 委托/可信 token；接入端点/客户端配置/工具/排错见 **[docs/MCP-INTEGRATION.md](docs/MCP-INTEGRATION.md)**
+- REST API 文档 `http://127.0.0.1:8000/docs`；MCP 端点 `/mcp`（Streamable HTTP）——`local` 形态用「Agent 密钥」、`sso` 形态走 D18 委托/可信 token；**登入控制台后左栏「运维 → MCP 接入」即为接入向导**（端点取本实例真实地址、客户端片段可复制、含工具清单与排错）；仓内长尾（MCP Inspector、sso 委托内部细节、源码指针）见 **[docs/MCP-INTEGRATION.md](docs/MCP-INTEGRATION.md)**
 - 认证模式切换、邀请 / 重置 / break-glass 细节见 [RUNBOOK §1.ab](RUNBOOK.md)
 - 开发 JWT：dev/test 下 `POST /api/dev/token` 以现有 Bearer 重签或代签（生产 404）
 

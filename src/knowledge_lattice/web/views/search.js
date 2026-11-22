@@ -15,7 +15,7 @@ function viewSearch() {
   <div class="qbar"><input id="qInput" data-in="q" value="${esc(state.q)}" placeholder="${esc(t("search.q.ph"))}" aria-label="${esc(t("search.q.ph"))}" autocomplete="off"><button class="btn" data-act="doSearch">${esc(t("search.go"))} <span class="kbd" style="color:inherit;border-color:currentColor">↵</span></button></div>
   <div class="qopts">
     <label>${esc(t("search.dataset"))} <select class="sel" data-in="qDs"><option value="">${esc(t("search.all"))}</option>${state.datasets.map((d) => `<option value="${esc(d.id)}" ${state.qDs === d.id ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</select></label>
-    <label class="switch"><input type="checkbox" data-in="autoEnt" ${state.autoEnt ? "checked" : ""}><span>${esc(t("search.autoEnt"))}</span> <span class="tag">M2-S3</span></label>
+    <label class="switch"><input type="checkbox" data-in="autoEnt" ${state.autoEnt ? "checked" : ""}><span>${esc(t("search.autoEnt"))}</span></label>
     <span style="flex:1"></span>
     <span class="tiny muted">${esc(t("search.identity", { user: lensUser(), org: cfg.org }))}</span>
   </div>

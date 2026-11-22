@@ -1,5 +1,12 @@
 # MCP 接入指南（Agent 侧）
 
+> **系统内入口（2026-11-22 起）**：控制台左栏「运维 → MCP 接入」（或顶栏插头图标）
+> 是本文的**用户面**——端点取本实例真实 origin、客户端片段可复制、工具清单与排错表
+> 在场，读者不必进代码仓。本文保留**仓内长尾**：MCP Inspector 手工调试、`sso` 委托
+> 形态的内部口径、源码/用例指针、以及给仓内工程师的实现说明。两侧内容按此分工维护：
+> 用户面改动改页面（`src/knowledge_lattice/web/views/mcp.js` + `i18n.js`），长尾改本文；
+> 工具清单三处（`mcp/server.py` / 页面 `MCP_TOOLS` / 本文 §5 表）由
+> `tests/test_mcp_guide_page.py` 断言一致。
 > 面向：要把自己的 agent 接到 knowledge-lattice 的工程师。
 > 适用：`LATTICE_AUTH_MODE=local`（D25 内置账号 + D26 agent key）。
 > `sso` 形态仍走 D18 委托 token / 可信子系统，见 §9。
