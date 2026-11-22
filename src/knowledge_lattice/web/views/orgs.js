@@ -9,6 +9,17 @@
  *   专属/只停不删/审计同事务；跨组织行按路径对齐 X-Org-Id——api.js 承载）。 */
 "use strict";
 
+/* 组织级生命周期操作（建 / 停用 / 恢复）= 系统管理员专属（api/admin.py:150 / :248，
+ * 非 sysadmin 一律 403）。门控口径：
+ * - local 形态：会话 payload（/api/auth/me）带 is_system_admin → **精确门控**，
+ *   非系统管理员不渲染这些控件（2026-11-22 修：此前 org_admin 看得到无权按钮）；
+ * - sso 形态：is_system_admin 是服务端 users 表事实、不在 token 里，前端无法预判 →
+ *   维持「控件常显 + 403 兜底」（既有取舍，orgs.viewNote 如实写明）。 */
+function canManageOrgLifecycle() {
+  if (AUTH.mode === "local") return !!(AUTH.user && AUTH.user.is_system_admin);
+  return true;
+}
+
 async function onEnterOrgs() {
   if (!connected()) return;
   const ep = state.epoch; // P1-5
@@ -37,10 +48,12 @@ function viewOrgs() {
   return `
   <header class="head"><h1>${esc(t("orgs.title"))}</h1>
     <p class="lede">${t("orgs.lede")}</p>
-    <div class="head-act"><button class="btn seal-btn" data-act="orgNewToggle">${v.newOpen ? esc(t("common.collapse")) : esc(t("orgs.new"))}</button></div>
+    <div class="head-act">${canManageOrgLifecycle()
+      ? `<button class="btn seal-btn" data-act="orgNewToggle">${v.newOpen ? esc(t("common.collapse")) : esc(t("orgs.new"))}</button>`
+      : `<span class="tiny muted">${esc(t("orgs.sysadminOnly"))}</span>`}</div>
   </header>
-  <div class="note" style="margin:0 0 16px;max-width:92ch">${t("orgs.viewNote")}</div>
-  ${v.newOpen ? orgNewHTML() : ""}
+  <div class="note" style="margin:0 0 16px">${t("orgs.viewNote")}</div>
+  ${v.newOpen && canManageOrgLifecycle() ? orgNewHTML() : ""}
   <table class="ledger">
     <thead><tr><th>${esc(t("orgs.col.org"))}</th><th>${esc(t("orgs.col.visible"))}</th><th>${esc(t("orgs.col.role"))}</th><th>${esc(t("orgs.col.expires"))}</th><th></th></tr></thead>
     <tbody>${orgs.length ? orgs.map((x) => {
@@ -53,12 +66,15 @@ function viewOrgs() {
         <td class="tiny">${x.expires_at ? tsHTML(x.expires_at, "mono tiny") : `<span class="tiny muted">${esc(t("orgs.permanent"))}</span>`}</td>
         <td><div style="display:flex;gap:6px;align-items:center">
           ${disabled
-            ? `<span class="pill bad">${esc(t("orgs.statusDisabled"))}</span>
-               <button class="btn ghost sm" data-act="orgEnable" data-id="${esc(x.org_id)}" data-name="${esc(x.name)}" title="${esc(t("orgs.enableTip"))}">${esc(t("orgs.enable"))}</button>`
-            : `<span class="pill ok">${esc(t("orgs.statusActive"))}</span>
-               <button class="btn ghost sm" data-act="orgDisableAsk" data-id="${esc(x.org_id)}" data-name="${esc(x.name)}" title="${esc(t("orgs.disableTip"))}" style="color:var(--danger)">${esc(t("orgs.disable"))}…</button>`}
+            ? `<span class="pill bad">${esc(t("orgs.statusDisabled"))}</span>`
+            : `<span class="pill ok">${esc(t("orgs.statusActive"))}</span>`}
+          ${canManageOrgLifecycle()
+            ? (disabled
+              ? `<button class="btn ghost sm" data-act="orgEnable" data-id="${esc(x.org_id)}" data-name="${esc(x.name)}" title="${esc(t("orgs.enableTip"))}">${esc(t("orgs.enable"))}</button>`
+              : `<button class="btn ghost sm" data-act="orgDisableAsk" data-id="${esc(x.org_id)}" data-name="${esc(x.name)}" title="${esc(t("orgs.disableTip"))}" style="color:var(--danger)">${esc(t("orgs.disable"))}…</button>`)
+            : ""}
         </div></td></tr>`;
-      if (v.askOrg !== x.org_id) return row;
+      if (v.askOrg !== x.org_id || !canManageOrgLifecycle()) return row;
       return row + `<tr><td colspan="5" style="border-bottom:0"><div class="confirm">
         <b>${t("orgs.disableAsk", { name: esc(x.name) })}</b> ${t("orgs.disableBody")}
         <div class="cf-act"><button class="btn danger-btn sm" data-act="orgDisableOk" data-id="${esc(x.org_id)}" data-name="${esc(x.name)}">${esc(t("common.confirm"))}</button>
@@ -66,7 +82,7 @@ function viewOrgs() {
         <span class="tiny muted" style="align-self:center">${esc(t("orgs.disableCode"))}</span></div></div></td></tr>`;
     }).join("") : `<tr><td colspan="5" class="tiny muted" style="padding:20px 16px">${esc(t("orgs.empty"))}</td></tr>`}</tbody>
   </table>
-  <div class="note" style="margin-top:16px;max-width:92ch">${t("orgs.foot")}</div>`;
+  <div class="note" style="margin-top:16px">${t("orgs.foot")}</div>`;
 }
 
 function orgNewHTML() {
@@ -93,6 +109,8 @@ function orgNewHTML() {
 
 Object.assign(actions, {
   orgNewToggle() {
+
+    if (!canManageOrgLifecycle()) return false;
     const v = state.orgView;
     v.newOpen = !v.newOpen;
     v.form = { id: "", name: "", admin: "" };
@@ -108,6 +126,8 @@ Object.assign(actions, {
     return false;
   },
   async orgCreate() {
+
+    if (!canManageOrgLifecycle()) return false;
     const d = state.orgView.form;
     const local = cfg.authMode === "local";
     const id = d.id.trim(), name = d.name.trim(), admin = d.admin.trim();
@@ -136,9 +156,13 @@ Object.assign(actions, {
     render();
     return false;
   },
-  orgDisableAsk(el) { state.orgView.askOrg = el.dataset.id; },
+  orgDisableAsk(el) {
+    if (!canManageOrgLifecycle()) return false;
+    state.orgView.askOrg = el.dataset.id; },
   orgDisableCancel() { state.orgView.askOrg = null; },
   async orgEnable(el) {
+
+    if (!canManageOrgLifecycle()) return false;
     const org = el.dataset.id, name = el.dataset.name;
     let body;
     try {
@@ -155,6 +179,8 @@ Object.assign(actions, {
     return false;
   },
   async orgDisableOk(el) {
+
+    if (!canManageOrgLifecycle()) return false;
     const org = el.dataset.id, name = el.dataset.name;
     state.orgView.askOrg = null;
     let body;

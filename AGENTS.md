@@ -63,6 +63,7 @@ src/knowledge_lattice/
 - **D25（M4）新增模块**：`domain/accounts.py`（本地账号域）、`api/auth.py` / `api/users.py`、迁移 0012（`users` 扩列 + `user_invitations` + `instance_setup`）、`web/views/login.js` / `users.js`。
 - **core 不写方言 SQL**——所有 SQL 下沉 `store/<dialect>`（backend.py 协议按域分节组合）；core 是纯业务编排。
 - `auto_entities` 识别钉在 api / mcp 层——core 两包不交叉；分层与边界规则的权威定义在 design §3，重构或加模块前先对照。
+- **界面文案纪律（2026-11-22 用户走查）**：用户可见文案（i18n 字典值 / 视图渲染串）**不得含仓内编号**（`D-n` 决策 / `#issue` / `G-n` 缺口 / `FR-/NFR-n` / `§` / `M*-S*` 里程碑 / `TC-*` 用例号 / `POC`）、仓内文档路径与裸接口路径——编号是评审/用例/缺口登记用的仓内语言，业务与数据用户看不懂。由 `tests/test_ui_copy_hygiene.py` 断言（例外：`views/mcp.js` 接入代码块与代码注释）。
 - 测试 `tests/` 按模块前缀命名（acl_ / ing_ / fts_ / emb_ / e2e_ / pg_…），双后端参数化（`[pg]` 条目）；fixtures / fake_providers.py 提供协议级测试替身，验收离线确定。
 
 ## 4. 工具链与常用命令

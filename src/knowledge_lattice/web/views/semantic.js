@@ -227,7 +227,6 @@ function entDetailHTML(d) {
       <div class="tiny muted" style="margin-top:6px">${t("sem.ent.graphNote", { n: SEM_GROUP_CAP })}</div></div>
   </div>
   ${ent.type === "table" ? semDescribeHTML(d) : ""}
-  <div class="tiny muted" style="margin-top:16px"><code>GET /api/orgs/${esc(cfg.org)}/semantic/entities/${esc(ent.id)}?depth=${state.sem.depth}</code> ≡ MCP <code>get_entity</code></div>
   </div>`;
 }
 

@@ -112,7 +112,10 @@ svg.ic { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none
 .picker-btn .pk-t { font-weight: 600; font-size: 13px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
 .picker-btn .pk-s { font-size: 11px; color: var(--ink-4); }
 .picker-btn .caret { color: var(--ink-4); display: inline-flex; }
-.avatar { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 600; color: #fff; flex: none; }
+/* inline-grid：头像要能与并列文字同行（成员表 <td> 里直接跟在用户名前）。
+ * 原 display:grid 是块级——在非 flex 容器里必然独占一行，把用户名挤到下一行
+ * （2026-11-22 维度与权限·成员页实测）。flex 容器内会被 blockify，视觉零变化。 */
+.avatar { width: 28px; height: 28px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 12px; font-weight: 600; color: #fff; flex: none; vertical-align: middle; }
 .menu {
   position: absolute; left: 0; top: calc(100% + 6px); z-index: 60; min-width: 280px;
   background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg); padding: var(--s1);
@@ -131,23 +134,16 @@ svg.ic { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none
 .nav-group { font-size: 12px; font-weight: 500; color: var(--ink-4); padding: 0 10px; margin: var(--s4) 0 4px; }
 .nav-group:first-child { margin-top: var(--s1); }
 .nav-item {
-  display: grid; grid-template-columns: 18px 1fr auto; align-items: center; gap: 10px; height: 36px;
+  display: grid; grid-template-columns: 18px 1fr; align-items: center; gap: 10px; height: 36px;
   padding: 0 10px; border-radius: var(--r); text-align: left; color: var(--ink-2); font-weight: 500; font-size: 14px;
   transition: background .15s, color .15s;
 }
 .nav-item .ni-k { color: var(--ink-3); display: inline-flex; }
 .nav-item .ni-k svg { width: 18px; height: 18px; }
-.nav-item .ni-c { font-size: 12px; color: var(--ink-3); font-weight: 500; }
 .nav-item:hover { background: var(--paper-3); color: var(--ink); }
 .nav-item.on { background: var(--seal-w); color: var(--seal); }
 .nav-item.on .ni-k { color: var(--seal); }
-.nav-item.on .ni-c { color: var(--seal); }
 .nav-tag { font-size: 10px; font-weight: 600; padding: 0 5px; border-radius: 4px; background: var(--paper-3); color: var(--ink-3); margin-left: 6px; vertical-align: 1px; line-height: 16px; display: inline-block; }
-.rail-foot { margin-top: auto; padding: var(--s3); font-size: 12px; color: var(--ink-3); line-height: 1.6;
-  background: var(--paper-2); border: 1px solid var(--rule); border-radius: var(--r-lg); }
-.rail-foot .rf-h { display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px; }
-.rail-foot .rf-h i { width: 6px; height: 6px; border-radius: 50%; background: var(--moss); box-shadow: 0 0 0 3px var(--moss-w); }
-.rail-foot code { font-size: 11px; background: var(--paper); border: 1px solid var(--rule); }
 
 main { grid-area: main; min-width: 0; padding: var(--s5) clamp(20px, 2.6vw, 40px) var(--s8); }
 .view { animation: viewIn .3s var(--ease) both; }
@@ -159,7 +155,7 @@ main { grid-area: main; min-width: 0; padding: var(--s5) clamp(20px, 2.6vw, 40px
 .head .lede { grid-column: 1 / -1; color: var(--ink-3); font-size: 13px; line-height: 20px; }
 .head .lede b { color: var(--ink-2); font-weight: 600; }
 .head .head-act { grid-column: 2; grid-row: 1; display: flex; gap: var(--s2); align-items: center; }
-.sub-tabs { display: flex; gap: var(--s5); margin: calc(-1 * var(--s2)) 0 var(--s5); border-bottom: 1px solid var(--rule); }
+.sub-tabs { display: flex; flex-wrap: wrap; gap: var(--s5); margin: calc(-1 * var(--s2)) 0 var(--s5); border-bottom: 1px solid var(--rule); }
 .sub-tab { padding: 10px 2px; color: var(--ink-3); border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 500; font-size: 14px; }
 .sub-tab:hover { color: var(--ink-2); }
 .sub-tab.on { color: var(--seal); border-color: var(--seal); font-weight: 600; }
@@ -499,11 +495,17 @@ details[open] > summary::before { transform: rotate(90deg); }
 .layer-key i.L2 { border-bottom-style: dotted; } .layer-key i.L3 { border-bottom-style: dashed; }
 
 /* ---------------- 运行页 ---------------- */
-.lanes { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s5); }
+.lanes { display: grid; grid-template-columns: 1fr; gap: var(--s5); }
+/* 原为 1fr 1fr「双泳道并排」（原型 v0.6 概念图）——实测半宽下事件行的 detail 大量换行、
+ * 两道条数不等时高度差悬殊，且两条各自倒序的时间线并排无法对齐，反而难扫读。
+ * 2026-11-22 改纵向堆叠：保留「两道分流」语义（标题+说明不变），宽度给足。 */
 .lanes > section { background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg); box-shadow: var(--sh-xs); padding: var(--s4) var(--s5) var(--s2); }
 .lane-h { display: flex; align-items: baseline; gap: var(--s3); padding-bottom: var(--s3); border-bottom: 1px solid var(--rule); margin-bottom: var(--s1); }
 .lane-h h3 { font-size: 15px; font-weight: 600; }
 .lane-h .tiny { margin-left: auto; }
+
+.lane-note { font-size: 12px; color: var(--ink-3); padding-bottom: 10px;
+  border-bottom: 1px solid var(--rule); margin-bottom: 8px; }
 .ev { display: grid; grid-template-columns: 62px 1fr; gap: var(--s3); padding: 10px 0; border-bottom: 1px solid var(--rule); font-size: 13px; }
 .ev:last-child { border-bottom: 0; }
 .ev.fresh { animation: fresh 1.6s var(--ease); }
@@ -531,7 +533,7 @@ details[open] > summary::before { transform: rotate(90deg); }
 @media (max-width: 1180px) {
   .split { grid-template-columns: 1fr; }
   .pane { position: static; max-height: none; }
-  .ent-cols, .lanes, .vis-split { grid-template-columns: 1fr; }
+  .ent-cols, .vis-split { grid-template-columns: 1fr; }
   .tb-link span { display: none; }
 }
 @media (max-width: 860px) {
@@ -539,7 +541,7 @@ details[open] > summary::before { transform: rotate(90deg); }
   .topbar { flex-wrap: wrap; height: auto; padding: 8px 12px; }
   .brand { width: auto; }
   .rail { position: static; height: auto; flex-direction: row; overflow-x: auto; padding: 8px 12px; border-right: 0; border-bottom: 1px solid var(--rule); }
-  .nav { flex-direction: row; } .nav-group, .rail-foot { display: none; }
+  .nav { flex-direction: row; } .nav-group { display: none; }
   .upload { grid-template-columns: 1fr; }
   .head { grid-template-columns: 1fr; } .head .head-act { grid-column: 1; grid-row: auto; }
 }
@@ -628,10 +630,11 @@ button:disabled, .btn[disabled] { cursor: not-allowed; }
    视觉零回归；类名/变量沿用既有设计系统。
    ========================================================================== */
 
-/* local：隐藏 sso 专属入口（连接设置 / 身份 lens / MCP 接入）；用户菜单见 #userPicker */
+/* local：隐藏 sso 专属入口（连接设置 / 身份 lens）；用户菜单见 #userPicker。
+ * MCP 接入 2026-11-22 起只走左栏导航（顶栏快捷入口已按用户要求移除，顶栏不再有
+ * 该元素——原弹层亦并入页面，单一内容来源）。 */
 body.auth-local #connPicker,
-body.auth-local .tb-lens,
-body.auth-local #mcpPicker { display: none; }
+body.auth-local .tb-lens { display: none; }
 
 /* 认证屏：单列骨架（topbar 保留品牌 + 语言 + API 参考），rail 隐去 */
 body.auth-screen .app {
@@ -644,7 +647,6 @@ body.auth-screen #orgPicker,
 body.auth-screen #userPicker,
 body.auth-screen .tb-lens,
 body.auth-screen #connPicker,
-body.auth-screen #mcpPicker,
 body.auth-screen .tb-sep,
 body.auth-screen .tb-div { display: none !important; }
 body.auth-screen main { display: grid; place-items: center; padding: var(--s6) var(--s4); }
@@ -688,7 +690,7 @@ body.auth-screen main > .auth-view { width: 100%; display: grid; place-items: ce
    仅命中 #users（sso 形态不渲染该视图——零回归）与本地账号表单；类名/变量
    沿用既有设计系统（.ledger/.pill/.btn/.note/.inp）。
    ========================================================================== */
-#users .users-note { margin: 0 0 10px; max-width: 92ch; }
+#users .users-note { margin: 0 0 10px; }
 #users .users-scope { margin: 0 0 var(--s4); }
 
 /* 邀请链接卡（只读链接 + 复制按钮 + token 明码） */
@@ -725,9 +727,9 @@ body.auth-screen main > .auth-view { width: 100%; display: grid; place-items: ce
 
 /* ==========================================================================
    ops 分区（2026-11-21，用户走查修正：任务与审计页）
-   四个子分区（任务 / 嵌入覆盖率 / maintenance 计数 / 审计）各占一个 tab，
+   四个子分区（任务 / 嵌入覆盖率 / 维护任务计数 / 审计）各占一个 tab，
    卡片不再纵向堆叠。内容卡片不用 .pane —— 那是侧栏详情面板（sticky + 固定
-   top + 内滚动），纵向堆叠时会等偏移吸附、逐块相互覆盖；maintenance 计数的
+   top + 内滚动），纵向堆叠时会等偏移吸附、逐块相互覆盖；维护任务计数的
    键是 mono 长技术名，固定窄键列会溢出压值，故用内容自适应网格。
    ========================================================================== */
 
@@ -739,7 +741,7 @@ body.auth-screen main > .auth-view { width: 100%; display: grid; place-items: ce
 }
 .card .lane-h { margin-bottom: var(--s3); }
 
-/* maintenance 计数：内容自适应 key/value 网格（长键折行、长值折行，绝不压列） */
+/* 维护任务计数：内容自适应 key/value 网格（长键折行、长值折行，绝不压列） */
 .ops-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 0 var(--s6); }
 .ops-stat { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, auto); gap: var(--s3);
   align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--rule); min-width: 0; }
@@ -777,7 +779,7 @@ body.auth-screen main > .auth-view { width: 100%; display: grid; place-items: ce
    #users 的 .users-form / .invite-card（类名与变量沿用既有设计系统：
    .ledger/.pill/.btn/.note/.inp/.sel；不改 #users 规则，不另起视觉语言）。
    ========================================================================== */
-#agent-keys .ak-note { margin: 0 0 var(--s4); max-width: 96ch; }
+#agent-keys .ak-note { margin: 0 0 var(--s4); }
 
 /* 一次性明文 key 卡（本页唯一签名字段：moss 提示卡 + mono 只读输入 + 复制） */
 #agent-keys .ak-keycard { margin: 0 0 var(--s4); }
@@ -817,4 +819,52 @@ body.auth-screen main > .auth-view { width: 100%; display: grid; place-items: ce
 @media (max-width: 860px) {
   #agent-keys .ak-form { grid-template-columns: 1fr; }
   #agent-keys .ak-keycard-line { grid-template-columns: 1fr; }
+}
+
+/* ==========================================================================
+   MCP 接入页（2026-11-22，views/mcp.js——docs/MCP-INTEGRATION.md 的用户面）
+   仅命中 #mcp-guide；版式=文档型（分区序号 + 代码块 + 表格）。类名与变量沿用
+   既有设计系统（.sec-title/.ledger/.note/.sql/.btn），不另起视觉语言。
+   ========================================================================== */
+#mcp-guide { max-width: 1080px; }
+#mcp-guide .mcp-kv {
+  display: grid; background: var(--paper); border: 1px solid var(--rule);
+  border-radius: var(--r-lg); box-shadow: var(--sh-sm); overflow: hidden;
+}
+#mcp-guide .mcp-kv-row {
+  display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: var(--s3);
+  align-items: baseline; padding: 10px var(--s4); font-size: 13px;
+  border-bottom: 1px solid var(--rule);
+}
+#mcp-guide .mcp-kv-row:last-child { border-bottom: 0; }
+#mcp-guide .mcp-kv-row > span { color: var(--ink-3); font-size: 12.5px; }
+#mcp-guide .mcp-kv-row code {
+  font-family: var(--mono); font-size: 12.5px; word-break: break-all;
+  color: var(--ink); background: transparent; padding: 0;
+}
+#mcp-guide .mcp-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin-top: var(--s2); }
+
+#mcp-guide .mcp-code { margin-top: var(--s2); }
+#mcp-guide .mcp-code-h {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s2);
+  font-size: 12px; font-weight: 600; color: var(--ink-2); margin-bottom: 2px;
+}
+#mcp-guide .mcp-code-h .btn { font-weight: 500; }
+#mcp-guide .mcp-code .sql { margin-top: 0; max-height: 320px; }
+
+#mcp-guide .mcp-steps, #mcp-guide .mcp-bullets {
+  padding-left: 20px; color: var(--ink-2); font-size: 13px; line-height: 1.75;
+}
+#mcp-guide .mcp-steps li, #mcp-guide .mcp-bullets li { margin: 2px 0; }
+#mcp-guide .mcp-steps li::marker { color: var(--seal); font-weight: 600; }
+#mcp-guide .mcp-p { font-size: 13px; color: var(--ink-2); line-height: 1.7; margin-bottom: var(--s2); }
+#mcp-guide .mcp-note { margin-top: var(--s3); }
+#mcp-guide .mcp-note-plain { margin-top: var(--s2); }
+#mcp-guide .mcp-tools code.mcp-tool-name { color: var(--ink); background: var(--paper-3); padding: 1px 6px; white-space: nowrap; }
+#mcp-guide .mcp-tools code.mcp-params { color: var(--ink-3); background: transparent; padding: 0; font-size: 11.5px; word-break: break-word; }
+#mcp-guide .mcp-trouble code { background: transparent; padding: 0; color: var(--ink); font-size: 11.5px; }
+#mcp-guide .mcp-foot { margin-top: var(--s6); padding-top: var(--s3); border-top: 1px solid var(--rule); }
+
+@media (max-width: 860px) {
+  #mcp-guide .mcp-kv-row { grid-template-columns: 1fr; gap: 2px; }
 }

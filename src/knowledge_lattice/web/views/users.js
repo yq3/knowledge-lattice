@@ -278,7 +278,7 @@ function invitationsSectionHTML() {
       <span style="flex:1"></span>
       <button class="btn seal-btn sm" data-act="invCreateToggle">${esc(u.invOpen ? t("common.collapse") : t("users.inv.new"))}</button>
     </div>
-    <p class="tiny muted" style="margin:0 0 12px;max-width:92ch">${t("users.inv.lede")}</p>
+    <p class="tiny muted" style="margin:0 0 12px">${t("users.inv.lede")}</p>
     ${u.invOpen ? invCreateFormHTML() : ""}
     ${body}`;
 }

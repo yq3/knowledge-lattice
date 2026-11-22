@@ -28,8 +28,9 @@ async function loadGrantsTable() {
         })
       : [];
     state.g.error = null; // 装载成功清错误态（P2-3）
-    state.usernames = [...new Set([...state.g.rows.map((r) => r.username), ...knownMembers()])].sort();
-    if (state.g.detail && !state.usernames.includes(state.g.detail)) state.g.detail = null;
+    const roster = latticeMembers();
+    state.usernames = roster.map(userLabel).sort();   // 显示名（顶栏视角菜单用）
+    if (state.g.detail && !roster.includes(state.g.detail)) state.g.detail = null;  // detail 存 id
     if (state.g.detail) seedGrantEditor(state.g.detail);
   } catch (e) {
     if (ep !== state.epoch) return;
@@ -42,10 +43,12 @@ async function loadGrantsTable() {
 
 /* 授权格成员集（export 用户名 ∪ 会话成员注册表，升序——P1-3）与格态判定（display-only 到期比较） */
 function latticeMembers() {
-  return [...new Set([...state.g.rows.map((r) => r.username), ...knownMembers()])].sort();
+  /* 键一律 user_id：导出行只有 username（users 表联查），经 userIdOf 归一；
+   * 会话成员注册表本来就是 id。两者并集去重——local 形态下同一人不再出现两行。 */
+  return [...new Set([...state.g.rows.map((r) => userIdOf(r.username)), ...knownMembers()])].sort();
 }
-function grantRowsOf(username) {
-  return state.g.rows.filter((r) => r.username === username);
+function grantRowsOf(uid) {
+  return state.g.rows.filter((r) => userIdOf(r.username) === uid);
 }
 function nowUtcStr() {
   return new Date().toISOString().slice(0, 19).replace("T", " ");
@@ -85,14 +88,14 @@ function grantsHTML() {
     <tbody>${members.map((u) => {
       const mine = grantRowsOf(u);
       const memberHasExp = mine.some((r) => r.expiresAt);
-      return `<tr><th><b style="font-weight:600">${esc(u)}</b>
+      return `<tr><th><b style="font-weight:600">${esc(userLabel(u))}</b>
           ${memberHasExp ? `<span class="tiny muted"> · ${esc(t("access.grants.hasExpires"))}</span>` : ""}
           <button class="link tiny" data-act="latDetail" data-u="${esc(u)}" title="${esc(t("access.grants.detailTip"))}">${g.detail === u ? esc(t("common.collapse")) : esc(t("access.grants.detail"))}</button></th>
         ${dims.map((d) => (d.values || []).map((v, i) => {
           const row = mine.find((r) => r.dimKey === d.key && r.value === v.value);
           const on = !!row;
           const expired = on && row.expiresAt && row.expiresAt <= now;
-          const title = `${u} · ${d.name}=${v.label}` + (row && row.expiresAt ? ` · ${expired ? t("access.grants.grantExpiredAt") : t("access.expires.existing")}: ${row.expiresAt}` : "");
+          const title = `${userLabel(u)} · ${d.name}=${v.label}` + (row && row.expiresAt ? ` · ${expired ? t("access.grants.grantExpiredAt") : t("access.expires.existing")}: ${row.expiresAt}` : "");
           return `<td class="${i === 0 ? "dg" : ""}"><button class="cellbtn ${on ? "on" : ""}" ${expired ? `style="opacity:.4;outline:1px dashed var(--danger);outline-offset:1px"` : ""}
             data-act="latCell" data-u="${esc(u)}" data-k="${esc(d.key)}" data-v="${esc(v.value)}" data-dim="${esc(d.id)}"
             title="${esc(title)}" aria-label="${esc(title)}" aria-pressed="${on}" ${g.saving ? "disabled" : ""}></button></td>`;
@@ -106,7 +109,7 @@ function grantsHTML() {
     <span class="lg"><span class="cellbtn on" style="opacity:.4;outline:1px dashed var(--danger);outline-offset:1px"></span>${esc(t("access.grants.legend.expired"))}</span>
     <span class="lg">${t("access.grants.legend.note")}</span>
   </div>
-  <div class="note" style="margin-top:16px;max-width:88ch">
+  <div class="note" style="margin-top:16px">
     ${t("access.grants.footNote")}
   </div>
   ${state.dims.some((d) => d.status === "retired") ? `<div class="tiny muted" style="margin-top:8px">${t("access.grants.retiredNote", { dims: state.dims.filter((d) => d.status === "retired").map((d) => esc(d.name)).join(t("common.sep")) })}</div>` : ""}`;
@@ -117,7 +120,7 @@ function grantDetailHTML(member) {
   const g = state.g;
   return `<div class="upload" style="margin:12px 0;border-radius:var(--r-lg)">
     <div style="grid-column:1/-1;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
-      <b style="font-size:15px">${esc(t("access.grants.detailTitle", { user: member }))}</b>
+      <b style="font-size:15px">${esc(t("access.grants.detailTitle", { user: userLabel(member) }))}</b>
       <span class="tiny muted">${t("access.grants.detailNote")}</span></div>
     <div class="u-row"><label>${esc(t("access.expires.prefill"))}</label>
       <div style="display:flex;gap:8px;align-items:center">
@@ -174,7 +177,7 @@ function membersHTML() {
       const expRows = mine.filter((r) => r.expiresAt && r.expiresAt <= now).length;
       const known = knownUser(u); // P1-4：会话已知 role/expiresAt（无则不默认代填）
       const row = `<tr>
-        <td>${avatar(u)} <b class="t-title">${esc(u)}</b></td>
+        <td>${avatar(userLabel(u))} <b class="t-title">${esc(userLabel(u))}</b>${userLabel(u) !== u ? `<div class="t-sub mono">${esc(u)}</div>` : ""}</td>
         <td>${m.roleSel === u
           ? `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
               <select class="sel" data-in="memRoleSel" style="height:26px;width:130px">
@@ -186,7 +189,7 @@ function membersHTML() {
               <button class="btn sm" data-act="memRoleOk" data-u="${esc(u)}" ${m.roleVal ? "" : "disabled"}>${esc(t("common.save"))}</button>
               <button class="btn ghost sm" data-act="memRoleCancel">${esc(t("common.cancel"))}</button></div>`
           : `<span class="pill ${known && known.role === "org_admin" ? "ok" : ""}">${esc(known && known.role ? known.role : "—")}</span>
-             <button class="btn ghost sm" data-act="memRoleAsk" data-u="${esc(u)}" title="PATCH /members/${esc(u)}">${esc(t("access.mem.changeRole"))}</button>`}</td>
+             <button class="btn ghost sm" data-act="memRoleAsk" data-u="${esc(u)}">${esc(t("access.mem.changeRole"))}</button>`}</td>
         <td>${m.expAsk === u
           ? `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
               <select class="sel" data-in="memExpMode" style="height:26px;width:110px">
@@ -208,11 +211,10 @@ function membersHTML() {
       return row + `<tr><td colspan="5" style="border-bottom:0"><div class="confirm">
         <b>${t("access.mem.removeAsk", { user: esc(u) })}</b> ${t("access.mem.removeBody")}
         <div class="cf-act"><button class="btn danger-btn sm" data-act="memDelOk" data-u="${esc(u)}">${esc(t("common.confirm"))}</button>
-        <button class="btn ghost sm" data-act="memCancel">${esc(t("common.cancel"))}</button>
-        <span class="tiny muted" style="align-self:center"><code>DELETE /api/orgs/${esc(cfg.org)}/members/${esc(u)}</code></span></div></div></td></tr>`;
+        <button class="btn ghost sm" data-act="memCancel">${esc(t("common.cancel"))}</button></div></div></td></tr>`;
     }).join("") : `<tr><td colspan="5" class="tiny muted" style="padding:20px 16px">${esc(t("access.mem.empty"))}</td></tr>`}</tbody>
   </table>
-  <div class="note" style="margin-top:16px;max-width:92ch">${t("access.mem.footNote")}</div>`;
+  <div class="note" style="margin-top:16px">${t("access.mem.footNote")}</div>`;
 }
 
 function memAddHTML() {
@@ -220,8 +222,8 @@ function memAddHTML() {
   return `<div class="upload" style="margin-bottom:16px">
     <div style="grid-column:1/-1"><b style="font-size:15px">${esc(t("access.mem.add"))}</b>
       <span class="tiny muted">—— ${t("access.mem.addNote")}</span></div>
-    <div class="u-row"><label>user_id<span class="req">*</span></label>
-      <input class="inp" data-in="memNewUid" placeholder="${esc(t("access.mem.uidPh"))}" value="${esc(d.uid)}" style="font-family:var(--mono)"></div>
+    <div class="u-row"><label>${esc(t("access.mem.col.member"))}<span class="req">*</span></label>
+      <input class="inp" data-in="memNewUid" placeholder="${esc(t("access.mem.uidPh"))}" value="${esc(d.uid)}"></div>
     <div class="u-row"><label>${esc(t("access.mem.role"))}</label>
       <select class="sel" data-in="memNewRole">
         <option value="member" ${d.role === "member" ? "selected" : ""}>member · ${esc(t("role.member"))}</option>
@@ -242,7 +244,7 @@ function memAddHTML() {
 function visHTML() {
   if (!isAdmin()) {
     return `<div class="note amber">${t("access.grants.needAdmin")}</div>
-    <div class="note" style="margin-top:12px;max-width:88ch">${t("access.vis.memberNote")}</div>`;
+    <div class="note" style="margin-top:12px">${t("access.vis.memberNote")}</div>`;
   }
   const v = state.vis;
   if (v.error) return `<div class="empty" style="margin:0"><h3>${esc(t("access.grants.loadErr", { err: esc(v.error) }))}</h3>
@@ -260,14 +262,14 @@ function visHTML() {
         ${v.docs.map((d) => `<th class="vh dg"><span class="cut" style="max-width:130px;display:inline-block" title="${esc(d.doc_id)}">${esc(d.title || d.doc_id)}</span></th>`).join("")}
       </tr>
     </thead>
-    <tbody>${v.members.map((u) => `<tr><th><b style="font-weight:600">${esc(u)}</b></th>
+    <tbody>${v.members.map((u) => `<tr><th><b style="font-weight:600">${esc(userLabel(u))}</b></th>
       ${v.docs.map((d) => {
         const cell = v.cells[`${u}|${d.doc_id}`];
         const cls = cell ? (cell.visible ? "ok" : "bad") : "";
         const mark = cell == null ? `<span class="tiny muted">·</span>`
           : cell.visible ? "✓" : "✗";
         return `<td><button class="cellbtn vis-cell ${cls}" data-act="visCell" data-u="${esc(u)}" data-id="${esc(d.doc_id)}"
-          title="${esc(u)} · ${esc(d.doc_id)}" aria-label="${esc(u)} × ${esc(d.doc_id)}">${mark}</button></td>`;
+          title="${esc(userLabel(u))} · ${esc(d.doc_id)}" aria-label="${esc(userLabel(u))} × ${esc(d.doc_id)}">${mark}</button></td>`;
       }).join("")}</tr>`).join("")}
     </tbody>
   </table>
@@ -278,7 +280,7 @@ function visHTML() {
     <span class="lg">${t("access.vis.legend.note")}</span>
   </div>
   ${state.vis.detail ? visDetailHTML(state.vis.detail) : ""}
-  <div class="note" style="margin-top:16px;max-width:88ch">${t("access.vis.note")}</div>`;
+  <div class="note" style="margin-top:16px">${t("access.vis.note")}</div>`;
 }
 
 /* 点格下钻：该 (member, doc) 的 explain 行集（逐维度结论——服务端解释） */
@@ -594,13 +596,14 @@ Object.assign(actions, {
     // P1-3：201 响应 {user_id, role, expires_at} 入会话注册表——零授权新成员立即可见
     // （expires_at 为 null=永久是合法值——仅 undefined 才回退表单值）
     setKnownUser(body.user_id || uid, {
+      username: body.username || undefined,
       role: body.role !== undefined ? body.role : d.role,
       expiresAt: body.expires_at !== undefined ? body.expires_at : (d.expires.trim() || null),
     });
-    toast(t("access.mem.added", { user: esc(body.user_id || uid), role: esc(body.role || d.role) }));
+    toast(t("access.mem.added", { user: esc(userLabel(body.user_id || uid)), role: esc(body.role || d.role) }));
     state.mem.addOpen = false;
     state.mem.form = { uid: "", role: "member", expires: "" };
-    state.usernames = [...new Set([...state.usernames, body.user_id || uid])].sort();
+    state.usernames = [...new Set([...state.usernames, userLabel(body.user_id || uid)])].sort();
     await loadGrantsTable();
     render();
     return false;

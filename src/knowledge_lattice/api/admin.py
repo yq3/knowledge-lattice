@@ -1179,11 +1179,22 @@ async def add_member(
             "sem_restricted——语义层敏感实体可见权，G-24①）",
         )
     expires_at = _parse_expires_at(body.expires_at, where="members expires_at")
+    # local 形态：允许按 **username** 指定成员（2026-11-22 用户走查——org_admin
+    # 侧没有用户目录，u_<hex> ID 既查不到也记不住；此前只能手输 ID，实际不可用）。
+    # 解析口径与建组织（POST /api/orgs 的 org_admin）一致：先按 id 查，查不到再按
+    # username 换 id；两者都不命中则原样下传，由 store 抛 KeyError → 404。
+    target = body.user_id
+    if service.settings.auth_mode == "local":
+        user = service.backend.get_user(target)
+        if user is None:
+            user = service.backend.get_user_by_username(target)
+        if user is not None:
+            target = user["id"]
     try:
-        return service.backend.add_membership(
-            org, body.user_id, role=body.role, expires_at=expires_at,
+        created = service.backend.add_membership(
+            org, target, role=body.role, expires_at=expires_at,
             audit=_audit_payload(EVENT_MEMBER_ADD, {
-                "org_id": org, "user_id": body.user_id, "actor": auth.user_id,
+                "org_id": org, "user_id": target, "actor": auth.user_id,
                 "role": body.role, "expires_at": expires_at,
             }),
         )
@@ -1195,6 +1206,12 @@ async def add_member(
         ) from exc
     except MembershipExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # 响应附 username：按 username 入组时前端可立即显示人名（sso 形态不加，零变化）。
+    if service.settings.auth_mode == "local":
+        row = service.backend.get_user(target)
+        if row is not None:
+            created["username"] = row["username"]
+    return created
 
 
 @router.patch("/api/orgs/{org}/members/{user_id}")
