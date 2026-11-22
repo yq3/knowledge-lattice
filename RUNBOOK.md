@@ -4,7 +4,7 @@
 > 依据：`benchmarks/report-m0b-2.md`（三项拍板实验报告）、`docs/design.md` §5.3、
 > schema v1.1 迁移（`store/<dialect>/migrations/docs/0002_schema_v1_1.sql`）。
 > 章节：§1 运行侧（重嵌入蓝绿 / §1.x 供应商切换 / §1.y 组织停用 / §1.z 查询审计 /
-> §1.aa 评测依赖 / §1.ab 内置账号 / §1.ac Agent 密钥）· §2 审计分区 · §3 迁移 · §4 备份恢复。
+> §1.aa 评测依赖 / §1.ab 内置账号 / §1.ac Agent 密钥 / §1.ad 控制台时区）· §2 审计分区 · §3 迁移 · §4 备份恢复。
 
 ## 1. 运行侧操作（重嵌入蓝绿为主；§1.x 起为专题）
 
@@ -222,18 +222,21 @@ sqlite 侧 `chunks.embed_model` 为摄取状态标签：重嵌入批次结束、
     待 factory PG 接线后执行等价操作。`--data-dir` 目录不存在会自动创建。
 - **会话/撤销**：本地 session 为 HS256 JWT（12h，localStorage Bearer）；改密/重置 `tv++`；
   登出仅清客户端 token；`LATTICE_SESSION_SECRET` 轮换=所有本地会话失效（需重新登录）。
-- **MCP 边界**：本地会话（`via=local`）只用于 Web/REST，MCP 直接拒绝；生产 local 形态不执行
-  SSO 分支——需要 agent 供数时切 `sso` 形态（或等 phase 2 `sso_sub` 绑定，G-33）。
+- **MCP 边界**：本地会话（`via=local`）只用于 Web/REST，MCP 拒绝；local 形态的 agent
+  供数走 **D26 agent key**（§1.ac——`via=agent_key`），**无需切 `sso` 形态**；`sso` 形态
+  仍走 D18 委托/可信 token（hybrid 账号绑定仍非目标，G-33）。
 - **审计**：`auth.login`/`auth.login_refused`/`auth.invite_*`/`user.*`/`instance.setup`；
   密码/token 不入审计；登录失败限流与写放大见 G-32。
-- **门禁**（M4 完成基线，双后端双模式 0 skipped）：
+- **门禁**（双后端双模式 0 skipped）：
 
   ```bash
   docker start lattice-pg
   export LATTICE_PG_DSN=postgresql://postgres:lattice@localhost:5432/lattice
-  scripts/test_gate.sh        # 常规 + python -O；M4 基线 2090+1 → D26 批后 2158+1（pg 臂 808）
+  scripts/test_gate.sh        # 常规 + python -O；当前 2190+1（pg 臂 809；M4 基线 2090+1）
   # 本机 uv 缓存不可写时：UV_CACHE_DIR="$PWD/.uv-cache" scripts/test_gate.sh
   ```
+
+  数字随批次变化，以 AGENTS §1 / 最近检查点为准。
 
 ### 1.ac Agent 密钥（D26，local 形态——issue #34）
 
@@ -241,7 +244,8 @@ sqlite 侧 `chunks.embed_model` 为摄取状态标签：重嵌入批次结束、
 > `sso` 形态管理端点 404、key 认证 401（sso 长期凭据仍走 D18 委托 token）。
 > 管理面仅 `org_admin`/`sysadmin` 可见；**明文只显示一次**（库内只存 sha256+前缀）。
 > **Agent 侧接入**（端点 `/mcp`、客户端配置、工具清单、上传三步、排错）见
-> [docs/MCP-INTEGRATION.md](docs/MCP-INTEGRATION.md)。
+> [docs/MCP-INTEGRATION.md](docs/MCP-INTEGRATION.md)；控制台「运维 → MCP 接入」是同一内容的实例化向导
+> （端点取运行时 origin、客户端片段可复制）。
 
 - **签发（Web）**：local 登录 → 左侧导航 **「Agent 密钥」** → 选择本组织 active 成员
   （member/org_admin 均可）→ 填 label（agent 标识，1..64，进审计 `act`）→ 创建 →
@@ -283,7 +287,8 @@ sqlite 侧 `chunks.embed_model` 为摄取状态标签：重嵌入批次结束、
   （`-<UTC 时间戳>Z`）、凭证/成员 `expires_at` 契约都建立在这个前提上——把存储改成本地
   时间会同时改掉对账、跨时区部署与既有数据语义。
 - **展示口径**：`GET /api/auth/config` 下发 `display_tz`，前端据此把 UTC 换算到该区
-  再渲染（分工见 design §3「PG 连接纪律」）。`display_tz = null` 表示"用浏览器时区"。
+  再渲染（存储恒 UTC 的口径见 design §3「PG 连接纪律」；展示分工注记见 `tzdisplay.py`
+  模块头）。`display_tz = null` 表示"用浏览器时区"。
 - **配置**：`LATTICE_DISPLAY_TZ`（`config.py`，模板见 `.env.example`）
 
   | 取值 | 行为 |
