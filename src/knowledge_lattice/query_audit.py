@@ -12,6 +12,8 @@
 
 detail_json（§4 字面）：查询词 + 返回 chunk_id / 实体 id 列表；refused 事件
 （403 无成员/无权限/停用组织 + get_entity 404 restricted 静默面）带 reason。
+D26（issue #34）：身份三键 act（agent 标识）/ via（身份来源）/ entry（rest|mcp）
+恒写入 detail_json（构建口径见 ``build_query_event``）。
 action 常量在 domain/audit_events（``search.*``——ops 视图查询道前缀自动路由）。
 """
 
@@ -39,11 +41,23 @@ def build_query_event(
     outcome: str = "accepted", detail: dict | None = None,
     target_type: str | None = None, target_id: str | None = None,
     request_id: str | None = None,
+    act: str | None = None, via: str | None = None,
+    entry: str | None = None,
 ) -> dict:
     """构造 audit_events 全列行（直写月库形态——不经 outbox_row_to_event）。
 
     created_at = 入队时刻（查询发生时刻——谁/何时/查了什么的「何时」）。
+
+    D26（issue #34 审计面）：身份三键恒写入 ``detail_json``——``act``（agent
+    标识：agent key label / 委托 act / 可信 service_id；None=人类直连）、
+    ``via``（身份来源：jwt/static/sso/trusted/local/agent_key）、``entry``
+    （入口：rest/mcp）。原 ``detail`` 键保留（同名键以身份三键为准——审计
+    身份不可由业务 detail 覆盖）。
     """
+    payload = dict(detail or {})
+    payload["act"] = act
+    payload["via"] = via
+    payload["entry"] = entry
     return {
         "id": f"aud_{uuid.uuid4()}",
         "org_id": org_id,
@@ -53,7 +67,7 @@ def build_query_event(
         "target_id": target_id,
         "outcome": outcome,
         "request_id": request_id,
-        "detail_json": json.dumps(detail or {}, ensure_ascii=False),
+        "detail_json": json.dumps(payload, ensure_ascii=False),
         "created_at": utc_now_ts(),
     }
 

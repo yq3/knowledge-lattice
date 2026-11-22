@@ -81,15 +81,37 @@ def get_auth(request: Request) -> AuthContext:
     )
 
 
+def enforce_agent_key_org(auth: AuthContext, org: str) -> None:
+    """agent key 组织绑定守卫（D26 / issue #34）：key 绑定组织 != 请求组织 →
+    403 ``org_mismatch``。
+
+    key 是**组织作用域凭据**——``sysadmin`` 的 key 同样受绑定约束（不因用户是
+    系统管理员而放大到全组织；跨组织操作须用会话/委托身份）。由 ``org_scoped``
+    及绕过它直调 ``check_path_org`` 的 org 路径端点共用（如 sysadmin 专属的
+    组织停用/恢复、换模型重嵌入、审计查询）。
+    """
+    if auth.via == "agent_key" and auth.org_claim != org:
+        raise AclDeniedError(
+            f"agent key org mismatch: key_org={auth.org_claim!r}"
+            f" request_org={org!r}（key 绑定组织与请求组织不一致）",
+            code="org_mismatch",
+        )
+
+
 def org_scoped(request: Request, org: str, auth: AuthContext) -> str:
     """组织作用域统一规则：路径 org 与 X-Org-Id 并存且不一致 → 400；成员关系校验 403
     （body.code=membership_denied——T12 机器码一致性）；**组织停用 403**
     （body.code=org_disabled——m3-1 issue #14 fail-closed：token 仍有效但组织
-    上下文拒绝；GET /api/orgs 列表不受影响——停用组织仍列出）。"""
+    上下文拒绝；GET /api/orgs 列表不受影响——停用组织仍列出）。
+
+    D26：agent key 在成员校验前先做组织绑定守卫（403 org_mismatch——key 绑定
+    组织须等于路径 org，sysadmin key 同样受限）。
+    """
     try:
         resolved = check_path_org(path_org=org, org_header=request.headers.get("x-org-id"))
     except OrgContextError as exc:
         raise OrgContextError(str(exc)) from exc
+    enforce_agent_key_org(auth, resolved)
     service = get_service(request)
     if service.backend.read_membership(auth.user_id, resolved) is None:
         raise AclDeniedError(

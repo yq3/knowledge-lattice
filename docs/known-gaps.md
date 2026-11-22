@@ -44,6 +44,7 @@
 | [G-32](#g-32-本地口令安全基线残余无-mfa无泄露库校验进程内限流d25-登记) | 已登记（POC 接受；企业回 sso） | 本地口令无 MFA、无泄露库校验、限流进程内（多实例不共享）、登录失败审计写放大；管理员预登记初始密码场景需强制改密 | D25 / FR-9 / design §5.5 | 2026-11-19 |
 | [G-33](#g-33-无-hybrid-账号绑定local-与-sso-同实例二选一d25-登记) | 已登记（phase 1 二选一） | 同一实例不同时支持 local+SSO 登录；存量 JIT 用户无本地密码；local 模式无 SSO 时 MCP 不可用（D18 供数链路需 sso 模式或 phase 2 sso_sub） | D25 / D16 / D18 | 2026-11-19 |
 | [G-34](#g-34-本地会话-localstorage-与撤销窗口d25-登记) | 已登记（POC 接受） | 本地 session 存 localStorage（XSS 面）；无 refresh；`tv` 只覆盖改密/重置，登出不撤销服务端；被盗 token 在 12h TTL 内有效 | D25 / FR-9 / design §5.5 | 2026-11-19 |
+| [G-35](#g-35-local-agent-key-为长期用户凭据无过期轮转细粒度-scope失败认证不写审计sysadmin-可跨组织管理d26-登记) | 已登记（POC 接受；生产回 D18） | local agent key 永不过期、无轮转/细粒度 scope；失败认证不写审计；sysadmin 可跨组织管理 | D26 / design §5.5 · §10 | 2026-11-21 |
 
 ---
 
@@ -356,3 +357,13 @@
 - **m4 实现状态（2026-11-20）**：localStorage Bearer、无 refresh、登出仅清客户端已实装；停用即时 401、改密/重置 `tv++`、`LATTICE_SESSION_SECRET` 轮换全失效；**残留**：XSS 面、被盗 token 在 12h TTL 内有效、无服务端会话列表/强制下线。**不划销**。
 - **收窄动作（未排期）**：HttpOnly cookie + CSRF（替代 localStorage）；refresh token；服务端会话表/强制下线；短 TTL + 滑动续期。
 - **重开条件**：公网暴露/XSS 风险评估升级，或需要强制下线能力。
+
+## G-35 local agent key 为长期用户凭据：无过期/轮转/细粒度 scope、失败认证不写审计、sysadmin 可跨组织管理（D26 登记）
+
+- **来源**：D26 设计（2026-11-21，[issue #34](https://github.com/yq3/knowledge-lattice/issues/34)）——`local` 形态每 agent 长期凭据（阶段 4 登记，实现完成态）。
+- **问题（分项）**：①**永不过期**——`expires_at` 恒 NULL（字段预留），泄露后长期有效，只能人工软撤销；②**无轮转/自动过期**——轮换=撤销+新建（需人工分发新明文），无旧 key 宽限/自动失效；③**无细粒度 scope**——key 继承绑定用户在该组织的全部权限（角色/维度 ACL），不能限制到 dataset/工具/只读；④**失败认证不写审计**——未知/已撤销/过期/停用用户的 key 认证只回 401（`AuthError`），不落审计事件（成功使用才进查询审计）；⑤**sysadmin 可跨组织管理**——sysadmin 豁免可管理任意组织（含停用组织）的 key（运维应急面，同时也是高权面）；⑥明文交付依赖人工——创建响应显示一次，无自动下发通道（线下复制）。
+- **触发场景**：key 泄露/人员离职/组织切换；长期未轮转；需要最小权限 agent（仅某库/某工具）；审计要求能追溯失败认证尝试。
+- **设计现状与对冲**：库内只存 sha256 摘要 + 展示前缀、明文仅创建响应一次；软撤销即时生效（401 revoked）；每 key 绑定 `(org, user, label)`，org 路径越界 403 `org_mismatch`（sysadmin 的 key 同受限）；管理面 org_admin 本组织 / sysadmin 豁免；审计 `agent_key.created`/`agent_key.revoked`（同事务、无明文/摘要）+ 查询审计 `act`/`via=agent_key`/`entry`；仅 local/POC 形态——sso 形态管理端点 404、认证关闭，sso 长期凭据仍走 D18 委托 token（短 TTL + IdP 治理）。
+- **残留缺口**（接受的）：①~⑤ 在 POC/受信内网形态接受；生产/企业场景应回 `sso`（D18）而非依赖本形态长期凭据。**不划销**。
+- **收窄动作（未排期）**：①过期/轮转策略（`expires_at` 字段已预留 + 管理面轮转操作=撤销+新建引导）；②key 级 scope（dataset/tool 白名单）；③失败认证审计（含 reason，注意写放大——G-26 族，可采样/限流前置）；④sysadmin 跨组织管理二次确认/强化审计；⑤管理面展示过期日/上次使用/轮转提示。
+- **重开条件**：真实 agent 生产部署；安全评审要求 key 最小权限或定期轮转；发生 key 泄露事件；审计要求覆盖失败认证。

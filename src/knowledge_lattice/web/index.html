@@ -3,7 +3,8 @@
      骨架：topbar（brand / 组织 picker / API 参考 / MCP 弹层 / 语言切换 / 连接设置 /
      本地账号用户菜单）+ rail（nav 挂载点 + rail-foot）+ #main 挂载点 + #toasts。
      全部动态区由 JS 渲染；D25 local 认证三屏由 views/login.js 渲染到 #main，
-     用户/邀请管理页由 views/users.js 渲染（仅 local + sysadmin/org_admin 可见）。
+     用户/邀请管理页由 views/users.js 渲染（仅 local + sysadmin/org_admin 可见），
+     Agent 长期凭据管理页由 views/agent_keys.js 渲染（D26，local 专属同门）。
      i18n：data-i18n + i18n.js 字典；默认中文、localStorage 持久化（FR-8）。 -->
 <html lang="zh-CN">
 <head>
@@ -97,6 +98,7 @@
 <script src="/static/app.js"></script>
 <script src="/static/views/login.js"></script>
 <script src="/static/views/users.js"></script>
+<script src="/static/views/agent_keys.js"></script>
 <script src="/static/views/docs.js"></script>
 <script src="/static/views/search.js"></script>
 <script src="/static/views/access.js"></script>

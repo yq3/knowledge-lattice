@@ -63,6 +63,7 @@ async def search(body: SearchRequest, request: Request) -> dict:
     except AclDeniedError:
         enqueue_query_event(service, build_query_event(
             EVENT_QUERY_SEARCH, org_id=org, actor=auth.user_id,
+            act=auth.act, via=auth.via, entry="rest",
             outcome="refused",
             detail={"query": body.query, "top_k": body.top_k,
                     "reason": "org_disabled"},
@@ -125,6 +126,7 @@ async def search(body: SearchRequest, request: Request) -> dict:
         # m3-2 G-22：refused（无成员/无权限——编译器第 0 步 403）入查询审计
         enqueue_query_event(service, build_query_event(
             EVENT_QUERY_SEARCH, org_id=org, actor=auth.user_id,
+            act=auth.act, via=auth.via, entry="rest",
             outcome="refused",
             detail={"query": body.query, "top_k": body.top_k,
                     "reason": exc.code},
@@ -133,6 +135,7 @@ async def search(body: SearchRequest, request: Request) -> dict:
     # m3-2 G-22：accepted 入查询审计（detail=查询词+返回 chunk_id 列表——§4）
     enqueue_query_event(service, build_query_event(
         EVENT_QUERY_SEARCH, org_id=org, actor=auth.user_id,
+        act=auth.act, via=auth.via, entry="rest",
         detail={"query": body.query, "top_k": body.top_k,
                 "chunk_ids": [r["chunk_id"] for r in result["results"]]},
     ))

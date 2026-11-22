@@ -251,6 +251,7 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
             if query_action is not None:
                 enqueue_query_event(service, build_query_event(
                     query_action, org_id=org, actor=auth.user_id,
+                    act=auth.act, via=auth.via, entry="mcp",
                     outcome="refused", detail={"reason": "org_disabled"},
                 ))
             raise ToolError(
@@ -398,12 +399,14 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
         except AclDeniedError as exc:  # code 随异常透出（membership_denied 类——T12）
             enqueue_query_event(service, build_query_event(
                 EVENT_QUERY_SEARCH, org_id=org_id, actor=auth.user_id,
+                act=auth.act, via=auth.via, entry="mcp",
                 outcome="refused",
                 detail={"query": query, "top_k": top_k, "reason": exc.code},
             ))
             raise ToolError(f"403: {exc}（code={exc.code}）") from exc
         enqueue_query_event(service, build_query_event(
             EVENT_QUERY_SEARCH, org_id=org_id, actor=auth.user_id,
+            act=auth.act, via=auth.via, entry="mcp",
             detail={"query": query, "top_k": top_k,
                     "chunk_ids": [r["chunk_id"] for r in result["results"]]},
         ))
@@ -545,6 +548,7 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
         except ToolError:
             enqueue_query_event(service, build_query_event(
                 EVENT_QUERY_ANNOTATE, org_id=org_id, actor=auth.user_id,
+                act=auth.act, via=auth.via, entry="mcp",
                 outcome="refused", detail={"reason": "semantic:read denied"},
             ))
             raise
@@ -580,6 +584,7 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
                 _audit_restricted(auth, org_id, "annotate", restricted_hits)
             enqueue_query_event(service, build_query_event(
                 EVENT_QUERY_ANNOTATE, org_id=org_id, actor=auth.user_id,
+                act=auth.act, via=auth.via, entry="mcp",
                 detail={"text": text, "fuzzy": bool(fuzzy),
                         "entity_ids": [m["entity_id"]
                                        for m in result.get("mentions") or ()]},
@@ -610,6 +615,7 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
         except ToolError:
             enqueue_query_event(service, build_query_event(
                 EVENT_QUERY_GET_ENTITY, org_id=org_id, actor=auth.user_id,
+                act=auth.act, via=auth.via, entry="mcp",
                 outcome="refused",
                 detail={"id": id, "key": key, "reason": "semantic:read denied"},
                 target_type="entity",
@@ -638,6 +644,7 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
                         " id=%s（保守记 not_found）", org_id, id)
             enqueue_query_event(service, build_query_event(
                 EVENT_QUERY_GET_ENTITY, org_id=org_id, actor=auth.user_id,
+                act=auth.act, via=auth.via, entry="mcp",
                 outcome="refused",
                 detail={"id": id, "key": key, "reason": reason},
                 target_type="entity",
@@ -665,6 +672,7 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
             _audit_restricted(auth, org_id, "get_entity", restricted_ids)
         enqueue_query_event(service, build_query_event(
             EVENT_QUERY_GET_ENTITY, org_id=org_id, actor=auth.user_id,
+            act=auth.act, via=auth.via, entry="mcp",
             detail={"entity_id": result["entity"]["id"],
                     "key": result["entity"].get("key"),
                     "node_ids": [n["id"] for n in result.get("nodes") or ()]},

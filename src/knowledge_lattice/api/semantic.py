@@ -305,6 +305,7 @@ async def semantic_annotate(
     except AclDeniedError as exc:
         enqueue_query_event(service, build_query_event(
             EVENT_QUERY_ANNOTATE, org_id=org, actor=auth.user_id,
+            act=auth.act, via=auth.via, entry="rest",
             outcome="refused", detail={"reason": exc.code},
         ))
         raise
@@ -313,6 +314,7 @@ async def semantic_annotate(
     except HTTPException:
         enqueue_query_event(service, build_query_event(
             EVENT_QUERY_ANNOTATE, org_id=org, actor=auth.user_id,
+            act=auth.act, via=auth.via, entry="rest",
             outcome="refused", detail={"reason": "semantic:read denied"},
         ))
         raise
@@ -400,6 +402,7 @@ async def semantic_annotate(
     # id 时即无权面真实形态，不额外标记——存在性不泄露优先）
     enqueue_query_event(service, build_query_event(
         EVENT_QUERY_ANNOTATE, org_id=org, actor=auth.user_id,
+        act=auth.act, via=auth.via, entry="rest",
         detail={"text": text, "fuzzy": bool(fuzzy),
                 "entity_ids": [m["entity_id"]
                                for m in result.get("mentions") or ()]},
@@ -515,6 +518,7 @@ async def get_semantic_entity(
     except AclDeniedError as exc:
         enqueue_query_event(service, build_query_event(
             EVENT_QUERY_GET_ENTITY, org_id=org, actor=auth.user_id,
+            act=auth.act, via=auth.via, entry="rest",
             outcome="refused",
             detail={"entity_id": entity_id, "reason": exc.code},
             target_type="entity",
@@ -526,6 +530,7 @@ async def get_semantic_entity(
     except HTTPException:
         enqueue_query_event(service, build_query_event(
             EVENT_QUERY_GET_ENTITY, org_id=org, actor=auth.user_id,
+            act=auth.act, via=auth.via, entry="rest",
             outcome="refused",
             detail={"entity_id": entity_id, "reason": "semantic:read denied"},
             target_type="entity",
@@ -556,6 +561,7 @@ async def get_semantic_entity(
                 "（保守记 not_found）", org, entity_id)
         enqueue_query_event(service, build_query_event(
             EVENT_QUERY_GET_ENTITY, org_id=org, actor=auth.user_id,
+            act=auth.act, via=auth.via, entry="rest",
             outcome="refused",
             detail={"entity_id": entity_id, "reason": reason},
             target_type="entity",
@@ -584,6 +590,7 @@ async def get_semantic_entity(
                                  restricted_ids)
     enqueue_query_event(service, build_query_event(
         EVENT_QUERY_GET_ENTITY, org_id=org, actor=auth.user_id,
+        act=auth.act, via=auth.via, entry="rest",
         detail={"entity_id": entity_id,
                 "node_ids": [n["id"] for n in result.get("nodes") or ()]},
         target_type="entity",

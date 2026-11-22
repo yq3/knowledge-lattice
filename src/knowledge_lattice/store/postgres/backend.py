@@ -5224,6 +5224,134 @@ class PgBackend:
             "invitation": self._account_invitation(invitation_id=inv["id"]),
         }
 
+    # ============ Agent Key 域（D26 / issue #34——语义见 store/backend.py） ============
+    #
+    # 事务纪律沿既有 audit= 先例：写路径 BEGIN/COMMIT，审计与业务写同事务；
+    # token_hash 冲突按 constraint 名 + 消息兜底映射 ValueError。PG 时间列经
+    # to_char 归一为库格式字符串（B⑦ 双方言 JSON 等价，datetime 不外泄）；now
+    # 一律取 taskclock.utc_now_ts 并 ::timestamp。last_used_at 热路径单条 UPDATE
+    # （autocommit，与 mark_upload_uploaded 同款，不包事务）。
+
+    _AGENT_KEY_SELECT = (
+        "id, org_id, user_id, label, token_hash, prefix, created_by,"
+        " to_char(created_at, 'YYYY-MM-DD HH24:MI:SS'),"
+        " to_char(last_used_at, 'YYYY-MM-DD HH24:MI:SS'),"
+        " to_char(revoked_at, 'YYYY-MM-DD HH24:MI:SS'), revoked_by,"
+        " to_char(expires_at, 'YYYY-MM-DD HH24:MI:SS')"
+    )
+
+    @staticmethod
+    def _agent_key_dict(row) -> dict:
+        return {
+            "id": row[0], "org_id": row[1], "user_id": row[2], "label": row[3],
+            "token_hash": row[4], "prefix": row[5], "created_by": row[6],
+            "created_at": row[7], "last_used_at": row[8], "revoked_at": row[9],
+            "revoked_by": row[10], "expires_at": row[11],
+        }
+
+    def _agent_key(self, key_id: str) -> dict | None:
+        row = self._conn.execute(
+            f"SELECT {self._AGENT_KEY_SELECT} FROM agent_keys WHERE id = %(id)s",
+            {"id": key_id},
+        ).fetchone()
+        return None if row is None else self._agent_key_dict(row)
+
+    def create_agent_key(
+        self, *, key_id: str, org_id: str, user_id: str, label: str,
+        token_hash: str, prefix: str, created_by: str,
+        expires_at: str | None, audit: tuple[str, str] | None = None,
+    ) -> dict:
+        from psycopg import errors as pg_errors
+
+        from knowledge_lattice.store.taskclock import normalize_expires_at
+
+        expires_norm = normalize_expires_at(expires_at)
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            try:
+                conn.execute(
+                    "INSERT INTO agent_keys(id, org_id, user_id, label, token_hash,"
+                    " prefix, created_by, expires_at)"
+                    " VALUES(%(i)s, %(o)s, %(u)s, %(l)s, %(th)s, %(p)s, %(cb)s,"
+                    " %(exp)s::timestamp)",
+                    {"i": key_id, "o": org_id, "u": user_id, "l": label,
+                     "th": token_hash, "p": prefix, "cb": created_by,
+                     "exp": expires_norm},
+                )
+            except pg_errors.UniqueViolation as exc:
+                diag = getattr(exc, "diag", None)
+                name = (getattr(diag, "constraint_name", None) or "")
+                if "token_hash" in name or "agent_keys_token_hash_key" in name:
+                    raise ValueError(
+                        "agent key 摘要冲突（32B 随机源撞库——重新签发）"
+                    ) from exc
+                raise
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return self._agent_key(key_id)
+
+    def get_agent_key_by_hash(self, token_hash: str) -> dict | None:
+        row = self._conn.execute(
+            f"SELECT {self._AGENT_KEY_SELECT} FROM agent_keys"
+            " WHERE token_hash = %(th)s",
+            {"th": token_hash},
+        ).fetchone()
+        return None if row is None else self._agent_key_dict(row)
+
+    def list_agent_keys(self, org_id: str) -> list[dict]:
+        rows = self._conn.execute(
+            f"SELECT {self._AGENT_KEY_SELECT} FROM agent_keys WHERE org_id = %(o)s"
+            " ORDER BY created_at DESC, id DESC",
+            {"o": org_id},
+        ).fetchall()
+        return [self._agent_key_dict(row) for row in rows]
+
+    def revoke_agent_key(
+        self, *, key_id: str, org_id: str, revoked_by: str,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        now = utc_now_ts()
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE agent_keys SET revoked_at = %(now)s::timestamp,"
+                " revoked_by = %(by)s"
+                " WHERE id = %(i)s AND org_id = %(o)s AND revoked_at IS NULL",
+                {"now": now, "by": revoked_by, "i": key_id, "o": org_id},
+            )
+            applied = cur.rowcount > 0
+            if applied and audit is not None:
+                self._outbox_insert(conn, *audit)
+            row = conn.execute(
+                f"SELECT {self._AGENT_KEY_SELECT} FROM agent_keys"
+                " WHERE id = %(i)s AND org_id = %(o)s",
+                {"i": key_id, "o": org_id},
+            ).fetchone()
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return None if row is None else self._agent_key_dict(row)
+
+    def touch_agent_key_last_used(
+        self, key_id: str, *, now: str, cutoff: str,
+    ) -> bool:
+        cur = self._conn.execute(
+            "UPDATE agent_keys SET last_used_at = %(now)s::timestamp"
+            " WHERE id = %(i)s"
+            "   AND (last_used_at IS NULL OR last_used_at < %(cutoff)s::timestamp)",
+            {"now": now, "i": key_id, "cutoff": cutoff},
+        )
+        return cur.rowcount > 0
+
 
 def _month_upper(month: str) -> str:
     """月排他上界（次月首日 0 点——'YYYY-MM-DD HH:MM:SS'）。"""

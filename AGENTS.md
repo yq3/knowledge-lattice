@@ -17,7 +17,7 @@
   - 评测真实数据（chat 端点配额受阻）：TC-EVAL-02 LLM 候选占比、TC-EVAL-03 真实 judge 校准与 A-6 阈值、响应层真实基线——配额恢复后补跑。
   - 部署期：真实 IdP / 公司 rerank 网关联调、G-28③ 生产 PG 接线、G-28①②⑥⑧ 触发时处置、G-30（真实 agent 部署时）。
 - **开放待决项**（[requirements §9](docs/requirements.md)）：待决-1（真实样例语料与业务问题）/ 2（企业 SSO 协议与 token 属性）/ 3（agent 侧 token 换取或可信子系统）未决；待决-4/5/6 已关闭。
-- **当前门禁基线**：2090+1 用例（+1 = `manual` 组 deselected），sqlite + pg 双后端 × 常规 / `python -O` 双模式 0 skipped（pg 臂 776）——数字随批次变化，以最近检查点为准。
+- **当前门禁基线**：2158+1 用例（+1 = `manual` 组 deselected），sqlite + pg 双后端 × 常规 / `python -O` 双模式 0 skipped（pg 臂 808）——数字随批次变化，以最近检查点为准。
 - D25 非目标（G-31~G-34 不划销）：hybrid 账号绑定、SMTP、MFA、refresh token、多实例共享限流。
 - 明确不做：GraphRAG / 图数据库（业务语义 = 类型化对象图，关系展开 SQL 可达）；ES 召回引擎、指标栈监控等只登记为演进缝（NFR-5）；不绑云厂（模型端点中立）。
 
@@ -31,6 +31,7 @@
 | [docs/known-gaps.md](docs/known-gaps.md) | 已预见问题登记（G-n，对策之后仍残留的缺口与开放点）；**活文档** |
 | [prototype/index.html](prototype/index.html) | 交互原型（mock 数据）：信息结构与 UI 风格**双基准**（含语义层视图） |
 | [RUNBOOK.md](RUNBOOK.md) | 运维手册（重嵌入蓝绿与供应商切换 / 组织停用 / 查询审计 / 评测 / 内置账号 / 审计分区 / 迁移 / 备份恢复）——运行侧活文档 |
+| [docs/MCP-INTEGRATION.md](docs/MCP-INTEGRATION.md) | Agent 侧 MCP 接入指南（端点/认证/客户端配置/工具清单/上传/排错）——运行侧活文档 |
 | `benchmarks/` | 实验 / 压测脚本与报告（report-*.md 归档，结论回写 known-gaps 或正文） |
 | `eval/` | 评测语料（corpus.jsonl / semantic_golden.jsonl）、黄金集（golden.jsonl）与报告归档（reports/） |
 
