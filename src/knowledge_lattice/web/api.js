@@ -1,20 +1,34 @@
 /* api.js —— REST 适配层（ui-1）：全部 fetch 收口。
- * - 连接状态 cfg = {baseToken, activeToken, org, lensUserId}，localStorage `lattice.cfg` 持久化；
- *   baseToken = 连接时粘贴的基 token（重签用）；activeToken = 实际请求用的 token（视角身份）。
+ * - 连接状态 cfg = {baseToken, activeToken, org, lensUserId, baseUserId, authMode}，
+ *   localStorage `lattice.cfg` 持久化（D25：旧值无 authMode 仍兼容，boot 门按服务端
+ *   /api/auth/config 校正）；baseToken = 连接时粘贴的基 token（重签用）；
+ *   activeToken = 实际请求用的 token（视角身份）；authMode = sso|local（本地会话时
+ *   connected() 还要求 AUTH.user 在场）。
  * - apiFetch(path, opts)：注入 Authorization / X-Org-Id / Content-Type；统一错误解析
  *   （body.detail || body.error——HTTPException 与 JSONResponse 两种错误体形态）；
- *   401 → toast + 打开连接设置；403 → toast 服务端 detail；网络异常 → toast。
+ *   401：sso → toast + 打开连接设置（原逻辑）；local → handleAuthExpired()（清会话回登录屏，
+ *   见 app.js——不 toast/openConn）；403 → toast 服务端 detail；网络异常 → toast。
+ * - apiPublic(path, opts)：匿名端点（auth config/setup/login/invite lookup·accept）专用——
+ *   不带 Authorization / X-Org-Id、不触发 401 连接设置；错误统一抛 ApiError。
  * - reissue({org?, userId?})：用 baseToken POST /api/dev/token 重签（dev 形态组织/身份切换）；
  *   给他人代签须系统管理员基 token（403）；生产无 dev 端点（404 → 提示直接粘贴已签 token）。
- * - 领域函数：每端点一函数。四处 contract-first 降级（be-① 文档列表 / m3-1 建库
- *   建维度与组织停用）各收口单函数并注释标记——后端实装后只改此处。
+ * - 领域函数：每端点一函数。原 contract-first 降级四处（be-① 文档列表 /
+ *   建库 / 建维度 / 组织停用）已随 m3-1 后端实装全部接真端点（m3-2 对账）。
+ * - D25 local（m4-3a）：authConfig/setupStatus/setupInstance/authLogin/authMe/
+ *   changePassword/authLogout/lookupInvitation/acceptInvitation——本地会话只 Web/REST。
+ * - D25 local（m4-3b）：listUsers/createUser/patchUser/resetUser +
+ *   listInvitations/createInvitation/revokeInvitation——用户/邀请管理页（views/users.js）；
+ *   邀请链接统一 inviteLink(token)（#invite= fragment——token 不进路径/Referer）。
+ * - D26（issue #34 阶段 3）：listAgentKeys/createAgentKey/revokeAgentKey——Agent
+ *   长期凭据管理页（views/agent_keys.js，local 专属）；明文 key 只在创建响应出现
+ *   一次（库内只存 sha256 + 展示前缀），调用方立即展示、不落 localStorage。
  * - pollTask：任务轮询（interval 1.5s / 终态停止 / 超时 120s / shouldStop 回调
  *   感知上下文切换即停——R2 P1-5，返回 null=已弃）。
  */
 "use strict";
 
 const CFG_KEY = "lattice.cfg";
-const cfg = { baseToken: "", activeToken: "", org: "", lensUserId: "", baseUserId: "" };
+const cfg = { baseToken: "", activeToken: "", org: "", lensUserId: "", baseUserId: "", authMode: "" };
 
 function loadCfg() {
   try {
@@ -24,6 +38,7 @@ function loadCfg() {
     cfg.org = saved.org || "";
     cfg.lensUserId = saved.lensUserId || "";
     cfg.baseUserId = saved.baseUserId || "";
+    cfg.authMode = saved.authMode === "local" ? "local" : saved.authMode === "sso" ? "sso" : "";
   } catch (e) { /* 损坏配置忽略——视为未连接 */ }
 }
 function saveCfg() {
@@ -40,7 +55,15 @@ function decodeJwt(token) {
   } catch (e) { return null; }
 }
 
-function connected() { return !!(cfg.activeToken && cfg.org); }
+/* 连接判定：sso = 已粘贴 token + 组织；local = 本地会话 token + AUTH.user 已恢复
+ * （D25——组织可为空，由用户菜单/组织页引导；AUTH 在 app.js 定义，脚本按序加载，
+ * 调用时恒已就绪，typeof 防御仅防加载顺序意外）。 */
+function connected() {
+  if (typeof AUTH !== "undefined" && AUTH.mode === "local") {
+    return !!(cfg.activeToken && AUTH.user);
+  }
+  return !!(cfg.activeToken && cfg.org);
+}
 
 /* ---------- 统一请求与错误语义 ---------- */
 
@@ -55,7 +78,9 @@ class ApiError extends Error {
 async function apiFetch(path, opts = {}) {
   const headers = Object.assign({}, opts.headers || {});
   if (cfg.activeToken) headers["Authorization"] = "Bearer " + cfg.activeToken;
-  if (cfg.org) headers["X-Org-Id"] = cfg.org;
+  // X-Org-Id：调用方显式指定（跨组织行操作按路径对齐——D18 路径/头一致性，
+  // m3-2 ui-be：PATCH orgs 等跨组织行不得恒发 cfg.org 头）优先；缺省注入当前组织
+  if (cfg.org && !("X-Org-Id" in headers)) headers["X-Org-Id"] = cfg.org;
   // opts.contentType 覆盖缺省 JSON（R2 P2-4：CSV 等纯文本体走 text/plain）
   if (opts.body != null && !(opts.body instanceof FormData) && !headers["Content-Type"]) {
     headers["Content-Type"] = opts.contentType || "application/json";
@@ -68,10 +93,60 @@ async function apiFetch(path, opts = {}) {
     throw new ApiError(0, t("err.network"));
   }
   if (resp.status === 401) {
-    toast(t("err.auth401"));
-    if (typeof openConn === "function") openConn();
+    if (typeof AUTH !== "undefined" && AUTH.mode === "local") {
+      // D25 local：会话过期/被撤销 → 清 token 回登录屏（不弹连接设置——local 无粘贴 token 路径）
+      if (typeof handleAuthExpired === "function") handleAuthExpired();
+    } else {
+      toast(t("err.auth401"));
+      if (typeof openConn === "function") openConn();
+    }
   }
   return resp;
+}
+
+/* 匿名请求（D25 auth config / setup / login / invite）：不带 Authorization 与
+ * X-Org-Id，不触发 401 连接设置；错误只抛 ApiError（登录屏自行内联展示——
+ * 不 toast，避免与表单错误条重复）。 */
+async function apiPublic(path, opts = {}) {
+  const headers = Object.assign({}, opts.headers || {});
+  if (opts.body != null && !(opts.body instanceof FormData) && !headers["Content-Type"]) {
+    headers["Content-Type"] = opts.contentType || "application/json";
+  }
+  let resp;
+  try {
+    resp = await fetch(path, Object.assign({}, opts, { headers }));
+  } catch (e) {
+    throw new ApiError(0, t("err.network"));
+  }
+  const body = await _parseBody(resp);
+  if (!resp.ok) {
+    const msg = body.error || body.detail || resp.statusText || String(resp.status);
+    throw new ApiError(resp.status, String(msg), body);
+  }
+  return body;
+}
+
+/* 本地会话请求（带当前 activeToken，不带 X-Org-Id）：401 只抛 ApiError——
+ * 调用方决定是「改密旧密码错」（不清会话）还是「会话过期」（handleAuthExpired）。
+ * authMe / changePassword / authLogout 三处共用。 */
+async function _authedJson(path, opts = {}) {
+  const headers = Object.assign({}, opts.headers || {});
+  if (cfg.activeToken) headers["Authorization"] = "Bearer " + cfg.activeToken;
+  if (opts.body != null && !(opts.body instanceof FormData) && !headers["Content-Type"]) {
+    headers["Content-Type"] = opts.contentType || "application/json";
+  }
+  let resp;
+  try {
+    resp = await fetch(path, Object.assign({}, opts, { headers }));
+  } catch (e) {
+    throw new ApiError(0, t("err.network"));
+  }
+  const body = await _parseBody(resp);
+  if (!resp.ok) {
+    const msg = body.error || body.detail || resp.statusText || String(resp.status);
+    throw new ApiError(resp.status, String(msg), body);
+  }
+  return body;
 }
 
 async function _parseBody(resp) {
@@ -89,6 +164,86 @@ async function apiJson(path, opts = {}) {
     throw new ApiError(resp.status, String(msg), body);
   }
   return body;
+}
+
+/* ---------- D25 local：boot 门 / 首启 / 会话 / 邀请接受（m4-3a） ----------
+ * 契约见 `_m4-impl-contract.md` §5：错误体 {error, code}；setup/login/accept 返回
+ * {token, expires_at, user, orgs}；me 返回 {user, orgs}；改密返回 {token, expires_at}。
+ * 用户/邀请管理（GET/POST /api/users、/api/orgs/{org}/invitations）归 m4-3b。 */
+
+function authConfig() { return apiPublic("/api/auth/config"); }
+function setupStatus() { return apiPublic("/api/setup/status"); }
+
+function setupInstance(body) {
+  return apiPublic("/api/setup", { method: "POST", body: JSON.stringify(body) });
+}
+
+function authLogin(username, password) {
+  return apiPublic("/api/auth/login", {
+    method: "POST", body: JSON.stringify({ username, password }),
+  });
+}
+
+/* 恢复本地会话：带当前 activeToken 的 fetch；401/网络错误都只抛 ApiError
+ * （bootLocal 自行分流：401 → handleAuthExpired；网络错 → 登录屏错误文案）。 */
+function authMe() { return _authedJson("/api/auth/me"); }
+
+function changePassword(oldPassword, newPassword) {
+  return _authedJson("/api/auth/password", {
+    method: "POST",
+    body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
+  });
+}
+
+function authLogout() { return _authedJson("/api/auth/logout", { method: "POST" }); }
+
+function lookupInvitation(token) {
+  return apiPublic("/api/auth/invitations/lookup", {
+    method: "POST", body: JSON.stringify({ token }),
+  });
+}
+
+function acceptInvitation({ token, password, display_name }) {
+  const body = { token, password };
+  if (display_name) body.display_name = display_name;
+  return apiPublic("/api/auth/invitations/accept", {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
+
+/* ---------- D25 local：用户 / 邀请管理（m4-3b，契约 §5） ----------
+ * sysadmin：GET/POST /api/users、PATCH /api/users/{id}、POST /api/users/{id}/reset；
+ * org_admin：GET/POST /api/orgs/{org}/invitations、DELETE …/{id}。
+ * 邀请明文 token 只在创建响应中出现一次（库内只存 sha256）——调用方立即展示、
+ * 不落 localStorage（刷新即消失）。 */
+
+function listUsers() { return apiJson("/api/users"); }
+
+function createUser(body) {
+  return apiJson("/api/users", { method: "POST", body: JSON.stringify(body) });
+}
+function patchUser(id, body) {
+  return apiJson(`/api/users/${enc(id)}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+function resetUser(id) {
+  return apiJson(`/api/users/${enc(id)}/reset`, { method: "POST" });
+}
+function listInvitations(org) {
+  return apiJson(`/api/orgs/${enc(org)}/invitations`);
+}
+function createInvitation(org, body) {
+  return apiJson(`/api/orgs/${enc(org)}/invitations`, {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
+function revokeInvitation(org, id) {
+  return apiJson(`/api/orgs/${enc(org)}/invitations/${enc(id)}`, { method: "DELETE" });
+}
+
+/* 邀请链接唯一生成口径（login.js parseInviteToken 吃 #invite=<token>）：
+ * origin + pathname + fragment——token 不进服务端路径/查询串/Referer。 */
+function inviteLink(token) {
+  return location.origin + location.pathname + "#invite=" + encodeURIComponent(token || "");
 }
 
 /* ---------- reissue：dev 形态组织/身份切换（POST /api/dev/token） ---------- */
@@ -131,10 +286,26 @@ const enc = encodeURIComponent;
 function listOrgs() { return apiJson("/api/orgs"); }
 function listDatasets(org) { return apiJson(`/api/orgs/${enc(org)}/datasets`); }
 
-// m3-1 contract-first：POST /api/orgs/{org}/datasets 未实装（#13）——按自然契约
-// 先行实装（POST JSON {name, description?}）；404 → 调用方降级提示「待 m3-1 后端轮次」。
+// m3-2 ui-be 对账：POST /api/orgs/{org}/datasets 真契约 {key, title?}（m3-1
+// #13 实装——description 仅 PATCH 承载；调用方 docs.js 建库表单 key+title，
+// 描述经 createDatasetThenDesc 补 PATCH）。
 function createDataset(org, body) {
   return apiJson(`/api/orgs/${enc(org)}/datasets`, { method: "POST", body: JSON.stringify(body) });
+}
+/* 建库 + 可选描述（描述走 PATCH description——契约字面） */
+async function createDatasetWithDesc(org, { key, title, description }) {
+  const created = await createDataset(org, { key, title: title || undefined });
+  if (description) {
+    try {
+      await patchDataset(org, created.id || key, { description });
+    } catch (e) { /* 建库已成——描述失败仅 toast，不回滚 */ }
+  }
+  return created;
+}
+function patchDataset(org, id, body) {
+  return apiJson(`/api/orgs/${enc(org)}/datasets/${enc(id)}`, {
+    method: "PATCH", body: JSON.stringify(body),
+  });
 }
 function deleteDataset(org, id) {
   // R2 P1-1：DELETE 收口 apiJson 同款 !ok 抛 ApiError（204 空 body → {} 正常返回）
@@ -142,14 +313,15 @@ function deleteDataset(org, id) {
 }
 function listDimensions(org) { return apiJson(`/api/orgs/${enc(org)}/dimensions`); }
 
-// m3-1 contract-first：POST /api/orgs/{org}/dimensions 未实装（#13）——按自然契约
-// 先行实装（POST JSON {key, name, required?}）；404 → 调用方降级提示。
+// m3-2 ui-be 对账：POST /api/orgs/{org}/dimensions 真契约 {key, label,
+// required?, enabled?}（m3-1 #13 实装——label=显示名；调用方 access.js
+// dimCreate 以表单「名称」作 label）。
 function createDimension(org, body) {
   return apiJson(`/api/orgs/${enc(org)}/dimensions`, { method: "POST", body: JSON.stringify(body) });
 }
 
-// be-1 contract-first：GET /api/orgs/{org}/documents 列表端点未实装——按提议契约先行
-// （?dataset=&limit=&offset= → {documents:[…], total}）；404 → 调用方降级（横幅 + 会话缓存）。
+// be-1 端点已实装（m3-1 #20 D-①）：GET /api/orgs/{org}/documents
+// ?dataset=&limit=&offset= → {documents:[…], total}。
 function listDocuments(org, { dataset, limit = 200, offset = 0 } = {}) {
   const q = new URLSearchParams();
   if (dataset) q.set("dataset", dataset);
@@ -297,7 +469,11 @@ function buildReport(org, buildId) {
   return apiJson(`/api/orgs/${enc(org)}/semantic/builds/${enc(buildId)}/report`);
 }
 
-/* ---------- 成员三方法（m2-6 A3——POST/PATCH/DELETE；无 GET members（m3-1 #13）） ---------- */
+/* ---------- 成员（m2-6 A3 写三方法 + m3-1 #13 GET members——ui-be 真源化） ---------- */
+
+// GET members（org_admin 门控）：{members:[{user_id,username,role,expires_at}]}——
+// 成员名单/身份菜单/成员行 role·到期 的真源（m3-2 ui-be：替换 export-CSV 单源）。
+function listMembers(org) { return apiJson(`/api/orgs/${enc(org)}/members`); }
 
 function addMember(org, body) {
   return apiJson(`/api/orgs/${enc(org)}/members`, { method: "POST", body: JSON.stringify(body) });
@@ -312,16 +488,147 @@ function deleteMember(org, userId) {
   return apiJson(`/api/orgs/${enc(org)}/members/${enc(userId)}`, { method: "DELETE" });
 }
 
-/* ---------- 组织管理（ui-2——POST /api/orgs 实装；PATCH 停用 m3-1 contract-first） ---------- */
+/* ---------- Agent 长期凭据（D26 / issue #34 阶段 3——views/agent_keys.js） ----------
+ * local 专属（app.py 仅在 auth_mode=local 注册 router；sso 形态不渲染本页）：
+ * GET/POST /api/orgs/{org}/agent-keys、DELETE …/{key_id}（软撤销）。
+ * 明文 key 只在创建响应出现一次（库内只存 sha256 + 前缀）——调用方立即展示、
+ * 不落 localStorage；列表行含 user_username（用户缺失回 None）。 */
+function listAgentKeys(org) { return apiJson(`/api/orgs/${enc(org)}/agent-keys`); }
+function createAgentKey(org, body) {
+  return apiJson(`/api/orgs/${enc(org)}/agent-keys`, {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
+function revokeAgentKey(org, keyId) {
+  return apiJson(`/api/orgs/${enc(org)}/agent-keys/${enc(keyId)}`, { method: "DELETE" });
+}
+
+/* ---------- 组织管理（ui-2——POST /api/orgs 与 PATCH /api/orgs/{org} 均已实装） ---------- */
 
 function createOrg(body) {
   return apiJson("/api/orgs", { method: "POST", body: JSON.stringify(body) });
 }
-// m3-1 contract-first：PATCH /api/orgs/{org}（组织停用/恢复 #14）未实装——按自然契约
-// 先行实装（body {status: "active"|"disabled"}）；404/405 → 调用方降级提示「待 m3-1」。
+// m3-2 ui-be 对账：PATCH /api/orgs/{org}（#14 停用/恢复——m3-1 实装）。跨组织
+// 行操作按路径对齐 X-Org-Id（D18 路径/头一致性——不恒发 cfg.org 头）。
 function setOrgStatus(org, status) {
-  return apiJson(`/api/orgs/${enc(org)}`, { method: "PATCH", body: JSON.stringify({ status }) });
+  return apiJson(`/api/orgs/${enc(org)}`, {
+    method: "PATCH",
+    headers: { "X-Org-Id": org },
+    body: JSON.stringify({ status }),
+  });
 }
 
-/* ---------- 时间显示（沿原型：UTC 字符串切 MM-DD HH:mm） ---------- */
-function short(ts) { return ts ? String(ts).slice(5, 16) : "—"; }
+/* ---------- 可见性解释（m3-1 #20 D-② 实装——m3-2 ui-be 接真端点） ---------- */
+
+// GET explain：user_id 缺省=自解释；给他人解释须 org_admin（403 如实）。
+function explainDocument(org, docId, userId) {
+  const q = userId ? `?user_id=${enc(userId)}` : "";
+  return apiJson(`/api/orgs/${enc(org)}/documents/${enc(docId)}/explain${q}`);
+}
+
+/* ---------- 时间显示（库内恒 UTC；此处转**显示时区**渲染） ----------
+ * 分工（design §3 PG 连接纪律 + tests/test_pg_scaff R2 P2-1）：
+ *   后端只吐 UTC（`YYYY-MM-DD HH:MM:SS`，与 CURRENT_TIMESTAMP 同格式）；
+ *   展示层负责本地化——本段就是那"展示层"的唯一实现。
+ *
+ * 显示时区（DISPLAY_TZ）来自启动时 GET /api/auth/config 的 display_tz
+ * （服务端 LATTICE_DISPLAY_TZ 解析，见 src/knowledge_lattice/tzdisplay.py）：
+ *   给了   → 固定该区（部署可用它把控制台钉在某个区，如 Asia/Shanghai）
+ *   没给   → 浏览器时区（缺省：谁看谁的本地时间）
+ *
+ * 三个方向：
+ *   fmtTs(utcStr)      → 显示区完整串（列表 tooltip / 明细）
+ *   short(utcStr)      → 显示区 MM-DD HH:mm（列表位）
+ *   toUtcStr(localStr) → 显示区墙钟 → UTC 库格式（expires_at 输入面提交前换算）
+ * CSV 导入导出**不走换算**（交换格式保持 UTC，防导出→导入漂移——见 access.js）。 */
+let DISPLAY_TZ = null;
+let _tsFmt = null;
+let _tsFmtKey = "";
+
+function setDisplayTz(tz) { DISPLAY_TZ = tz ? String(tz) : null; }
+
+/* 显示时区名（tooltip 用；无显式配置时给浏览器区）。 */
+function tzName() {
+  if (DISPLAY_TZ) return DISPLAY_TZ;
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; }
+  catch (e) { return "UTC"; }
+}
+
+/* 显示区格式化器（en-CA 出 YYYY-MM-DD HH:mm:ss 部件，逐部件取用更稳）。 */
+function tsFormatter() {
+  const key = DISPLAY_TZ ? String(DISPLAY_TZ) : "";
+  if (_tsFmt && _tsFmtKey === key) return _tsFmt;
+  const opts = {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  };
+  if (key) opts.timeZone = key;
+  _tsFmt = new Intl.DateTimeFormat("en-CA", opts);
+  _tsFmtKey = key;
+  return _tsFmt;
+}
+
+/* 库里/接口的 UTC 串 → epoch ms。接受 `YYYY-MM-DD HH:MM[:SS]`（无后缀=UTC
+ * 墙钟）与带显式偏移的 ISO 8601（`Z` / `+08:00`——凭证 expires_at 那条口径）。
+ * 解析不了返回 null（调用方原样透出，不猜）。 */
+function tsToEpoch(ts) {
+  const text = String(ts == null ? "" : ts).trim();
+  if (!text) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/.exec(text);
+  if (!m) return null;
+  const wall = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+  const off = /^([+-])(\d{2}):?(\d{2})$/.exec(text.slice(m[0].length));
+  if (off) {
+    const minutes = (+off[2]) * 60 + (+off[3]);
+    return wall - (off[1] === "-" ? -minutes : minutes) * 60000;
+  }
+  return wall; // 无偏移后缀 = UTC（库格式）
+}
+
+const _pad2 = (n) => String(n).padStart(2, "0");
+
+function _wallParts(epochMs) {
+  const out = {};
+  for (const part of tsFormatter().formatToParts(new Date(epochMs))) out[part.type] = part.value;
+  if (out.hour === "24") out.hour = "00"; // 个别 ICU 的 h24 陷阱
+  return out;
+}
+
+/* 显示区在 epochMs 时刻的偏移（东正，毫秒）。 */
+function tzOffsetMs(epochMs) {
+  if (!DISPLAY_TZ) return -new Date(epochMs).getTimezoneOffset() * 60000;
+  const p = _wallParts(epochMs);
+  const wall = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
+  return wall - Math.floor(epochMs / 1000) * 1000;
+}
+
+/* UTC 串 → 显示区 `YYYY-MM-DD HH:mm:ss`；解析不了原样返回（空 → ""）。 */
+function fmtTs(ts) {
+  const ms = tsToEpoch(ts);
+  if (ms == null) return ts ? String(ts) : "";
+  const p = _wallParts(ms);
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
+}
+
+/* 列表位：显示区 MM-DD HH:mm（原口径保留，只是先换算过）。
+ * 非时间串（"—"、占位符）原样透出——不能对透传结果再切字符。 */
+function short(ts) {
+  if (tsToEpoch(ts) == null) return ts ? String(ts) : "—";
+  return fmtTs(ts).slice(5, 16);
+}
+
+/* 显示区墙钟串 → UTC `YYYY-MM-DD HH:mm:ss`（expires_at 输入面提交前用）。
+ * 空 → ""；解析不了原样返回（交服务端校验并如实报 400，不静默改写）。
+ * 时区偏移按目标时刻取两次（DST 边界上第一次估算的日可能差一天）。 */
+function toUtcStr(input) {
+  const text = String(input == null ? "" : input).trim();
+  if (!text) return "";
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(text);
+  if (!m) return text;
+  const wall = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+  let ms = wall - tzOffsetMs(wall);
+  ms = wall - tzOffsetMs(ms);
+  const d = new Date(ms);
+  return `${d.getUTCFullYear()}-${_pad2(d.getUTCMonth() + 1)}-${_pad2(d.getUTCDate())}`
+    + ` ${_pad2(d.getUTCHours())}:${_pad2(d.getUTCMinutes())}:${_pad2(d.getUTCSeconds())}`;
+}

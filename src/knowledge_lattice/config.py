@@ -19,7 +19,15 @@ WORKER_MODES = (WORKER_MODE_INLINE, WORKER_MODE_SUBPROCESS)
 
 # mock IdP 公开缺省密钥（m2-4 R2 P2-2：仓库公开常量——prod + 该缺省值组合被
 # build_sso_verifier fail-closed 拒绝，与 dev JWT P2-5 同口径〔公开密钥=可伪造〕）
-DEFAULT_SSO_MOCK_SECRET = "dev-mock-idp-secret"
+# ≥32 字节（PyJWT InsecureKeyLengthWarning 清零——m3-4 E-2 warnings 治理；
+# 公开缺省值语义不变：prod+mock-idp+缺省值启动即拒的守卫不受长度影响）
+DEFAULT_SSO_MOCK_SECRET = "dev-mock-idp-secret-0123456789abcdef"
+
+# ---- 鉴权形态枚举（M4/D25——m4-1：dataclass 默认与 get_settings env fallback
+#      同源，防漂移；worker_mode 同款口径） ----
+AUTH_MODE_SSO = "sso"      # 默认：企业 SSO（D16）+ 委托/可信（D18）——现状零变化
+AUTH_MODE_LOCAL = "local"  # 内置账号 + 邀请制（D25/FR-9）
+AUTH_MODES = (AUTH_MODE_SSO, AUTH_MODE_LOCAL)
 
 
 @dataclass(frozen=True)
@@ -111,6 +119,18 @@ class Settings:
     # 空串/[] = 可信子系统整体关闭（fail-closed）；mTLS 形态归真实部署期
     trusted_services_json: str = ""
 
+    # 账号与登录（M4/D25/FR-9——local 形态；默认 sso 零行为变化）
+    auth_mode: str = AUTH_MODE_SSO  # sso（D16/D18 现状）| local（内置账号 + 邀请制）
+    session_secret: str = ""  # local 必填：HS256 本地会话密钥（≥32 字节；create_app
+    #  启动即拒缺失/过短/仓库公开缺省值——不得复用 dev JWT / mock-idp 公开密钥）
+    session_ttl_s: float = 12 * 3600.0  # 本地会话 TTL（D25——12h）
+    init_password: str = ""  # 首启 POST /api/setup 门禁（prod 建议必填；空=不门禁）
+    invite_ttl_s: float = 72 * 3600.0  # 邀请/重置 token TTL（D25——72h）
+    login_max_fails: int = 5  # 登录限流：窗口内失败次数上限（超过即锁定）
+    login_window_s: float = 900.0  # 登录限流窗口（15min）
+    login_lock_s: float = 600.0  # 锁定时长（10min）
+    password_min_len: int = 10  # 密码最小长度（允许 8 作为下限）
+
     # 上传凭证（M1-3 三步式——P3-10/P3-13 择型：TTL 15min、全局上限 200MB 均可配置）
     upload_credential_ttl_s: float = 900.0  # 凭证有效期（签发 → expires_at）
     upload_max_bytes: int = 200 * 1024 * 1024  # 全局上限（PUT 独立生效——413，P3-13）
@@ -159,6 +179,15 @@ class Settings:
     # 运行日志（v0.8.5：结构化 JSON→stdout；本地开发可切人读格式）
     log_level: str = "INFO"
     log_format: str = "json"  # json | human
+
+    # 控制台时间显示时区（2026-11-22 用户走查——**只影响展示，不碰存储**）：
+    # 库内时间恒 UTC（taskclock.TS_FMT）；本项决定前端把 UTC 渲染成哪个区。
+    #   ""（缺省）= 前端用浏览器时区（谁看谁的本地时间）
+    #   IANA 名    = 固定该区（如 Asia/Shanghai）
+    #   server/auto= 取服务器（进程）时区——TZ → /etc/localtime → /etc/timezone
+    # 解析与探测实现在 tzdisplay.py；非法名 WARNING 后回落探测（展示层不
+    # fail-closed——不因时区名写错就起不来）。
+    display_tz: str = ""
 
     @property
     def db_path(self) -> Path:
@@ -261,6 +290,16 @@ def get_settings() -> Settings:
         sso_mock_secret=_f("LATTICE_SSO_MOCK_SECRET", DEFAULT_SSO_MOCK_SECRET),
         sso_audience=_f("LATTICE_SSO_AUDIENCE", "knowledge-lattice"),
         trusted_services_json=_f("LATTICE_TRUSTED_SERVICES_JSON", ""),
+        # M4/D25/FR-9：鉴权形态与本地账号参数（默认 sso——现状零变化）
+        auth_mode=env("LATTICE_AUTH_MODE", AUTH_MODE_SSO),
+        session_secret=_f("LATTICE_SESSION_SECRET", ""),
+        session_ttl_s=float(_num("LATTICE_SESSION_TTL_S", 12 * 3600.0)),
+        init_password=_f("LATTICE_INIT_PASSWORD", ""),
+        invite_ttl_s=float(_num("LATTICE_INVITE_TTL_S", 72 * 3600.0)),
+        login_max_fails=int(_num("LATTICE_LOGIN_MAX_FAILS", 5)),
+        login_window_s=float(_num("LATTICE_LOGIN_WINDOW_S", 900.0)),
+        login_lock_s=float(_num("LATTICE_LOGIN_LOCK_S", 600.0)),
+        password_min_len=int(_num("LATTICE_PASSWORD_MIN_LEN", 10)),
         upload_credential_ttl_s=float(_num("LATTICE_UPLOAD_TTL_S", 900.0)),
         upload_max_bytes=int(_num("LATTICE_UPLOAD_MAX_BYTES", 200 * 1024 * 1024)),
         maintenance_interval_s=float(_num("LATTICE_MAINTENANCE_INTERVAL_S", 300.0)),
@@ -298,6 +337,7 @@ def get_settings() -> Settings:
         semantic_fuzzy_vec_top=int(_num("LATTICE_SEM_FUZZY_VEC_TOP", 3)),
         log_level=env("LATTICE_LOG_LEVEL", "INFO"),
         log_format=env("LATTICE_LOG_FORMAT", "json"),
+        display_tz=env("LATTICE_DISPLAY_TZ", ""),
     )
     _validate(settings)
     return settings
@@ -310,6 +350,11 @@ def _validate(s: Settings) -> None:
             f"invalid worker_mode {s.worker_mode!r}（合法值："
             f" {' | '.join(WORKER_MODES)}——fail-closed，不静默回退）"
         )
+    if s.auth_mode not in AUTH_MODES:
+        raise ValueError(
+            f"invalid auth_mode {s.auth_mode!r}（合法值："
+            f" {' | '.join(AUTH_MODES)}——fail-closed，不静默回退）"
+        )
     numeric_failures = []
     for name in (
         "worker_heartbeat_s", "worker_lease_s", "worker_poll_s",
@@ -320,12 +365,24 @@ def _validate(s: Settings) -> None:
         "semantic_l0_token_budget",
         "semantic_daily_sync_interval_s",
         "semantic_retag_reconcile_interval_s",
+        # M4/D25：本地账号时序参数（≥0；0 的边界语义由消费面决定——
+        # TTL=0 立即过期 / lock_s=0 不锁）
+        "session_ttl_s", "invite_ttl_s", "login_window_s", "login_lock_s",
     ):
         value = getattr(s, name)
         if value < 0:
             numeric_failures.append(f"{name}={value!r}")
     if s.task_max_attempts < 1:
         numeric_failures.append(f"task_max_attempts={s.task_max_attempts!r}（须 ≥1）")
+    # M4/D25：密码长度下限 8（设计下限；缺省 10 可配，但不得配到 8 以下）
+    if s.password_min_len < 8:
+        numeric_failures.append(
+            f"password_min_len={s.password_min_len!r}（须 ≥8）"
+        )
+    if s.login_max_fails < 1:
+        numeric_failures.append(
+            f"login_max_fails={s.login_max_fails!r}（须 ≥1）"
+        )
     if not 0.0 <= s.semantic_delete_guard <= 1.0:
         numeric_failures.append(
             f"semantic_delete_guard={s.semantic_delete_guard!r}（须 ∈ [0,1]）"

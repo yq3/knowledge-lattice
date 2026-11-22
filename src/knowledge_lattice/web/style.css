@@ -80,9 +80,11 @@ svg.ic { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none
   background: var(--paper); border-bottom: 1px solid var(--rule);
 }
 .brand { display: flex; align-items: center; gap: 10px; min-width: calc(var(--rail) - var(--s4)); flex: none; padding-right: var(--s3); }
-.seal { width: 28px; height: 28px; flex: none; display: grid; place-items: center; border-radius: 8px;
+.brand-seal { width: 28px; height: 28px; flex: none; display: grid; place-items: center; border-radius: 8px;
   background: linear-gradient(140deg, #2970FF 0%, #155EEF 55%, #004EEB 100%); box-shadow: var(--sh-xs), inset 0 0 0 1px rgba(255,255,255,.12); }
-.seal svg { width: 26px; height: 26px; }
+.brand-seal svg { width: 26px; height: 26px; }
+/* 注：品牌标原类名 .seal 与提示卡 .note.seal / 标签 .tag.seal 撞名——.seal 的
+ * 28×28/grid 会把红提示压成小方块（upstream 原型既有缺陷），故改为 .brand-seal。 */
 .brand-name { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; color: var(--ink); white-space: nowrap; }
 .brand-sub { font-size: 10.5px; font-weight: 600; color: var(--seal); background: var(--seal-w); border: 1px solid var(--seal-b);
   padding: 0 6px; border-radius: 5px; line-height: 17px; letter-spacing: .02em; }
@@ -110,7 +112,10 @@ svg.ic { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none
 .picker-btn .pk-t { font-weight: 600; font-size: 13px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
 .picker-btn .pk-s { font-size: 11px; color: var(--ink-4); }
 .picker-btn .caret { color: var(--ink-4); display: inline-flex; }
-.avatar { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 600; color: #fff; flex: none; }
+/* inline-grid：头像要能与并列文字同行（成员表 <td> 里直接跟在用户名前）。
+ * 原 display:grid 是块级——在非 flex 容器里必然独占一行，把用户名挤到下一行
+ * （2026-11-22 维度与权限·成员页实测）。flex 容器内会被 blockify，视觉零变化。 */
+.avatar { width: 28px; height: 28px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 12px; font-weight: 600; color: #fff; flex: none; vertical-align: middle; }
 .menu {
   position: absolute; left: 0; top: calc(100% + 6px); z-index: 60; min-width: 280px;
   background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg); padding: var(--s1);
@@ -129,23 +134,16 @@ svg.ic { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none
 .nav-group { font-size: 12px; font-weight: 500; color: var(--ink-4); padding: 0 10px; margin: var(--s4) 0 4px; }
 .nav-group:first-child { margin-top: var(--s1); }
 .nav-item {
-  display: grid; grid-template-columns: 18px 1fr auto; align-items: center; gap: 10px; height: 36px;
+  display: grid; grid-template-columns: 18px 1fr; align-items: center; gap: 10px; height: 36px;
   padding: 0 10px; border-radius: var(--r); text-align: left; color: var(--ink-2); font-weight: 500; font-size: 14px;
   transition: background .15s, color .15s;
 }
 .nav-item .ni-k { color: var(--ink-3); display: inline-flex; }
 .nav-item .ni-k svg { width: 18px; height: 18px; }
-.nav-item .ni-c { font-size: 12px; color: var(--ink-3); font-weight: 500; }
 .nav-item:hover { background: var(--paper-3); color: var(--ink); }
 .nav-item.on { background: var(--seal-w); color: var(--seal); }
 .nav-item.on .ni-k { color: var(--seal); }
-.nav-item.on .ni-c { color: var(--seal); }
 .nav-tag { font-size: 10px; font-weight: 600; padding: 0 5px; border-radius: 4px; background: var(--paper-3); color: var(--ink-3); margin-left: 6px; vertical-align: 1px; line-height: 16px; display: inline-block; }
-.rail-foot { margin-top: auto; padding: var(--s3); font-size: 12px; color: var(--ink-3); line-height: 1.6;
-  background: var(--paper-2); border: 1px solid var(--rule); border-radius: var(--r-lg); }
-.rail-foot .rf-h { display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px; }
-.rail-foot .rf-h i { width: 6px; height: 6px; border-radius: 50%; background: var(--moss); box-shadow: 0 0 0 3px var(--moss-w); }
-.rail-foot code { font-size: 11px; background: var(--paper); border: 1px solid var(--rule); }
 
 main { grid-area: main; min-width: 0; padding: var(--s5) clamp(20px, 2.6vw, 40px) var(--s8); }
 .view { animation: viewIn .3s var(--ease) both; }
@@ -157,7 +155,7 @@ main { grid-area: main; min-width: 0; padding: var(--s5) clamp(20px, 2.6vw, 40px
 .head .lede { grid-column: 1 / -1; color: var(--ink-3); font-size: 13px; line-height: 20px; }
 .head .lede b { color: var(--ink-2); font-weight: 600; }
 .head .head-act { grid-column: 2; grid-row: 1; display: flex; gap: var(--s2); align-items: center; }
-.sub-tabs { display: flex; gap: var(--s5); margin: calc(-1 * var(--s2)) 0 var(--s5); border-bottom: 1px solid var(--rule); }
+.sub-tabs { display: flex; flex-wrap: wrap; gap: var(--s5); margin: calc(-1 * var(--s2)) 0 var(--s5); border-bottom: 1px solid var(--rule); }
 .sub-tab { padding: 10px 2px; color: var(--ink-3); border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 500; font-size: 14px; }
 .sub-tab:hover { color: var(--ink-2); }
 .sub-tab.on { color: var(--seal); border-color: var(--seal); font-weight: 600; }
@@ -497,11 +495,17 @@ details[open] > summary::before { transform: rotate(90deg); }
 .layer-key i.L2 { border-bottom-style: dotted; } .layer-key i.L3 { border-bottom-style: dashed; }
 
 /* ---------------- 运行页 ---------------- */
-.lanes { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s5); }
+.lanes { display: grid; grid-template-columns: 1fr; gap: var(--s5); }
+/* 原为 1fr 1fr「双泳道并排」（原型 v0.6 概念图）——实测半宽下事件行的 detail 大量换行、
+ * 两道条数不等时高度差悬殊，且两条各自倒序的时间线并排无法对齐，反而难扫读。
+ * 2026-11-22 改纵向堆叠：保留「两道分流」语义（标题+说明不变），宽度给足。 */
 .lanes > section { background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg); box-shadow: var(--sh-xs); padding: var(--s4) var(--s5) var(--s2); }
 .lane-h { display: flex; align-items: baseline; gap: var(--s3); padding-bottom: var(--s3); border-bottom: 1px solid var(--rule); margin-bottom: var(--s1); }
 .lane-h h3 { font-size: 15px; font-weight: 600; }
 .lane-h .tiny { margin-left: auto; }
+
+.lane-note { font-size: 12px; color: var(--ink-3); padding-bottom: 10px;
+  border-bottom: 1px solid var(--rule); margin-bottom: 8px; }
 .ev { display: grid; grid-template-columns: 62px 1fr; gap: var(--s3); padding: 10px 0; border-bottom: 1px solid var(--rule); font-size: 13px; }
 .ev:last-child { border-bottom: 0; }
 .ev.fresh { animation: fresh 1.6s var(--ease); }
@@ -529,7 +533,7 @@ details[open] > summary::before { transform: rotate(90deg); }
 @media (max-width: 1180px) {
   .split { grid-template-columns: 1fr; }
   .pane { position: static; max-height: none; }
-  .ent-cols, .lanes, .vis-split { grid-template-columns: 1fr; }
+  .ent-cols, .vis-split { grid-template-columns: 1fr; }
   .tb-link span { display: none; }
 }
 @media (max-width: 860px) {
@@ -537,7 +541,7 @@ details[open] > summary::before { transform: rotate(90deg); }
   .topbar { flex-wrap: wrap; height: auto; padding: 8px 12px; }
   .brand { width: auto; }
   .rail { position: static; height: auto; flex-direction: row; overflow-x: auto; padding: 8px 12px; border-right: 0; border-bottom: 1px solid var(--rule); }
-  .nav { flex-direction: row; } .nav-group, .rail-foot { display: none; }
+  .nav { flex-direction: row; } .nav-group { display: none; }
   .upload { grid-template-columns: 1fr; }
   .head { grid-template-columns: 1fr; } .head .head-act { grid-column: 1; grid-row: auto; }
 }
@@ -564,13 +568,6 @@ details[open] > summary::before { transform: rotate(90deg); }
 .menu-form .inp { height: 30px; font-size: 12.5px; width: 100%; }
 .menu-form .mf-sec { font-size: 11.5px; font-weight: 600; color: var(--ink-4); padding: 6px 0 0; text-transform: none; letter-spacing: .01em; }
 .menu-form .mf-act { display: flex; gap: var(--s2); align-items: center; padding-top: 4px; }
-
-/* 降级横幅（be-1 / be-② / m3-1 三处诚实降级） */
-.banner { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: var(--r-lg);
-  background: var(--amber-w); border: 1px solid var(--amber-b); color: #93370D; font-size: 13px; line-height: 1.6; margin-bottom: var(--s4); }
-.banner::before { content: "!"; flex: none; width: 18px; height: 18px; border-radius: 50%; background: var(--amber); color: #fff; font-size: 11px; font-weight: 700; display: grid; place-items: center; margin-top: 1px; }
-.banner b { color: #93370D; }
-.banner code { background: var(--paper); border-color: var(--amber-b); }
 
 /* 加载 / 禁用态 */
 .loading { display: flex; align-items: center; gap: 10px; padding: var(--s6) var(--s5); color: var(--ink-3); font-size: 13px; }
@@ -618,3 +615,313 @@ button:disabled, .btn[disabled] { cursor: not-allowed; }
 
 /* 表脚：条数标注（「最近 N 条」）+ 加载更多 */
 .tbl-foot { display: flex; gap: var(--s3); align-items: center; flex-wrap: wrap; margin-top: var(--s2); }
+
+/* m3-2 ui-be：可见性解释行（docs pane explain 卡 / vis 矩阵下钻）与矩阵格点 */
+.explain-row { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; border-bottom: 1px dashed var(--line, rgba(127,127,127,.18)); }
+.explain-row:last-of-type { border-bottom: 0; }
+.explain-row .pill { flex: none; }
+.vis-lattice .vis-cell { width: 22px; height: 22px; }
+.vis-lattice .vis-cell.ok { background: var(--ok, #16a34a); border-color: var(--ok, #16a34a); }
+.vis-lattice .vis-cell.bad { background: transparent; border: 1.5px solid var(--danger, #dc2626); }
+
+/* ==========================================================================
+   m4-3a additions（2026-11-20，D25 local：boot 门 + setup/login/invite 三屏 +
+   用户菜单）。默认 sso 形态不命中任何选择器（body 无 auth-local/auth-screen），
+   视觉零回归；类名/变量沿用既有设计系统。
+   ========================================================================== */
+
+/* local：隐藏 sso 专属入口（连接设置 / 身份 lens）；用户菜单见 #userPicker。
+ * MCP 接入 2026-11-22 起只走左栏导航（顶栏快捷入口已按用户要求移除，顶栏不再有
+ * 该元素——原弹层亦并入页面，单一内容来源）。 */
+body.auth-local #connPicker,
+body.auth-local .tb-lens { display: none; }
+
+/* 认证屏：单列骨架（topbar 保留品牌 + 语言 + API 参考），rail 隐去 */
+body.auth-screen .app {
+  grid-template-columns: 1fr;
+  grid-template-rows: var(--top) 1fr;
+  grid-template-areas: "top" "main";
+}
+body.auth-screen .rail { display: none; }
+body.auth-screen #orgPicker,
+body.auth-screen #userPicker,
+body.auth-screen .tb-lens,
+body.auth-screen #connPicker,
+body.auth-screen .tb-sep,
+body.auth-screen .tb-div { display: none !important; }
+body.auth-screen main { display: grid; place-items: center; padding: var(--s6) var(--s4); }
+body.auth-screen main > .auth-view { width: 100%; display: grid; place-items: center; }
+
+/* 认证卡 */
+.auth-shell { width: 100%; max-width: 520px; }
+.auth-card { width: 100%; background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg); box-shadow: var(--sh-lg); padding: var(--s6) var(--s6) var(--s5); }
+.auth-brand { display: flex; align-items: center; gap: 10px; margin-bottom: var(--s5); }
+.auth-title { font-size: 22px; line-height: 30px; font-weight: 650; letter-spacing: -0.01em; color: var(--ink); }
+.auth-lede { color: var(--ink-3); font-size: 13px; line-height: 1.7; margin-top: 6px; }
+.auth-lede b { color: var(--ink-2); font-weight: 600; }
+.auth-form { display: flex; flex-direction: column; gap: 12px; margin-top: var(--s5); }
+.af-row { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; font-weight: 500; color: var(--ink-2); }
+.af-row .inp { width: 100%; height: 38px; }
+.af-sec { margin-top: 6px; padding-top: 10px; border-top: 1px dashed var(--rule); font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+.af-hint { margin-top: -6px; font-size: 12px; line-height: 1.6; color: var(--ink-3); }
+.af-hint code { font-size: 11px; }
+.auth-submit { width: 100%; height: 40px; margin-top: 6px; }
+.auth-back { width: 100%; height: 34px; }
+.auth-err { margin-top: var(--s4); padding: 10px 12px; border: 1px solid var(--danger-b); border-radius: var(--r); background: var(--danger-w); color: var(--danger-2); font-size: 12.5px; line-height: 1.6; }
+.auth-note { margin-top: var(--s5); padding-top: var(--s4); border-top: 1px solid var(--rule); color: var(--ink-3); font-size: 12px; line-height: 1.7; }
+.auth-note code { font-size: 11px; }
+.auth-note-sub { margin-top: 6px; }
+.auth-meta { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--rule); border-radius: var(--r); background: var(--paper-2); }
+.auth-meta > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 12.5px; }
+.auth-meta span { color: var(--ink-4); flex: none; }
+.auth-meta b { font-weight: 550; color: var(--ink); text-align: right; word-break: break-all; }
+.auth-meta b.mono { font-size: 11.5px; }
+.auth-meta small { display: block; margin-left: 8px; font-size: 11px; color: var(--ink-4); font-weight: 400; text-align: right; word-break: break-all; }
+.auth-actions { margin-top: var(--s4); }
+
+/* 顶栏用户菜单（#userPicker——local 已登录才显示） */
+#userPicker .menu { left: auto; right: 0; min-width: 320px; }
+#userPicker .picker-btn .pk-s { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#userPicker .menu-form .mf-row { grid-template-columns: 92px 1fr; }
+#userPicker .menu-form .menu-item { margin-top: 6px; }
+
+/* ==========================================================================
+   m4-3b additions（2026-11-20，D25 local：用户/邀请管理页 views/users.js）
+   仅命中 #users（sso 形态不渲染该视图——零回归）与本地账号表单；类名/变量
+   沿用既有设计系统（.ledger/.pill/.btn/.note/.inp）。
+   ========================================================================== */
+#users .users-note { margin: 0 0 10px; }
+#users .users-scope { margin: 0 0 var(--s4); }
+
+/* 邀请链接卡（只读链接 + 复制按钮 + token 明码） */
+#users .invite-card { margin: 0 0 var(--s4); }
+#users .invite-head { display: flex; align-items: center; gap: var(--s2); margin-bottom: 6px; }
+#users .invite-meta { display: flex; align-items: baseline; gap: var(--s2); font-size: 12.5px; color: var(--ink-3); }
+#users .invite-meta b { color: var(--ink); font-weight: 600; }
+#users .invite-link { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s2); align-items: center; margin-top: var(--s2); }
+#users .invite-link .inp { width: 100%; font-family: var(--mono); font-size: 12px; }
+#users .invite-token { margin-top: 6px; font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); word-break: break-all; }
+
+/* 表单网格（sysadmin 建号 / org_admin 邀请共用） */
+#users .users-form {
+  display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 10px 14px;
+  background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg);
+  padding: var(--s4); margin: 0 0 var(--s4); box-shadow: var(--sh-sm);
+}
+#users .users-form .uf-field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; font-weight: 500; color: var(--ink-2); min-width: 0; }
+#users .users-form .uf-field .inp, #users .users-form .uf-field .sel { width: 100%; height: 32px; }
+#users .users-form .uf-field select:disabled { opacity: .55; cursor: not-allowed; }
+#users .users-form .uf-check { flex-direction: row; align-items: center; gap: 8px; font-weight: 400; padding-top: 18px; }
+#users .users-form .uf-check input { width: 15px; height: 15px; accent-color: var(--seal); }
+#users .users-form .uf-actions { grid-column: 1 / -1; display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; padding-top: 4px; border-top: 1px dashed var(--rule); }
+
+/* 行内操作按钮（不换行；窄屏可折行） */
+#users .users-status { white-space: nowrap; }
+#users .users-rowact { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+#users .users-rowact .btn.sm { white-space: nowrap; }
+
+@media (max-width: 860px) {
+  #users .users-form { grid-template-columns: 1fr; }
+  #users .invite-link { grid-template-columns: 1fr; }
+}
+
+/* ==========================================================================
+   ops 分区（2026-11-21，用户走查修正：任务与审计页）
+   四个子分区（任务 / 嵌入覆盖率 / 维护任务计数 / 审计）各占一个 tab，
+   卡片不再纵向堆叠。内容卡片不用 .pane —— 那是侧栏详情面板（sticky + 固定
+   top + 内滚动），纵向堆叠时会等偏移吸附、逐块相互覆盖；维护任务计数的
+   键是 mono 长技术名，固定窄键列会溢出压值，故用内容自适应网格。
+   ========================================================================== */
+
+/* 静态内容卡（.lane-h 作卡头）：与侧栏 sticky 面板 .pane 相对——用于纵向
+ * 堆叠的全宽区块（不吸附、不内滚动，故不会相互覆盖） */
+.card {
+  background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg);
+  box-shadow: var(--sh-xs); padding: var(--s5); min-width: 0;
+}
+.card .lane-h { margin-bottom: var(--s3); }
+
+/* 维护任务计数：内容自适应 key/value 网格（长键折行、长值折行，绝不压列） */
+.ops-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 0 var(--s6); }
+.ops-stat { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, auto); gap: var(--s3);
+  align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--rule); min-width: 0; }
+.ops-stat .os-k { font-family: var(--mono); font-size: 11.5px; line-height: 1.5; color: var(--ink-3); overflow-wrap: anywhere; }
+.ops-stat .os-v { margin: 0; font-size: 13px; color: var(--ink); text-align: right; min-width: 0; overflow-wrap: anywhere; }
+/* 嵌套 dict / 对象数组占整行：键左、子键行右（长值有地方放，不与标量行错位） */
+.ops-stat.wide { grid-column: 1 / -1; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); align-items: start; padding: 9px 0; }
+.ops-stat.wide .os-v { text-align: left; }
+
+/* 嵌套 dict 的子键行（缩进一条竖线——层级可读、不另起卡片） */
+.ops-sub { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); gap: 2px var(--s3);
+  padding: 2px 0 2px 10px; border-left: 2px solid var(--rule); min-width: 0; }
+.ops-sub dt { font-family: var(--mono); font-size: 11px; line-height: 1.6; color: var(--ink-4); overflow-wrap: anywhere; }
+.ops-sub dd { margin: 0; min-width: 0; font-size: 12.5px; line-height: 1.6; color: var(--ink-2); overflow-wrap: anywhere; }
+.ops-sub .ops-sub { margin-top: 2px; }
+
+/* 分区内错误清单（maintenance stats.errors——失败是可行动信息，不只计数） */
+.card .note.seal { margin: 0 0 var(--s4); }
+.ops-errs { margin: 6px 0 0 1.1em; padding: 0; font-family: var(--mono); font-size: 11.5px; line-height: 1.65; word-break: break-word; }
+
+/* 通用健壮性：任意 key/value 列表的键列都允许长键折行（原 .kv 固定列遇长
+ * mono 键——如 semantic 实体属性名——会溢出压住值列） */
+.kv dt { overflow-wrap: anywhere; }
+/* 泳道卡头标题不折行（长注释让位：注记可折行，标题保持一行） */
+.lane-h h3 { white-space: nowrap; }
+
+@media (max-width: 860px) {
+  .ops-stats { grid-template-columns: 1fr; gap: 0; }
+  .ops-stat.wide { grid-template-columns: 1fr; gap: 2px; }
+}
+
+/* ==========================================================================
+   D26 additions（2026-11-21，issue #34 阶段 3：Agent 长期凭据管理页
+   views/agent_keys.js）——仅命中 #agent-keys；表单/一次性 key 卡视觉镜像
+   #users 的 .users-form / .invite-card（类名与变量沿用既有设计系统：
+   .ledger/.pill/.btn/.note/.inp/.sel；不改 #users 规则，不另起视觉语言）。
+   ========================================================================== */
+#agent-keys .ak-note { margin: 0 0 var(--s4); }
+
+/* 一次性明文 key 卡（本页唯一签名字段：moss 提示卡 + mono 只读输入 + 复制） */
+#agent-keys .ak-keycard { margin: 0 0 var(--s4); }
+#agent-keys .ak-keycard-head { display: flex; align-items: center; gap: var(--s2); margin-bottom: 6px; }
+#agent-keys .ak-keycard-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--s2); font-size: 12.5px; color: var(--ink-3); }
+#agent-keys .ak-keycard-meta b { color: var(--ink); font-weight: 600; }
+#agent-keys .ak-keycard-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s2); align-items: center; margin-top: var(--s2); }
+#agent-keys .ak-keycard-line .inp { width: 100%; font-family: var(--mono); font-size: 12px; background: var(--paper); }
+#agent-keys .ak-keycard-once { margin-top: 6px; }
+#agent-keys .ak-config {
+  margin-top: var(--s2); padding: var(--s3); border: 1px dashed var(--rule);
+  border-radius: var(--r-lg); background: var(--paper-2);
+  display: flex; flex-direction: column; gap: 4px;
+}
+#agent-keys .ak-config-title { font-size: 12px; font-weight: 600; color: var(--ink-2); }
+#agent-keys .ak-config-row { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: var(--s2); align-items: baseline; font-size: 12px; }
+#agent-keys .ak-config-row code { font-family: var(--mono); word-break: break-all; color: var(--ink); }
+#agent-keys .ak-config-act { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding-top: 2px; }
+
+/* 表单网格（归属成员 / key 标签） */
+#agent-keys .ak-form {
+  display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 10px 14px;
+  background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-lg);
+  padding: var(--s4); margin: 0 0 var(--s4); box-shadow: var(--sh-sm);
+}
+#agent-keys .ak-form .ak-field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; font-weight: 500; color: var(--ink-2); min-width: 0; }
+#agent-keys .ak-form .ak-field .inp, #agent-keys .ak-form .ak-field .sel { width: 100%; height: 32px; }
+#agent-keys .ak-form .ak-field .sel:disabled { opacity: .55; cursor: not-allowed; }
+#agent-keys .ak-form .ak-field .tiny { font-weight: 400; line-height: 1.5; }
+#agent-keys .ak-form .ak-actions { grid-column: 1 / -1; display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; padding-top: 4px; border-top: 1px dashed var(--rule); }
+
+/* 列表单元格（前缀/状态/行内操作不换行） */
+#agent-keys .ak-prefix { white-space: nowrap; }
+#agent-keys .ak-status { white-space: nowrap; }
+#agent-keys .ledger td .btn.sm { white-space: nowrap; }
+
+@media (max-width: 860px) {
+  #agent-keys .ak-form { grid-template-columns: 1fr; }
+  #agent-keys .ak-keycard-line { grid-template-columns: 1fr; }
+}
+
+/* ==========================================================================
+   MCP 接入页（2026-11-22，views/mcp.js——docs/MCP-INTEGRATION.md 的用户面）
+   版式：分区卡（.card + .lane-h 卡头，序号圆标一列到底）+ 代码面板 + 键值行。
+   首版是"文档流"（裸标题 + 无边代码块），标题/代码/段落全落在同一层灰底上，
+   用户读不出分区边界（2026-11-22 走查：内容看上去很乱，标题、代码块、段落揉在
+   一起）。改为一节一卡：卡头分隔线把标题与正文断开，正文只放一种内容（说明 /
+   代码 / 键值行），节间留白固定 s4。类名与变量沿用既有设计系统
+   （.card/.lane-h/.ledger 口径的排版、.note/.sql/.btn），不另起视觉语言。
+   ========================================================================== */
+#mcp-guide { display: flex; flex-direction: column; gap: var(--s4); }
+#mcp-guide .head { margin-bottom: var(--s2); }
+
+/* 分区卡 */
+#mcp-guide .mcp-sec { padding: var(--s5); }
+#mcp-guide .mcp-sec > .lane-h { align-items: center; gap: var(--s2); margin-bottom: var(--s4); }
+#mcp-guide .mcp-n {
+  flex: none; width: 20px; height: 20px; border-radius: 50%; background: var(--seal-w);
+  color: var(--seal); font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+#mcp-guide .mcp-sec-hint { margin-left: auto; font-size: 12px; color: var(--ink-3); font-weight: 400; }
+
+/* 键值行（端点 / 凭据 / 组织 / 传输） */
+#mcp-guide .mcp-kv { display: grid; }
+#mcp-guide .mcp-kv-row {
+  display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: var(--s4);
+  align-items: center; padding: 9px 0; border-bottom: 1px solid var(--rule); font-size: 13px;
+}
+#mcp-guide .mcp-kv-row:first-child { padding-top: 0; }
+#mcp-guide .mcp-kv-row:last-child { border-bottom: 0; padding-bottom: 0; }
+#mcp-guide .mcp-kv-row > dt { color: var(--ink-3); font-size: 12.5px; }
+#mcp-guide .mcp-kv-row > dd { display: flex; align-items: center; gap: var(--s3); min-width: 0; }
+#mcp-guide .mcp-kv-row code {
+  font-family: var(--mono); font-size: 12.5px; word-break: break-all;
+  color: var(--ink); background: transparent; padding: 0;
+}
+
+/* 说明文字 / 列表 / 提示行 */
+#mcp-guide .mcp-hint { font-size: 12.5px; line-height: 1.7; color: var(--ink-3); margin-top: var(--s3); }
+#mcp-guide .mcp-steps, #mcp-guide .mcp-bullets {
+  padding-left: 20px; color: var(--ink-2); font-size: 13px; line-height: 1.75;
+}
+/* 列表跟在代码面板后面时留出与"面板→段落"一致的间隙 */
+#mcp-guide .mcp-code + .mcp-bullets, #mcp-guide .mcp-code + .mcp-steps { margin-top: var(--s4); }
+#mcp-guide .mcp-steps li, #mcp-guide .mcp-bullets li { margin: 4px 0; }
+#mcp-guide .mcp-steps li::marker { color: var(--seal); font-weight: 600; }
+#mcp-guide .mcp-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); margin-top: var(--s4); }
+#mcp-guide .mcp-row .mcp-hint { margin-top: 0; }
+#mcp-guide .mcp-sec > .note { margin-top: var(--s4); }
+
+/* 代码面板：卡头皮（标题 + 复制）与代码体是一个整体，便于"认领"到某个客户端 */
+#mcp-guide .mcp-code {
+  border: 1px solid var(--rule); border-radius: var(--r); overflow: hidden;
+  background: var(--paper-2); break-inside: avoid;
+}
+#mcp-guide .mcp-code-h {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s2);
+  padding: 3px 6px 3px 12px; background: var(--paper-3); border-bottom: 1px solid var(--rule);
+  font-size: 12px; font-weight: 600; color: var(--ink-2);
+}
+#mcp-guide .mcp-code-h .btn { height: 24px; padding: 0 9px; font-size: 11.5px; font-weight: 500; }
+#mcp-guide .mcp-code > pre {
+  margin: 0; border: 0; border-radius: 0; background: var(--paper-2); max-height: 300px;
+}
+#mcp-guide .mcp-clients { display: flex; flex-direction: column; gap: var(--s4); margin-top: var(--s4); }
+#mcp-guide .mcp-sec > .mcp-code { margin-top: var(--s4); }
+
+/* 参考行（工具清单 / 排错）：卡内网格行，不另用表格（避免卡内再套边框） */
+#mcp-guide .mcp-rows { display: grid; }
+#mcp-guide .mcp-row-head, #mcp-guide .mcp-row-item {
+  display: grid; grid-template-columns: 124px minmax(0, 1fr) 354px; gap: var(--s4);
+  padding: 9px 0; border-bottom: 1px solid var(--rule); align-items: baseline;
+}
+#mcp-guide .mcp-row-head { padding-top: 0; font-size: 12px; color: var(--ink-3); }
+#mcp-guide .mcp-row-item { font-size: 13px; color: var(--ink-2); }
+#mcp-guide .mcp-row-item:last-child { border-bottom: 0; padding-bottom: 0; }
+#mcp-guide .mcp-trouble .mcp-row-head, #mcp-guide .mcp-trouble .mcp-row-item {
+  grid-template-columns: 232px minmax(0, 1fr);
+}
+#mcp-guide .mcp-tools code.mcp-name {
+  color: var(--ink); background: var(--paper-3); padding: 1px 6px;
+  font-weight: 500; white-space: nowrap; justify-self: start;
+}
+#mcp-guide .mcp-tools code.mcp-args { color: var(--ink-3); background: transparent; padding: 0; font-size: 11.5px; word-break: break-word; }
+#mcp-guide .mcp-trouble code.mcp-sym { background: transparent; padding: 0; color: var(--ink); font-size: 12px; word-break: break-word; }
+
+#mcp-guide .mcp-foot { margin-top: var(--s2); }
+
+/* 窄屏：工具清单改成"名称 | 用途"上行 + 参数下行，隐藏列名行（列名在上下排里
+ * 对不上号）。代码面板本身已是竖排全文，不再有单列/双列之分。 */
+@media (max-width: 1100px) {
+  #mcp-guide .mcp-tools .mcp-row-head { display: none; }
+  #mcp-guide .mcp-tools .mcp-row-item { grid-template-columns: 116px minmax(0, 1fr); row-gap: 2px; }
+  #mcp-guide .mcp-tools .mcp-row-item > code.mcp-args { grid-column: 2; }
+}
+@media (max-width: 700px) {
+  #mcp-guide .mcp-sec { padding: var(--s4); }
+  #mcp-guide .mcp-kv-row,
+  #mcp-guide .mcp-trouble .mcp-row-head, #mcp-guide .mcp-trouble .mcp-row-item {
+    grid-template-columns: minmax(0, 1fr); row-gap: 2px;
+  }
+  #mcp-guide .mcp-trouble .mcp-row-head { display: none; }
+  #mcp-guide .mcp-sec-hint { display: none; }
+}

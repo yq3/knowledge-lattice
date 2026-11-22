@@ -6,9 +6,21 @@
 
 ## 1. 项目状态与边界
 
-- POC 阶段，2026-10-28 自 lab 仓拆仓独立演进（拆仓前的 issue 评审 #31~#42 指向 lab 仓；仓内携带的历史 PR #47~#55 为迁移前合并记录）。
-- M0a / M0b / M1 已交付（M1 收尾归档见检查点 m1-5，TC-UI 手动走查待用户执行）；**M2 全部交付 ✅（2026-11-02 m2-5 收口段双通过——主线 6/6 + 语义轨道 6/6：m2-1 worker 框架 PR #2、m2-2 审计/备份 PR #3、m2-3 管理面 PR #5、m2-4 生产化认证 PR #11、m2-6 管理面补全与嵌入执行体 PR #12、m2-5 收口段〔跨组织隔离全绿 TC-OPS-09/T15/TC-AZ-04+REST-PG 残项+G-6 halfvec 复测〔不引入〕+全链 SLO 复跑 1361.6ms PASS+G-7 rerank 百炼联调〔DashScopeReranker provider〕+G-8 首次真实模型数据〔百炼 text-embedding-v4：真实基线/MRL/指纹阈值〕+TC-PERF-05 真实边图全达标+P3-7 hardening+配置切换便利性〔换供应商仅 env 零代码〕+B① 4/4——门禁 1651+1→1715+1 双后端双模式 0 skipped，2026-11-02 双通过〕、m2s-1~m2s-6 语义轨道〔M2-S1/S2/S3 整行收口——PR #4/#6/#7/#8/#9/#10〕；G-2/15/16/17/18/19/21 收口，G-22~G-27 登记含 m2-5 新增语义 gate ⑨），段序总表/进度/挂账见 [.opencode/workflows/_m2-plan.md](.opencode/workflows/_m2-plan.md)（M2 终态档案）；**下一段 M3（未开工，拆 5 段——m3-1 管理面补强〔#13 五方法+#14 停用+G-24①〕/m3-2 查询级审计〔G-22+T-S9⑥〕/m3-3 语义 hardening〔#15 G-24⑨+G-23 残余〕/m3-4 评测框架〔TC-EVAL-02/04+ragas〕/m3-5 评测收口〔TC-EVAL-03/05+MRL 判据〕，2026-11-02 用户确认；部署期：真实 IdP/rerank 网关联调；用户侧：TC-UI 手动走查——M1+M2 达成宣告唯一待勾）——段序总表/挂账/口径裁定预告见 [.opencode/workflows/_m3-plan.md](.opencode/workflows/_m3-plan.md)**；M2 之前 agent 侧以「同 schema 的 Git YAML + 本地 AC 自动机」过渡。
-- 文档版本随实现高频勘误（多数批次为非决策变更）——引用时以各文档头部版本行为准，不要背版本号。
+- POC 阶段，2026-10-28 自 lab 仓拆仓独立演进：拆仓前的设计评审 issue #31~#42、以及 M0a~M1 的 PR #44~#55 都在 lab 仓；本仓 PR 自 #1 起。
+- **里程碑全部交付 ✅**：M0a / M0b / M1 / M2 / M3 / M4 均已完成（M4 于 2026-11-21 经 PR #29 合入 `develop`，mergeCommit `df8344a`）。
+  - M2（2026-11-02 收口）：worker 框架、审计与备份、管理面、生产化认证、语义轨道（M2-S1~S3）。
+  - M3（2026-11-10 收口）：管理面补强、查询级审计、语义 hardening、评测框架与评测收口（受限宣告见档案）。
+  - M4：D25 内置账号 / 邀请制 local 形态；默认 sso 形态（SSO/JIT/委托/可信）零变化。
+  - **M4 后增量（非里程碑，均已合入 `develop`）**：D26 local 形态 agent key（2026-11-22，PR #35，issue #34）；用户走查批——控制台「MCP 接入」页、界面文案卫生、时间显示本地化（2026-11-22，PR #36/#37）。
+- **逐段交付证据、门禁数、裁定与挂账不在本文件复述**：M2 / M3 / M4 终态档案分别在 [.opencode/workflows/_m2-plan.md](.opencode/workflows/_m2-plan.md)、[.opencode/workflows/_m3-plan.md](.opencode/workflows/_m3-plan.md)、[.opencode/workflows/_m4-plan.md](.opencode/workflows/_m4-plan.md)（M4 另有检查点 `.opencode/workflows/task-knowledge-lattice-m4-4.md`）；验收完成态以 [docs/TEST-CASES.md](docs/TEST-CASES.md) §六对照表为准（M0~M4 + D26 行）。
+- **仍未勾的验收项**（用户侧 / 部署期，不阻塞已交付代码）：
+  - TC-UI / TC-KEY 人工走查（`manual` 组不进门禁）：M1 / M2 / M3 达成宣告共同待勾 + M4 TC-UI-06·07 + TC-UI-08（时间显示）+ TC-KEY-08·09（Agent 密钥 / MCP 接入页）。
+  - 评测真实数据（chat 端点配额受阻）：TC-EVAL-02 LLM 候选占比、TC-EVAL-03 真实 judge 校准与 A-6 阈值、响应层真实基线——配额恢复后补跑。
+  - 部署期：真实 IdP / 公司 rerank 网关联调、G-28③ 生产 PG 接线、G-28①②⑥⑧ 触发时处置、G-30（真实 agent 部署时）。
+- **开放待决项**（[requirements §9](docs/requirements.md)）：待决-1（真实样例语料与业务问题）/ 2（企业 SSO 协议与 token 属性）/ 3（agent 侧 token 换取或可信子系统）未决；待决-4/5/6 已关闭。
+- **当前门禁基线**：2190+1 用例（+1 = `manual` 组 deselected），sqlite + pg 双后端 × 常规 / `python -O` 双模式 0 skipped（pg 臂 809；2026-11-22 走查批后）——数字随批次变化，以最近检查点为准。
+- D25 非目标（G-31~G-34 不划销）：hybrid 账号绑定、SMTP、MFA、refresh token、多实例共享限流。
+- D26 非目标（G-35 不划销）：key 过期 / 自动轮转 / 细粒度 scope / 失败认证审计；local 的 agent 供数走 agent key，**不再需要切 `sso` 形态**；hybrid 账号绑定仍非目标。
 - 明确不做：GraphRAG / 图数据库（业务语义 = 类型化对象图，关系展开 SQL 可达）；ES 召回引擎、指标栈监控等只登记为演进缝（NFR-5）；不绑云厂（模型端点中立）。
 
 ## 2. 文档地图与设计冻结纪律（最重要）
@@ -20,14 +32,15 @@
 | [docs/TEST-CASES.md](docs/TEST-CASES.md) | 验收用例展开层：design §9 冻结 T / T-S 编号的展开 + 模块 TC-* 用例 + 里程碑验收对照表；**活文档** |
 | [docs/known-gaps.md](docs/known-gaps.md) | 已预见问题登记（G-n，对策之后仍残留的缺口与开放点）；**活文档** |
 | [prototype/index.html](prototype/index.html) | 交互原型（mock 数据）：信息结构与 UI 风格**双基准**（含语义层视图） |
-| [RUNBOOK.md](RUNBOOK.md) | 运维手册（重嵌入蓝绿 / 审计分区回溯 / 双方言迁移注意）——运行侧活文档 |
+| [RUNBOOK.md](RUNBOOK.md) | 运维手册（重嵌入蓝绿与供应商切换 / 组织停用 / 查询审计 / 评测 / 内置账号 / Agent 密钥 / 控制台时区 / 审计分区 / 迁移 / 备份恢复）——运行侧活文档 |
+| [docs/MCP-INTEGRATION.md](docs/MCP-INTEGRATION.md) | Agent 侧 MCP 接入指南（端点/认证/客户端配置/工具清单/上传/排错）——运行侧活文档 |
 | `benchmarks/` | 实验 / 压测脚本与报告（report-*.md 归档，结论回写 known-gaps 或正文） |
-| `eval/` | 评测语料（corpus.jsonl）与黄金集（golden.jsonl） |
+| `eval/` | 评测语料（corpus.jsonl / semantic_golden.jsonl）、黄金集（golden.jsonl）与报告归档（reports/） |
 
 **设计冻结纪律**：
 
 - `docs/` 下 requirements / design 两正文**仅在决策变化时修改**——决策变更走 issue + D 编号（先例：#35→D23 语义层并入、#41→D12 修订 + D24 双后端）；实现问题走测试用例与 issue，不动正文。措辞勘误、随实现回写口径的批次须在版本行声明「非决策变更，D 编号与冻结结论不动」。
-- 活文档（TEST-CASES / known-gaps / RUNBOOK）不受冻结约束、随实现回写；TEST-CASES 与正文冲突时以正文为准并开 issue。
+- 活文档（TEST-CASES / known-gaps / RUNBOOK / docs/MCP-INTEGRATION.md）不受冻结约束、随实现回写；TEST-CASES 与正文冲突时以正文为准并开 issue。
 - 原型微调属非决策变更、不动 D 编号决策。
 - 编号体系沿用既有口径，不新造体系：D-n 决策 / FR·NFR 需求 / T·T-S 冻结测试（design §9）/ TC-\* 模块用例 / G-n 已预见缺口 / 待决-n 待选型 / A-n 用例附录待澄清口径。
 
@@ -37,18 +50,25 @@
 src/knowledge_lattice/
 ├── app.py            # FastAPI 装配（api 各 router + MCP mount + 静态页壳）
 ├── config.py / log.py
+├── tzdisplay.py      # 控制台显示时区解析（存储/接口恒 UTC，仅展示换算）
+├── query_audit.py    # 查询级审计异步队列（m3-2）
 ├── core/docs/        # 文档域业务（ingest / chunking / retrieve / acl / quality / credentials…）
 ├── core/semantic/    # 业务语义域（D23 并入）——与 core/docs 包级互斥
+├── domain/           # 身份 / 账号 / agent key / 审计事件域模型（auth / accounts / agent_keys / audit_events / models）
 ├── store/            # StorageBackend 协议 + sqlite/ postgres/ 双方言包（migrations / fts / vec / acl_render / audit）
-├── adapters/         # 外置依赖适配（embedder / reranker / parser_docling / tokenizer / breaker…）
-├── api/              # REST 端点（upload / documents / tasks / search / quality / admin）
+├── adapters/         # 外置依赖适配（embedder / reranker / auth_sso / parser_docling / tokenizer / breaker…）
+├── api/              # REST 端点（upload / documents / tasks / search / semantic / quality / admin / auth / users / agent_keys）
 ├── mcp/              # MCP server（docs + semantic 两组工具）
-├── web/              # 前端薄壳（原生 HTML/JS/CSS + i18n.js 中英双语——FR-8，服务端不感知语言）
-└── worker/           # 任务子进程（ingest / reindex / reembed / delete + maintenance）
+├── web/              # 前端薄壳（原生 HTML/JS/CSS + i18n.js 中英双语——FR-8；D25 登录/用户、D26 Agent 密钥/MCP 接入）
+└── worker/           # 任务子进程（ingest / reindex / reembed / semantic_sync·build·retag + maintenance；delete 预留）
 ```
 
+- **D25（M4）新增模块**：`domain/accounts.py`（本地账号域）、`api/auth.py` / `api/users.py`、迁移 0012（`users` 扩列 + `user_invitations` + `instance_setup`）、`web/views/login.js` / `users.js`。
+- **D26（M4 后增量）新增模块**：`domain/agent_keys.py`（每 agent 长期凭据域）、`api/agent_keys.py`、迁移 0013（`agent_keys`）、`web/views/agent_keys.js`（管理页）/ `mcp.js`（接入向导）；Agent 侧接入指南 `docs/MCP-INTEGRATION.md`。
 - **core 不写方言 SQL**——所有 SQL 下沉 `store/<dialect>`（backend.py 协议按域分节组合）；core 是纯业务编排。
 - `auto_entities` 识别钉在 api / mcp 层——core 两包不交叉；分层与边界规则的权威定义在 design §3，重构或加模块前先对照。
+- **界面文案纪律（2026-11-22 用户走查）**：用户可见文案（i18n 字典值 / 视图渲染串）**不得含仓内编号**（`D-n` 决策 / `#issue` / `G-n` 缺口 / `FR-/NFR-n` / `§` / `M*-S*` 里程碑 / `TC-*` 用例号 / `POC`）、仓内文档路径与裸接口路径——编号是评审/用例/缺口登记用的仓内语言，业务与数据用户看不懂。由 `tests/test_ui_copy_hygiene.py` 断言（例外：`views/mcp.js` 接入代码块与代码注释）。
+- **界面时间口径（2026-11-22 用户走查）**：库内与接口恒为 UTC；控制台只按显示时区渲染（`LATTICE_DISPLAY_TZ` → `GET /api/auth/config` 的 `display_tz` → 前端 `fmtTs`/`short`）。**不得为显示改存储 / 迁移 / 审计月分区 / 凭证 `expires_at` 契约**；CSV 导入导出保持 UTC。
 - 测试 `tests/` 按模块前缀命名（acl_ / ing_ / fts_ / emb_ / e2e_ / pg_…），双后端参数化（`[pg]` 条目）；fixtures / fake_providers.py 提供协议级测试替身，验收离线确定。
 
 ## 4. 工具链与常用命令
@@ -63,7 +83,7 @@ src/knowledge_lattice/
   语义（fail-closed）：未设 DSN 直接失败，绝不静默绿；pg 臂收集数 >0（防参数化被删的假绿）；常规 + `python -O` 双模式全量；**skip = 失败**。
 - 日常单测 `uv run pytest`（sqlite 默认后端，无需容器）；筛选用 `-m "not manual"`（manual = TC-UI 浏览器人工走查，不进门禁；`pdf_models` = 需 docling 模型权重，首次运行联网下载）。
 - 无独立 lint / typecheck 工具链（未配置）——质量门禁 = pytest 门禁 + review。
-- 配置走环境变量（`LATTICE_*`，模板见 .env.example）；`.env`、`data/` 不入库，密钥只走 .env / 环境变量。
+- 配置走环境变量（`LATTICE_*`，模板见 .env.example）；`.env`、`data/` 不入库，密钥只走 .env / 环境变量。**服务不自动读取 `.env`**——本地用 `uvicorn --env-file .env` 注入，部署侧由进程管理器注入。
 
 ## 5. Git 与多 Agent 工作流
 
@@ -81,7 +101,7 @@ src/knowledge_lattice/
 
 ## 7. PlantUML 渲染（流程图）
 
-仓库内文档（如 `.opencode/README.md`）用 ```puml 代码块嵌图。已验证可用的本地渲染流程（在线服务不可用，别用）：
+仓库内文档（如 `.opencode/README.md`）用 `puml` 代码块嵌图。已验证可用的本地渲染流程（在线服务不可用，别用）：
 
 - **下载 jar**（本机有 java，无需 brew/graphviz；api.github.com 下载会超时，用阿里云 maven 镜像）：
   ```bash

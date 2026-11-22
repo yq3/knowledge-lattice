@@ -15,9 +15,9 @@
 | [G-3](#g-3-restricted-实体静默缺失agent-不知道自己缺信息) | 已接受（衍生效应；条件性扩大预登记 #37） | restricted 实体无权时全程无信号，agent 把「无权」当「不存在」 | T-S9 / design §6.3 · #37 | 2026-10-19 |
 | [G-4](#g-4-l0-注入陈旧性dict_rev-记录了但没闭环) | 待澄清（M2-S3 实现前） | L0 进 system prompt 后无刷新机制，dict_rev 记了没人比对 | design §6.3 · §6.2 | 2026-10-19 |
 | [G-5](#g-5-容器化重部署数据易失裸机形态假设与快照恢复引导缺口) | 待澄清（部署平台确认前） | 平台重分配易失容器则 `data/` 随容器销毁；快照机制已有但目的地与启动恢复引导未闭环 | NFR-1 / NFR-10 / D2 / design §2 | 2026-10-19 |
-| [G-6](#g-6-pg-后端已知差异fts-评分函数与向量索引维度上限d24) | 已接受（收窄①②已闭环——环境确认 + M1-5 校准（停用词 +7.14pp/ts_rank_cd 0 差异/OR 材料齐备）；**新增：PG 5万 N=5 并发 P95 2443.2ms 超标 + 双路召回预算缺口——M2 halfvec 索引化复测（裁定②）**） | PG 后端 FTS 评分与 SQLite 不逐字一致；pgvector 索引 2000 维上限需 halfvec 或精确扫描起步 | D24 / NFR-2 / design §7 · TEST-CASES A-17 | 2026-10-21 |
+| [G-6](#g-6-pg-后端已知差异fts-评分函数与向量索引维度上限d24) | 已接受（收窄①②已闭环——环境确认 + M1-5 校准（停用词 +7.14pp/ts_rank_cd 0 差异/OR 材料齐备）；**新增：PG 5万 N=5 并发 P95 2443.2ms 超标 + 双路召回预算缺口——M2 halfvec 索引化复测（裁定②）**；v1.5——m3-5 真实模型 60q 复测偏差 3.33pp 维持不关闭） | PG 后端 FTS 评分与 SQLite 不逐字一致；pgvector 索引 2000 维上限需 halfvec 或精确扫描起步 | D24 / NFR-2 / design §7 · TEST-CASES A-17 | 2026-10-21 |
 | [G-7](#g-7-网关-rerank-端点形态未确认openai-无-rerank-标准) | **已闭环**（2026-10-22 用户确认） | 网关提供 Cohere 风格 /rerank——Reranker 按 Cohere 契约实现，none 保留为降级路径 | D12 / FR-2 / 需求待决-5 | 2026-10-21 |
-| [G-8](#g-8-嵌入模型治理三件开放点mrl-截断指纹阈值迁移方案) | **部分闭环（2026-10-27——迁移方案已定；MRL/指纹阈值代理面校准完成：截断 r@10 0 损失/fp16 噪声底 1.0——真实模型与真实抖动两维受阻申报，M2 复验）** | ~~重嵌入方案一/二选择~~ 已定；剩 MRL 真实模型复验、指纹阈值真实抖动校准两项（代理面已出数） | D12 / FR-1 / design §5.3 · M0b | 2026-10-21 |
+| [G-8](#g-8-嵌入模型治理三件开放点mrl-截断指纹阈值迁移方案) | **①已收口（2026-11-10 m3-5——MRL 判据落笔：M3 完整集 60q 真实 API 512/256 两档全 0.00pp，「截断开放为可选配置」成立）；②维持 0.99/0.95（真实抖动未校准）；③已定** | ~~MRL 截断判据~~ 已收口（真实语料部署复标留待决-1）；剩指纹阈值真实抖动校准（换底模事件时执行） | D12 / FR-1 / design §5.3 · M0b | 2026-10-21 |
 | [G-9](#g-9-间接-prompt-injection输入侧防护-mvp-不实现出站外传与-agent-上传传播向量无对冲) | 已接受（附收窄动作） | 被注入 agent 持合法委托 token 外传用户可见内容（出站无 DLP）；agent 经上传凭证具写路径，注入文档可植入语料内部传播 | NFR-6 / D18 / FR-1 / design §5.3~5.4 · §6.3 | 2026-10-21 |
 | [G-10](#g-10-网关侧请求留存策略未确认嵌入rerank-外发内容可能落-acl-管辖之外的存储) | 已接受（同信任域——用户决策 2026-10-22） | 网关日志/正文留存策略未确认；若留存，受限维度内容落本服务 ACL 管辖之外 | NFR-6 / D12 / 需求风险表（#42 必修1） | 2026-10-22 |
 | [G-11](#g-11-目标机系统-python-399-低于运行时口径doclingfastmcp-硬性要求-310) | 已接受（对冲已定——uv 托管 CPython 3.12；M0a 断言与部署 runbook 待落） | 目标机系统 Python 3.9.9 装不上 docling/FastMCP（均 ≥3.10）——自带解释器对冲，系统解释器不作为依赖 | NFR-1 / D1 / D2 / D11 / design §7 | 2026-10-22 |
@@ -31,12 +31,20 @@
 | [G-19](#g-19-五源每天一次兜底调度未接线design-§58-适配器表半句) | **已收口**（m2s-4 R1——maintenance 挂载 semantic_daily_sync：五源/日·窗口跨零点·pending 幂等·sem_sync_runs 24h 与 webhook 去重） | design §5.8 适配器表「每天一次兜底」半句——五源仅 webhook/手动两路径，app 兜底循环只认领任务行不投递同步；长期无 webhook 的源停留旧快照 | FR-S1 / design §5.8 · M2-S1 | 2026-10-31 |
 | [G-20](#g-20-webhook-验签前读取完整请求体无大小上限公网入口内存放大) | 已接受（私有化内网面+部署侧反代限流兜底） | webhook 验签前 `await request.body()` 无上限——公网入口内存放大（design 未要求）；公网直曝部署时补应用层上限 | 安全 / design §6.2 · M2-S2 | 2026-10-31 |
 | [G-21](#g-21-annotatello-读-live-快照而非-build-产物冷缓存重启窗口-rev-锚点失真评测门禁非持久m2s-4-p2-1-方案-b-登记项) | **已收口**（m2s-5 方案 A：0008 快照附表+按 current build 取快照+冷缓存/重启服务 build 产物；残留 8 项登记〔快照 GC/pg CHECK/对账双层口径等〕；**m2s-6 核销 6 项+再挂 2 项**〔mixed-mode/l0_extra〕2026-11-01） | annotate/L0 恒读 live：冷缓存/重启 rev 锚点失真、评测拦下词典重启后仍被服务、sync→build 窗口内容/rev 错配 | 语义 / design §5.8·§5.9 · M2-S2 | 2026-10-31 |
-| [G-22](#g-22-查询级异步审计未实现fr-6-既有缺口ts9⑥a-16) | 已登记（POC 接受——事件级审计已闭环，查询级挂起） | 查询级异步审计全库未实现——T-S9⑥/A-16 挂起，refused 查询不可回溯 | FR-6 / design §6.3⑥ · T-S9 | 2026-11-01 |
-| [G-23](#g-23-模糊索引最终一致的残余窗口m2s-6-裁定-5-口径落地后) | 已登记（下批收口——正常路径与写失败路径已覆盖，异常窗口极窄） | `embed_model` 未入内容集合（模型迁移+崩溃窗口向量层静默为空）/标记粘滞（静态词典重触整替）/per-skip 全量重算/`fuzzy_repaired` 观测语义/构建产物 code versioning | design §5.8 · m2s-6 | 2026-11-01 |
-| [G-24](#g-24-语义面-p3-残留集合m2s-6-交付后登记) | 已登记（m2-5/下批分项收口） | `sem_restricted` 无授予入口/持权审计两漏记/vec 档无有界超时降级审计/模糊内存面性能/auto_entities 超长不降级/L1 缺 disambiguation/审计常量登记处 | design §6.3 / NFR-8·11 · m2s-6 | 2026-11-01 |
+| [G-22](#g-22-查询级异步审计未实现fr-6-既有缺口ts9⑥a-16) | **已收口**（m3-2——六入口查询审计+T-S9⑥/A-16 收口） | ~~查询级异步审计全库未实现~~（m3-2 划销——query_audit.py 月库直写+链防叉互斥+refused+sysadmin 脱敏） | FR-6 / design §6.3⑥ · T-S9 | 2026-11-01 |
+| [G-23](#g-23-模糊索引最终一致的残余窗口m2s-6-裁定-5-口径落地后) | ✅ 已收口（m3-3，2026-11-08——①~⑤全清） | ~~`embed_model` 未入内容集合/标记粘滞/per-skip 全量重算/`fuzzy_repaired` 观测语义/构建产物 code versioning~~（m3-3 划销） | design §5.8 · m2s-6 | 2026-11-01 |
+| [G-24](#g-24-语义面-p3-残留集合m2s-6-交付后登记) | ✅ 已收口（m3-3，2026-11-08——⑥⑦⑨划销，全项清） | ~~全部分项~~（①②③④⑤⑧ m2-5/m3-1/m3-2+⑥⑦⑨ m3-3 划销） | design §6.3 / NFR-8·11 · m2s-6 | 2026-11-01 |
 | [G-25](#g-25-可信子系统限流器进程内态m2-4-登记) | 已登记（重开=多进程/多实例部署） | `ServiceRateLimiter` 进程内存态——多 worker/多实例部署限流不跨进程共享（线程锁已加、计数并发安全） | design §2 L810 · m2-4 | 2026-11-01 |
 | [G-26](#g-26-认证拒绝路径审计写放大m2-4-登记) | 已登记（部署侧准入兜底） | `unknown_service` 等 refused 审计由未认证调用方可触发——无界写 audit_outbox（T13 设计强制 vs 写放大权衡） | design §5.5/T13 · m2-4 | 2026-11-01 |
 | [G-27](#g-27-reembed-覆盖率未收敛fail-closedm2-6-登记) | 已登记（可选收窄=runner 按 error 分类回队） | reembed 全库覆盖率未收敛时任务 failed **留人工**（不再自动重试——并发持续摄取极端窗口）；附：members 守卫 pg 咨询锁 `hashtext(org)` 键碰撞=跨组织偶发串行化（纯性能面，事务级即释） | design §5.3 / RUNBOOK §1 · m2-6 | 2026-11-01 |
+| [G-28](#g-28-查询审计与前端开放点集合m3-2-交付后登记) | 已登记（④⑤⑦已划销+③机制与测试已交付——m3-3；①②⑥⑧触发时处置） | 查询审计覆盖面/矩阵 m×n 无护栏/~~PG 接线三件~~〔③机制+测试已交付 m3-3，残余=生产 lifespan 接线部署期〕/~~flush 全月扫描~~/~~链互斥并发测试缺口~~/refused 写放大/~~溢出观测面~~/哈希链 \x1f 硬化 | FR-6 · design §6.3⑥ · m3-2 | 2026-11-08 |
+| [G-29](#g-29-评测框架选型钉版与门禁残余开放点m3-4-登记) | 已登记（③ **已划销** m3-5——RR exact+同源校验+clean env 漏检面关闭；④ 裁定维持主依赖〔用户 2026-11-10〕；①钉版维持+复评条件明确；②lock 副作用维持；⑤ judge 判读词表残余登记） | ragas 上游断裂钉版/统一 lock docling 共享依赖降级副作用/~~per-query RR exact 缺位漏检面~~/deepeval 依赖分组口径（维持）/judge 判读残余（真实联调记录解析误判率） | design §7 · D2 · TC-EVAL-02/03/04 · m3-4/m3-5 | 2026-11-09 |
+| [G-30](#g-30-tc-eval-05-在线锚点数据面缺口应答引用采集入口与-agent-标识m3-5-登记) | 已登记（重开=真实 agent 部署） | agent 最终应答引用 chunk_id 无采集入口、审计 actor=裸 user_id 无 agent 标识/session——TC-EVAL-05 现以 search 返回面为锚点（用户裁定 N-1 2026-11-10）+构造会话形态；生产 `--db` sampler 的 actor_prefix 待部署配置 | FR-6 · design §6.3⑥ · TC-EVAL-05 · m3-5 | 2026-11-10 |
+| [G-31](#g-31-邀请交付无-smtp线下链接的泄露与运维缺口d25-登记) | 已登记（POC 接受） | 邀请/重置链接只能管理员复制线下交付——链接经聊天/邮件转发可能泄露；过期/撤销后需人工重发；无 SMTP 自动通知 | D25 / FR-9 / RUNBOOK §1.ab | 2026-11-19 |
+| [G-32](#g-32-本地口令安全基线残余无-mfa无泄露库校验进程内限流d25-登记) | 已登记（POC 接受；企业回 sso） | 本地口令无 MFA、无泄露库校验、限流进程内（多实例不共享）、登录失败审计写放大；管理员预登记初始密码场景需强制改密 | D25 / FR-9 / design §5.5 | 2026-11-19 |
+| [G-33](#g-33-无-hybrid-账号绑定local-与-sso-同实例二选一d25-登记) | 已登记（phase 1 二选一） | 同一实例不同时支持 local+SSO 登录；存量 JIT 用户无本地密码；local 模式无 SSO 时 MCP 不可用（D18 供数链路需 sso 模式或 phase 2 sso_sub） | D25 / D16 / D18 | 2026-11-19 |
+| [G-34](#g-34-本地会话-localstorage-与撤销窗口d25-登记) | 已登记（POC 接受） | 本地 session 存 localStorage（XSS 面）；无 refresh；`tv` 只覆盖改密/重置，登出不撤销服务端；被盗 token 在 12h TTL 内有效 | D25 / FR-9 / design §5.5 | 2026-11-19 |
+| [G-35](#g-35-local-agent-key-为长期用户凭据无过期轮转细粒度-scope失败认证不写审计sysadmin-可跨组织管理d26-登记) | 已登记（POC 接受；生产回 D18） | local agent key 永不过期、无轮转/细粒度 scope；失败认证不写审计；sysadmin 可跨组织管理 | D26 / design §5.5 · §10 | 2026-11-21 |
 
 ---
 
@@ -101,7 +109,7 @@
 - **设计现状与对冲**：①RRF 只看名次、融合后 top-k 集合差异被大幅抹平，TEST-CASES 排序类断言按「名次集等价」执行（A-17）；**v0.8 补：评分方向差异（SQLite `bm25()` 越小越好 / PG `ts_rank` 越大越好）已在 backend 内吸收为名次、PG tsquery 转义口径已定（design §5.2）**；PG 侧用应用层 jieba 预分词 + `to_tsvector('simple', …)` 五列 GENERATED（**显式 regconfig 双参——GENERATED 要求 immutable，design §4 PG 映射**）+ 加权 `ts_rank` 求和（不依赖 zhparser/ParadeDB）；②`halfvec(2560)`（fp16，索引上限 4000、存储减半）**——注意与 SQLite float32 的距离结果不完全一致，绝对分值不跨后端比对（名次集等价口径已覆盖）**/ MRL 截断 ≤2000 / 不建索引走精确扫描——三条出路见本条与 design §10「PG 后端差异」行（design §4 注仅指向本条）；③**精确扫描起步**（与 SQLite 暴力扫语义完全一致），HNSW 启用需 pgvector ≥0.8 `hnsw.iterative_scan=strict_order` 并重跑越权矩阵；**越权安全不受①②③影响**（WHERE 仍生效 + 返回前二次断言），受影响的只是召回完整度与排序一致性。
 - **残留缺口**（接受的）：两后端检索质量不承诺逐分一致，黄金集须分后端校准（M1 小型集 / M3 完整集各一份基线）；PG 索引化时机与 halfvec 质量损失未标定；**jieba 词典升级需触发 PG 分词列全量重算**（GENERATED 依赖应用层分词结果——design §4 PG 映射已登记，重算迁移随 v1.1 已就位的迁移框架执行）。**v1.1 注记（2026-10-25，M0b-3）**：`chunk_vectors.embedding` 为无维度 `vector` 列 + `<=>` 精确扫描（不建 HNSW——2560 维超 `vector` 索引 2000 上限，halfvec/表达式索引评估随 M1）；重算迁移经 `schema_migrations` 框架（锁外建表竞态双捕获形态见 design §3）。**v1.2 注记（2026-10-27，M1-5 校准实测——判据落笔经用户裁定②）**：**PG 5 万块 N=5 并发 P95 超标已触发**——池化/每线程连接后真值 **2443.2ms > 2s**（此前 3437.5ms 为客户端单连接串行化假象，已作废；改善 -29% 后余扫描级争用：5 路并发 `<=>` 精确扫描对容器 CPU/内存带宽竞争），**单请求四组合全部达标**（全组合全轮次观测带 474~1191ms ≤2s——含 pg-5万 两轮 836.2/1106.2，跨轮容器方差 ±25%）；**双路召回预算缺口**：5 万档 recall 段 >300ms 预算（R2 轮 440.4 sqlite/405.6 pg；R3 轮 pg 640.4——两轮均超，结论稳健；两后端同源精确扫描，独立于并发）；**10 万档未测**（2026-10-24 用户拍板「不压测、不搞大数据量」——TC-PERF-01 缩档裁定 1/5 万；本段任务书 1/5 万口径；TC-PERF-03 正文 ~10 万档本段未测）。处置（M1-5 裁定②）：M1 交付口径 = **P95 基线出数**（TC-PERF-03 分项标定完成，见 benchmarks/report-m1-5.md），NFR-8 条文不动、并发达标**顺延 M2 halfvec/表达式索引化后复测**（bench7 评估脚本已入库——known-gaps 收窄③），双路召回预算缺口与并发项同批 M2 复测。
 - **收窄动作**（①已闭环；②③未排期，不构成决策变更）：①~~M0b PG spike 先确认公司 PG 扩展白名单与版本（需求待决-6）~~ **已闭环（2026-10-22）**——用户确认公司环境为 **PG 16 + pgvector 0.8.x**（requirements 待决-6 关闭）；0.8.x 能力核对（官方 CHANGELOG/README，2026-10-22）：**迭代扫描自 0.8.0**（`hnsw.iterative_scan = strict_order / relaxed_order`，配 `hnsw.max_scan_tuples` / `hnsw.scan_mem_multiplier` 调节——本条③的 HNSW 启用前提满足；`relaxed_order` 召回优于 `strict_order` 但结果顺序略松，本服务「名次集等价」断言口径可容纳，列为 M1 黄金集实验选项）；**halfvec 自 0.7.0、索引上限 4000 维**（本条②出路可用——`vector` 列 + 表达式索引 `(embedding::halfvec(2560)) halfvec_cosine_ops` 为官方文档形态）；0.8.1~0.8.7 均为缺陷修复与兼容/性能改进、无功能性变更（0.8.2 并行 HNSW 构建缓冲区溢出、0.8.3/0.8.4 HNSW vacuum 相关缺陷——部署与 CI 镜像按 0.8.x 最新取用，具体小版本随 M0b spike 按实例核对）；0.9.0（未发布）将弃 PG 13/14——PG 16 不受影响；②**✅ 校准已完成（2026-10-27，M1-5——B-3 决策路径用户拍板版）**：黄金集双后端偏差 r@10 −10.72pp / MRR −10.68pp（>2pp 触发；6/28 query 逐条归档）→ TokenBag 代理确认 q01/q10 疑问词零召回与停用词假设吻合 → **停用词滤除实验 +7.14pp 精确命中**（0.7857→0.8571，sqlite 零变化、纯 PG 侧修复候选）；**ts_rank_cd 排序对照 0.00pp 差异**（印证「不能解 AND 零召回」）；OR 口径变更**未动**（§5.2 钉死口径——决策建议材料已备：真实模型重测受阻申报〔qwen3-embedding-0.6b 首选接入方案〕→ 停用词评估 → OR 决策流程，随 M2 执行）；③halfvec vs 精确扫描 10 万块 P95 对比（TC-PERF 联动）——**未执行（2026-10-26 用户裁定顺延）**：bench7 脚本已入库（定性现象：10 万块精确扫描标定运行耗时过长本身即索引化动机信号），M2 索引化决策时执行。
-- **重开条件**：两后端黄金集偏差持续 >2pp 且 RRF 抹不平；或公司 PG 明确允许 ParadeDB（届时改为真 BM25 可消除①）；或 PG 侧 10 万块精确扫描 P95 超标必须索引化。**v1.2 补记（2026-10-27）**：偏差 10.72pp 的构成已归因（疑问词零召回——停用词可解 +7.14pp；余量真实模型泛化待验），不构成「RRF 抹不平」的重开触发；**5 万档 N=5 并发 P95 2443.2ms 已达「精确扫描 P95 超标」实质**（低于名义 10 万档、高于验收线）——M2 halfvec 索引化复测兑现时本条进入收窄。**v1.3 注记（2026-11-02，m2-5 收口段实测——首次真实嵌入数据）**：①**全链 SLO 复跑**：bench5 形态（同脚本同造数同口径）pg 5 万 N=5 **P95 1361.6ms ≤2s PASS**（P50 1074.6/P99 1545.5/rps 3.54；单请求 C_full 911.4ms〔recall 段 464.3ms〕）——与 M1-5 真值 2443.2ms **两数据并列保留**（-44% 环境负载差异超容器方差记录 ±25%，不做单方采信；生产首部署复测后定论）；**重开条件维持不关闭**；②**halfvec 索引化结论：不引入**——召回段对比 LIMIT1024 零收益、LIMIT64 overlap 0.12~0.56 欠召回（合成均匀向量最坏情形口径——10 万档/真实向量决策须再评估），表达式索引 391MB 无对应收益；全链 halfvec 档未测；③**双路召回预算缺口维持**（真实档 recall 段 464.3ms >300ms 预算）；④**真实模型基线**：百炼 text-embedding-v4 黄金集 r@10 sqlite 0.9286 / **pg 1.0000（28 query 饱和态——分辨率 ≈3.57pp，不足以关闭「>2pp 偏差」重开条件，本轮不成立保留重开；M3 完整集复测）**；TokenBag 代理系统性低估被证实（+3.57/+21.43pp）——此前基于代理面的停用词假设（+7.14pp）收益面待真实数据复核。数据 benchmarks/report-m2-5-g6-halfvec.md。
+- **重开条件**：两后端黄金集偏差持续 >2pp 且 RRF 抹不平；或公司 PG 明确允许 ParadeDB（届时改为真 BM25 可消除①）；或 PG 侧 10 万块精确扫描 P95 超标必须索引化。**v1.2 补记（2026-10-27）**：偏差 10.72pp 的构成已归因（疑问词零召回——停用词可解 +7.14pp；余量真实模型泛化待验），不构成「RRF 抹不平」的重开触发；**5 万档 N=5 并发 P95 2443.2ms 已达「精确扫描 P95 超标」实质**（低于名义 10 万档、高于验收线）——M2 halfvec 索引化复测兑现时本条进入收窄。**v1.3 注记（2026-11-02，m2-5 收口段实测——首次真实嵌入数据）**：①**全链 SLO 复跑**：bench5 形态（同脚本同造数同口径）pg 5 万 N=5 **P95 1361.6ms ≤2s PASS**（P50 1074.6/P99 1545.5/rps 3.54；单请求 C_full 911.4ms〔recall 段 464.3ms〕）——与 M1-5 真值 2443.2ms **两数据并列保留**（-44% 环境负载差异超容器方差记录 ±25%，不做单方采信；生产首部署复测后定论）；**重开条件维持不关闭**；②**halfvec 索引化结论：不引入**——召回段对比 LIMIT1024 零收益、LIMIT64 overlap 0.12~0.56 欠召回（合成均匀向量最坏情形口径——10 万档/真实向量决策须再评估），表达式索引 391MB 无对应收益；全链 halfvec 档未测；③**双路召回预算缺口维持**（真实档 recall 段 464.3ms >300ms 预算）；④**真实模型基线**：百炼 text-embedding-v4 黄金集 r@10 sqlite 0.9286 / **pg 1.0000（28 query 饱和态——分辨率 ≈3.57pp，不足以关闭「>2pp 偏差」重开条件，本轮不成立保留重开；M3 完整集复测）**；TokenBag 代理系统性低估被证实（+3.57/+21.43pp）——此前基于代理面的停用词假设（+7.14pp）收益面待真实数据复核。数据 benchmarks/report-m2-5-g6-halfvec.md。**v1.4 注记（2026-11-09，m3-4——M3 完整集基线出数）**：TokenBag 代理口径下双后端基线 60q/73docs——sqlite r@10 **0.9167**/MRR 0.8031、pg **0.8333**/MRR 0.7213（偏差 r@10 −8.34pp >2pp 维持；逐 query 诚实零清单：sqlite 3 条/pg 7 条 AND 语义不可达——登记 eval/reports/labeling-notes.md）；**G-6 重开条件复测载体就位**（eval/reports/m3-baseline-*.{md,json}+逐 query hits），真实模型复测与 MRL 判据落笔归 m3-5；基线数字与 deepeval 门禁冻结表同源互锁（TC-EVAL-04）。**v1.5 注记（2026-11-10，m3-5——MRL 复测顺带真实模型 60q 数据）**：D 组 G-8① 复测 full 档（百炼 text-embedding-v4）顺带给出真实模型完整集 r@10——sqlite 0.9667 / pg 1.0（偏差 3.33pp >2pp，**本条维持不关闭**；pg 满分 1.0 为分辨率内饱和——60q 分辨率 1.67pp，真实模型 vs TokenBag 代理口径不可比）；重开条件「两后端偏差持续 >2pp 且 RRF 抹不平」的裁定维持观察（真实语料部署后复标）。
 
 ## G-7 网关 rerank 端点形态未确认：OpenAI 无 rerank 标准
 
@@ -122,7 +130,7 @@
 - **设计现状与对冲**：①design §5.3 标签带 `:trunc` 后缀区分截断向量，与不截断向量不混算；②探针拒绝写入 + 告警是保守方向（误报代价 = 人工确认后换标签重嵌，不丢数据）；③两方案都保证 BM25 全程可用（useful-early），差别只在向量路降级窗口；TC-EMB-06 按方案一断言（M2），方案二选中则回写用例。
 - **残留缺口**：①②两项数值在真实语料（待决-1）与 M1 校准前无法定；指纹阈值在模型侧无文档可依，只能经验标定。③已定（见上）。
 - **收窄动作**：①**◐ 代理面校准完成（2026-10-27，M1-5）**：黄金集 2560 vs 1024 截断——recall@10 损失 **0.00pp**（双后端）/ MRR −1.63（sqlite）/−2.38（pg）pp（数据 benchmarks/report-m1-5-g8-mrl.md）；**口径申报：TokenBag 非 MRL 训练模型，截断对比为代理面**——真实 MRL 模型（qwen3 系）验证受阻申报（接入方案已备：env 三变量零产品改动），**「截断开放为可选配置」的判据落笔待真实模型复验**（M2）；②**◐ 可构造面校准完成（2026-10-27，M1-5）**：0.99/0.95 两档行为实测——同模型重嵌入 min cosine=1.0（无误报面）、fp16 量化噪声底 1.0（6 位小数，良性变换 4 个数量级余量）、漂移判定剖面（>1% warn / >5% reject，严格小于——边界值落上一档；数据 report-m1-5-g8-threshold.md）；**真实网关抖动分布受阻申报**（校准执行建议 3 步已附），数值维持保守临时值不变，M2 真实抖动到位后校准；③M0b 分表实验把「模型迁移蓝绿」列为判据之一（design §8 M0b-2）——✅ 已定（见上）。
-- **重开条件**：真实语料到位（待决-1）；或发生一次网关换底模事件（用真实偏差校准阈值）；或首次换模型需求出现（届时方案选择必须定）。**v2 注记（2026-11-02，m2-5 收口段——首次真实模型实测，百炼 text-embedding-v4）**：①**MRL 截断判据材料就绪**——服务端原生 dimensions 截断（512/256 两档×双后端）**本集分辨率内未观测到损失**（28 query 全 0.00pp、分辨率 ≈3.57pp——严格结论，M3 完整集 TC-EVAL-02 复标），显著优于 M1-5 TokenBag 代理面的客户端前缀截断（MRR −1.63~−2.38pp）；「截断开放为可选配置」判据落笔归 M3 完整集；②**指纹阈值维持 0.99/0.95**——百炼真实响应 60 样本（3 哨兵×20 次）余弦偏差全 1.0（同模型同端点确定性），无误报面、与 M1-5 可构造面结论一致；跨版本微调抖动分布未建模（换底模事件时按 M1-5 校准建议 3 步执行）；③开发态百炼维度枚举 [64,128,256,512,768,1024,1536,2048,3072]（**无 2560**——仓库默认 qwen3-embedding-4b:2560 维持中立，百炼档经 env 改维）。数据 benchmarks/report-m2-5-g8-real-model.md。待决-1 真实语料维持未决（m2-5 受阻申报顺延——材料 report-m2-5-blocked.md）。
+- **重开条件**：真实语料到位（待决-1）；或发生一次网关换底模事件（用真实偏差校准阈值）；或首次换模型需求出现（届时方案选择必须定）。**v2 注记（2026-11-02，m2-5 收口段——首次真实模型实测，百炼 text-embedding-v4）**：①**MRL 截断判据材料就绪**——服务端原生 dimensions 截断（512/256 两档×双后端）**本集分辨率内未观测到损失**（28 query 全 0.00pp、分辨率 ≈3.57pp——严格结论，M3 完整集 TC-EVAL-02 复标），显著优于 M1-5 TokenBag 代理面的客户端前缀截断（MRR −1.63~−2.38pp）；「截断开放为可选配置」判据落笔归 M3 完整集；②**指纹阈值维持 0.99/0.95**——百炼真实响应 60 样本（3 哨兵×20 次）余弦偏差全 1.0（同模型同端点确定性），无误报面、与 M1-5 可构造面结论一致；跨版本微调抖动分布未建模（换底模事件时按 M1-5 校准建议 3 步执行）；③开发态百炼维度枚举 [64,128,256,512,768,1024,1536,2048,3072]（**无 2560**——仓库默认 qwen3-embedding-4b:2560 维持中立，百炼档经 env 改维）。数据 benchmarks/report-m2-5-g8-real-model.md。待决-1 真实语料维持未决（m2-5 受阻申报顺延——材料 report-m2-5-blocked.md）。**v3 注记（2026-11-10，m3-5——①收口）**：**MRL 截断判据正式落笔**——M3 完整集 60q/73docs 双后端真实 API 复测（百炼 text-embedding-v4 服务端原生 dimensions 截断）：**512/256 两档 r@10 全 0.00pp**（分辨率由 28q 的 3.57pp 收紧至 **1.67pp**）、sqlite 256 档 MRR +0.84pp（=1/120 正向波动非损失）；判据材料 `benchmarks/report-m3-5-g8-mrl-fullset.md`（工件 data/bench-results/ gitignored 不入库）。**「截断开放为可选配置」成立**（M3 完整集分辨率内口径——经 env `LATTICE_EMBED_MODEL/DIM` 零代码、标签 `model:dim` 与全维不混算）；真实语料到位（待决-1）后部署期复标。②维持：指纹阈值 0.99/0.95 不动（跨版本微调抖动分布未建模，换底模事件时按 M1-5 校准建议 3 步执行）。
 
 ## G-9 间接 prompt injection：输入侧防护 MVP 不实现，出站外传与 agent 上传传播向量无对冲
 
@@ -241,9 +249,7 @@
 - **来源**：m2s-6 R1 Committer 需求边界审查（2026-11-01）——Tester「docs 查询审计通用套件间接覆盖」结论被推翻（grep 全库无任何 query-audit 实现/用例）。
 - **问题**：design §6.3⑥「annotate / get_entity 普通查询走查询级异步审计，与 docs 查询审计共用月库」全库未实现——docs 检索与语义查询均只有 outbox 权限/业务事件，无查询级 refused/普通查询落审计路径。T-S9⑥（无权尝试走查询级异步审计、refused 可回溯）无法按字面验收。
 - **设计现状与对冲**：FR-6 既有缺口、非 m2s-6 引入；事件级（restricted 持权访问 outbox）已闭环。T-S9 按用户裁定（2026-11-01）以 ①~⑤+持权路径收口。
-- **残留缺口**：查询级审计（语义+docs 两侧）实现与 T-S9⑥ 显式断言挂起。
-- **收窄动作（未排期）**：查询级审计落地时（建议独立任务/主线段）补 T-S9⑥+A-16 关闭。
-- **重开条件**：审计合规要求查询级可回溯时。
+- **✅ 已收口（m3-2，2026-11-08）**：六入口（REST/MCP × search·annotate·get_entity）查询级异步审计实现——`query_audit.py` 进程内异步队列（5s/满批 200/月库直写/关停 flush）+ `append_query_events` 双方言直写月库（哈希链入链）+ 两写道链防叉互斥（sqlite BEGIN IMMEDIATE/pg 咨询锁）+ refused（403 三因+get_entity 404 二值回查）+ sysadmin 元数据脱敏；**T-S9⑥ 真断言+A-16 收口**（TEST-CASES v1.9.16）；完整口径见 design v0.9.11 §6.3⑥ 注记。残余开放点移 G-28。
 
 ## G-23 模糊索引最终一致的残余窗口（m2s-6 裁定 5 口径落地后）
 
@@ -253,11 +259,13 @@
 - **收窄动作（未排期）**：下批合并修法——embed_model 入集合后标记触发面即冗余可整体移除+「再次 skipped 不重触」断言；性能项挂 m2-5（TC-PERF-05 同轮）。
 - **重开条件**：模型迁移场景上线前①必须收口。
 
+> **✅ 已收口（m3-3，2026-11-08）**：①~⑤全清——①`embed_model` 入对账集合（四元组 `{(entity_id, kind, text_norm, embed_model)}`；模型迁移崩溃窗口回归用例锁定：旧标签行内容恰等也触发整替）+**标记触发面整体移除**（任务 B① 授权——内容/覆盖三路对账完备性成立，真需修复场景无遗漏；标记保留写入仅观测、凡修复即清除）；②修复成功清 current 行 `index_write_failed`/`vec_skipped`（粘滞消除）；③build stats 存内容集合哈希（带 embed_model 维；健康索引 skipped 快速通过零 `build_fuzzy_terms` 调用+「再次 skipped 不重触」双轮断言；向量覆盖为「可补齐态」不入哈希、快速分支保留覆盖检查——语义闭环）；④被修复 build 行留 `repaired` 注记（reasons/terms/vec_embedded）；⑤`FUZZY_CODE_REV=1` 入 dict_rev（分量经 `dict_rev_components` 暴露——算法/规范化代码变更 bump 触发重建）。**纪律注记**：FUZZY_CODE_REV bump 靠人守 docstring（运行时无强制）——模糊算法/规范化行为变更必须 bump，否则 skipped 快速通过会保留陈旧产物；该输入入 dict_rev 使存量组织升级后首次构建一次性全量重建（沿 yaml_rev 先例，非缺陷）。
+
 ## G-24 语义面 P3 残留集合（m2s-6 交付后登记）
 
 - **来源**：m2s-6 R1/R3 Committer P3 清单（2026-11-01，按裁定登记不动）。
 - **问题（分项）**：①`semantic:restricted` 授予载体为 membership `role='sem_restricted'`（design v0.9.6 注记）但**无管理面授予入口**（POC 仅 DB/dev 工具）；②**持权审计两漏记**——get_entity `include=['attrs']` 时 restricted 根实体访问不落审计（审计前提为 curated 非空）；经关系展开「看到」restricted 端点（非根）不审计；③**search_entities vec 档无有界超时/熔断/降级审计**——`embedder.embed` 用 `embed_timeout_s=30s`、未走 `query_embed_timeout_s`/breaker、失败仅 warning（NFR-8/§5.2 口径——to_thread 已消除事件循环阻塞，此为延迟/可观测面）；④**模糊内存面性能**——annotator 每片段 `dict()` 全量复制 pinyin/dels 映射+无条件构建模糊面（10⁴~10⁵ 实体 NFR-11 P99 20ms 风险）；⑤**vec top-3 硬编码**——annotator 未消费 `LATTICE_SEM_FUZZY_VEC_TOP`；⑥**auto_entities 超长不降级**——query >4000 字时 annotate ValueError 上抛 400 整次检索（与增益路失败不阻断相悖——建议 auto 分支返回 None）；⑦**中间件 L1 概念行缺 disambiguation**（mention 契约未携带该字段——design §6.3② 字面含）；⑧**审计事件常量未入 domain/audit_events.py 单一登记处**（EVENT_SEMANTIC_RESTRICTED_ACCESS 在 core/semantic/constants）。
-- **设计现状与对冲**：全部登记级、无功能/安全面阻塞；③④挂 m2-5（TC-PERF-05 同轮），其余下批。**v2 注记（2026-11-02，m2-5 收口）**：**③④⑤ 已收口划销**——③ search_entities vec 档 `query_embed_timeout_s` 有界等待+共享熔断（service.breakers["embed"]）+`search.degraded`（scope=search_entities）降级审计（REST/MCP 双接线）；④ 模糊内存面懒构建+索引直读（万级词典首建 3.75s 一次性、AC 主路径零开销；R2 补 threading.Lock+哨兵赋值序——并发首建恰一次）；⑤ `LATTICE_SEM_FUZZY_VEC_TOP` 端到端消费（vec top-3 硬编码消除）。**新增⑨（m2-5 Committer 复审登记）**：**语义查询面不随指纹探针 gate 关闭**——docs 检索在探针拒绝时关查询侧向量路（api/search 传 service.gate），而 search_entities/annotate 的 fuzzy vec 层不看 gate（探针拒绝后仍用跨底模向量计算语义近邻，与 NFR-8/§5.2「查询侧向量路关闭」跨切面不一致）+ annotate fuzzy vec 走 embed_timeout_s=30s 同步嵌入无 breaker/无降级审计（③只覆盖 search_entities）——M3 语义补强批处置（[#15](https://github.com/yq3/knowledge-lattice/issues/15)）。
+- **设计现状与对冲**：全部登记级、无功能/安全面阻塞；③④挂 m2-5（TC-PERF-05 同轮），其余下批。**v2 注记（2026-11-02，m2-5 收口）**：**③④⑤ 已收口划销**——③ search_entities vec 档 `query_embed_timeout_s` 有界等待+共享熔断（service.breakers["embed"]）+`search.degraded`（scope=search_entities）降级审计（REST/MCP 双接线）；④ 模糊内存面懒构建+索引直读（万级词典首建 3.75s 一次性、AC 主路径零开销；R2 补 threading.Lock+哨兵赋值序——并发首建恰一次）；⑤ `LATTICE_SEM_FUZZY_VEC_TOP` 端到端消费（vec top-3 硬编码消除）。**新增⑨（m2-5 Committer 复审登记）**：**语义查询面不随指纹探针 gate 关闭**——docs 检索在探针拒绝时关查询侧向量路（api/search 传 service.gate），而 search_entities/annotate 的 fuzzy vec 层不看 gate（探针拒绝后仍用跨底模向量计算语义近邻，与 NFR-8/§5.2「查询侧向量路关闭」跨切面不一致）+ annotate fuzzy vec 走 embed_timeout_s=30s 同步嵌入无 breaker/无降级审计（③只覆盖 search_entities）——M3 语义补强批处置（[#15](https://github.com/yq3/knowledge-lattice/issues/15)）。**v3 注记（2026-11-08，m3-1 交付）**：**① 已收口划销**——`sem_restricted` 管理面授予入口实装（POST/PATCH members role 枚举扩展：org_admin 门控+单值列不兼任 org_admin〔T-S9〕+唯一 active org_admin 守卫兼容 409；审计 member.add/update 同事务）；②⑧→m3-2、⑥⑦⑨→m3-3 维持。**v4 注记（2026-11-08，m3-2 交付）**：**②⑧ 已收口划销**——②持权审计两漏记补齐（get_entity `include=['attrs']` 根实体无条件审计〔删「curated 非空」前提〕+展开端点 `sem_restricted_ids` 批量判定并入 entity_ids、无 restricted 零事件不虚报〔test_g24b2c 对照〕）；⑧审计事件常量统一入 `domain/audit_events.py` 单一登记处（EVENT_SEMANTIC_RESTRICTED_ACCESS 迁入+查询审计新常量——全 src 无旧路径导入的文本扫描用例）；⑥⑦⑨→m3-3 维持。**v5 注记（2026-11-08，m3-3 交付）**：**⑥⑦⑨ 已收口划销（G-24 全项清）**——⑥auto_entities 超长（>4000 字）auto 分支降级返回 None 不阻断检索（显式 entities 参数契约上抛保留——对照断言钉死）；⑦L1 mention 契约补可选 `disambiguation` 字段（**非决策变更**：design §6.3② 字面「概念/系统：name + brief + disambiguation」+YAML `curated_json.disambiguation` {not,hint} 自然落位；无数据不出现键向后兼容，中间件概念行消费 hint）；⑨语义查询面随指纹探针 gate 关闭（search_entities/annotate fuzzy vec 层四接线点〔REST/MCP〕——探针拒绝零嵌入调用+`probe_reject` 降级审计，与 docs 检索同源）+annotate fuzzy vec 有界等待（`query_embed_timeout_s`）+共享熔断+scope=annotate 降级审计（`embed_query_bounded` 公共化与 search_entities 逐字同构——issue #15 随 PR 关闭）。
 - **收窄动作（未排期）**：分项入 m2s followups/m2-5。
 - **重开条件**：持权审计合规要求（②）或性能达标测试（③④）触发时优先。
 
@@ -285,3 +293,77 @@
 - **收窄动作（未排期）**：runner 按 error 分类回队（「未收敛」类自动重投+退避）；RUNBOOK §1 已注处置口径。
 - **重开条件**：并发摄取密集部署下频繁出现未收敛 failed。
 - **附注（性能面，无需处置）**：members 唯一 admin 自锁守卫 `pg_advisory_xact_lock(hashtext(org))` 键碰撞=跨组织偶发串行化（事务级即释，纯性能非正确性）。
+
+## G-28 查询审计与前端开放点集合（m3-2 交付后登记）
+
+- **来源**：m3-2 R1 Tester/Committer 审查（2026-11-08）+ 用户裁定（P2-1 上调 m3-3 修复）。
+- **问题（分项）**：①**查询审计覆盖面**——`search_entities`/`describe_table`/`l0` 不入查询级审计（design §6.3⑥ 字面只点名 annotate/get_entity+docs 检索；`fetch`/`list_documents` 亦未列）；②**可见性矩阵 m×n 无规模护栏**——前端 org_admin 面全量逐格 GET explain 取数（4 并发，O(m·n) 请求量——大组织需分页/懒取）；③**PG 接线三件**——flush 线程与请求线程共享 `PgBackend._conn` 单连接（psycopg 无跨线程锁，P2-1——**用户裁定 2026-11-08 m3-3 修复**：backend_factory 独立连接/连接级串行化+pg 臂双连接）；`ensure_month_partition` 每轮 flush DDL 无进程内缓存；pg `last_row_hash` 按 seq DESC 无索引；④**flush 全月扫描规模化**——existed 每轮查整月 id 集合（O(当月行数)/次、月度累计 O(N²)）+「enqueue 即 wake」低流量近乎逐条触发（修法=按批 id 查询/索引/ensure 缓存——生产化前修，与 ③ 同批经济）；⑤**链互斥并发测试缺口**——test_qa9 顺序形态无法捕获互斥回归（注入实证摘除后仍绿）→**m3-3 首轮必做**（收编并发脚本）；⑥**查询级 refused 写放大**（G-26 延伸）——认证后无权用户每次尝试落一条 refused（含任意路径 org/query 文本），上界=队列 10⁴ 丢最旧+月库累积（未认证 401 先于入队不触发）；⑦**溢出/丢弃观测面仅日志**——dropped/pending 不在 /stats（可 m3-3 顺手暴露）；⑧**哈希链 canonical `\x1f` 前置**——查询道 org_id/target_id 用户可控字段未净化（需 DB 写权限才可利用，理论硬化项）。
+- **设计现状与对冲**：全部登记级——③ 生产 app 恒 sqlite（factory 检测 PG DSN 仅告警）无当前暴露；④ sqlite 默认形态流量放大有限且不阻塞检索（增量 1.4ms 实测）；⑤ 互斥实现本身经并发注入验证正确；⑥ 属可接受审计面（与 G-26 部署侧准入兜底同栏）。**v2 注记（2026-11-08，m3-3 交付）**：**④⑤⑦ 已收口划销+③ 机制与测试已交付**——③（P2-1，用户裁定 m3-3 修复）`QueryAuditQueue` 收 `backend_factory` + `store/postgres/audit_factory.py` 惰性单连接（独立于请求连接——pg 臂 pid 断言双连接）+flush 全程 `_flush_lock` 串行化，**残余=生产 lifespan 工厂注入与 `close()` 关停（PG 接线部署期——生产 app 恒 sqlite 无当前暴露，RUNBOOK §1.z 接线点已记）**，`ensure_month_partition` DDL 缓存与 `last_row_hash` 索引随部署期接线同批；⑤链互斥并发测试收编正式用例（barrier+shipper×querier 双线程 120 轮+walk_chain+行数对账，sqlite/pg 双臂——注入摘互斥红实证捕获力，qa1b 隔离 stop() flush+refused 分支断言补齐）；④existed 改按本批 id 查询（双方言——消 O(当月行数)/次 扫描）；⑦dropped/pending 计数进 /stats（`query_audit{dropped,pending}`，未装配/异常→null 不 500）。
+- **收窄动作（未排期）**：~~③⑤（+⑦ 顺手）→ m3-3（用户裁定）~~ 已交付；①②⑥⑧ 登记（触发时处置——①需扩覆盖面属口径决定、②大组织部署触发、⑧理论硬化）；~~④→ 生产化/PG 接线前（m3-3 可顺路）~~ 已交付。
+- **重开条件**：PG 切换（③④ 前置必修）；大组织矩阵卡顿（②）；审计合规扩面（①）。
+
+## G-29 评测框架选型钉版与门禁残余开放点（m3-4 登记）
+
+- **来源**：m3-4 R1 Coder 择型申报+Tester/Committer 双审（2026-11-09，择型 11 条全 ACCEPT 附注记）。
+- **问题（分项）**：①**ragas 上游断裂钉版**——ragas 全线（0.2~0.4）顶层 `import langchain_community.chat_models.vertexai`，该模块自 langchain-community 0.3.27 移除而 ragas 对 langchain 系未钉版本，按最新解析必炸；本仓钉 **ragas 0.2.15 × langchain 0.3 era（langchain-community 0.3.26）** 防御（pyproject eval 依赖组注记+`src/knowledge_lattice/eval/ragas_bridge.py` docstring 选型结论）；②**统一 lock 共享依赖降级副作用**——eval 组入 lock 后统一解析将 docling 系共享依赖 transformers 5.20.2→5.17.0、huggingface-hub 1.33.0→1.16.1（默认环境不装 eval 组同样受影响；门禁双模式全绿证明兼容）；③**per-query RR exact 缺位漏检面**——TC-EVAL-04 门禁卡「成员集漂移」（recall@10 exact）与聚合排序质量（0.05 余量），单 query 纯排序回退（top-10 成员不变、RR 降、聚合 MRR 位移 <0.05）不被卡——择型④明示取舍，确定性系统收紧 RR exact 零成本；④**deepeval 依赖分组口径**——现落主依赖（门禁默认可跑），Committer 建议 dev 组（`uv run` 默认含 dev 同样可跑、服务端闭包更小）；运行面无差异（从源码 `uv run` 部署不受影响）。
+- **设计现状与对冲**：①默认环境零 ragas/langchain（uv tree 铁证——D2 纪律）；judge 接口惰性导入留 m3-5；②升级 docling 时须回归门禁；③「调坏权重」类验收句已双源注入实证覆盖；④部署镜像构建用 `uv sync --frozen`（RUNBOOK §1.aa）。
+- **收窄动作（未排期）**：~~③+Committer P3-2/P3-7（聚合下限显式 raise 使 -O 等强）+P3-9（冻结表 vs 基线 JSON 自动同源校验）→ m3-5 顺手批候选~~ **✅ 已交付（m3-5，2026-11-10）**——per-query RR exact 冻结 60×2+聚合下限显式 raise（-O 等强）+冻结表 vs 基线 JSON 自动同源校验用例（Tester 注入实证 3/3 红）+eval_seed clean env 单一来源（门禁与基线生成同环境，RR 名次面环境漂移消除——代价面：eval_gate 不再直接覆盖语料外命中面，由 TC-EVAL-01 标准矩阵+聚合指标间接承接）；①上游修复或解除钉版条件出现时重评；~~④ m3-5 或后续批裁定分组~~ **已裁定维持主依赖（用户 2026-11-10）**——RUNBOOK §1.aa 注记在位。
+- **重开条件**：ragas 对 langchain 钉版本或修复 vertexai import（①复评）；docling 升级（②回归）；~~评测门禁漏过一次真实排序回归（③收紧触发）~~ ③已收紧关闭。
+- **⑤ judge 判读词表残余（m3-5 登记）**：两级词表（长词全文否定形先序+短词末行整体匹配）实测对抗面通过，但残留两类边角——前缀表不含「答案」等常见 LLM 输出形态（ValueError→重试一次兜底）；长词 `faithful` 任意位置命中对「not fully faithful」否定变体**静默误判**（解析成功不触发重试，比解析失败危险）。**处置**：真实 judge 联调恢复时记录解析失败率与误判率（A-6 复跑注记），必要时改 JSON 约束输出或末行 exact 匹配。
+
+## G-30 TC-EVAL-05 在线锚点数据面缺口：应答引用采集入口与 agent 标识（m3-5 登记）
+
+- **来源**：m3-5 R1 Coder/Tester/Committer 三方需求边界申报 N-1，用户裁定 2026-11-10（接受「search 返回面」为 M3 锚点面，本条登记部署期缺口）。
+- **问题**：TC-EVAL-05 用例原文「agent 会话引用 chunk_id 存在性抽样（引用不存在 ID = 幻觉证据）」未定义采集入口。现状三缺口：①**应答引用无采集入口**——查询审计只采 search 返回 chunk_ids（系统返回即真，仅删除漂移会悬空），agent 最终应答中的引用（可能编造=幻觉证据的真正判面）无独立事件；②**审计 actor=裸 user_id**——无 agent 标识/session id 粒度（design §4 L484 注释形态未落地），无法区分同一用户多会话与 human/agent 发起；③**生产 sampler 配置缺口**——`scripts/eval_anchor_m35.py --db` 硬编码 `actor_prefix="agent:"` 而现网审计 actor 无该前缀，生产抽样会静默 0 会话（需部署时配置 actor 形态或加 `--actor-prefix/--all-actors` 旗标）。
+- **触发场景**：真实 agent 部署后执行 TC-EVAL-05 在线抽样——应答幻觉面不可测（只有返回面）、会话归因不可分、生产 CLI 零命中。
+- **设计现状与对冲**：m3-5 交付**构造会话形态**管道（--demo：真实检索配方+审计写入读回全链，注入伪造 ID 演示判定面、如实登记不冒充）+「search 返回面」锚点（用户裁定 N-1——引用完整性/悬空检测语义，删除漂移可测）；记录级出数归档（sqlite 缺失比 0.0274/pg 0.027）。
+- **残留缺口**（接受的）：「引用不存在 ID=幻觉证据」的完整判面（应答侧）在真实 agent 部署前不可测；比例口径为去重 ID 分母（按引用次数 12/312=3.85%）——报告已注明。
+- **收窄动作（未排期，部署期）**：①agent 引用回报事件（如应答引用采集入口——审计 action 或独立事件）；②审计 actor 携带 agent 标识/session 片段（design §4 L484 形态落地）；③`--db` sampler 加 `--actor-prefix/--all-actors` 旗标；④真实会话到位后复标 TC-EVAL-05。
+- **重开条件**：真实 agent 部署（TC-EVAL-05 在线形态验收时四项一并执行）。
+
+## G-31 邀请交付无 SMTP：线下链接的泄露与运维缺口（D25 登记）
+
+- **来源**：D25 设计（2026-11-19，V2 采用无 SMTP 形态——管理员复制链接/码线下交付）。
+- **问题**：邀请/重置 token 只能由管理员经聊天/邮件/口头转发；链接可能落入非目标人/群/日志；过期/撤销/重发依赖人工；无自动通知与投递回执。
+- **触发场景**：POC 或内网部署无 SMTP；管理员批量邀请；token 被转发到公开群。
+- **设计现状与对冲**：token 32B urlsafe、库中只存 sha256、单次、72h、可撤销/重发；URL fragment + accept body 传 token（不进访问日志/Referer）；邀请成功弹窗只显示一次可复制链接；accept 校验 token/成员关系/状态；审计 `auth.invite_*`。
+- **m4 实现状态（2026-11-20）**：邀请/重置链接、单次/72h/撤销重发、URL fragment + accept body 传 token、审计已实装（TC-AUTH-07/08 双后端）；**仍然无 SMTP/自动通知**——链接线下交付、过期/撤销后人工重发；`scripts/reset_admin.py` break-glass 覆盖管理员失联（需 shell 权限）。**不划销**（接 notifier 前残留不变）。
+- **收窄动作（未排期）**：接 SMTP/企业微信 notifier（接口留缝）；邀请列表显示已交付/已接受/已过期；管理员可在页面重发/撤销。
+- **重开条件**：真实企业部署需要自动通知，或发生 token 泄露事件。
+
+## G-32 本地口令安全基线残余：无 MFA、无泄露库校验、进程内限流（D25 登记）
+
+- **来源**：D25 安全基线（2026-11-19，POC 接受）。
+- **问题（分项）**：①无 MFA/二次验证；②无口令泄露库/常见弱口令校验（仅最小长度）；③登录限流与锁定为进程内（多实例/多 worker 不共享，G-25 族）；④登录失败审计可被未认证方触发（写放大，G-26 族）；⑤若采用「管理员设初始密码」兜底而无法强制改密，管理员长期知晓用户口令。
+- **设计现状与对冲**：stdlib scrypt（n=2^14,r=8,p=1）+ 随机 salt + 常数时间比较；username+IP 限流（5 次/15min 锁 10min）；`tv` 撤销；失败审计含 reason（不记口令）；邀请制优先（用户自设密码，管理员不知晓）；`must_change_password` 列为 phase 2 兜底。
+- **m4 实现状态（2026-11-20）**：stdlib scrypt、username+IP 限流（5 次/15min 锁 10min）、`tv` 撤销、失败审计（reason 区分、不含口令）、break-glass 重置审计（`auth.password_reset`）已实装；**残留**：无 MFA/泄露库校验、限流进程内（多实例不共享）、登录失败审计写放大、`must_change_password` 未做。**不划销**。
+- **收窄动作（未排期）**：MFA（TOTP/WebAuthn）；弱口令库；共享限流（Redis/DB 计数）；失败审计采样/限流前置。
+- **重开条件**：公网/多实例部署，或安全评审要求 MFA。
+
+## G-33 无 hybrid 账号绑定：local 与 sso 同实例二选一（D25 登记）
+
+- **来源**：D25 phase 1 决策（2026-11-19，同实例二选一、不做账号绑定）。
+- **问题**：①同一实例不能同时用 local 密码与 SSO 登录（`auth_mode` 二选一），企业切换期需整体切换；②存量 SSO/JIT 用户无本地密码，local 模式下需管理员发「设密码」邀请/重置；③local 模式未配 SSO 时 MCP 无委托 token 来源（D18 供数链路不可用）；④不做按 email 自动合并（防账号劫持）。
+- **设计现状与对冲**：`auth_mode` 显式配置、默认 sso；local 模式 JIT 关闭；本地 token 仅 Web/REST；存量用户以 `status/password_hash` 区分；RUNBOOK 写清切换与 MCP 边界。
+- **m4 实现状态（2026-11-20）**：`auth_mode` 默认 sso、local 关闭 JIT、local session 在 MCP 被拒（`via=local`）已实装（TC-AUTH-06/10）；**残留**：同实例仍二选一、存量 JIT 用户需邀请/重置设密、local 无 SSO 时 MCP 不可用——phase 2 `sso_sub` 未做。**不划销**。
+- **收窄动作（未排期）**：phase 2 预登记 `sso_sub`（IdP sub）显式绑定；或同实例 hybrid（需账号绑定/合并策略与审计）。
+- **重开条件**：企业同时需要本地与 SSO 登录，或 local 模式必须供 agent 使用。
+
+## G-34 本地会话 localStorage 与撤销窗口（D25 登记）
+
+- **来源**：D25 会话设计（2026-11-19，phase 1 沿用 localStorage Bearer）。
+- **问题**：①token 存 localStorage，XSS 可窃取；②无 refresh token，12h TTL 到期需重登；③登出仅清客户端，服务端无状态；④`tv` 只覆盖改密/重置，被盗 token 在 TTL 内仍有效；⑤无服务端会话列表/强制下线。
+- **设计现状与对冲**：独立 `LATTICE_SESSION_SECRET`、`aud=knowledge-lattice-web`、`typ=session`；停用即时 401（每请求查 `disabled_at`）；`tv++` 撤销改密/重置前会话；CSP/转义沿现有薄壳纪律；local token 不进 MCP。
+- **m4 实现状态（2026-11-20）**：localStorage Bearer、无 refresh、登出仅清客户端已实装；停用即时 401、改密/重置 `tv++`、`LATTICE_SESSION_SECRET` 轮换全失效；**残留**：XSS 面、被盗 token 在 12h TTL 内有效、无服务端会话列表/强制下线。**不划销**。
+- **收窄动作（未排期）**：HttpOnly cookie + CSRF（替代 localStorage）；refresh token；服务端会话表/强制下线；短 TTL + 滑动续期。
+- **重开条件**：公网暴露/XSS 风险评估升级，或需要强制下线能力。
+
+## G-35 local agent key 为长期用户凭据：无过期/轮转/细粒度 scope、失败认证不写审计、sysadmin 可跨组织管理（D26 登记）
+
+- **来源**：D26 设计（2026-11-21，[issue #34](https://github.com/yq3/knowledge-lattice/issues/34)）——`local` 形态每 agent 长期凭据（阶段 4 登记，实现完成态）。
+- **问题（分项）**：①**永不过期**——`expires_at` 恒 NULL（字段预留），泄露后长期有效，只能人工软撤销；②**无轮转/自动过期**——轮换=撤销+新建（需人工分发新明文），无旧 key 宽限/自动失效；③**无细粒度 scope**——key 继承绑定用户在该组织的全部权限（角色/维度 ACL），不能限制到 dataset/工具/只读；④**失败认证不写审计**——未知/已撤销/过期/停用用户的 key 认证只回 401（`AuthError`），不落审计事件（成功使用才进查询审计）；⑤**sysadmin 可跨组织管理**——sysadmin 豁免可管理任意组织（含停用组织）的 key（运维应急面，同时也是高权面）；⑥明文交付依赖人工——创建响应显示一次，无自动下发通道（线下复制）。
+- **触发场景**：key 泄露/人员离职/组织切换；长期未轮转；需要最小权限 agent（仅某库/某工具）；审计要求能追溯失败认证尝试。
+- **设计现状与对冲**：库内只存 sha256 摘要 + 展示前缀、明文仅创建响应一次；软撤销即时生效（401 revoked）；每 key 绑定 `(org, user, label)`，org 路径越界 403 `org_mismatch`（sysadmin 的 key 同受限）；管理面 org_admin 本组织 / sysadmin 豁免；审计 `agent_key.created`/`agent_key.revoked`（同事务、无明文/摘要）+ 查询审计 `act`/`via=agent_key`/`entry`；仅 local/POC 形态——sso 形态管理端点 404、认证关闭，sso 长期凭据仍走 D18 委托 token（短 TTL + IdP 治理）。
+- **残留缺口**（接受的）：①~⑤ 在 POC/受信内网形态接受；生产/企业场景应回 `sso`（D18）而非依赖本形态长期凭据。**不划销**。
+- **收窄动作（未排期）**：①过期/轮转策略（`expires_at` 字段已预留 + 管理面轮转操作=撤销+新建引导）；②key 级 scope（dataset/tool 白名单）；③失败认证审计（含 reason，注意写放大——G-26 族，可采样/限流前置）；④sysadmin 跨组织管理二次确认/强化审计；⑤管理面展示过期日/上次使用/轮转提示。
+- **重开条件**：真实 agent 生产部署；安全评审要求 key 最小权限或定期轮转；发生 key 泄露事件；审计要求覆盖失败认证。

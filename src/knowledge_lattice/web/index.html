@@ -1,7 +1,10 @@
 <!doctype html>
 <!-- 静态页壳（ui-1 重建——视觉基准 prototype v0.6；无构建链，经典 <script> 按序引入）。
-     骨架：topbar（brand / 组织 picker / API 参考 / MCP 弹层 / 语言切换 / 连接设置）+
-     rail（nav 挂载点 + rail-foot）+ #main 挂载点 + #toasts。全部动态区由 JS 渲染。
+     骨架：topbar（brand / 组织 picker / API 参考 / 语言切换 / 连接设置 /
+     本地账号用户菜单）+ rail（nav 挂载点）+ #main 挂载点 + #toasts。
+     全部动态区由 JS 渲染；D25 local 认证三屏由 views/login.js 渲染到 #main，
+     用户/邀请管理页由 views/users.js 渲染（仅 local + sysadmin/org_admin 可见），
+     Agent 长期凭据管理页由 views/agent_keys.js 渲染（D26，local 专属同门）。
      i18n：data-i18n + i18n.js 字典；默认中文、localStorage 持久化（FR-8）。 -->
 <html lang="zh-CN">
 <head>
@@ -15,7 +18,7 @@
 <div class="app">
   <header class="topbar">
     <div class="brand">
-      <div class="seal" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 6h12M6 12h12M6 18h12M6 6v12M12 6v12M18 6v12" stroke="#fff" stroke-opacity=".45" stroke-width="1.6" stroke-linecap="round"/><circle cx="6" cy="6" r="2.2" fill="#fff"/><circle cx="18" cy="12" r="2.2" fill="#fff"/><circle cx="12" cy="18" r="2.2" fill="#fff"/><path d="M6 6 18 12 12 18" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div class="brand-seal" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 6h12M6 12h12M6 18h12M6 6v12M12 6v12M18 6v12" stroke="#fff" stroke-opacity=".45" stroke-width="1.6" stroke-linecap="round"/><circle cx="6" cy="6" r="2.2" fill="#fff"/><circle cx="18" cy="12" r="2.2" fill="#fff"/><circle cx="12" cy="18" r="2.2" fill="#fff"/><path d="M6 6 18 12 12 18" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
       <span class="brand-name">Knowledge Lattice</span><span class="brand-sub" data-i18n="app.subtitle">Enterprise</span>
     </div>
     <span class="tb-sep" aria-hidden="true">/</span>
@@ -23,21 +26,6 @@
     <div class="picker" id="orgPicker"></div>
     <div class="tb-spacer"></div>
     <button class="tb-link" data-act="apiDocs" data-i18n-title="topbar.apiDocs" title="OpenAPI · /docs"><svg class="ic" viewBox="0 0 24 24"><path d="M4 19.5V5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2Zm0 0A2 2 0 0 0 6 22h12"/></svg><span data-i18n="topbar.apiDocs">API 参考</span></button>
-    <div class="picker" id="mcpPicker">
-      <button class="tb-link" data-act="mcpMenu" aria-haspopup="true"><svg class="ic" viewBox="0 0 24 24"><path d="M9 7H6a3 3 0 0 0 0 6h3m6-6h3a3 3 0 0 1 0 6h-3M8 10h8"/></svg><span data-i18n="topbar.mcp">MCP 接入</span></button>
-      <div class="menu" id="menu-mcp" style="left:auto;right:0;min-width:360px">
-        <div class="tiny muted" style="padding:6px 10px 4px;font-weight:500" data-i18n="mcp.title">MCP 工具 · 单 server 挂载 /mcp</div>
-        <div class="menu-item"><code>search</code><small data-i18n="mcp.search">权限内检索</small></div>
-        <div class="menu-item"><code>fetch</code><small data-i18n="mcp.fetch">取块原文</small></div>
-        <div class="menu-item"><code>upload</code><small data-i18n="mcp.upload">凭证三步上传</small></div>
-        <div class="menu-item"><code>list_documents</code><small data-i18n="mcp.list_documents">文档列表</small></div>
-        <div class="menu-item"><code>annotate</code><small data-i18n="mcp.annotate">术语识别</small></div>
-        <div class="menu-item"><code>get_entity</code><small data-i18n="mcp.get_entity">实体与关系展开</small></div>
-        <div class="menu-item"><code>search_entities</code><small data-i18n="mcp.search_entities">实体检索</small></div>
-        <div class="menu-item"><code>describe_table</code><small data-i18n="mcp.describe_table">表列透传</small></div>
-        <div class="menu-note" data-i18n="mcp.note">委托 token——sub=用户、act=agent、org 单值 claim；禁止 token 原样透传（D18）。API 参考 = FastAPI OpenAPI /docs。</div>
-      </div>
-    </div>
     <span class="tb-div" aria-hidden="true"></span>
     <!-- 语言切换：中 | EN（FR-8——切换即时生效、localStorage 持久化） -->
     <div class="lang-switch" id="langSwitch">
@@ -58,7 +46,7 @@
         <div class="menu-form">
           <div class="mf-sec" data-i18n="settings.mode.reissue">模式 A · dev 重签（开发环境）</div>
           <div class="mf-row"><label for="connBaseToken" data-i18n="settings.baseToken">基 token</label>
-            <input class="inp" id="connBaseToken" type="text" autocomplete="off" data-i18n-ph="settings.baseToken.ph" placeholder="系统管理员或本人 dev token（POST /api/dev/token 签发）"></div>
+            <input class="inp" id="connBaseToken" type="text" autocomplete="off" data-i18n-ph="settings.baseToken.ph" placeholder="系统管理员或本人的开发令牌"></div>
           <div class="mf-row"><label for="connOrg" data-i18n="settings.org">组织 org</label>
             <input class="inp" id="connOrg" type="text" autocomplete="off" data-i18n-ph="settings.org.ph" placeholder="如 org:tax（X-Org-Id / token org claim）"></div>
           <div class="mf-row"><label for="connLens" data-i18n="settings.lens">身份 user_id</label>
@@ -78,11 +66,12 @@
         </div>
       </div>
     </div>
+    <!-- 本地账号用户菜单（D25 local——app.js renderUserMenu 渲染；sso 形态恒隐藏） -->
+    <div class="picker" id="userPicker" style="display:none"></div>
   </header>
 
   <aside class="rail" aria-label="导航" data-i18n-aria="rail.aria">
     <nav class="nav" id="nav"></nav>
-    <div class="rail-foot" id="railFoot"></div>
   </aside>
   <main id="main"></main>
 </div>
@@ -91,6 +80,10 @@
 <script src="/static/i18n.js"></script>
 <script src="/static/api.js"></script>
 <script src="/static/app.js"></script>
+<script src="/static/views/login.js"></script>
+<script src="/static/views/users.js"></script>
+<script src="/static/views/agent_keys.js"></script>
+<script src="/static/views/mcp.js"></script>
 <script src="/static/views/docs.js"></script>
 <script src="/static/views/search.js"></script>
 <script src="/static/views/access.js"></script>

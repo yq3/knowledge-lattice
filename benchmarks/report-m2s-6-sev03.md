@@ -1,7 +1,9 @@
 # TC-SEV-03 检索增益评测报告（m2s-6——M2-S3 验收句）
 
-> 任务：task-knowledge-lattice-m2s-6（A4）。口径：docs 黄金集（corpus.jsonl
-> 39 篇 + golden.jsonl 28 条）开/关实体召回路对比 recall@10 与 MRR；
+> 任务：task-knowledge-lattice-m2s-6（A4）；**m3-4 数字随 M3 完整集重测**
+> （黄金集 28→60 条 / 语料 39→73 篇——TC-EVAL-02 扩容；28 条期旧数字见
+> 文末历史档）。口径：docs 黄金集（corpus.jsonl 73 篇 + golden.jsonl 60 条）
+> 开/关实体召回路对比 recall@10 与 MRR；
 > **不回退才允许 `auto_entities` 默认开启**（design §8 M2-S3 验收句）。
 > 栈：参考词典（eval/semantic_seed）+ build + ingest 同事务打标 +
 > TokenBagEmbedder(dim=32) 向量路、无 reranker（增益归因隔离——实体路是
@@ -10,24 +12,29 @@
 > 可重复执行：`uv run pytest tests/test_sev_03_entity_route_eval.py -q`
 > （双后端参数化——本报告数字与测试断言互锁）。
 
-## 一、开/关实体召回路对比（28 query）
+## 一、开/关实体召回路对比（60 query——m3-4 完整集）
 
 ### sqlite
 
-- off: recall@10=0.8214, MRR=0.3372
-- on: recall@10=0.9286, MRR=0.4087
+- off: recall@10=0.7, MRR=0.2627
+- on: recall@10=0.75, MRR=0.2917
 
 ### pg（G-6 已登记差异：to_tsquery `&` AND 语义使基线天然偏低——增益结论不受影响）
 
-- off(pg): recall@10=0.5, MRR=0.4734
-- on(pg): recall@10=0.625, MRR=0.5142
+- off(pg): recall@10=0.475, MRR=0.4854
+- on(pg): recall@10=0.55, MRR=0.5026
 
 ### 不回退判定
 
-**通过**——两后端两指标全维提升（sqlite recall@10 +10.72pp / MRR +7.15pp；
-pg recall@10 +12.50pp / MRR +4.08pp）。实体召回路对「query 提及业务概念、
-答案块以实体叙述」的样本人群有实质增益（28 query 中 sqlite 有 3 条
-off 未进前 10、on 进入；零回退样本）。
+**通过**——两后端两指标全维提升（m3-4 完整集 60 query：sqlite recall@10
++5.00pp / MRR +2.90pp；pg recall@10 +7.50pp / MRR +1.72pp）。实体召回路
+对「query 提及业务概念、答案块以实体叙述」的样本人群有实质增益（零回退
+样本——on ≥ off 全维成立）。
+
+> **历史档（m2s-6 期，28 query/39 docs——m3-4 扩容前）**：sqlite
+> off r@10=0.8214/MRR=0.3372、on r@10=0.9286/MRR=0.4087（+10.72pp/+7.15pp）；
+> pg off r@10=0.5/MRR=0.4734、on r@10=0.625/MRR=0.5142（+12.50pp/+4.08pp）。
+> 绝对值不可与 60 query 期直接比较（集合不同、均值口径基数变化）。
 
 **结论**：满足「不回退才允许 auto_entities 默认开启」的前提——但默认值
 维持 **False（保守档：显式参数形态）**，理由：①本增益建立在参考词典与

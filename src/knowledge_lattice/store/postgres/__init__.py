@@ -23,7 +23,11 @@ M0b-1 已落（PG spike）：
 随 M1-2+/M2 再落：backup.py（pg_dump runbook——M2 备份演练）。
 """
 
+from .audit_factory import audit_backend_factory
 from .connection import connect, connect_pool, setup_connection
 from .migrate import migrate_db
 
-__all__ = ["connect", "connect_pool", "setup_connection", "migrate_db"]
+__all__ = [
+    "connect", "connect_pool", "setup_connection", "migrate_db",
+    "audit_backend_factory",
+]

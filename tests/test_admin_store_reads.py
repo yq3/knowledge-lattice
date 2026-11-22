@@ -247,3 +247,27 @@ def test_audit_chain_error_codes() -> None:
     with pytest.raises(AuditChainError) as ei:
         walk_chain([r1, r2, orphan])
     assert ei.value.code == "multi_heads", "孤儿实际触发路径=第二链头"
+
+
+def test_list_members_and_orgs_expires_normalized_str(matrix) -> None:
+    """P3-1（m3-1 Committer 移交——m3-2 修）：list_members /
+    list_orgs_for_user 的 expires_at 双方言统一**库格式字符串**（pg to_char
+    归一——psycopg datetime 不外泄，B⑦ 双方言 JSON 等价；仿
+    test_list_grants_for_export_expires_normalized_str 先例）。"""
+    import re
+
+    backend = matrix.make_backend()
+    members = backend.list_members(ORG)
+    by_uid = {m["user_id"]: m for m in members}
+    # matrix 造数：u_expired_member 带过期 membership、u_full 永久
+    exp = by_uid["u_expired_member"]["expires_at"]
+    assert isinstance(exp, str), (
+        f"expires_at 必须为字符串（pg 臂修复前为 datetime）——got {type(exp)}")
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", exp), exp
+    assert by_uid["u_full"]["expires_at"] is None
+
+    orgs = backend.list_orgs_for_user("u_expired_member")
+    assert orgs and orgs[0]["org_id"] == ORG
+    assert isinstance(orgs[0]["expires_at"], str) and re.fullmatch(
+        r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", orgs[0]["expires_at"])
+    assert backend.list_orgs_for_user("u_full")[0]["expires_at"] is None

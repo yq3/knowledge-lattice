@@ -72,6 +72,12 @@ from knowledge_lattice.core.semantic.lookup import (
     describe_table,
     search_entities,
 )
+from knowledge_lattice.domain.audit_events import (
+    EVENT_QUERY_ANNOTATE,
+    EVENT_QUERY_GET_ENTITY,
+    EVENT_QUERY_SEARCH,
+    EVENT_SEMANTIC_RESTRICTED_ACCESS,
+)
 from knowledge_lattice.domain.auth import (
     AuthContext,
     AuthError,
@@ -80,6 +86,7 @@ from knowledge_lattice.domain.auth import (
     authenticate,
     resolve_org,
 )
+from knowledge_lattice.query_audit import build_query_event, enqueue_query_event
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +180,8 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
     mcp.add_middleware(ToolTimeoutMiddleware(timeout_s=settings.mcp_timeout_s))
 
     def _auth_and_org(ctx: Context, *, param_org: str | None,
-                      param_permissions: list[str] | None = None
+                      param_permissions: list[str] | None = None,
+                      query_action: str | None = None
                       ) -> tuple[AuthContext, str]:
         """认证 + 组织上下文统一规则（D18）——401/400 语义以 ToolError 透出；
         返回完整 AuthContext（M1-3：act＝服务身份进凭证三一致校验）。
@@ -183,6 +191,9 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
         路径（TC-AUTH-05/T13）；③工具参数 org（D18）与 permissions（FR-4/
         A-9）忽略并记审计——**对一切认证形态生效**（R2 P2-1：审计块在认证
         成功后统一执行，trusted 分支不提前 return 跳过）。
+
+        m3-2 G-22：``query_action``（查询审计覆盖工具传入）时停用组织 403
+        落查询审计 refused（裁定②「停用组织均记」；认证失败不在此面）。
         """
         request = getattr(ctx.request_context, "request", None) if ctx else None
         auth_header = request.headers.get("authorization") if request is not None else None
@@ -218,12 +229,35 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
             raise ToolError(f"{exc.code}: {exc}") from exc
         except OrgContextError as exc:
             raise ToolError(f"400: {exc}") from exc
+        # ---- D25（m4-2）：本地 session token 只用于 Web/REST——MCP 边界拒绝 ----
+        # 认证已通过（via=local）但本地会话不是 D18 委托/可信身份；位置在
+        # resolve_org 之前（org 上下文不参与该拒绝，且不写 org 忽略审计）。
+        # sso/委托/可信/dev JWT 路径零改动。
+        if auth.via == "local":
+            raise ToolError(
+                "401: local session token 不能用于 MCP（D25——MCP 仍走 D18 委托"
+                " token / 可信子系统；local 模式无 SSO 时 MCP 不可用）"
+            )
         # ---- 组织上下文统一规则（trusted 路径 claim=已校验的 X-Org-Id，直通） ----
         org_header = request.headers.get("x-org-id") if request is not None else None
         try:
             org = resolve_org(org_claim=auth.org_claim, org_header=org_header)
         except OrgContextError as exc:
             raise ToolError(f"400: {exc}") from exc
+        # ---- 停用组织拦截（m3-1 issue #14——MCP 会话同 403：token 仍有效但
+        #      组织上下文拒绝；与 REST org_scoped 同判据）；m3-2 G-22：查询
+        #      审计覆盖工具的停用面 refused 入队（org 已解析、auth 已通过） ----
+        if service.backend.get_org_status(org) == "disabled":
+            if query_action is not None:
+                enqueue_query_event(service, build_query_event(
+                    query_action, org_id=org, actor=auth.user_id,
+                    act=auth.act, via=auth.via, entry="mcp",
+                    outcome="refused", detail={"reason": "org_disabled"},
+                ))
+            raise ToolError(
+                f"403: org disabled: {org!r}——组织已停用（fail-closed：MCP 会话"
+                "一律拒绝；恢复走 PATCH /api/orgs/{org} status=active）"
+            )
         # ---- 工具参数忽略审计（公共块——一切认证形态，R2 P2-1；m2-4
         #      followup ⑤/m2-5：移至 resolve_org **成功后**——org 上下文 400
         #      的请求不写忽略事件（拒绝语义与忽略语义不叠加，与 REST 面
@@ -265,13 +299,10 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
 
     def _audit_restricted(auth: AuthContext, org_id: str, tool: str,
                           entity_ids: list[int]) -> None:
-        """持权访问 restricted 实体的权限事件（A-16 口径持权面——outbox）。"""
+        """持权访问 restricted 实体的权限事件（A-16 口径持权面——outbox；
+        m3-2 G-24⑧：常量自 domain/audit_events（单一登记处）。"""
         if not entity_ids:
             return
-        from knowledge_lattice.core.semantic.constants import (
-            EVENT_SEMANTIC_RESTRICTED_ACCESS,
-        )
-
         try:
             service.backend.append_outbox(
                 EVENT_SEMANTIC_RESTRICTED_ACCESS,
@@ -324,9 +355,11 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
 
         entities/auto_entities 解析钉本（api/mcp）层——resolve_query_entities
         识别与展开（core/docs 不调 annotate，§3 规则 2）；返回块附
-        matched_entities（实体路命中——agent 解释召回原因）。"""
+        matched_entities（实体路命中——agent 解释召回原因）；m3-2 G-22：
+        accepted/refused 入查询级异步审计（detail=查询词+chunk_id 列表）。"""
         auth, org_id = _auth_and_org(
-            ctx, param_org=org, param_permissions=permissions
+            ctx, param_org=org, param_permissions=permissions,
+            query_action=EVENT_QUERY_SEARCH,
         )
         entity_ctx = None
         if entities is not None or auto_entities:
@@ -346,7 +379,7 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
             except ValueError as exc:
                 raise ToolError(f"400: {exc}") from exc
         try:
-            return run_search(
+            result = run_search(
                 service.backend,
                 settings,
                 user_id=auth.user_id,
@@ -364,7 +397,20 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
                 entity_seeds=(entity_ctx or {}).get("seeds"),
             )
         except AclDeniedError as exc:  # code 随异常透出（membership_denied 类——T12）
+            enqueue_query_event(service, build_query_event(
+                EVENT_QUERY_SEARCH, org_id=org_id, actor=auth.user_id,
+                act=auth.act, via=auth.via, entry="mcp",
+                outcome="refused",
+                detail={"query": query, "top_k": top_k, "reason": exc.code},
+            ))
             raise ToolError(f"403: {exc}（code={exc.code}）") from exc
+        enqueue_query_event(service, build_query_event(
+            EVENT_QUERY_SEARCH, org_id=org_id, actor=auth.user_id,
+            act=auth.act, via=auth.via, entry="mcp",
+            detail={"query": query, "top_k": top_k,
+                    "chunk_ids": [r["chunk_id"] for r in result["results"]]},
+        ))
+        return result
 
     @mcp.tool(name="fetch", description=FETCH_TOOL_DESCRIPTION)
     def fetch(
@@ -493,9 +539,19 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
         四步消歧（精确全词→别名→上下文短别名→L0 片段兜底）+ 最长匹配优先；
         fuzzy=true 跑第 3 层模糊兜底（§5.9——同音错字/编辑距离/语义近邻，
         低信任候选落 candidates、中间件不自动注入）；负样本零标注；
-        restricted 实体表现为不存在（T-S9——持 semantic:restricted 者可见）。"""
-        auth, org_id = _auth_and_org(ctx, param_org=None)
-        _sem_member(auth, org_id)
+        restricted 实体表现为不存在（T-S9——持 semantic:restricted 者可见）；
+        m3-2 G-22：accepted/refused 入查询级异步审计。"""
+        auth, org_id = _auth_and_org(
+            ctx, param_org=None, query_action=EVENT_QUERY_ANNOTATE)
+        try:
+            _sem_member(auth, org_id)
+        except ToolError:
+            enqueue_query_event(service, build_query_event(
+                EVENT_QUERY_ANNOTATE, org_id=org_id, actor=auth.user_id,
+                act=auth.act, via=auth.via, entry="mcp",
+                outcome="refused", detail={"reason": "semantic:read denied"},
+            ))
+            raise
         can_restricted = _sem_restricted(auth, org_id)
         from knowledge_lattice.core.semantic.annotator import annotate_text
 
@@ -510,10 +566,29 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
                 fuzzy=fuzzy,
                 include_restricted=can_restricted,
                 embedder=getattr(service, "embedder", None),
+                # m3-3 G-24⑨：probe gate（探针拒绝关 fuzzy vec 层）+ 有界
+                # 等待/共享熔断/降级审计（scope=annotate——REST 同款接线）
+                gate=getattr(service, "gate", None),
+                breakers=getattr(service, "breakers", None),
+                user_id=auth.user_id,
             )
             if can_restricted:
-                _audit_restricted(
-                    auth, org_id, "annotate", _restricted_hit_ids(org_id, result))
+                # m3-3 D-5：权限事件取数失败跳过（主结果已定不升级错误）
+                try:
+                    restricted_hits = _restricted_hit_ids(org_id, result)
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "annotate restricted-audit ids lookup failed:"
+                        " org=%s（权限事件跳过）", org_id)
+                    restricted_hits = []
+                _audit_restricted(auth, org_id, "annotate", restricted_hits)
+            enqueue_query_event(service, build_query_event(
+                EVENT_QUERY_ANNOTATE, org_id=org_id, actor=auth.user_id,
+                act=auth.act, via=auth.via, entry="mcp",
+                detail={"text": text, "fuzzy": bool(fuzzy),
+                        "entity_ids": [m["entity_id"]
+                                       for m in result.get("mentions") or ()]},
+            ))
             return result
         except ValueError as exc:
             raise ToolError(f"400: {exc}") from exc
@@ -530,9 +605,23 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
     ) -> dict:
         """get_entity（§6.3）：实体详情 + 类型化关系展开（rel_type 分组邻接、
         多跳迭代调用）；restricted 实体 404（fail-closed——T-S9；持
-        semantic:restricted 者可见，m2s-6 持权路径）。"""
-        auth, org_id = _auth_and_org(ctx, param_org=None)
-        _sem_member(auth, org_id)
+        semantic:restricted 者可见，m2s-6 持权路径）；m3-2：G-22 查询审计
+        （404=refused〔restricted 静默面〕/200=accepted）+ G-24② 权限事件
+        漏记补齐（include=['attrs'] 根 + 展开 restricted 端点）。"""
+        auth, org_id = _auth_and_org(
+            ctx, param_org=None, query_action=EVENT_QUERY_GET_ENTITY)
+        try:
+            _sem_member(auth, org_id)
+        except ToolError:
+            enqueue_query_event(service, build_query_event(
+                EVENT_QUERY_GET_ENTITY, org_id=org_id, actor=auth.user_id,
+                act=auth.act, via=auth.via, entry="mcp",
+                outcome="refused",
+                detail={"id": id, "key": key, "reason": "semantic:read denied"},
+                target_type="entity",
+                target_id=str(id) if id is not None else key,
+            ))
+            raise
         can_restricted = _sem_restricted(auth, org_id)
         try:
             result = get_entity(
@@ -542,12 +631,54 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
                 can_restricted=can_restricted,
             )
         except EntityNotFound as exc:
+            # 404 = restricted 静默面或真不存在——refused 可回溯（A-16）。
+            # m3-3 D-5：回查仅服务审计 reason 判定——取数失败保守记 not_found。
+            reason = "not_found"
+            if not can_restricted:
+                try:
+                    if _entity_is_restricted(org_id, id, key):
+                        reason = "restricted"
+                except Exception:  # noqa: BLE001 —— 审计回查失败保守化
+                    logger.warning(
+                        "get_entity 404 audit reason lookup failed: org=%s"
+                        " id=%s（保守记 not_found）", org_id, id)
+            enqueue_query_event(service, build_query_event(
+                EVENT_QUERY_GET_ENTITY, org_id=org_id, actor=auth.user_id,
+                act=auth.act, via=auth.via, entry="mcp",
+                outcome="refused",
+                detail={"id": id, "key": key, "reason": reason},
+                target_type="entity",
+                target_id=str(id) if id is not None else key,
+            ))
             raise ToolError(f"404: {exc}") from exc
         except ValueError as exc:
             raise ToolError(f"400: {exc}") from exc
-        if can_restricted and result["entity"].get("curated") is not None \
-                and _entity_is_restricted(org_id, id, key):
-            _audit_restricted(auth, org_id, "get_entity", [result["entity"]["id"]])
+        if can_restricted:
+            # G-24②①：restricted 根（无 curated 前提——include=['attrs'] 同样
+            # 落）+ ②：展开「看到」的 restricted 端点，并入权限事件
+            # （m3-3 D-5 包裹——取数失败跳过权限事件，不阻断主响应）
+            try:
+                restricted_ids: list[int] = []
+                if _entity_is_restricted(org_id, id, key):
+                    restricted_ids.append(result["entity"]["id"])
+                node_ids = [n["id"] for n in result.get("nodes") or ()]
+                restricted_ids.extend(
+                    service.backend.sem_restricted_ids(org_id, node_ids))
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "get_entity restricted-audit ids lookup failed: org=%s"
+                    " id=%s（权限事件跳过，不影响主响应）", org_id, id)
+                restricted_ids = []
+            _audit_restricted(auth, org_id, "get_entity", restricted_ids)
+        enqueue_query_event(service, build_query_event(
+            EVENT_QUERY_GET_ENTITY, org_id=org_id, actor=auth.user_id,
+            act=auth.act, via=auth.via, entry="mcp",
+            detail={"entity_id": result["entity"]["id"],
+                    "key": result["entity"].get("key"),
+                    "node_ids": [n["id"] for n in result.get("nodes") or ()]},
+            target_type="entity",
+            target_id=str(id) if id is not None else key,
+        ))
         return result
 
     @mcp.tool(name="search_entities", description=SEARCH_ENTITIES_TOOL_DESCRIPTION)
@@ -569,8 +700,10 @@ def build_mcp_server(service, settings: Settings) -> FastMCP:
                 settings=effective_settings(settings, service.embedder),
                 embedder=getattr(service, "embedder", None),
                 # G-24③（m2-5）：vec 档有界超时/熔断/降级审计——共享 embed
-                # 熔断器与 §5.2 检索向量路同一状态
+                # 熔断器与 §5.2 检索向量路同一状态；
+                # G-24⑨前半（m3-3）：probe gate 接线——探针拒绝关向量路
                 breakers=service.breakers, user_id=auth.user_id,
+                gate=getattr(service, "gate", None),
             )
         except ValueError as exc:
             raise ToolError(f"400: {exc}") from exc

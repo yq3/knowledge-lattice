@@ -39,6 +39,12 @@ _CHAIN_FIELDS = (
 _US = "\x1f"
 
 
+# PG 月库链追加的事务级咨询锁键（m3-2 G-22）：ship_outbox 与 append_query_events
+# 两写道共用——「读链基 → 计算哈希 → 插入」临界区互斥，防同 prev 分叉破链
+# （sqlite 由 BEGIN IMMEDIATE 单写事务承担同职责）。
+AUDIT_CHAIN_LOCK_KEY = 20261108
+
+
 def compute_row_hash(record: dict, prev_hash: str | None) -> str:
     """本行哈希：sha256(prev_hash + US + 各字段 US 拼接)。"""
     parts = [(prev_hash or "")]

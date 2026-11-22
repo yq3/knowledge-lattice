@@ -39,8 +39,12 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
 from knowledge_lattice.domain.audit_events import (
+    EVENT_DATASET_CREATED,
     EVENT_DATASET_DELETE,
+    EVENT_DATASET_UPDATED,
+    EVENT_DIMENSION_CREATED,
     EVENT_DIMENSION_RETIRE,
+    EVENT_DIMENSION_UPDATED,
     EVENT_DIMENSION_VALUE_CREATE,
     EVENT_DIMENSION_VALUE_DISABLE,
     EVENT_DIMENSION_VALUE_ENABLE,
@@ -48,10 +52,14 @@ from knowledge_lattice.domain.audit_events import (
     EVENT_MEMBER_ADD,
     EVENT_MEMBER_REMOVE,
     EVENT_MEMBER_UPDATE,
+    EVENT_ORG_DISABLED,
+    EVENT_ORG_ENABLED,
 )
 from knowledge_lattice.domain.auth import AuthContext, check_path_org, issue_dev_jwt
 from knowledge_lattice.store.backend import (
+    DatasetExistsError,
     DatasetNotEmptyError,
+    DimensionExistsError,
     DimensionValueExistsError,
     MembershipExistsError,
     MembershipExpiredError,
@@ -60,7 +68,7 @@ from knowledge_lattice.store.backend import (
 )
 from knowledge_lattice.store.taskclock import utc_now_ts
 
-from .upload import get_auth, get_service, org_scoped
+from .upload import enforce_agent_key_org, get_auth, get_service, org_scoped
 
 router = APIRouter()
 dev_token_router = APIRouter()  # 仅 dev/test 注册（app.py 门控——生产 404）
@@ -136,7 +144,9 @@ async def create_org(
     成员关系，不在此开通则新组织无人可管）；id/name 非空非纯空白；用户
     不存在 404 组织零残留（D16 不建账号）；重复组织 409（含并发窗口——
     store 撞 UNIQUE 映射 OrgExistsError；组织不可删只能停用——P1-1）；
-    审计同事务。"""
+    审计同事务。local 形态（D25）``org_admin`` 按「用户 ID → username」
+    解析（本地账号的人类可读键是 username；ID 仍兼容），membership/审计
+    落解析后的稳定 ID，响应附 ``org_admin_username``。"""
     if not auth.is_system_admin:
         raise HTTPException(status_code=403, detail="系统管理员专属操作（design §6.2）")
     org_id = body.id.strip()
@@ -148,29 +158,120 @@ async def create_org(
             detail="id/name/org_admin 均不得为空或纯空白（R2/P3-8a）",
         )
     service = get_service(request)
+    local_mode = service.settings.auth_mode == "local"
+    admin_username: str | None = None
+    if local_mode:
+        # D25/m4-2：local 形态的组织管理员必须是 active 用户——invited（未接受
+        # 邀请）或 disabled（停用）用户不可任管理员（否则组织建出即无人可管）；
+        # 用户不存在仍走下方 404 路径（存在性敏感）。sso 形态现有行为不变。
+        #
+        # local 形态按「用户 ID → username」解析：本地账号的人类可读键是
+        # username（ID 为不透明 u_<hex>，与 /api/users 列表/邀请面一致）；
+        # 已按 ID 传入的调用方不受影响。membership/审计落解析后的稳定 ID。
+        admin_user = service.backend.get_user(org_admin)
+        if admin_user is None:
+            admin_user = service.backend.get_user_by_username(org_admin)
+        if admin_user is not None:
+            if (
+                admin_user["status"] != "active"
+                or admin_user["disabled_at"] is not None
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="org_admin 必须为 active 用户（invited/disabled 不可任管理员）",
+                )
+            org_admin = admin_user["id"]
+            admin_username = admin_user["username"]
     from knowledge_lattice.domain.audit_events import EVENT_ORG_CREATED
 
+    audit_payload = {
+        "org_id": org_id, "name": name,
+        "org_admin": org_admin, "actor": auth.user_id,
+    }
+    if admin_username is not None:
+        audit_payload["org_admin_username"] = admin_username
     try:
         service.backend.create_org(
             org_id=org_id, name=name,
             org_admin_user_id=org_admin,
             audit=(
                 EVENT_ORG_CREATED,
-                json.dumps({
-                    "org_id": org_id, "name": name,
-                    "org_admin": org_admin, "actor": auth.user_id,
-                }, ensure_ascii=False),
+                json.dumps(audit_payload, ensure_ascii=False),
             ),
         )
     except KeyError as exc:
-        raise HTTPException(
-            status_code=404,
-            detail=f"用户不存在: {org_admin!r}（管理员不建账号——建档走"
-            " SSO JIT，D16）",
-        ) from exc
+        detail = (
+            f"用户不存在: {org_admin!r}（local 模式按用户名或用户 ID 指定；"
+            "先建号并接受邀请激活）"
+            if local_mode
+            else f"用户不存在: {org_admin!r}（管理员不建账号——建档走"
+            " SSO JIT，D16）"
+        )
+        raise HTTPException(status_code=404, detail=detail) from exc
     except OrgExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"org_id": org_id, "name": name, "org_admin": org_admin}
+    payload = {"org_id": org_id, "name": name, "org_admin": org_admin}
+    if admin_username is not None:
+        payload["org_admin_username"] = admin_username
+    return payload
+
+
+class OrgStatusRequest(BaseModel):
+    """组织状态迁移请求（m3-1 issue #14——status 载体；name 等其它字段本段
+    不开放——PATCH 只承载停用/恢复）。"""
+
+    model_config = {"extra": "forbid"}
+
+    status: str
+
+
+@router.patch("/api/orgs/{org}")
+async def patch_org_status(
+    org: str, request: Request, body: OrgStatusRequest,
+    auth: AuthContext = Depends(get_auth),
+) -> dict:
+    """组织停用/恢复（m3-1 issue #14——design P1-1「组织不可删只能停用」的
+    实现载体）：**sysadmin 专属**（org_admin 不能停自己的组织——防误操作
+    锁死；与 POST /api/orgs 同门控）。
+
+    - status=disabled：停用后该组织所有 ``/api/orgs/{org}/...`` 端点一律
+      403（token 仍有效但组织上下文拒绝——fail-closed）；MCP 会话同 403；
+      webhook 拒绝；**进行中任务让跑完**（执行体不检查组织状态），新任务
+      投递拒绝（入口拦截承载）；成员关系保留（GET /api/orgs 仍列出）；
+    - status=active：恢复（幂等——同值重复 200 零新审计）；
+    - 审计 org.disabled/org.enabled 与状态翻转同一事务入 outbox（仅实际
+      翻转时记）。
+
+    注：本端点不走 org_scoped 停用拦截（sysadmin 无成员关系 403 + 恢复路径
+    必须对停用组织可达——否则停用不可逆）。
+    """
+    if not auth.is_system_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="系统管理员专属操作（org_admin 不能停用自己的组织——"
+            "防误操作锁死；design P1-1/issue #14）",
+        )
+    if body.status not in ("active", "disabled"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid status: {body.status!r}（active | disabled）",
+        )
+    resolved = check_path_org(path_org=org, org_header=request.headers.get("x-org-id"))
+    enforce_agent_key_org(auth, resolved)  # D26：sysadmin key 亦受组织绑定约束
+    service = get_service(request)
+    event = EVENT_ORG_DISABLED if body.status == "disabled" else EVENT_ORG_ENABLED
+    result = service.backend.set_org_status(
+        resolved, body.status,
+        audit=_audit_payload(event, {
+            "org_id": resolved, "actor": auth.user_id, "status": body.status,
+        }),
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"org not found: {resolved!r}")
+    return {
+        "org_id": resolved, "status": result["status"],
+        "applied": result["applied"],
+    }
 
 
 @router.get("/api/orgs/{org}/dimensions")
@@ -181,12 +282,241 @@ async def list_dimensions(
     return {"dimensions": get_service(request).backend.list_dimensions(org)}
 
 
+class DimensionCreateRequest(BaseModel):
+    """新建维度请求（m3-1 A4——{key, label, ...}：label→name 列〔显示名〕；
+    required/enabled 可选，默认 enabled=true/required=false——D5 仅影响上传）。
+    P3-8（m3-2）：extra=forbid——status 等生命周期字段在 POST 面显式拒绝
+    （422），与 PATCH「status→400 归退役端点」口径对齐。"""
+
+    model_config = {"extra": "forbid"}
+
+    key: str
+    label: str
+    required: bool = False
+    enabled: bool = True
+
+
+class DimensionPatchRequest(BaseModel):
+    """维度修改请求（m3-1 A5——label/required/enabled 可选；**status 由退役
+    端点管理**——本端点不承载生命周期，显式携带 status → 400）。"""
+
+    model_config = {"extra": "forbid"}
+
+    label: str | None = None
+    required: bool | None = None
+    enabled: bool | None = None
+    status: str | None = None  # 仅用于显式拒绝（retire 端点专属载体）
+
+
+@router.post("/api/orgs/{org}/dimensions", status_code=201)
+async def create_dimension(
+    org: str, request: Request, body: DimensionCreateRequest,
+    auth: AuthContext = Depends(get_auth),
+) -> dict:
+    """新建维度（m3-1 A4——§6.2 五方法之一）：org_admin 门控；key 冲突 409
+    （UNIQUE(org_id, key)）；默认 enabled=true/required=false（D5：仅影响
+    上传、不影响过滤）；dimension.created 审计同事务。"""
+    org = org_scoped(request, org, auth)
+    service = get_service(request)
+    _require_org_admin(service, auth, org)
+    key = body.key.strip()
+    label = body.label.strip()
+    if not key or not label:
+        raise HTTPException(
+            status_code=400, detail="key/label 不得为空或纯空白",
+        )
+    try:
+        return service.backend.create_dimension(
+            org, key, label,
+            required=body.required, enabled=body.enabled,
+            audit=_audit_payload(EVENT_DIMENSION_CREATED, {
+                "org_id": org, "key": key, "label": label,
+                "required": body.required, "enabled": body.enabled,
+                "actor": auth.user_id,
+            }),
+        )
+    except DimensionExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/api/orgs/{org}/dimensions/{dim_id}")
+async def get_dimension(
+    org: str, dim_id: str, request: Request,
+    auth: AuthContext = Depends(get_auth),
+) -> dict:
+    """单维度只读（m3-1 连带新增——§6.2 GET 单维度；org_scoped 成员可读
+    〔与 GET /dimensions 同读面——维度元数据非 ACL 客体〕；retired 如实
+    展示——只读不裁定）。"""
+    org = org_scoped(request, org, auth)
+    dim = get_service(request).backend.get_dimension(org, dim_id)
+    if dim is None:
+        raise HTTPException(status_code=404, detail=f"dimension not found: {dim_id!r}")
+    return dim
+
+
+@router.patch("/api/orgs/{org}/dimensions/{dim_id}")
+async def patch_dimension(
+    org: str, dim_id: str, request: Request, body: DimensionPatchRequest,
+    auth: AuthContext = Depends(get_auth),
+) -> dict:
+    """修改维度（m3-1 A5）：label/required/enabled——**enabled/required 仅
+    影响上传、不影响过滤**（D5 v0.4）；**生命周期 status 仍由退役端点管理**
+    （PATCH status → 400）；retired 维度 → 409（values create/enable 对称）；
+    dimension.updated 审计同事务。"""
+    org = org_scoped(request, org, auth)
+    service = get_service(request)
+    _require_org_admin(service, auth, org)
+    if body.status is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="status 由退役端点管理（POST .../dimensions/{id}/retire"
+            "——唯一生命周期路径，T20）；本端点仅修改 label/required/enabled",
+        )
+    label: object = ...
+    if body.label is not None:
+        label = body.label.strip()
+        if not label:
+            raise HTTPException(status_code=400, detail="label 不得为空或纯空白")
+    try:
+        updated = service.backend.update_dimension(
+            org, dim_id,
+            name=label,
+            required=... if body.required is None else body.required,
+            enabled=... if body.enabled is None else body.enabled,
+            audit=_audit_payload(EVENT_DIMENSION_UPDATED, {
+                "org_id": org, "dimension_id": dim_id, "actor": auth.user_id,
+                "label": None if label is ... else label,
+                "required": body.required, "enabled": body.enabled,
+            }),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"dimension not found: {dim_id!r}")
+    return updated
+
+
+@router.get("/api/orgs/{org}/dimensions/{dim_id}/values")
+async def list_dimension_values(
+    org: str, dim_id: str, request: Request,
+    auth: AuthContext = Depends(get_auth),
+) -> dict:
+    """取值列表（m3-1 A6——§6.2 取值列表；org_scoped 成员可读；**含 disabled
+    取值**——管理面对账与重新启用恢复路径的数据面，行含 status）。"""
+    org = org_scoped(request, org, auth)
+    values = get_service(request).backend.list_dimension_values(org, dim_id)
+    if values is None:
+        raise HTTPException(status_code=404, detail=f"dimension not found: {dim_id!r}")
+    return {"values": values}
+
+
+@router.get("/api/orgs/{org}/dimensions/{dim_id}/values/{value_id}")
+async def get_dimension_value(
+    org: str, dim_id: str, value_id: str, request: Request,
+    auth: AuthContext = Depends(get_auth),
+) -> dict:
+    """单取值只读（m3-1 连带新增——§6.2 GET 单取值；org_scoped 成员可读）。"""
+    org = org_scoped(request, org, auth)
+    value = get_service(request).backend.get_dimension_value(org, dim_id, value_id)
+    if value is None:
+        raise HTTPException(
+            status_code=404, detail=f"value not found: {value_id!r}"
+        )
+    return value
+
+
 @router.get("/api/orgs/{org}/datasets")
 async def list_datasets(
     org: str, request: Request, auth: AuthContext = Depends(get_auth)
 ) -> dict:
     org = org_scoped(request, org, auth)
     return {"datasets": get_service(request).backend.list_datasets(org)}
+
+
+class DatasetCreateRequest(BaseModel):
+    """新建知识库请求（m3-1 A2——{key, title?}：key=id 稳定标识、title=显示名
+    缺省=key）。P3-8（m3-2）：extra=forbid——与 PATCH 统一（status 等
+    生命周期字段 POST 面显式拒绝 422）。"""
+
+    model_config = {"extra": "forbid"}
+
+    key: str
+    title: str | None = None
+
+
+class DatasetPatchRequest(BaseModel):
+    """库修改请求（m3-1 A3——title/description 可选；key 不可改：引用锚点
+    〔documents.dataset_id 外键〕）。"""
+
+    model_config = {"extra": "forbid"}
+
+    title: str | None = None
+    description: str | None = None
+
+
+@router.post("/api/orgs/{org}/datasets", status_code=201)
+async def create_dataset(
+    org: str, request: Request, body: DatasetCreateRequest,
+    auth: AuthContext = Depends(get_auth),
+) -> dict:
+    """新建知识库（m3-1 A2——§6.2 五方法之一）：org_admin 门控；组织内 key
+    冲突 409（id 全局 PK——DatasetExistsError）；初始空库（新建零文档）；
+    dataset.created 审计同事务。"""
+    org = org_scoped(request, org, auth)
+    service = get_service(request)
+    _require_org_admin(service, auth, org)
+    key = body.key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="key 不得为空或纯空白")
+    title = (body.title or "").strip() or key
+    try:
+        return service.backend.create_dataset(
+            org, key, title,
+            audit=_audit_payload(EVENT_DATASET_CREATED, {
+                "org_id": org, "dataset_id": key, "title": title,
+                "actor": auth.user_id,
+            }),
+        )
+    except DatasetExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.patch("/api/orgs/{org}/datasets/{dataset_id}")
+async def patch_dataset(
+    org: str, dataset_id: str, request: Request, body: DatasetPatchRequest,
+    auth: AuthContext = Depends(get_auth),
+) -> dict:
+    """修改知识库（m3-1 A3）：title/description（键显式出现才改——
+    description 显式 null=清空，MemberPatchRequest 同款 model_fields_set
+    语义）；不存在/跨组织 404；改名撞 UNIQUE(org_id, name) 409；
+    dataset.updated 审计同事务。删除仍走服务层流程（先删文档再删库——
+    P1-1，DELETE 端点既有）。"""
+    org = org_scoped(request, org, auth)
+    service = get_service(request)
+    _require_org_admin(service, auth, org)
+    title: object = ...
+    if "title" in body.model_fields_set:
+        title = (body.title or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="title 不得为空或纯空白")
+    description: object = ...
+    if "description" in body.model_fields_set:
+        description = body.description  # 显式 null=清空
+    try:
+        updated = service.backend.update_dataset(
+            org, dataset_id,
+            name=title, description=description,
+            audit=_audit_payload(EVENT_DATASET_UPDATED, {
+                "org_id": org, "dataset_id": dataset_id, "actor": auth.user_id,
+            }),
+        )
+    except DatasetExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if updated is None:
+        raise HTTPException(
+            status_code=404, detail=f"dataset not found in org: {dataset_id!r}"
+        )
+    return updated
 
 
 @router.delete("/api/orgs/{org}/datasets/{dataset_id}", status_code=204)
@@ -587,10 +917,16 @@ async def reindex_document(
       fail-closed 兜底）。
     """
     resolved = check_path_org(path_org=org, org_header=request.headers.get("x-org-id"))
+    enforce_agent_key_org(auth, resolved)  # D26：先于文档存在性（不泄露他组织面）
     service = get_service(request)
     doc = service.backend.get_document(doc_id)
     if doc is None or doc["org_id"] != resolved:
         raise HTTPException(status_code=404, detail=f"document not found: {doc_id!r}")
+    # 停用组织新任务投递拒绝（m3-1 issue #14——reembed 全库任务同样以目标
+    # 组织停用为准 fail-closed；进行中任务让跑完〔执行体不检查〕）
+    from .upload import _require_org_active
+
+    _require_org_active(service, resolved)
 
     if embed_model:
         # N-1 裁定（2026-11-01）：换模型=系统级配置变更——sysadmin 专属
@@ -717,6 +1053,7 @@ async def query_audit(
     同一事件不重复出现）。
     """
     resolved = check_path_org(path_org=org, org_header=request.headers.get("x-org-id"))
+    enforce_agent_key_org(auth, resolved)  # D26：sysadmin key 亦不得跨组织读审计
     service = get_service(request)
     membership = service.backend.read_membership(auth.user_id, resolved)
     if membership is not None and membership["role"] == "org_admin":
@@ -728,6 +1065,11 @@ async def query_audit(
             status_code=403, detail="audit query requires org_admin (own org) "
             "or system admin (metadata-only)——FR-6 分级",
         )
+    # 停用组织访问面 403（m3-1 issue #14——/api/orgs/{org}/... 一律拦截；
+    # 门控先行〔不泄露审计内容〕，停用拦截随后）
+    from .upload import _require_org_active
+
+    _require_org_active(service, resolved)
 
     # 读路径下沉 store（m2-6 B④——双源合并/去重/过滤/排序双方言收口
     # read_org_audit；B5 注记见其 docstring：读回行 row_hash 不自洽勿复算链）
@@ -748,11 +1090,24 @@ async def org_stats(
     org: str, request: Request, auth: AuthContext = Depends(get_auth),
 ) -> dict:
     """运维面板 stats（m2-3 B4——maintenance 任务族最近一次运行计数；含
-    audit_outbox_trimmed 新键：已搬运 outbox 行保留期清理）。只读。"""
+    audit_outbox_trimmed 新键：已搬运 outbox 行保留期清理）。只读。
+
+    m3-3 G-28⑦：新增 ``query_audit``（dropped/pending——查询审计队列溢出
+    丢弃与在队深度观测面，此前仅日志可见；队列未装配时键缺省 None）。"""
     org = org_scoped(request, org, auth)
     service = get_service(request)
     _require_org_admin(service, auth, org)
-    return {"maintenance": service.backend.read_last_maintenance_stats()}
+    body = {"maintenance": service.backend.read_last_maintenance_stats()}
+    qa = getattr(service, "query_audit", None)
+    if qa is not None:
+        try:
+            body["query_audit"] = {"dropped": int(qa.dropped),
+                                   "pending": int(qa.pending)}
+        except Exception:  # noqa: BLE001 —— 观测面取数失败不 500 stats
+            body["query_audit"] = None
+    else:
+        body["query_audit"] = None
+    return body
 
 
 # ============================================================================
@@ -764,11 +1119,29 @@ async def org_stats(
 
 class MemberAddRequest(BaseModel):
     """加成员请求（POST /members）：user_id 须为既有用户（JIT 建档或其他途径
-    ——管理员不建账号，D16）。"""
+    ——管理员不建账号，D16）。role 枚举 m3-1 扩展 sem_restricted（G-24①——
+    极少数敏感实体可见权，§6.3 权限口径③；单值列天然不兼任 org_admin——
+    T-S9 既有口径）。"""
 
     user_id: str
     role: str = "member"
     expires_at: str | None = None
+
+
+_MEMBER_ROLES = ("member", "org_admin", "sem_restricted")
+
+
+@router.get("/api/orgs/{org}/members")
+async def list_members(
+    org: str, request: Request, auth: AuthContext = Depends(get_auth)
+) -> dict:
+    """成员列表（m3-1 A1——§6.2 五方法之一）：org_admin 门控 + org_scoped；
+    行含 user_id/username/role/expires_at——**含过期行如实返回**（过滤语义
+    归权限计算，列表面只作展示；m2-6 软停用=expires_at 承载的管理面对账面）。"""
+    org = org_scoped(request, org, auth)
+    service = get_service(request)
+    _require_org_admin(service, auth, org)
+    return {"members": service.backend.list_members(org)}
 
 
 class MemberPatchRequest(BaseModel):
@@ -793,20 +1166,35 @@ async def add_member(
 ) -> dict:
     """加成员（A3——JIT 用户入组 API 面）：用户不存在 404（管理员不建账号，
     D16——建档走 SSO JIT）；已存在成员关系（含过期行）409（过期行恢复 =
-    DELETE 后重加 + PUT grants 补授权——T23 先例三步）。审计同事务。"""
+    DELETE 后重加 + PUT grants 补授权——T23 先例三步）。审计同事务。
+    role=sem_restricted（m3-1 G-24①——语义层敏感实体可见权的管理面授予
+    入口；org_admin 不兼任——单值列）。"""
     org = org_scoped(request, org, auth)
     service = get_service(request)
     _require_org_admin(service, auth, org)
-    if body.role not in ("member", "org_admin"):
+    if body.role not in _MEMBER_ROLES:
         raise HTTPException(
-            status_code=400, detail=f"invalid role: {body.role!r}（member | org_admin）",
+            status_code=400,
+            detail=f"invalid role: {body.role!r}（member | org_admin | "
+            "sem_restricted——语义层敏感实体可见权，G-24①）",
         )
     expires_at = _parse_expires_at(body.expires_at, where="members expires_at")
+    # local 形态：允许按 **username** 指定成员（2026-11-22 用户走查——org_admin
+    # 侧没有用户目录，u_<hex> ID 既查不到也记不住；此前只能手输 ID，实际不可用）。
+    # 解析口径与建组织（POST /api/orgs 的 org_admin）一致：先按 id 查，查不到再按
+    # username 换 id；两者都不命中则原样下传，由 store 抛 KeyError → 404。
+    target = body.user_id
+    if service.settings.auth_mode == "local":
+        user = service.backend.get_user(target)
+        if user is None:
+            user = service.backend.get_user_by_username(target)
+        if user is not None:
+            target = user["id"]
     try:
-        return service.backend.add_membership(
-            org, body.user_id, role=body.role, expires_at=expires_at,
+        created = service.backend.add_membership(
+            org, target, role=body.role, expires_at=expires_at,
             audit=_audit_payload(EVENT_MEMBER_ADD, {
-                "org_id": org, "user_id": body.user_id, "actor": auth.user_id,
+                "org_id": org, "user_id": target, "actor": auth.user_id,
                 "role": body.role, "expires_at": expires_at,
             }),
         )
@@ -818,6 +1206,12 @@ async def add_member(
         ) from exc
     except MembershipExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # 响应附 username：按 username 入组时前端可立即显示人名（sso 形态不加，零变化）。
+    if service.settings.auth_mode == "local":
+        row = service.backend.get_user(target)
+        if row is not None:
+            created["username"] = row["username"]
+    return created
 
 
 @router.patch("/api/orgs/{org}/members/{user_id}")
@@ -826,13 +1220,16 @@ async def patch_member(
     auth: AuthContext = Depends(get_auth),
 ) -> dict:
     """成员关系更新（A3——角色变更/软停用/续期）：不存在 404；**已过期行 409**
-    （T23 续期禁令——删行重加是唯一恢复路径）；唯一管理员自锁 409（守卫）。"""
+    （T23 续期禁令——删行重加是唯一恢复路径）；唯一管理员自锁 409（守卫——
+    降级 sem_restricted 同属身份终结，同守卫〔m3-1 G-24① 兼容面〕）。"""
     org = org_scoped(request, org, auth)
     service = get_service(request)
     _require_org_admin(service, auth, org)
-    if body.role is not None and body.role not in ("member", "org_admin"):
+    if body.role is not None and body.role not in _MEMBER_ROLES:
         raise HTTPException(
-            status_code=400, detail=f"invalid role: {body.role!r}（member | org_admin）",
+            status_code=400,
+            detail=f"invalid role: {body.role!r}（member | org_admin | "
+            "sem_restricted——语义层敏感实体可见权，G-24①）",
         )
     expires_at = ...  # Ellipsis 哨兵 = 不变（store 协议）
     if "expires_at" in body.model_fields_set:  # 键显式出现（含 null=改永久）

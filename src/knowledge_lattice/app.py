@@ -39,16 +39,36 @@ from knowledge_lattice.config import Settings, get_settings
 from knowledge_lattice.core.docs.acl import AclDeniedError
 from knowledge_lattice.core.docs.credentials import CredentialError, CredentialService
 from knowledge_lattice.core.docs.ingest import IngestService
+from knowledge_lattice.domain.accounts import (
+    LoginRateLimiter,
+    validate_local_auth_settings,
+)
 from knowledge_lattice.domain.auth import AuthError, OrgContextError
 from knowledge_lattice.mcp.server import build_mcp_server
+from knowledge_lattice.query_audit import QueryAuditQueue
 
 logger = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 
 
+class _NoStaleStaticFiles(StaticFiles):
+    """静态页壳资产恒要求回源重验证（Cache-Control: no-cache）。
+
+    无构建链 → 资产 URL 不带内容哈希；StaticFiles 默认不发缓存头，浏览器会按
+    Last-Modified 做**启发式缓存**（约 10% 文件年龄内直接命中本地副本）——升级或
+    改前端后普通刷新仍可能跑到旧 JS/CSS（"改了看不到"）。no-cache **不禁止缓存**、
+    只要求每次回源验证：文件未变回 304（零体传输），变了立即拿到新版。
+    """
+
+    async def get_response(self, path: str, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
 class ServiceContext:
-    """依赖容器（backend/settings/gate/ingest/credentials/quality/embedder/reranker/enhancer/breakers/worker）。"""
+    """依赖容器（backend/settings/gate/ingest/credentials/quality/embedder/reranker/enhancer/breakers/worker/query_audit）。"""
 
     def __init__(
         self,
@@ -66,6 +86,8 @@ class ServiceContext:
         worker=None,
         sso=None,
         trusted=None,
+        query_audit=None,
+        login_limiter=None,
     ) -> None:
         self.settings = settings
         self.backend = backend
@@ -82,6 +104,12 @@ class ServiceContext:
         # + 可信子系统白名单（含按服务限流器——TC-AUTH-05/T13）
         self.sso = sso
         self.trusted = trusted
+        # m3-2 G-22：查询级异步审计队列（六入口热路径仅入队；后台批量 flush
+        # 直写月库——丢失窗口 ≤5s，FR-6 §5.6）。None=未装配（旧测试壳兼容）
+        self.query_audit = query_audit
+        # M4/D25（m4-1）：本地登录限流器（进程内单例——m4-2 登录端点共用；
+        # sso 形态不消费但恒构造，装配面统一）
+        self.login_limiter = login_limiter
 
 
 class InlineWorkerHandle:
@@ -194,6 +222,21 @@ class SubprocessWorkerHandle:
         self._supervisor.stop()
 
 
+def _resolve_sso(settings, sso_verifier):
+    """SSO 验签器装配（D25：local 形态恒 None——显式注入也忽略）。
+
+    sso 形态沿用既有分层：显式注入优先，否则按 `settings.sso_provider`
+    配置化构造（none=缺省 dev 形态 / mock-idp=mock IdP）。
+    """
+    if settings.auth_mode == "local":
+        return None
+    if sso_verifier is not None:
+        return sso_verifier
+    from knowledge_lattice.adapters.auth_sso import build_sso_verifier
+
+    return build_sso_verifier(settings)
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -210,13 +253,19 @@ def create_app(
     m2-4 auth 装配分层：``sso_verifier`` 显式注入优先；否则按
     settings.sso_provider 配置化构造（none=缺省 dev 形态——现有门禁/测试零
     感知；mock-idp=mock IdP）。可信子系统白名单恒由 settings.trusted_services_json
-    构造（畸形配置 fail-closed raise）。
+    构造（畸形配置 fail-closed raise）。M4/D25（m4-1）：``auth_mode=="local"``
+    时先做启动守卫（``validate_local_auth_settings``——session_secret 缺失/
+    过短/公开缺省值即 ValueError），且 SSO 验签器恒为 None（显式注入也忽略
+    ——SSO JIT 关闭）。
 
     backend（m2-6 B⑧）：显式注入优先（API 级 pg 臂测试——pg_db 包装器经此
     挂载 create_app，CSV diff 等 API 面双方言断言的基建）；缺省走共享工厂
     ``store.factory.build_backend``（P2-4 先例——与 worker 同源）。
     """
     settings = settings or get_settings()
+    # M4/D25（m4-1）：local 形态启动守卫——session_secret 缺失/过短/复用公开
+    # 缺省值即拒（create_app 局部守卫也覆盖 Settings 直接构造的调用方）
+    validate_local_auth_settings(settings)
     if settings.worker_mode not in ("inline", "subprocess"):
         raise ValueError(
             f"invalid worker_mode {settings.worker_mode!r}（合法值：inline | subprocess"
@@ -226,7 +275,6 @@ def create_app(
 
     # P2-4/P2-5（M2.1 R2）：backend/quality 经共享工厂装配——与 worker 子进程
     # build_default_services 同源（杜绝主/子进程装配分叉）
-    from knowledge_lattice.adapters.auth_sso import build_sso_verifier
     from knowledge_lattice.core.docs.quality import build_quality_service
     from knowledge_lattice.domain.auth import TrustedServiceRegistry
 
@@ -321,9 +369,15 @@ def create_app(
         credentials=credentials, quality=quality, embedder=embedder,
         reranker=reranker, enhancer=enhancer, breakers=breakers,
         worker=worker_handle,
-        sso=sso_verifier if sso_verifier is not None
-        else build_sso_verifier(settings),
+        # M4/D25（m4-1）：local 形态关闭 SSO/JIT——不构造验签器（即使显式注入
+        # 也忽略，D25 口径）；sso 形态沿用既有分层（显式注入 > 配置化构造）
+        sso=_resolve_sso(settings, sso_verifier),
         trusted=TrustedServiceRegistry.from_json(settings.trusted_services_json),
+        query_audit=QueryAuditQueue(backend),
+        # M4/D25（m4-1）：进程内登录限流器（m4-2 登录端点消费）
+        login_limiter=LoginRateLimiter(
+            settings.login_max_fails, settings.login_window_s, settings.login_lock_s
+        ),
     )
 
     mcp_server = build_mcp_server(service, settings)
@@ -370,6 +424,9 @@ def create_app(
             maintenance_task = asyncio.create_task(_periodic_maintenance())
         worker_handle.start()  # worker：inline 兜底循环 / subprocess 子进程 + 监控
         app.state.worker = worker_handle
+        # m3-2 G-22：查询审计后台 flush 线程（满 5s 或满批先刷；uvicorn 关停
+        # 时 stop→flush 残留——正常关停零丢失）
+        service.query_audit.start()
         try:
             async with mcp_app.lifespan(mcp_app):  # MCP session manager 交给父 app
                 yield
@@ -378,6 +435,7 @@ def create_app(
                 if task is not None:
                     task.cancel()
             worker_handle.stop()
+            service.query_audit.stop()
 
     app = FastAPI(title="knowledge-lattice", lifespan=lifespan)
     app.state.service = service
@@ -404,8 +462,32 @@ def create_app(
             {"error": str(exc), "code": exc.code}, status_code=exc.http_status
         )
 
-    from knowledge_lattice.api import admin, documents, quality, search, semantic, tasks, upload
+    from knowledge_lattice.api import (
+        admin,
+        agent_keys as agent_keys_api,
+        auth as auth_api,
+        documents,
+        quality,
+        search,
+        semantic,
+        tasks,
+        upload,
+        users as users_api,
+    )
 
+    # M4/D25（m4-2）：账号面错误体统一 {"error", "code"}（契约 §5——429 锁定
+    # 另带 Retry-After 头；status_code 由 AccountError 携带）
+    @app.exception_handler(auth_api.AccountError)
+    async def _account_error(_: Request, exc: auth_api.AccountError):
+        return JSONResponse(
+            {"error": str(exc), "code": exc.code},
+            status_code=exc.status_code,
+            headers=exc.headers,
+        )
+
+    # D25：config/setup-status 恒注册（sso 形态也需 Web boot 门——恒 200、双 false）；
+    # local_router 与 users.router 仅 local 注册（sso 下这些路径 404——契约 §5）
+    app.include_router(auth_api.public_router)
     app.include_router(upload.router)
     app.include_router(documents.router)
     app.include_router(tasks.router)
@@ -416,12 +498,21 @@ def create_app(
     if settings.environment in ("dev", "test"):  # dev token 仅 dev/test（生产 404——D18/P2-4）
         app.include_router(admin.dev_token_router)
 
+    if settings.auth_mode == "local":
+        # M4/D25（m4-2）：本地登录/邀请接受 + 用户/邀请管理（sso 形态 404）
+        app.include_router(auth_api.local_router)
+        app.include_router(users_api.router)
+        # D26（issue #34 阶段 2B）：agent key 管理面（local 专属——sso 形态 404）
+        app.include_router(agent_keys_api.router)
+
     if WEB_DIR.is_dir():
-        app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+        app.mount("/static", _NoStaleStaticFiles(directory=WEB_DIR), name="static")
 
         @app.get("/", include_in_schema=False)
         async def index() -> FileResponse:
-            return FileResponse(WEB_DIR / "index.html")
+            # 页壳 HTML 同款口径：重验证（防升级后旧壳引用旧资产）
+            return FileResponse(WEB_DIR / "index.html",
+                                headers={"Cache-Control": "no-cache"})
 
     # MCP 挂最后（path="/mcp" 由内层 app 处理；未匹配路径落入其 404）
     app.mount("/", mcp_app)

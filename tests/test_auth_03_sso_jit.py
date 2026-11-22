@@ -21,7 +21,7 @@ from knowledge_lattice.config import Settings
 from knowledge_lattice.domain.audit_events import EVENT_AUTH_USER_JIT
 from knowledge_lattice.domain.auth import AuthError, authenticate
 
-SECRET = "unit-sso-secret"
+SECRET = "unit-sso-secret-0123456789abcdef012"
 AUD = "knowledge-lattice"
 
 
@@ -142,7 +142,7 @@ def test_sso_username_conflict_rejected(backend, tmp_path) -> None:
 def test_sso_bad_signature_rejected(backend, tmp_path) -> None:
     """非本 IdP 密钥签发（验签失败）→ 401（dev 形态下也不得误认）。"""
     verifier = _verifier()
-    forged = MockIdpVerifier(secret="attacker-secret").issue_token(
+    forged = MockIdpVerifier(secret="attacker-secret-9876543210fedcba").issue_token(
         sub="u_evil", aud=(AUD,),
     )
     try:
@@ -336,18 +336,19 @@ def test_mock_idp_prod_default_secret_rejected() -> None:
     from knowledge_lattice.adapters.auth_sso import (
         MockIdpVerifier, build_sso_verifier,
     )
+    from knowledge_lattice.config import DEFAULT_SSO_MOCK_SECRET
 
     try:
         build_sso_verifier(Settings(
             environment="prod", sso_provider="mock-idp",
-            sso_mock_secret="dev-mock-idp-secret",  # 公开缺省值
+            sso_mock_secret=DEFAULT_SSO_MOCK_SECRET,  # 公开缺省值（引用常量——P3-10）
         ))
         raise AssertionError("prod + 公开缺省密钥应 fail-closed")
     except ValueError as exc:
         assert "LATTICE_SSO_MOCK_SECRET" in str(exc)
     # prod + 显式密钥 → 放行（企业内网 POC 形态可用）
     assert isinstance(build_sso_verifier(Settings(
-        environment="prod", sso_provider="mock-idp", sso_mock_secret="real-secret",
+        environment="prod", sso_provider="mock-idp", sso_mock_secret="real-secret-0123456789abcdef012",
     )), MockIdpVerifier)
     # dev/test + 缺省密钥 → 放行（本地开发零配置）
     assert isinstance(build_sso_verifier(Settings(

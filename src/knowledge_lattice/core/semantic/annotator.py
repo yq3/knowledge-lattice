@@ -561,7 +561,7 @@ class Annotator:
         matched_by = "context" if hit["is_context"] else hit["kind"]
         base = _TIER_CONFIDENCE[matched_by]
         confidence = min(base, _RESOLVED_CEILING[resolved_by])
-        return {
+        mention = {
             "span": [s, e],
             "surface": text[s:e],
             "entity_id": eid,
@@ -576,6 +576,30 @@ class Annotator:
             "brief": self._brief(ent),
             "_cand_ids": pick,
         }
+        # G-24⑦（m3-3 裁定①）：mention 契约补可选 disambiguation——
+        # design §6.3② 中间件 L1 注入规则字面「概念/系统：name + brief +
+        # disambiguation」，数据来源 = curated_json.disambiguation（YAML
+        # {not, hint}——自然落位）；无数据不出现该键（向后兼容非决策变更）。
+        disamb = self._disambiguation(ent)
+        if disamb:
+            mention["disambiguation"] = disamb
+        return mention
+
+    def _disambiguation(self, ent) -> list[dict]:
+        """curated disambiguation 携带面（[{not, hint}] 原样——畸形行防御跳过）。"""
+        curated = _loads(ent.get("curated_json"))
+        out = []
+        for d in curated.get("disambiguation") or ():
+            if not isinstance(d, dict):
+                continue
+            row = {}
+            if d.get("not"):
+                row["not"] = str(d["not"])
+            if d.get("hint"):
+                row["hint"] = str(d["hint"])
+            if row:
+                out.append(row)
+        return out
 
     def _candidate(self, mention, eid) -> dict:
         ent = self.entities[eid]
@@ -744,7 +768,10 @@ def annotate_text(backend, settings, org_id: str, text: str, *,
                   fuzzy: bool = False,
                   include_restricted: bool = False,
                   embedder=None,
-                  embed_batch=None) -> dict:
+                  embed_batch=None,
+                  gate=None,
+                  breakers: dict | None = None,
+                  user_id: str | None = None) -> dict:
     """REST/MCP 共用编排：dict_rev 锚点 + mentions（Annotator 内含原文切片）。
 
     - fuzzy=True（§5.9 第 3 层——m2s-6）：向量层经注入 embedder（缺省
@@ -752,32 +779,45 @@ def annotate_text(backend, settings, org_id: str, text: str, *,
       backend.sem_fuzzy_vec_search（阈值 0.75 top-3，SQL 在 store）；
       embed_batch(texts) 可覆盖批量嵌入（评测/测试确定性注入面）；
     - include_restricted=True（T-S9 持权路径）：restricted 实体参与识别——
-      由 api/mcp 层按调用方 membership role 判定后传入（core 不查权限）。"""
+      由 api/mcp 层按调用方 membership role 判定后传入（core 不查权限）；
+    - **G-24⑨后半（m3-3/issue #15）**：fuzzy vec 层嵌入经
+      ``settings.query_embed_timeout_s`` 有界等待 + 共享熔断
+      （``breakers["embed"]``）+ ``search.degraded``（scope=annotate）降级
+      审计——沿 search_entities G-24③ m2-5 实装口径（此前走 embed_timeout_s
+      =30s 同步嵌入、无 breaker、无审计）；embed_batch 注入面（评测确定性）
+      不走有界/熔断，但 gate 拒绝时 vec 层照常整体关闭；
+    - **G-24⑨前半（m3-3）**：``gate.rejected``（探针拒绝档）→ fuzzy vec
+      层关闭不发嵌入调用（NFR-8/§5.2「查询侧向量路关闭」跨切面一致）+
+      probe_reject 降级审计（与 docs 检索同源语义）。"""
     ann, rev = get_annotator(backend, org_id, settings)
     if ann is None:
         return {"dict_rev": None, "mentions": [], "candidates": []}
+    gate_rejected = gate is not None and gate.rejected
+    if fuzzy and gate_rejected:
+        _audit_annotate_vec_degraded(backend, org_id, user_id, "probe_reject")
+        logger.warning("annotate fuzzy vec layer closed: probe rejected")
     vec_lookup = None
-    if fuzzy:
-        def vec_lookup(fragment: str) -> list[dict]:
-            embed = embed_batch or _default_embed_batch(backend, settings,
-                                                        org_id, embedder)
-            vectors = embed([fragment])
-            vec = vectors[0] if vectors else None
-            if vec is None:
-                return []
-            hits = backend.sem_fuzzy_vec_search(
-                org_id, vec, embed_model=settings.embed_model_label,
-                top_k=settings.semantic_fuzzy_vec_top,
-                min_sim=settings.semantic_fuzzy_vec_threshold,
-            )
-            # 实体去重保最优 + min_sim 过滤（store 返回 term 级行）
-            best: dict[int, dict] = {}
-            for h in hits:
-                if h["sim"] < settings.semantic_fuzzy_vec_threshold:
-                    continue
-                if h["entity_id"] not in best or h["sim"] > best[h["entity_id"]]["sim"]:
-                    best[h["entity_id"]] = h
-            return sorted(best.values(), key=lambda h: -h["sim"])
+    if fuzzy and not gate_rejected:
+        if embed_batch is not None:
+            def vec_lookup(fragment: str) -> list[dict]:
+                vectors = embed_batch([fragment])
+                vec = vectors[0] if vectors else None
+                if vec is None:
+                    return []
+                return _vec_hits(backend, settings, org_id, vec)
+        elif embedder is not None:
+            def vec_lookup(fragment: str) -> list[dict]:
+                from knowledge_lattice.core.semantic.lookup import (
+                    embed_query_bounded,
+                )
+
+                vec = embed_query_bounded(
+                    backend, settings, embedder, fragment, org_id=org_id,
+                    user_id=user_id, breakers=breakers, scope="annotate",
+                )
+                if vec is None:
+                    return []
+                return _vec_hits(backend, settings, org_id, vec)
     result = ann.annotate(
         text, context_entities=context_entities, prefer_types=prefer_types,
         fuzzy=fuzzy, include_restricted=include_restricted,
@@ -789,8 +829,45 @@ def annotate_text(backend, settings, org_id: str, text: str, *,
     return {"dict_rev": rev, **result}
 
 
+def _vec_hits(backend, settings, org_id: str, vec) -> list[dict]:
+    """查询向量 → sem_fuzzy_vec_search 结果整形（实体去重保最优 + min_sim）。"""
+    hits = backend.sem_fuzzy_vec_search(
+        org_id, vec, embed_model=settings.embed_model_label,
+        top_k=settings.semantic_fuzzy_vec_top,
+        min_sim=settings.semantic_fuzzy_vec_threshold,
+    )
+    best: dict[int, dict] = {}
+    for h in hits:
+        if h["sim"] < settings.semantic_fuzzy_vec_threshold:
+            continue
+        if h["entity_id"] not in best or h["sim"] > best[h["entity_id"]]["sim"]:
+            best[h["entity_id"]] = h
+    return sorted(best.values(), key=lambda h: -h["sim"])
+
+
+def _audit_annotate_vec_degraded(backend, org_id, user_id, reason) -> None:
+    """annotate fuzzy vec 层降级审计（G-24⑨——search.degraded scope=annotate；
+    写失败仅告警——增益路语义不阻断识别）。"""
+    import json as _json
+
+    try:
+        backend.append_outbox(
+            "search.degraded",
+            _json.dumps(
+                {"user_id": user_id, "org_id": org_id,
+                 "reasons": [reason], "scope": "annotate"},
+                ensure_ascii=False,
+            ),
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("search.degraded (annotate) audit write failed")
+
+
 def _default_embed_batch(backend, settings, org_id, embedder):
-    """向量层缺省嵌入通道：embedder 注入（None → 该层恒空——不阻断前两层）。"""
+    """向量层缺省嵌入通道：embedder 注入（None → 该层恒空——不阻断前两层）。
+
+    m3-3 G-24⑨后半后：本通道仅供未接 query_embed_timeout_s/breaker 的旧
+    调用面兼容——REST/MCP 端点已改经 embed_query_bounded（有界+熔断+审计）。"""
     if embedder is None:
         return lambda texts: [None] * len(texts)
 

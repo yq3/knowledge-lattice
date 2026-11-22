@@ -3,9 +3,10 @@
  *   点格 = 该成员全量 local 行 PUT 替换（expires 沿库内、新授权 null）；
  *   B① 行级到期编辑保留在成员行「详细」抽屉（ui-1 chips 编辑器 + CSV 迁入）。
  *   API 无维度 source 字段——不标 sync 只读格（export=local 口径，诚实差异）。
- * - 成员子标签：真端点（POST/PATCH/DELETE members——m2-6 A3）；名单源 = export
- *   用户名（无 GET members，m3-1 #13）；T23 约束（过期行 409 三步恢复 / 唯一
- *   管理员自锁 / 级联清授权）由服务端守卫如实回显。
+ * - 成员子标签：真端点（GET/POST/PATCH/DELETE members——m2-6 A3 + m3-1 #13）；
+ *   名单源 = GET members 真源 ∪ export 用户名 ∪ 会话注册表（m3-2 真源化）；
+ *   T23 约束（过期行 409 三步恢复 / 唯一管理员自锁 / 级联清授权）由服务端
+ *   守卫如实回显。
  * - 维度子标签：ui-1 既有治理（停用/恢复/新增取值/退役/新建维度†）。
  * - 可见性矩阵：占位空态（待 be-① 文档列表 + be-② explain——前端不演算 ACL，B5）。 */
 "use strict";
@@ -27,8 +28,9 @@ async function loadGrantsTable() {
         })
       : [];
     state.g.error = null; // 装载成功清错误态（P2-3）
-    state.usernames = [...new Set([...state.g.rows.map((r) => r.username), ...knownMembers()])].sort();
-    if (state.g.detail && !state.usernames.includes(state.g.detail)) state.g.detail = null;
+    const roster = latticeMembers();
+    state.usernames = roster.map(userLabel).sort();   // 显示名（顶栏视角菜单用）
+    if (state.g.detail && !roster.includes(state.g.detail)) state.g.detail = null;  // detail 存 id
     if (state.g.detail) seedGrantEditor(state.g.detail);
   } catch (e) {
     if (ep !== state.epoch) return;
@@ -41,14 +43,21 @@ async function loadGrantsTable() {
 
 /* 授权格成员集（export 用户名 ∪ 会话成员注册表，升序——P1-3）与格态判定（display-only 到期比较） */
 function latticeMembers() {
-  return [...new Set([...state.g.rows.map((r) => r.username), ...knownMembers()])].sort();
+  /* 键一律 user_id：导出行只有 username（users 表联查），经 userIdOf 归一；
+   * 会话成员注册表本来就是 id。两者并集去重——local 形态下同一人不再出现两行。 */
+  return [...new Set([...state.g.rows.map((r) => userIdOf(r.username)), ...knownMembers()])].sort();
 }
-function grantRowsOf(username) {
-  return state.g.rows.filter((r) => r.username === username);
+function grantRowsOf(uid) {
+  return state.g.rows.filter((r) => userIdOf(r.username) === uid);
 }
 function nowUtcStr() {
   return new Date().toISOString().slice(0, 19).replace("T", " ");
 }
+/* expires_at 输入面（2026-11-22）：**输入框里是显示时区墙钟**，提交前用
+ * toUtcStr() 换回 UTC；库里/接口里一律 UTC（比较、排序、审计都用 UTC）。
+ * 边界只有两处：seed（UTC→显示区）与提交（显示区→UTC）。
+ * CSV 导入导出**不换算**（交换格式保持 UTC，否则导出→导入会漂 8 小时）。 */
+function localOf(ts) { return ts ? fmtTs(ts) : ""; }
 
 /* 既有 expires 映射 + ui-1 chips 编辑器种子（B①——抽屉内逐行 expires） */
 function seedGrantEditor(member, preserve = false) {
@@ -58,7 +67,10 @@ function seedGrantEditor(member, preserve = false) {
   mine.forEach((r) => { state.g.existing[`${r.dimKey}=${r.value}`] = r.expiresAt; });
   if (!preserve) {
     state.g.picked = { ...state.g.existing };
-    state.g.expires = { ...state.g.existing }; // 行内初始值=库内值（未编辑即沿用——B①）
+    // 行内初始值=库内值（未编辑即沿用——B①），但表达成**显示时区墙钟**：
+    // 输入框里写什么就提交什么（提交时统一换回 UTC），不出现两套口径。
+    state.g.expires = Object.fromEntries(
+      Object.entries(state.g.existing).map(([k, v]) => [k, localOf(v)]));
   }
 }
 
@@ -84,14 +96,14 @@ function grantsHTML() {
     <tbody>${members.map((u) => {
       const mine = grantRowsOf(u);
       const memberHasExp = mine.some((r) => r.expiresAt);
-      return `<tr><th><b style="font-weight:600">${esc(u)}</b>
+      return `<tr><th><b style="font-weight:600">${esc(userLabel(u))}</b>
           ${memberHasExp ? `<span class="tiny muted"> · ${esc(t("access.grants.hasExpires"))}</span>` : ""}
           <button class="link tiny" data-act="latDetail" data-u="${esc(u)}" title="${esc(t("access.grants.detailTip"))}">${g.detail === u ? esc(t("common.collapse")) : esc(t("access.grants.detail"))}</button></th>
         ${dims.map((d) => (d.values || []).map((v, i) => {
           const row = mine.find((r) => r.dimKey === d.key && r.value === v.value);
           const on = !!row;
           const expired = on && row.expiresAt && row.expiresAt <= now;
-          const title = `${u} · ${d.name}=${v.label}` + (row && row.expiresAt ? ` · ${expired ? t("access.grants.grantExpiredAt") : t("access.expires.existing")}: ${row.expiresAt}` : "");
+          const title = `${userLabel(u)} · ${d.name}=${v.label}` + (row && row.expiresAt ? ` · ${expired ? t("access.grants.grantExpiredAt") : t("access.expires.existing")}: ${localOf(row.expiresAt)}` : "");
           return `<td class="${i === 0 ? "dg" : ""}"><button class="cellbtn ${on ? "on" : ""}" ${expired ? `style="opacity:.4;outline:1px dashed var(--danger);outline-offset:1px"` : ""}
             data-act="latCell" data-u="${esc(u)}" data-k="${esc(d.key)}" data-v="${esc(v.value)}" data-dim="${esc(d.id)}"
             title="${esc(title)}" aria-label="${esc(title)}" aria-pressed="${on}" ${g.saving ? "disabled" : ""}></button></td>`;
@@ -105,7 +117,7 @@ function grantsHTML() {
     <span class="lg"><span class="cellbtn on" style="opacity:.4;outline:1px dashed var(--danger);outline-offset:1px"></span>${esc(t("access.grants.legend.expired"))}</span>
     <span class="lg">${t("access.grants.legend.note")}</span>
   </div>
-  <div class="note" style="margin-top:16px;max-width:88ch">
+  <div class="note" style="margin-top:16px">
     ${t("access.grants.footNote")}
   </div>
   ${state.dims.some((d) => d.status === "retired") ? `<div class="tiny muted" style="margin-top:8px">${t("access.grants.retiredNote", { dims: state.dims.filter((d) => d.status === "retired").map((d) => esc(d.name)).join(t("common.sep")) })}</div>` : ""}`;
@@ -116,7 +128,7 @@ function grantDetailHTML(member) {
   const g = state.g;
   return `<div class="upload" style="margin:12px 0;border-radius:var(--r-lg)">
     <div style="grid-column:1/-1;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
-      <b style="font-size:15px">${esc(t("access.grants.detailTitle", { user: member }))}</b>
+      <b style="font-size:15px">${esc(t("access.grants.detailTitle", { user: userLabel(member) }))}</b>
       <span class="tiny muted">${t("access.grants.detailNote")}</span></div>
     <div class="u-row"><label>${esc(t("access.expires.prefill"))}</label>
       <div style="display:flex;gap:8px;align-items:center">
@@ -131,7 +143,7 @@ function grantDetailHTML(member) {
         const on = key in g.picked;
         const existing = g.existing[key];
         return `<span style="display:inline-flex;gap:6px;align-items:center">
-          <button class="vchip ${on ? "on" : ""}" data-act="gCell" data-k="${esc(key)}" title="${existing ? esc(t("access.expires.existing")) + ": " + esc(existing) : ""}">${esc(v.label)}<span class="vx">${esc(v.value)}</span></button>
+          <button class="vchip ${on ? "on" : ""}" data-act="gCell" data-k="${esc(key)}" title="${existing ? esc(t("access.expires.existing")) + ": " + esc(localOf(existing)) : ""}">${esc(v.label)}<span class="vx">${esc(v.value)}</span></button>
           ${on ? `<input class="chip-exp" data-in="gExp" data-id="${esc(key)}" placeholder="${esc(t("access.expires.rowPh"))}" value="${esc(g.expires[key] || "")}" title="${esc(t("access.expires.rowTitle"))}">` : ""}
         </span>`;
       }).join("")}</div>
@@ -173,7 +185,7 @@ function membersHTML() {
       const expRows = mine.filter((r) => r.expiresAt && r.expiresAt <= now).length;
       const known = knownUser(u); // P1-4：会话已知 role/expiresAt（无则不默认代填）
       const row = `<tr>
-        <td>${avatar(u)} <b class="t-title">${esc(u)}</b></td>
+        <td>${avatar(userLabel(u))} <b class="t-title">${esc(userLabel(u))}</b>${userLabel(u) !== u ? `<div class="t-sub mono">${esc(u)}</div>` : ""}</td>
         <td>${m.roleSel === u
           ? `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
               <select class="sel" data-in="memRoleSel" style="height:26px;width:130px">
@@ -185,7 +197,7 @@ function membersHTML() {
               <button class="btn sm" data-act="memRoleOk" data-u="${esc(u)}" ${m.roleVal ? "" : "disabled"}>${esc(t("common.save"))}</button>
               <button class="btn ghost sm" data-act="memRoleCancel">${esc(t("common.cancel"))}</button></div>`
           : `<span class="pill ${known && known.role === "org_admin" ? "ok" : ""}">${esc(known && known.role ? known.role : "—")}</span>
-             <button class="btn ghost sm" data-act="memRoleAsk" data-u="${esc(u)}" title="PATCH /members/${esc(u)}">${esc(t("access.mem.changeRole"))}</button>`}</td>
+             <button class="btn ghost sm" data-act="memRoleAsk" data-u="${esc(u)}">${esc(t("access.mem.changeRole"))}</button>`}</td>
         <td>${m.expAsk === u
           ? `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
               <select class="sel" data-in="memExpMode" style="height:26px;width:110px">
@@ -207,11 +219,10 @@ function membersHTML() {
       return row + `<tr><td colspan="5" style="border-bottom:0"><div class="confirm">
         <b>${t("access.mem.removeAsk", { user: esc(u) })}</b> ${t("access.mem.removeBody")}
         <div class="cf-act"><button class="btn danger-btn sm" data-act="memDelOk" data-u="${esc(u)}">${esc(t("common.confirm"))}</button>
-        <button class="btn ghost sm" data-act="memCancel">${esc(t("common.cancel"))}</button>
-        <span class="tiny muted" style="align-self:center"><code>DELETE /api/orgs/${esc(cfg.org)}/members/${esc(u)}</code></span></div></div></td></tr>`;
+        <button class="btn ghost sm" data-act="memCancel">${esc(t("common.cancel"))}</button></div></div></td></tr>`;
     }).join("") : `<tr><td colspan="5" class="tiny muted" style="padding:20px 16px">${esc(t("access.mem.empty"))}</td></tr>`}</tbody>
   </table>
-  <div class="note" style="margin-top:16px;max-width:92ch">${t("access.mem.footNote")}</div>`;
+  <div class="note" style="margin-top:16px">${t("access.mem.footNote")}</div>`;
 }
 
 function memAddHTML() {
@@ -219,8 +230,8 @@ function memAddHTML() {
   return `<div class="upload" style="margin-bottom:16px">
     <div style="grid-column:1/-1"><b style="font-size:15px">${esc(t("access.mem.add"))}</b>
       <span class="tiny muted">—— ${t("access.mem.addNote")}</span></div>
-    <div class="u-row"><label>user_id<span class="req">*</span></label>
-      <input class="inp" data-in="memNewUid" placeholder="${esc(t("access.mem.uidPh"))}" value="${esc(d.uid)}" style="font-family:var(--mono)"></div>
+    <div class="u-row"><label>${esc(t("access.mem.col.member"))}<span class="req">*</span></label>
+      <input class="inp" data-in="memNewUid" placeholder="${esc(t("access.mem.uidPh"))}" value="${esc(d.uid)}"></div>
     <div class="u-row"><label>${esc(t("access.mem.role"))}</label>
       <select class="sel" data-in="memNewRole">
         <option value="member" ${d.role === "member" ? "selected" : ""}>member · ${esc(t("role.member"))}</option>
@@ -235,15 +246,110 @@ function memAddHTML() {
     </div></div>`;
 }
 
-/* ---------- 可见性矩阵占位（be-① / be-② 落地前不实装——B5） ---------- */
+/* ---------- 可见性矩阵（m3-1 be-①② 实装——m3-2 ui-be 实装：org_admin 逐格
+ *           GET explain?user_id=X 取数；前端不演算 ACL〔B5〕，只平铺服务端结论） ---------- */
 
 function visHTML() {
-  return `<div class="empty">
-    <h3>${esc(t("access.vis.title"))}</h3>
-    <p>${t("access.vis.body")}</p>
-    <p style="margin-top:10px">${t("access.vis.body2")}</p>
+  if (!isAdmin()) {
+    return `<div class="note amber">${t("access.grants.needAdmin")}</div>
+    <div class="note" style="margin-top:12px">${t("access.vis.memberNote")}</div>`;
+  }
+  const v = state.vis;
+  if (v.error) return `<div class="empty" style="margin:0"><h3>${esc(t("access.grants.loadErr", { err: esc(v.error) }))}</h3>
+    <div style="margin-top:16px"><button class="btn ghost sm" data-act="visRetry">${esc(t("common.retry"))}</button></div></div>`;
+  if (!v.rows) return loadingHTML("access");
+  if (!(v.members || []).length || !(v.docs || []).length) {
+    return `<div class="empty" style="margin:0"><h3>${esc(t("access.vis.empty.title"))}</h3><p>${t("access.vis.empty.body")}</p></div>`;
+  }
+  return `
+  <div class="lane-h" style="margin-top:4px"><h3>${esc(t("access.vis.title"))}</h3>
+    <span class="tiny muted">${t("access.vis.legend.note")}</span></div>
+  <table class="lattice vis-lattice">
+    <thead>
+      <tr><th style="text-align:left;padding-left:14px">${esc(t("access.vis.col.member"))} \\ ${esc(t("access.vis.col.doc"))}</th>
+        ${v.docs.map((d) => `<th class="vh dg"><span class="cut" style="max-width:130px;display:inline-block" title="${esc(d.doc_id)}">${esc(d.title || d.doc_id)}</span></th>`).join("")}
+      </tr>
+    </thead>
+    <tbody>${v.members.map((u) => `<tr><th><b style="font-weight:600">${esc(userLabel(u))}</b></th>
+      ${v.docs.map((d) => {
+        const cell = v.cells[`${u}|${d.doc_id}`];
+        const cls = cell ? (cell.visible ? "ok" : "bad") : "";
+        const mark = cell == null ? `<span class="tiny muted">·</span>`
+          : cell.visible ? "✓" : "✗";
+        return `<td><button class="cellbtn vis-cell ${cls}" data-act="visCell" data-u="${esc(u)}" data-id="${esc(d.doc_id)}"
+          title="${esc(userLabel(u))} · ${esc(d.doc_id)}" aria-label="${esc(userLabel(u))} × ${esc(d.doc_id)}">${mark}</button></td>`;
+      }).join("")}</tr>`).join("")}
+    </tbody>
+  </table>
+  <div class="legend">
+    <span class="lg"><span class="cellbtn on"></span>${esc(t("access.vis.legend.visible"))}</span>
+    <span class="lg"><span class="cellbtn"></span>${esc(t("access.vis.legend.hidden"))}</span>
+    <span class="lg">·</span>
+    <span class="lg">${t("access.vis.legend.note")}</span>
   </div>
-  <div class="note" style="max-width:88ch">${t("access.vis.note")}</div>`;
+  ${state.vis.detail ? visDetailHTML(state.vis.detail) : ""}
+  <div class="note" style="margin-top:16px">${t("access.vis.note")}</div>`;
+}
+
+/* 点格下钻：该 (member, doc) 的 explain 行集（逐维度结论——服务端解释） */
+function visDetailHTML(detail) {
+  // 静态全宽卡片（.card）：不用 .pane——sticky 侧栏面板在纵向流程里会吸附覆盖上方矩阵
+  return `<div class="card" style="margin-top:16px;padding:14px 16px">
+    <div class="lane-h"><h3>${esc(t("access.vis.detailTitle", { user: detail.user, doc: detail.doc }))}</h3>
+      <button class="link tiny" data-act="visDetailClose">${esc(t("common.collapse"))}</button></div>
+    ${(detail.rows || []).map((r) => `<div class="explain-row">
+      <span>${VERDICT_PILL[r.verdict] || esc(r.verdict || "—")}</span>
+      <b>${esc(r.kind === "membership" ? t("docs.vis.membership") : (r.label || r.key || r.kind))}</b>
+      <span class="tiny muted">${esc(r.detail || "")}</span>
+    </div>`).join("")}
+    <div class="tiny" style="margin-top:6px">${detail.visible
+      ? `<span class="pill ok">${esc(t("docs.vis.visible"))}</span>`
+      : `<span class="pill bad">${esc(t("docs.vis.notVisible"))}</span>`}</div>
+  </div>`;
+}
+
+/* 矩阵取数（org_admin）：members（GET members 真源）× documents（GET documents）
+ * 逐格 GET explain?user_id——并发小批（4）推进，格点落位即渲染（不阻塞整表）。 */
+async function loadVisMatrix() {
+  const ep = state.epoch;
+  state.vis = { rows: false, members: [], docs: [], cells: {}, error: null, detail: null };
+  render();
+  try {
+    const [memBody, docBody] = await Promise.all([
+      listMembers(cfg.org), listDocuments(cfg.org),
+    ]);
+    if (ep !== state.epoch) return;
+    state.vis.members = (memBody.members || []).map((m) => m.user_id);
+    state.vis.docs = (docBody.documents || []).filter((d) => d.doc_id);
+    state.vis.rows = true;
+    render();
+    // 逐格取数（小批并发——org_admin 面；403/失败格保持 · 未取态）
+    const jobs = [];
+    for (const u of state.vis.members) {
+      for (const d of state.vis.docs) jobs.push([u, d.doc_id]);
+    }
+    const CONC = 4;
+    let idx = 0;
+    async function worker() {
+      while (idx < jobs.length) {
+        const [u, docId] = jobs[idx++];
+        try {
+          const body = await explainDocument(cfg.org, docId, u);
+          if (ep !== state.epoch) return;
+          state.vis.cells[`${u}|${docId}`] = {
+            visible: !!body.visible, rows: body.rows || [],
+          };
+        } catch (e) { /* 单格失败保持未取态——不阻断整表 */ }
+      }
+    }
+    await Promise.all(Array.from({ length: CONC }, worker));
+    if (ep !== state.epoch) return;
+    render();
+  } catch (e) {
+    if (ep !== state.epoch) return;
+    state.vis.error = String((e && e.message) || e);
+    render();
+  }
 }
 
 /* ---------- 维度子标签（ui-1 平移） ---------- */
@@ -373,6 +479,10 @@ async function onEnterAccess() {
   if (!state.dims.length && !state.loading.govDims) {
     await loadGovernanceDims().catch(() => { /* 已 toast */ });
   }
+  // 成员行 role/到期真源补全（GET members——org_admin；失败静默退化会话注册表）
+  if (sub === "members" && isAdmin()) await loadMembers();
+  // 可见性矩阵懒装载（首次进入 vis 子标签）
+  if (sub === "vis" && isAdmin() && state.vis.rows === null) await loadVisMatrix();
 }
 
 /* ---------- 动作与输入 ---------- */
@@ -438,7 +548,7 @@ Object.assign(actions, {
     } else {
       state.g.picked[key] = "";
       // 新选行预填：全局输入框值优先（显式意图），否则库内既有值
-      state.g.expires[key] = state.g.prefill.trim() || state.g.existing[key] || "";
+      state.g.expires[key] = state.g.prefill.trim() || localOf(state.g.existing[key]);
     }
   },
   async gSave() {
@@ -449,7 +559,9 @@ Object.assign(actions, {
       // R2 P2-5：按首个 = 分割——取值本身可含 =（split("=") 会截断）
       const eq = k.indexOf("=");
       const dimKey = k.slice(0, eq), value = k.slice(eq + 1);
-      const expires = state.g.expires[k] ?? state.g.existing[k] ?? "";
+      const expires = state.g.expires[k] !== undefined
+        ? toUtcStr(state.g.expires[k])      // 输入框值：显示时区 → UTC
+        : (state.g.existing[k] || "");      // 未进过输入框：库里本来即 UTC
       return { dim_key: dimKey, value, expires_at: expires || null };
     });
     try {
@@ -483,7 +595,7 @@ Object.assign(actions, {
     let body;
     try {
       body = await addMember(cfg.org, {
-        user_id: uid, role: d.role, expires_at: d.expires.trim() || null,
+        user_id: uid, role: d.role, expires_at: toUtcStr(d.expires.trim()) || null,
       });
     } catch (e) {
       if (e.status === 404) toast(t("access.mem.add404", { user: esc(uid) }));
@@ -494,13 +606,14 @@ Object.assign(actions, {
     // P1-3：201 响应 {user_id, role, expires_at} 入会话注册表——零授权新成员立即可见
     // （expires_at 为 null=永久是合法值——仅 undefined 才回退表单值）
     setKnownUser(body.user_id || uid, {
+      username: body.username || undefined,
       role: body.role !== undefined ? body.role : d.role,
       expiresAt: body.expires_at !== undefined ? body.expires_at : (d.expires.trim() || null),
     });
-    toast(t("access.mem.added", { user: esc(body.user_id || uid), role: esc(body.role || d.role) }));
+    toast(t("access.mem.added", { user: esc(userLabel(body.user_id || uid)), role: esc(body.role || d.role) }));
     state.mem.addOpen = false;
     state.mem.form = { uid: "", role: "member", expires: "" };
-    state.usernames = [...new Set([...state.usernames, body.user_id || uid])].sort();
+    state.usernames = [...new Set([...state.usernames, userLabel(body.user_id || uid)])].sort();
     await loadGrantsTable();
     render();
     return false;
@@ -544,7 +657,7 @@ Object.assign(actions, {
     state.mem.expAsk = u;
     // P1-4：显式二选一（设时点 / 改永久）——known 有值则预填；不再隐式空串=永久
     const known = knownUser(u);
-    state.mem.expVal = known && known.expiresAt ? known.expiresAt : "";
+    state.mem.expVal = localOf(known && known.expiresAt);
     state.mem.expMode = "set";
     state.mem.ask = null;
   },
@@ -554,7 +667,8 @@ Object.assign(actions, {
     const m = state.mem;
     let value;
     if (m.expMode === "perm") value = null;              // 显式改永久
-    else { value = m.expVal.trim(); if (!value) return false; } // 设时点必须非空（禁用隐式空=永久）
+    // 设时点必须非空（禁用隐式空=永久）；输入框是显示时区，提交前换回 UTC
+    else { value = toUtcStr(m.expVal.trim()); if (!value) return false; }
     let body;
     try {
       body = await patchMember(cfg.org, u, { expires_at: value }); // 键显式出现（null=改永久）
@@ -569,7 +683,7 @@ Object.assign(actions, {
       role: body.role !== undefined ? body.role : (prevExp.role ?? null),
       expiresAt: body.expires_at !== undefined ? body.expires_at : null, // 本动作显式改 expires
     });
-    toast(t("access.mem.expSet", { user: esc(u), v: esc(body.expires_at == null ? "null" : body.expires_at) }));
+    toast(t("access.mem.expSet", { user: esc(u), v: esc(body.expires_at == null ? "null" : localOf(body.expires_at)) }));
     state.mem.expAsk = null;
     render();
     return false;
@@ -601,18 +715,44 @@ Object.assign(actions, {
     return false;
   },
 
+  /* ----- 可见性矩阵（m3-2 ui-be：org_admin 逐格取数） ----- */
+  async visRetry() {
+    await loadVisMatrix();
+    return false;
+  },
+  visCell(el) {
+    const u = el.dataset.u, docId = el.dataset.id;
+    const cell = state.vis.cells[`${u}|${docId}`];
+    if (!cell) {
+      // 未取格（单格失败面）——点按单格重取
+      explainDocument(cfg.org, docId, u).then((body) => {
+        state.vis.cells[`${u}|${docId}`] = {
+          visible: !!body.visible, rows: body.rows || [],
+        };
+        state.vis.detail = { user: u, doc: docId, rows: body.rows || [], visible: !!body.visible };
+        render();
+      }).catch((e) => errToast(e));
+      return false;
+    }
+    state.vis.detail = { user: u, doc: docId, ...cell };
+    render();
+    return false;
+  },
+  visDetailClose() { state.vis.detail = null; },
+
   /* ----- 维度治理（ui-1 平移） ----- */
   dimNewToggle() { state.dimNewOpen = !state.dimNewOpen; },
   async dimCreate() {
     const d = state.dimNew;
-    const key = d.key.trim(), name = d.name.trim();
-    if (!key || !name) return false;
+    const key = d.key.trim(), label = d.name.trim();
+    if (!key || !label) return false;
     let body;
     try {
-      // m3-1 contract-first：POST dimensions 未实装——404 降级提示
-      body = await createDimension(cfg.org, { key, name, required: !!d.required });
+      // m3-2 ui-be 对账：真契约 {key, label, required?}（m3-1 #13 实装——
+      // label=显示名；表单「名称」作 label）
+      body = await createDimension(cfg.org, { key, label, required: !!d.required });
     } catch (e) {
-      if (e.status === 404) toast(t("degrade.m31"));
+      if (e.status === 409) toast(esc(String(e.message || "")));
       else errToast(e);
       return false;
     }
@@ -742,12 +882,19 @@ Object.assign(INPUTS, {
 
 VIEWS.access = { render: viewAccess, onEnter: onEnterAccess };
 
-/* 子标签切换也走懒装载（onEnter 只覆盖整视图进入——首切「授权/成员」时补载） */
+/* 子标签切换也走懒装载（onEnter 只覆盖整视图进入——首切「授权/成员/矩阵」时补载） */
 const _subBase = actions.sub;
 actions.sub = (el) => {
   _subBase(el);
-  if (el.dataset.s === "access" && (el.dataset.v === "grants" || el.dataset.v === "members")
+  const s = el.dataset.s, v = el.dataset.v;
+  if (s === "access" && (v === "grants" || v === "members")
       && isAdmin() && !state.g.rows.length && !state.loading.grants) {
     loadGrantsTable().then(() => render()).catch(() => { /* 已 toast */ });
+  }
+  if (s === "access" && v === "members" && isAdmin()) {
+    loadMembers().then(() => render()).catch(() => {});
+  }
+  if (s === "access" && v === "vis" && isAdmin() && state.vis.rows === null) {
+    loadVisMatrix().catch(() => { /* 错误态已在 loadVisMatrix 呈现 */ });
   }
 };

@@ -60,7 +60,7 @@ class OrgContextError(Exception):
 class AuthContext:
     user_id: str
     org_claim: str | None  # token org claim（单值——按组织签发）
-    via: str  # jwt | static | sso | trusted
+    via: str  # jwt | static | sso | trusted | local（D25 本地会话）| agent_key（D26）
     is_system_admin: bool
     act: str | None = None  # 服务身份（委托 token act / 可信子系统 service_id；
     #  开发 JWT 同名 claim 承载；静态 token 无服务身份 → None=直连）
@@ -153,7 +153,14 @@ def _authenticate_sso_claims(backend, settings: Settings, claims) -> AuthContext
 
     SSO 拒绝面审计口径一致（P3-6）：audience_mismatch / missing_sub /
     invalid_act / user_disabled 全部留 ``auth.sso_refused``（reason 级）。
+
+    D25 local 形态入口防御：``auth_mode=="local"`` 时 SSO 整体关闭（JIT 不得
+    写库）——正常的 ``authenticate`` 装配不会走到这里（local 不构造验签器且
+    sso 分支被跳过），直连调用 fail-closed。
     """
+    if settings.auth_mode == "local":
+        raise AuthError("local 模式下不启用 SSO（D25——SSO JIT 关闭）")
+
     from knowledge_lattice.domain.audit_events import (
         EVENT_AUTH_DELEGATED,
         EVENT_AUTH_SSO_REFUSED,
@@ -234,8 +241,17 @@ def _authenticate_sso_claims(backend, settings: Settings, claims) -> AuthContext
 def authenticate(backend, settings: Settings, token: str, *, sso=None) -> AuthContext:
     """Bearer token → AuthContext（用户须存在且未禁用）。
 
-    - ``sso`` 验签器在场（auth 装配分层注入——m2-4 A5）：优先 IdP 验签——
-      成功走 SSO/委托语义（aud 校验/act 解析/JIT 建档，TC-AUTH-03/04）；
+    - **agent key**（D26 / issue #34——``lka_`` 前缀）：**顶部专道分流**到
+      ``authenticate_agent_key``（local-only，失败一律 401 且**不 fallback**
+      到 dev JWT/静态 token——长寿命凭据不得被开发形态兜底放大）；见
+      domain/agent_keys.py；
+    - ``auth_mode=="local"``（D25/FR-9）：**先**尝试本地会话 token
+      （``authenticate_session``——HS256 独立 secret/aud/typ/tv）；失败继续
+      后续分支（dev/test 便利与兼容：开发 JWT/静态 token 仍可用；prod local
+      下两者被既有门禁拒绝 → 401）。local 形态**不执行** SSO 分支（SSO JIT
+      关闭——即使显式注入验签器）；
+    - ``sso`` 验签器在场且非 local（auth 装配分层注入——m2-4 A5）：优先 IdP
+      验签——成功走 SSO/委托语义（aud 校验/act 解析/JIT 建档，TC-AUTH-03/04）；
       验签失败（非本 IdP 签发）落回后续分支（dev/test 下仍可用开发形态）；
     - dev/test：开发 JWT 验签（P2-5：prod **不进入该分支**——dev secret 默认
       值是仓库公开常量，prod 下验签等于允许伪造任意身份）；
@@ -243,7 +259,27 @@ def authenticate(backend, settings: Settings, token: str, *, sso=None) -> AuthCo
       生产拒绝——D18）；
     - 验签失败/未知用户/禁用 → 401。
     """
-    if sso is not None:
+    # D26：agent key 专道分流——前缀即可判定形态，先于一切开发形态分支；失败
+    # 不 fallback（未知 lka_ token 不得落回 dev JWT/静态 token）。局部 import
+    # 化解循环导入（domain/agent_keys 依赖本模块的 AuthContext/AuthError）。
+    from knowledge_lattice.domain.agent_keys import (
+        AGENT_KEY_PREFIX,
+        authenticate_agent_key,
+    )
+
+    if token.startswith(AGENT_KEY_PREFIX):
+        return authenticate_agent_key(backend, settings, token)
+    if settings.auth_mode == "local":
+        # D25：local 会话优先；任何失败（过期/tv 撤销/停用/邀请态/非会话 token）
+        # 均落回既有 dev JWT/静态分支——dev/test 便利（TC-AUTH-01~05 回归），
+        # prod local 由后续 prod 门禁统一 401。
+        from knowledge_lattice.domain.accounts import authenticate_session
+
+        try:
+            return authenticate_session(backend, settings, token)
+        except AuthError:
+            pass
+    if settings.auth_mode != "local" and sso is not None:
         from knowledge_lattice.adapters.auth_sso import SsoVerificationError
 
         try:

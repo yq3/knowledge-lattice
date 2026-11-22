@@ -105,6 +105,38 @@ class PgBackend:
                 bucket.add(value)
         return {key: tuple(sorted(values)) for key, values in grants.items()}
 
+    # ---- explain 数据源（m3-1 D-②——可见性解释，只解释不裁定） ----
+
+    def read_membership_row(self, user_id: str, org_id: str) -> dict | None:
+        """成员关系原始行（不过滤过期——explain membership 第 0 步数据源）。
+        expires_at 按 B⑦ 契约 to_char 归一为库格式字符串（datetime 不外泄）。"""
+        row = self._conn.execute(
+            "SELECT role, to_char(expires_at, 'YYYY-MM-DD HH24:MI:SS')"
+            " FROM user_org_memberships"
+            " WHERE user_id = %(uid)s AND org_id = %(org)s",
+            {"uid": user_id, "org": org_id},
+        ).fetchone()
+        return None if row is None else {"role": row[0], "expires_at": row[1]}
+
+    def read_grant_rows(self, user_id: str, org_id: str) -> list[dict]:
+        """授权行（active 维度 × active 取值、不过滤 expires_at——explain
+        「授权已过期 detail 注明」数据源；expires_at B⑦ 契约字符串归一）。"""
+        rows = self._conn.execute(
+            "SELECT dim.key, v.value,"
+            " to_char(g.expires_at, 'YYYY-MM-DD HH24:MI:SS')"
+            " FROM user_dimension_grants g"
+            " JOIN dimensions dim ON dim.id = g.dimension_id"
+            "   AND dim.org_id = %(org)s AND dim.status = 'active'"
+            " JOIN dimension_values v"
+            "   ON v.id = g.value_id AND v.dimension_id = dim.id"
+            "   AND v.status = 'active'"
+            " WHERE g.user_id = %(uid)s ORDER BY dim.key, v.value",
+            {"uid": user_id, "org": org_id},
+        ).fetchall()
+        return [
+            {"key": r[0], "value": r[1], "expires_at": r[2]} for r in rows
+        ]
+
     # ============ Search 域（M1-1 实装：FTS/向量召回 + 名次协议 + 双断言源） ============
 
     def recall_fts(
@@ -859,6 +891,68 @@ class PgBackend:
             {"id": r[0], "name": r[1], "doc_count": r[2]}
             for r in self._conn.execute(sql, params)
         ]
+
+    # ---- 文档列表 D-①（m3-1 issue #20 be-①——与 sqlite 实现同构） ----
+
+    _DOC_LIST_COLS = (
+        "d.id AS doc_id, d.dataset_id, d.title, d.active_version,"
+        " d.active_status, d.active_error, d.pending_version, d.pending_status,"
+        " d.updated_at,"
+        " (SELECT count(*) FROM chunks c WHERE c.doc_id = d.id"
+        "   AND c.version = d.active_version AND c.tombstone = 0) AS chunk_count,"
+        " (SELECT count(*) FROM quality_flags qf WHERE qf.doc_id = d.id"
+        "   AND qf.state = 'open') AS quality_open"
+    )
+
+    def list_org_documents(
+        self, org_id: str, *,
+        dataset_id: str | None = None,
+        limit: int = 50, offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        """org_admin 面：本组织全量文档行（不过 ACL——visible 由 api 层按调用者
+        本人编译产物回填；管理面对账用）。"""
+        conds = ["d.org_id = %(org)s"]
+        fparams: dict[str, object] = {"org": org_id}
+        if dataset_id is not None:
+            conds.append("d.dataset_id = %(ds)s")
+            fparams["ds"] = dataset_id
+        where = " AND ".join(conds)
+        total = self._conn.execute(
+            f"SELECT count(*) FROM documents d WHERE {where}", fparams
+        ).fetchone()[0]
+        cursor = self._conn.execute(
+            f"SELECT {self._DOC_LIST_COLS} FROM documents d WHERE {where}"
+            " ORDER BY d.updated_at DESC NULLS LAST, d.id"
+            " LIMIT %(limit)s OFFSET %(offset)s",
+            {**fparams, "limit": limit, "offset": offset},
+        )
+        cols = [c[0] for c in cursor.description]
+        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+        self._attach_dims(rows)
+        return rows, total
+
+    def visible_documents_page(
+        self, plan: AclPlan, *,
+        dataset_ids: list[str] | None = None,
+        limit: int = 50, offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        """member 面：ACL 过滤后可见文档行（visible_docs CTE——与检索路同一
+        编译产物；分页/排序与 list_org_documents 同款）。"""
+        from knowledge_lattice.store.postgres.acl_render import (
+            render_documents_page_select,
+        )
+
+        page_sql, page_params, total_sql, total_params = (
+            render_documents_page_select(
+                plan, dataset_ids=dataset_ids, limit=limit, offset=offset
+            )
+        )
+        cursor = self._conn.execute(page_sql, page_params)
+        cols = [c[0] for c in cursor.description]
+        rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+        self._attach_dims(rows)
+        total = self._conn.execute(total_sql, total_params).fetchone()[0]
+        return rows, total
 
     # ============ Quality 域（design §5.4 / FR-3——M1-4，与 SqliteBackend 同构） ============
 
@@ -1624,6 +1718,243 @@ class PgBackend:
         ).fetchall()
         return [{"id": r[0], "name": r[1], "description": r[2]} for r in rows]
 
+    # ---- dimensions/datasets CRUD（m3-1 A2~A8——与 sqlite 实现同构，
+    #      仅参数标记/异常映射方言差异） ----
+
+    def create_dataset(
+        self, org_id: str, dataset_id: str, name: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        """新建知识库（m3-1 A2——初始空库；id 冲突 → DatasetExistsError 409；
+        dataset.created 与插入同一事务）。"""
+        from psycopg import errors as pg_errors
+
+        from knowledge_lattice.store.backend import DatasetExistsError
+
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "INSERT INTO datasets(id, org_id, name)"
+                " VALUES(%(i)s, %(org)s, %(n)s)",
+                {"i": dataset_id, "org": org_id, "n": name},
+            )
+            if audit is not None:
+                # P3-2（m3-2，沿 m2-4 followup ④ 先例）：outbox 完整性错误
+                # 不得落入下方 UniqueViolation→DatasetExistsError 宽捕
+                try:
+                    self._outbox_insert(conn, *audit)
+                except pg_errors.UniqueViolation as exc:
+                    raise RuntimeError(
+                        f"audit outbox 写入完整性错误（{exc}）——新建知识库"
+                    ) from exc
+            conn.execute("COMMIT")
+        except pg_errors.UniqueViolation as exc:
+            self._rollback()
+            # P3-5（m3-2）：按约束来源区分 409 文案（同名 name 冲突 vs id 冲突）
+            constraint = getattr(getattr(exc, "diag", None), "constraint_name", "") or ""
+            if "name" in str(constraint):
+                raise DatasetExistsError(
+                    f"dataset name 冲突: {name!r}（UNIQUE(org_id, name)"
+                    "——同名库已存在，title 需唯一）"
+                ) from exc
+            raise DatasetExistsError(
+                f"dataset 已存在: {dataset_id!r}（id 全局唯一——组织内 key"
+                " 冲突或跨组织占用）"
+            ) from exc
+        except BaseException:
+            self._rollback()
+            raise
+        return {"id": dataset_id, "name": name, "description": None}
+
+    def update_dataset(
+        self, org_id: str, dataset_id: str, *,
+        name: object = ..., description: object = ...,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """修改知识库 title/description（m3-1 A3——key 不可改；改名撞
+        UNIQUE(org_id, name) → DatasetExistsError 409；dataset.updated 同事务）。"""
+        from psycopg import errors as pg_errors
+
+        from knowledge_lattice.store.backend import DatasetExistsError
+
+        row = self._conn.execute(
+            "SELECT name, description FROM datasets WHERE id = %(ds)s"
+            " AND org_id = %(org)s",
+            {"ds": dataset_id, "org": org_id},
+        ).fetchone()
+        if row is None:
+            return None
+        new_name = row[0] if name is ... else name
+        new_desc = row[1] if description is ... else description
+        if (new_name is None or str(new_name).strip() == "") and name is not ...:
+            raise ValueError("name 不得为空")
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE datasets SET name = %(n)s, description = %(d)s"
+                " WHERE id = %(ds)s AND org_id = %(org)s",
+                {"n": new_name, "d": new_desc, "ds": dataset_id, "org": org_id},
+            )
+            if cur.rowcount and audit is not None:
+                # P3-2（m3-2，沿 m2-4 followup ④ 先例）：outbox 完整性错误
+                # 不得落入下方 UniqueViolation→DatasetExistsError 宽捕
+                try:
+                    self._outbox_insert(conn, *audit)
+                except pg_errors.UniqueViolation as exc:
+                    raise RuntimeError(
+                        f"audit outbox 写入完整性错误（{exc}）——修改知识库"
+                    ) from exc
+            conn.execute("COMMIT")
+        except pg_errors.UniqueViolation as exc:
+            self._rollback()
+            raise DatasetExistsError(
+                f"dataset name 冲突: {new_name!r}（UNIQUE(org_id, name)）"
+            ) from exc
+        except BaseException:
+            self._rollback()
+            raise
+        return {"id": dataset_id, "name": new_name, "description": new_desc}
+
+    def create_dimension(
+        self, org_id: str, key: str, name: str, *,
+        required: bool = False, enabled: bool = True,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        """新建维度（m3-1 A4——默认 enabled=true/required=false〔D5〕；
+        UNIQUE(org_id, key) 冲突 → DimensionExistsError 409；dimension.created
+        与插入同一事务）。"""
+        import uuid as _uuid
+
+        from psycopg import errors as pg_errors
+
+        from knowledge_lattice.store.backend import DimensionExistsError
+
+        dim_id = f"dim:{org_id}:{key}:{_uuid.uuid4().hex[:8]}"
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "INSERT INTO dimensions(id, org_id, key, name, required, enabled)"
+                " VALUES(%(id)s, %(org)s, %(k)s, %(n)s, %(req)s, %(en)s)",
+                {"id": dim_id, "org": org_id, "k": key, "n": name,
+                 "req": int(bool(required)), "en": int(bool(enabled))},
+            )
+            if audit is not None:
+                # P3-2（m3-2，沿 m2-4 followup ④ 先例）：outbox 完整性错误
+                # 不得落入下方 UniqueViolation→DimensionExistsError 宽捕
+                try:
+                    self._outbox_insert(conn, *audit)
+                except pg_errors.UniqueViolation as exc:
+                    raise RuntimeError(
+                        f"audit outbox 写入完整性错误（{exc}）——新建维度"
+                    ) from exc
+            conn.execute("COMMIT")
+        except pg_errors.UniqueViolation as exc:
+            self._rollback()
+            raise DimensionExistsError(
+                f"dimension key 冲突: {key!r}（UNIQUE(org_id, key)）"
+            ) from exc
+        except BaseException:
+            self._rollback()
+            raise
+        return {"id": dim_id, "key": key, "name": name,
+                "required": bool(required), "enabled": bool(enabled),
+                "status": "active"}
+
+    def _dimension_row(self, org_id: str, dim_id: str):
+        return self._conn.execute(
+            "SELECT id, key, name, required, enabled, status"
+            " FROM dimensions WHERE id = %(dim)s AND org_id = %(org)s",
+            {"dim": dim_id, "org": org_id},
+        ).fetchone()
+
+    @staticmethod
+    def _dimension_dict(row) -> dict:
+        return {
+            "id": row[0], "key": row[1], "name": row[2],
+            "required": bool(row[3]), "enabled": bool(row[4]),
+            "status": row[5],
+        }
+
+    def update_dimension(
+        self, org_id: str, dim_id: str, *,
+        name: object = ..., required: object = ..., enabled: object = ...,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """修改维度 label/required/enabled（m3-1 A5——status 不触碰〔退役端点
+        管理生命周期〕；retired 维度 → ValueError 409；dimension.updated 同事务）。"""
+        row = self._dimension_row(org_id, dim_id)
+        if row is None:
+            return None
+        if row[5] == "retired":
+            raise ValueError(
+                f"dimension retired: {dim_id!r}——retired 维度不再修改"
+                "（重建维度是唯一路径，T20 对称）"
+            )
+        new_name = row[2] if name is ... else name
+        new_required = bool(row[3]) if required is ... else bool(required)
+        new_enabled = bool(row[4]) if enabled is ... else bool(enabled)
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "UPDATE dimensions SET name = %(n)s, required = %(req)s,"
+                " enabled = %(en)s, updated_at = CURRENT_TIMESTAMP"
+                " WHERE id = %(dim)s AND org_id = %(org)s",
+                {"n": new_name, "req": int(new_required), "en": int(new_enabled),
+                 "dim": dim_id, "org": org_id},
+            )
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return {"id": row[0], "key": row[1], "name": new_name,
+                "required": new_required, "enabled": new_enabled,
+                "status": row[5]}
+
+    def get_dimension(self, org_id: str, dim_id: str) -> dict | None:
+        """单维度行（m3-1 A6——retired 如实展示，只读不裁定）。"""
+        row = self._dimension_row(org_id, dim_id)
+        return None if row is None else self._dimension_dict(row)
+
+    def list_dimension_values(
+        self, org_id: str, dim_id: str,
+    ) -> list[dict] | None:
+        """维度取值列表（m3-1 A7——含 disabled：管理面对账数据面）。"""
+        row = self._dimension_row(org_id, dim_id)
+        if row is None:
+            return None
+        values = self._conn.execute(
+            "SELECT id, value, label, status FROM dimension_values"
+            " WHERE dimension_id = %(d)s ORDER BY sort_order, value",
+            {"d": dim_id},
+        ).fetchall()
+        return [
+            {"id": i, "value": v, "label": l, "status": s}
+            for i, v, l, s in values
+        ]
+
+    def get_dimension_value(
+        self, org_id: str, dim_id: str, value_id: str,
+    ) -> dict | None:
+        """单取值行（m3-1 A8——org 归属经维度校验）。"""
+        row = self._dimension_row(org_id, dim_id)
+        if row is None:
+            return None
+        vrow = self._conn.execute(
+            "SELECT id, value, label, status FROM dimension_values"
+            " WHERE id = %(vid)s AND dimension_id = %(d)s",
+            {"vid": value_id, "d": dim_id},
+        ).fetchone()
+        if vrow is None:
+            return None
+        return {"id": vrow[0], "value": vrow[1], "label": vrow[2],
+                "status": vrow[3]}
+
     def find_user_by_token_hash(self, token_hash: str) -> dict | None:
         """静态 token 查 user（sha256 形态直查——D18 仅 dev/test）。"""
         row = self._conn.execute(
@@ -1633,14 +1964,8 @@ class PgBackend:
             return None
         return {"id": row[0], "is_system_admin": bool(row[1])}
 
-    def get_user_auth(self, user_id: str) -> dict | None:
-        """认证侧用户态（是否存在 / 是否禁用 / 是否系统管理员）。"""
-        row = self._conn.execute(
-            "SELECT is_system_admin, disabled_at FROM users WHERE id = %(id)s", {"id": user_id}
-        ).fetchone()
-        if row is None:
-            return None
-        return {"is_system_admin": bool(row[0]), "disabled_at": row[1]}
+    # get_user_auth 随 M4（D25）迁 Accounts 域并扩列 status/token_version
+    #（定义见下方 Accounts 域；此处不再保留旧两列实现——后定义覆盖会成死代码）。
 
     def upsert_user_jit(
         self, *, user_id: str, username: str, display_name: str | None,
@@ -3009,6 +3334,21 @@ class PgBackend:
             frontier = next_frontier
         return {"nodes": list(nodes.values()), "edges": edges, "truncated": truncated}
 
+    def sem_restricted_ids(self, org_id: str, entity_ids) -> list[int]:
+        """id 集中 restricted 实体子集（m3-2 G-24②②——展开端点审计数据源；
+        ANY(%(keys)s) 数组分片同 _SEM_IN_CHUNK 口径）。"""
+        ids = [i for i in entity_ids if i is not None]
+        out: list[int] = []
+        for chunk in _sem_chunks(ids, self._SEM_IN_CHUNK):
+            rows = self._conn.execute(
+                "SELECT id FROM sem_entities"
+                " WHERE org_id = %(org)s AND sensitivity = 'restricted'"
+                "   AND id = ANY(%(keys)s)",
+                {"org": org_id, "keys": chunk},
+            ).fetchall()
+            out.extend(r[0] for r in rows)
+        return out
+
     def sem_search_entities(
         self, org_id: str, q_norm: str, q_raw: str, *,
         types: Sequence[str] | None, top_k: int,
@@ -3148,6 +3488,7 @@ class PgBackend:
         sqlite 跨文件两步形态的方言对照，接口语义一致：不丢不重）。"""
         from knowledge_lattice.store.taskclock import TS_FMT  # noqa: E402 —— R2 P3-2 常量单源
         from knowledge_lattice.store.audit_chain import (
+            AUDIT_CHAIN_LOCK_KEY,
             compute_row_hash,
             month_of,
             outbox_row_to_event,
@@ -3163,6 +3504,12 @@ class PgBackend:
             conn = self._conn
             conn.execute("BEGIN")
             try:
+                # m3-2 G-22：链追加事务级咨询锁——与查询道直写 append_query_events
+                # 互斥（「读链基→算链→插入」临界区，防同 prev 分叉破链）
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(%(k)s)",
+                    {"k": AUDIT_CHAIN_LOCK_KEY},
+                )
                 rows = conn.execute(
                     "SELECT id, event_type, payload_json, created_at FROM audit_outbox"
                     " WHERE shipped_at IS NULL ORDER BY created_at, id LIMIT %(n)s",
@@ -3230,6 +3577,77 @@ class PgBackend:
             " WHERE id = ANY(%(ids)s) AND shipped_at IS NULL",
             {"now": now, "ids": list(ids)},
         )
+
+    # ---- 查询级审计直写月分区（m3-2 G-22——FR-6 §5.6 异步弱一致，不走 outbox） ----
+
+    def append_query_events(self, events) -> int:
+        """查询级审计事件直写 audit_events 月分区（语义见 backend.py 协议）。
+
+        pg 形态：单事务 BEGIN…COMMIT + **事务级咨询锁**（与 ship_outbox 的
+        链追加互斥——防同 prev 分叉破链；AUDIT_CHAIN_LOCK_KEY 同源）；
+        ON CONFLICT (id, created_at) DO NOTHING + 已存 id 跳过不推进 prev
+        （重试路径幂等，与搬运道同纪律）。
+        """
+        from knowledge_lattice.store.audit_chain import (
+            AUDIT_CHAIN_LOCK_KEY,
+            compute_row_hash,
+            month_of,
+        )
+        from .audit import ensure_month_partition, last_row_hash, month_bounds
+
+        if not events:
+            return 0
+        by_month: dict[str, list[dict]] = {}
+        for ev in events:
+            by_month.setdefault(month_of(str(ev["created_at"])), []).append(ev)
+        written = 0
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(%(k)s)",
+                {"k": AUDIT_CHAIN_LOCK_KEY},
+            )
+            for month, recs in by_month.items():
+                ensure_month_partition(
+                    conn, datetime(int(month[:4]), int(month[4:6]), 1, tzinfo=UTC)
+                )
+                # m3-3 G-28④：existed 按本批 id 查询（消 O(当月行数)/次 的
+                # 全月扫描——幂等跳过语义不变：批内已存 id 跳过不推进 prev）
+                batch_ids = [ev["id"] for ev in recs]
+                existed = {
+                    r[0] for r in conn.execute(
+                        "SELECT id FROM audit_events WHERE id = ANY(%(ids)s)",
+                        {"ids": batch_ids},
+                    ).fetchall()
+                }
+                prev = last_row_hash(conn, month)
+                if prev is None and not existed:
+                    prev = self._chain_start_hash(conn, month)
+                for ev in recs:
+                    if ev["id"] in existed:
+                        continue
+                    row = dict(ev)
+                    row["prev_hash"] = prev
+                    row["row_hash"] = compute_row_hash(row, prev)
+                    conn.execute(
+                        "INSERT INTO audit_events(id, org_id, actor, action,"
+                        " target_type, target_id, outcome, request_id, detail_json,"
+                        " prev_hash, row_hash, created_at)"
+                        " VALUES(%(id)s, %(org_id)s, %(actor)s, %(action)s,"
+                        " %(target_type)s, %(target_id)s, %(outcome)s,"
+                        " %(request_id)s, %(detail_json)s, %(prev_hash)s,"
+                        " %(row_hash)s, %(created_at)s)"
+                        " ON CONFLICT (id, created_at) DO NOTHING",
+                        row,
+                    )
+                    prev = row["row_hash"]
+                    written += 1
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return written
 
     def read_monthly_events(self, *, when: str) -> list[dict]:
         """读指定时点所在月的 audit_events（分区范围查询——m2-3 B2：**链遍历
@@ -3926,24 +4344,83 @@ class PgBackend:
         ]
 
     def list_all_orgs(self) -> list[dict]:
-        """全部组织 {id, name}（GET /api/orgs sysadmin 面——m2-5 A1）。"""
+        """全部组织 {org_id, name, status}（GET /api/orgs sysadmin 面——m2-5 A1；
+        m3-1 补 status 列：停用组织仍列出、成员关系保留——仅访问面 403）。"""
         return [
-            {"org_id": r[0], "name": r[1]}
+            {"org_id": r[0], "name": r[1], "status": r[2]}
             for r in self._conn.execute(
-                "SELECT id, name FROM orgs ORDER BY id"
+                "SELECT id, name, status FROM orgs ORDER BY id"
             ).fetchall()
         ]
 
     def list_orgs_for_user(self, user_id: str) -> list[dict]:
-        """用户 membership 组织行（GET /api/orgs 普通用户面——m2-5 A1；
-        含过期行如实返回，过滤语义归权限计算）。"""
+        """用户 membership 组织行（GET /api/orgs 普通用户面——m2-5 A1；m3-1
+        补 status；含过期行如实返回，过滤语义归权限计算）。P3-1（m3-2）：
+        expires_at 恒为库格式字符串（to_char 归一——B⑦ 双方言 JSON 等价）。"""
         return [
-            {"org_id": r[0], "name": r[1], "role": r[2], "expires_at": r[3]}
+            {"org_id": r[0], "name": r[1], "role": r[2], "expires_at": r[3],
+             "status": r[4]}
             for r in self._conn.execute(
-                "SELECT m.org_id, o.name, m.role, m.expires_at"
+                "SELECT m.org_id, o.name, m.role,"
+                " to_char(m.expires_at, 'YYYY-MM-DD HH24:MI:SS'), o.status"
                 " FROM user_org_memberships m JOIN orgs o ON o.id = m.org_id"
                 " WHERE m.user_id = %(u)s ORDER BY m.org_id", {"u": user_id},
             ).fetchall()
+        ]
+
+    def get_org_status(self, org_id: str) -> str | None:
+        """组织状态（停用拦截统一读口——m3-1 issue #14）。"""
+        row = self._conn.execute(
+            "SELECT status FROM orgs WHERE id = %(org)s", {"org": org_id}
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_org_status(
+        self, org_id: str, status: str, *,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        """组织状态迁移（m3-1 issue #14——与 sqlite 同语义：同值幂等零新审计；
+        翻转时 org.disabled/org.enabled 与 UPDATE 同一事务）。"""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE orgs SET status = %(status)s WHERE id = %(org)s"
+                " AND status != %(status)s",
+                {"status": status, "org": org_id},
+            )
+            applied = cur.rowcount > 0
+            if applied:
+                if audit is not None:
+                    self._outbox_insert(conn, *audit)
+            else:
+                exists = conn.execute(
+                    "SELECT 1 FROM orgs WHERE id = %(org)s", {"org": org_id}
+                ).fetchone()
+                if exists is None:
+                    conn.execute("COMMIT")
+                    return None
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return {"org_id": org_id, "status": status, "applied": applied}
+
+    def list_members(self, org_id: str) -> list[dict]:
+        """组织成员列表（m3-1 A1——含过期行如实返回；username 联查 users）。
+        P3-1（m3-2）：expires_at 恒为库格式字符串（to_char 归一——B⑦ 双方言
+        JSON 等价，psycopg datetime 不外泄）。"""
+        rows = self._conn.execute(
+            "SELECT m.user_id, u.username, m.role,"
+            " to_char(m.expires_at, 'YYYY-MM-DD HH24:MI:SS')"
+            " FROM user_org_memberships m"
+            " LEFT JOIN users u ON u.id = m.user_id"
+            " WHERE m.org_id = %(org)s ORDER BY m.user_id",
+            {"org": org_id},
+        ).fetchall()
+        return [
+            {"user_id": r[0], "username": r[1], "role": r[2], "expires_at": r[3]}
+            for r in rows
         ]
 
     def create_org(
@@ -4080,6 +4557,800 @@ class PgBackend:
         except BaseException:
             self._rollback()
             raise
+
+    # ============ Accounts 域（M4 / D25 local 账号——m4-1；语义见 store/backend.py） ============
+    #
+    # 事务纪律沿既有 audit= 先例：写路径 BEGIN/COMMIT，审计与业务写同事务；
+    # 唯一冲突按 constraint/索引名 + 消息兜底映射（users_username_key /
+    # ux_users_email）。PG 时间列经 to_char 归一为库格式字符串（B⑦ 双方言
+    # JSON 等价，datetime 不外泄）；now 一律取 taskclock.utc_now_ts 并 ::timestamp。
+
+    _ACCOUNT_USER_SELECT = (
+        "id, username, display_name, email, password_hash, status,"
+        " token_version, token_hash, is_system_admin,"
+        " to_char(last_login_at, 'YYYY-MM-DD HH24:MI:SS'), created_by,"
+        " to_char(disabled_at, 'YYYY-MM-DD HH24:MI:SS'),"
+        " to_char(created_at, 'YYYY-MM-DD HH24:MI:SS')"
+    )
+    _ACCOUNT_INVITATION_SELECT = (
+        "i.id, i.user_id, i.org_id, i.role, i.purpose, i.token_hash, i.invited_by,"
+        " to_char(i.expires_at, 'YYYY-MM-DD HH24:MI:SS'),"
+        " to_char(i.consumed_at, 'YYYY-MM-DD HH24:MI:SS'),"
+        " to_char(i.revoked_at, 'YYYY-MM-DD HH24:MI:SS'),"
+        " to_char(i.created_at, 'YYYY-MM-DD HH24:MI:SS'),"
+        " u.username, u.display_name, u.email, o.name"
+    )
+
+    @staticmethod
+    def _account_user_dict(row, *, with_password_hash: bool = True) -> dict:
+        d = {
+            "id": row[0], "username": row[1], "display_name": row[2],
+            "email": row[3], "password_hash": row[4], "status": row[5],
+            "token_version": row[6], "token_hash": row[7],
+            "is_system_admin": bool(row[8]), "last_login_at": row[9],
+            "created_by": row[10], "disabled_at": row[11], "created_at": row[12],
+        }
+        if not with_password_hash:
+            d.pop("password_hash")
+        return d
+
+    @staticmethod
+    def _account_invitation_dict(row) -> dict:
+        return {
+            "id": row[0], "user_id": row[1], "org_id": row[2], "role": row[3],
+            "purpose": row[4], "token_hash": row[5], "invited_by": row[6],
+            "expires_at": row[7], "consumed_at": row[8], "revoked_at": row[9],
+            "created_at": row[10],
+            "username": row[11], "display_name": row[12], "email": row[13],
+            "org_name": row[14],
+        }
+
+    @staticmethod
+    def _norm_account_email(email: str | None) -> str | None:
+        return (email or "").strip().lower() or None
+
+    def _account_user(self, user_id: str) -> dict | None:
+        row = self._conn.execute(
+            f"SELECT {self._ACCOUNT_USER_SELECT} FROM users WHERE id = %(id)s",
+            {"id": user_id},
+        ).fetchone()
+        return None if row is None else self._account_user_dict(row)
+
+    def _account_invitation(self, *, invitation_id: str | None = None,
+                            token_hash: str | None = None) -> dict | None:
+        if invitation_id is not None:
+            where, params = "i.id = %(v)s", {"v": invitation_id}
+        else:
+            where, params = "i.token_hash = %(v)s", {"v": token_hash}
+        row = self._conn.execute(
+            f"SELECT {self._ACCOUNT_INVITATION_SELECT}"
+            " FROM user_invitations i JOIN users u ON u.id = i.user_id"
+            " LEFT JOIN orgs o ON o.id = i.org_id"
+            f" WHERE {where}",
+            params,
+        ).fetchone()
+        return None if row is None else self._account_invitation_dict(row)
+
+    @staticmethod
+    def _user_unique_kind(exc) -> str:
+        """唯一冲突归类：'email' | 'username'（PG constraint/索引名优先）。"""
+        diag = getattr(exc, "diag", None)
+        name = (getattr(diag, "constraint_name", None) or "")
+        if "ux_users_email" in name:
+            return "email"
+        if "users_username_key" in name:
+            return "username"
+        text = str(exc).lower()
+        if "ux_users_email" in text or "users.email" in text or (
+            "email" in text and "username" not in text
+        ):
+            return "email"
+        return "username"
+
+    @staticmethod
+    def _invitation_reason(row) -> str:
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        consumed_at, revoked_at, expires_at = row[0], row[1], row[2]
+        if revoked_at is not None:
+            return "revoked"
+        if consumed_at is not None:
+            return "consumed"
+        if expires_at is not None and str(expires_at) <= utc_now_ts():
+            return "expired"
+        return "invalid"
+
+    def count_users(self) -> int:
+        return self._conn.execute("SELECT count(*) FROM users").fetchone()[0]
+
+    def get_instance_setup(self) -> dict | None:
+        row = self._conn.execute(
+            "SELECT to_char(completed_at, 'YYYY-MM-DD HH24:MI:SS'),"
+            " admin_user_id FROM instance_setup WHERE id = 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return {"completed_at": row[0], "admin_user_id": row[1]}
+
+    def setup_instance(
+        self, *, admin_user_id: str, username: str,
+        display_name: str | None, email: str | None, password_hash: str,
+        org_id: str | None, org_name: str | None,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        from psycopg import errors as pg_errors
+
+        from knowledge_lattice.store.backend import SetupCompletedError
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        if (org_id is None) != (org_name is None):
+            raise ValueError("org_id/org_name 必须成对提供（首组织同事务创建）")
+        username = username.strip()
+        email_norm = self._norm_account_email(email)
+        now = utc_now_ts()
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            # 事务级 advisory lock：并发 setup 串行化（后到者在锁内重查即拒）
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%(k)s))",
+                {"k": "lattice:instance_setup"},
+            )
+            if conn.execute("SELECT count(*) FROM users").fetchone()[0] > 0:
+                raise SetupCompletedError("实例已完成首启 setup（库内已有用户）")
+            if conn.execute(
+                "SELECT 1 FROM instance_setup WHERE id = 1"
+            ).fetchone() is not None:
+                raise SetupCompletedError("实例已完成首启 setup（instance_setup 行已在）")
+            try:
+                conn.execute(
+                    "INSERT INTO users(id, username, display_name, email,"
+                    " password_hash, status, is_system_admin, created_at)"
+                    " VALUES(%(i)s, %(u)s, %(d)s, %(e)s, %(p)s, 'active', 1,"
+                    " %(ts)s::timestamp)",
+                    {"i": admin_user_id, "u": username, "d": display_name,
+                     "e": email_norm, "p": password_hash, "ts": now},
+                )
+                if org_id is not None:
+                    conn.execute(
+                        "INSERT INTO orgs(id, name) VALUES(%(i)s, %(n)s)",
+                        {"i": org_id, "n": org_name},
+                    )
+                    conn.execute(
+                        "INSERT INTO user_org_memberships(user_id, org_id, role)"
+                        " VALUES(%(u)s, %(o)s, 'org_admin')",
+                        {"u": admin_user_id, "o": org_id},
+                    )
+                conn.execute(
+                    "INSERT INTO instance_setup(id, completed_at, admin_user_id)"
+                    " VALUES(1, %(ts)s::timestamp, %(u)s)",
+                    {"ts": now, "u": admin_user_id},
+                )
+            except pg_errors.UniqueViolation as exc:
+                raise SetupCompletedError(
+                    f"首启并发冲突（{exc}）——setup 已整体回滚"
+                ) from exc
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        org = None
+        if org_id is not None:
+            row = conn.execute(
+                "SELECT id, name FROM orgs WHERE id = %(o)s", {"o": org_id}
+            ).fetchone()
+            org = {"id": row[0], "name": row[1]}
+        return {"user": self._account_user(admin_user_id), "org": org}
+
+    def create_user(
+        self, *, user_id: str, username: str, display_name: str | None,
+        email: str | None, password_hash: str | None, status: str,
+        is_system_admin: bool, created_by: str | None,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        from psycopg import errors as pg_errors
+
+        from knowledge_lattice.store.backend import (
+            EmailTakenError,
+            UsernameTakenError,
+        )
+
+        username = username.strip()
+        email_norm = self._norm_account_email(email)
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            try:
+                if conn.execute(
+                    "SELECT 1 FROM users WHERE username = %(u)s", {"u": username}
+                ).fetchone() is not None:
+                    raise UsernameTakenError(f"username 已被占用: {username!r}")
+                if email_norm is not None and conn.execute(
+                    "SELECT 1 FROM users WHERE email = %(e)s", {"e": email_norm}
+                ).fetchone() is not None:
+                    raise EmailTakenError(f"email 已被占用: {email_norm!r}")
+                conn.execute(
+                    "INSERT INTO users(id, username, display_name, email,"
+                    " password_hash, status, is_system_admin, created_by)"
+                    " VALUES(%(i)s, %(u)s, %(d)s, %(e)s, %(p)s, %(s)s,"
+                    " %(adm)s, %(cb)s)",
+                    {"i": user_id, "u": username, "d": display_name,
+                     "e": email_norm, "p": password_hash, "s": status,
+                     "adm": 1 if is_system_admin else 0, "cb": created_by},
+                )
+            except pg_errors.UniqueViolation as exc:
+                if self._user_unique_kind(exc) == "email":
+                    raise EmailTakenError(
+                        f"email 已被占用: {email_norm!r}（并发唯一约束兜底）"
+                    ) from exc
+                raise UsernameTakenError(
+                    f"username 已被占用: {username!r}（并发唯一约束兜底）"
+                ) from exc
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return self._account_user(user_id)
+
+    def create_invited_user(
+        self, *, user_id: str, username: str, display_name: str | None,
+        email: str | None, invitation_id: str, org_id: str | None,
+        role: str | None, token_hash: str, invited_by: str, expires_at: str,
+        is_system_admin: bool, audit: tuple[str, str] | None = None,
+    ) -> dict:
+        from psycopg import errors as pg_errors
+
+        from knowledge_lattice.store.backend import (
+            EmailTakenError,
+            UsernameTakenError,
+        )
+        from knowledge_lattice.store.taskclock import normalize_expires_at
+
+        username = username.strip()
+        email_norm = self._norm_account_email(email)
+        expires_norm = normalize_expires_at(expires_at)
+        if expires_norm is None:
+            raise ValueError("create_invited_user 的 expires_at 必填")
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            try:
+                if conn.execute(
+                    "SELECT 1 FROM users WHERE username = %(u)s", {"u": username}
+                ).fetchone() is not None:
+                    raise UsernameTakenError(f"username 已被占用: {username!r}")
+                if email_norm is not None and conn.execute(
+                    "SELECT 1 FROM users WHERE email = %(e)s", {"e": email_norm}
+                ).fetchone() is not None:
+                    raise EmailTakenError(f"email 已被占用: {email_norm!r}")
+                conn.execute(
+                    "INSERT INTO users(id, username, display_name, email, status,"
+                    " is_system_admin, created_by)"
+                    " VALUES(%(i)s, %(u)s, %(d)s, %(e)s, 'invited', %(adm)s, %(cb)s)",
+                    {"i": user_id, "u": username, "d": display_name,
+                     "e": email_norm, "adm": 1 if is_system_admin else 0,
+                     "cb": invited_by},
+                )
+                conn.execute(
+                    "INSERT INTO user_invitations(id, user_id, org_id, role,"
+                    " purpose, token_hash, invited_by, expires_at)"
+                    " VALUES(%(i)s, %(u)s, %(o)s, %(r)s, 'invite', %(th)s,"
+                    " %(by)s, %(exp)s::timestamp)",
+                    {"i": invitation_id, "u": user_id, "o": org_id, "r": role,
+                     "th": token_hash, "by": invited_by, "exp": expires_norm},
+                )
+            except pg_errors.UniqueViolation as exc:
+                diag = getattr(exc, "diag", None)
+                name = (getattr(diag, "constraint_name", None) or "")
+                if "token_hash" in name or "user_invitations_token_hash_key" in name:
+                    raise ValueError(
+                        "邀请 token 摘要冲突（32B urlsafe 随机源撞库——重新签发）"
+                    ) from exc
+                if self._user_unique_kind(exc) == "email":
+                    raise EmailTakenError(
+                        f"email 已被占用: {email_norm!r}（并发唯一约束兜底）"
+                    ) from exc
+                raise UsernameTakenError(
+                    f"username 已被占用: {username!r}（并发唯一约束兜底）"
+                ) from exc
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return {
+            "user": self._account_user(user_id),
+            "invitation": self._account_invitation(invitation_id=invitation_id),
+        }
+
+    def get_user(self, user_id: str) -> dict | None:
+        return self._account_user(user_id)
+
+    def get_user_by_username(self, username: str) -> dict | None:
+        row = self._conn.execute(
+            f"SELECT {self._ACCOUNT_USER_SELECT} FROM users WHERE username = %(u)s",
+            {"u": username},
+        ).fetchone()
+        return None if row is None else self._account_user_dict(row)
+
+    def get_user_auth(self, user_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT is_system_admin,"
+            " to_char(disabled_at, 'YYYY-MM-DD HH24:MI:SS'), status, token_version"
+            " FROM users WHERE id = %(id)s",
+            {"id": user_id},
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "is_system_admin": bool(row[0]), "disabled_at": row[1],
+            "status": row[2], "token_version": row[3],
+        }
+
+    def list_users(self) -> list[dict]:
+        rows = self._conn.execute(
+            f"SELECT {self._ACCOUNT_USER_SELECT} FROM users"
+            " ORDER BY created_at, id"
+        ).fetchall()
+        return [
+            self._account_user_dict(r, with_password_hash=False) for r in rows
+        ]
+
+    def update_user_flags(
+        self, *, user_id: str, disabled: bool | None,
+        is_system_admin: bool | None, actor: str,
+        audits: list[str] | None = None,
+    ) -> dict:
+        import json as _json
+
+        from knowledge_lattice.store.backend import LastSysadminError
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            # 事务级 advisory lock 串行化末位 sysadmin 守卫判定（跨行并发——
+            # 与 members 守卫同款；hashtext 常量键，跨组织全局单序列）
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%(k)s))",
+                {"k": "lattice:sysadmins"},
+            )
+            row = conn.execute(
+                "SELECT is_system_admin, disabled_at IS NOT NULL"
+                " FROM users WHERE id = %(id)s FOR UPDATE",
+                {"id": user_id},
+            ).fetchone()
+            if row is None:
+                conn.execute("COMMIT")
+                raise KeyError(f"user not found: {user_id!r}")
+            was_admin = bool(row[0])
+            was_disabled = bool(row[1])
+            new_admin = was_admin if is_system_admin is None else bool(is_system_admin)
+            new_disabled = was_disabled if disabled is None else bool(disabled)
+            if new_admin == was_admin and new_disabled == was_disabled:
+                conn.execute("COMMIT")
+                return self._account_user(user_id)  # 幂等：零写入零审计
+            if was_admin and not was_disabled and (not new_admin or new_disabled):
+                others = conn.execute(
+                    "SELECT count(*) FROM users WHERE is_system_admin = 1"
+                    " AND disabled_at IS NULL AND id != %(id)s",
+                    {"id": user_id},
+                ).fetchone()[0]
+                if others == 0:
+                    conn.execute("COMMIT")
+                    raise LastSysadminError(
+                        f"用户 {user_id!r} 是最后一名 active sysadmin——"
+                        "停用/撤权被拒（先指定继任 sysadmin）"
+                    )
+            now = utc_now_ts()
+            sets: list[str] = []
+            params: dict = {"id": user_id}
+            disabling = new_disabled and not was_disabled
+            enabling = was_disabled and not new_disabled
+            if disabling:
+                sets += [
+                    "disabled_at = %(now)s::timestamp",
+                    "token_version = token_version + 1",
+                ]
+                params["now"] = now
+            elif enabling:
+                sets += ["disabled_at = NULL"]
+            if new_admin != was_admin:
+                sets += ["is_system_admin = %(adm)s"]
+                params["adm"] = 1 if new_admin else 0
+            conn.execute(
+                f"UPDATE users SET {', '.join(sets)} WHERE id = %(id)s", params
+            )
+            for event in audits or []:
+                # 候选事件名（store 构造 payload）或 (event, payload_json) 二元组
+                #（调用方自带 payload——两种形态都收，跨段契约免漂移）
+                if isinstance(event, tuple):
+                    event_type, fixed_payload = event
+                else:
+                    event_type, fixed_payload = event, None
+                if event_type == "user.disabled" and disabling:
+                    default = {"user_id": user_id, "actor": actor,
+                               "disabled_at": now}
+                elif event_type == "user.enabled" and enabling:
+                    default = {"user_id": user_id, "actor": actor}
+                elif event_type == "user.sysadmin_changed" and new_admin != was_admin:
+                    default = {"user_id": user_id, "actor": actor,
+                               "is_system_admin": new_admin}
+                else:
+                    continue  # 候选事件与本次实际变化不符——不写
+                payload = (
+                    fixed_payload if fixed_payload is not None
+                    else _json.dumps(default)
+                )
+                self._outbox_insert(conn, event_type, payload)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return self._account_user(user_id)
+
+    def set_user_password(
+        self, *, user_id: str, password_hash: str,
+        bump_token_version: bool, audit: tuple[str, str] | None = None,
+    ) -> dict:
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            if bump_token_version:
+                cur = conn.execute(
+                    "UPDATE users SET password_hash = %(p)s,"
+                    " token_version = token_version + 1 WHERE id = %(id)s",
+                    {"p": password_hash, "id": user_id},
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE users SET password_hash = %(p)s WHERE id = %(id)s",
+                    {"p": password_hash, "id": user_id},
+                )
+            if cur.rowcount == 0:
+                conn.execute("COMMIT")
+                raise KeyError(f"user not found: {user_id!r}")
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return self._account_user(user_id)
+
+    def record_login(self, user_id: str) -> None:
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        self._conn.execute(
+            "UPDATE users SET last_login_at = %(now)s::timestamp WHERE id = %(id)s",
+            {"now": utc_now_ts(), "id": user_id},
+        )
+
+    def list_user_orgs(self, user_id: str) -> list[dict]:
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        rows = self._conn.execute(
+            "SELECT m.org_id, o.name, m.role, o.status"
+            " FROM user_org_memberships m JOIN orgs o ON o.id = m.org_id"
+            " WHERE m.user_id = %(u)s"
+            "   AND (m.expires_at IS NULL OR m.expires_at > %(now)s::timestamp)"
+            " ORDER BY m.org_id",
+            {"u": user_id, "now": utc_now_ts()},
+        ).fetchall()
+        return [
+            {"id": r[0], "name": r[1], "role": r[2], "status": r[3]}
+            for r in rows
+        ]
+
+    def create_invitation(
+        self, *, invitation_id: str, user_id: str, org_id: str | None,
+        role: str | None, purpose: str, token_hash: str, invited_by: str,
+        expires_at: str, revoke_pending: bool,
+        audit: tuple[str, str] | None = None,
+    ) -> dict:
+        from psycopg import errors as pg_errors
+
+        from knowledge_lattice.store.taskclock import (
+            normalize_expires_at,
+            utc_now_ts,
+        )
+
+        if purpose not in ("invite", "reset"):
+            raise ValueError(f"purpose 非法: {purpose!r}（须为 invite|reset）")
+        expires_norm = normalize_expires_at(expires_at)
+        if expires_norm is None:
+            raise ValueError("create_invitation 的 expires_at 必填")
+        now = utc_now_ts()
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            if revoke_pending:
+                conn.execute(
+                    "UPDATE user_invitations SET revoked_at = %(now)s::timestamp"
+                    " WHERE user_id = %(u)s AND purpose = %(p)s"
+                    "   AND org_id IS NOT DISTINCT FROM %(o)s"
+                    "   AND consumed_at IS NULL AND revoked_at IS NULL",
+                    {"now": now, "u": user_id, "p": purpose, "o": org_id},
+                )
+            try:
+                conn.execute(
+                    "INSERT INTO user_invitations(id, user_id, org_id, role,"
+                    " purpose, token_hash, invited_by, expires_at)"
+                    " VALUES(%(i)s, %(u)s, %(o)s, %(r)s, %(p)s, %(th)s, %(by)s,"
+                    " %(exp)s::timestamp)",
+                    {"i": invitation_id, "u": user_id, "o": org_id, "r": role,
+                     "p": purpose, "th": token_hash, "by": invited_by,
+                     "exp": expires_norm},
+                )
+            except pg_errors.UniqueViolation as exc:
+                diag = getattr(exc, "diag", None)
+                name = (getattr(diag, "constraint_name", None) or "")
+                if "token_hash" in name or "user_invitations_token_hash_key" in name:
+                    raise ValueError(
+                        "邀请 token 摘要冲突（32B urlsafe 随机源撞库——重新签发）"
+                    ) from exc
+                raise
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return self._account_invitation(invitation_id=invitation_id)
+
+    def find_invitation_by_token_hash(self, token_hash: str) -> dict | None:
+        return self._account_invitation(token_hash=token_hash)
+
+    def get_invitation(self, invitation_id: str) -> dict | None:
+        return self._account_invitation(invitation_id=invitation_id)
+
+    def list_invitations(self, org_id: str) -> list[dict]:
+        rows = self._conn.execute(
+            f"SELECT {self._ACCOUNT_INVITATION_SELECT}"
+            " FROM user_invitations i JOIN users u ON u.id = i.user_id"
+            " LEFT JOIN orgs o ON o.id = i.org_id"
+            " WHERE i.org_id = %(org)s"
+            " ORDER BY i.created_at DESC, i.id DESC",
+            {"org": org_id},
+        ).fetchall()
+        return [self._account_invitation_dict(r) for r in rows]
+
+    def revoke_invitation(
+        self, *, invitation_id: str, org_id: str, actor: str,
+        audit: tuple[str, str] | None = None,
+    ) -> bool:
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        now = utc_now_ts()
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE user_invitations SET revoked_at = %(now)s::timestamp"
+                " WHERE id = %(i)s AND org_id = %(o)s AND consumed_at IS NULL"
+                "   AND revoked_at IS NULL AND expires_at > %(now)s::timestamp",
+                {"now": now, "i": invitation_id, "o": org_id},
+            )
+            applied = cur.rowcount > 0
+            if applied and audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return applied
+
+    def accept_invitation(
+        self, *, token_hash: str, password_hash: str,
+        display_name: str | None, audit_event: str, actor_label: str,
+    ) -> dict:
+        import json as _json
+
+        from knowledge_lattice.store.backend import InvitationInvalidError
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        now = utc_now_ts()
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            inv = self._account_invitation(token_hash=token_hash)
+            if inv is None:
+                raise InvitationInvalidError(
+                    "邀请 token 无效（不存在）", reason="invalid"
+                )
+            if inv["revoked_at"] is not None:
+                raise InvitationInvalidError("邀请已被撤销", reason="revoked")
+            if inv["consumed_at"] is not None:
+                raise InvitationInvalidError("邀请已被使用（单次）", reason="consumed")
+            if inv["expires_at"] <= now:
+                raise InvitationInvalidError("邀请已过期", reason="expired")
+            cur = conn.execute(
+                "UPDATE user_invitations SET consumed_at = %(now)s::timestamp"
+                " WHERE id = %(i)s AND consumed_at IS NULL AND revoked_at IS NULL"
+                "   AND expires_at > %(now)s::timestamp",
+                {"now": now, "i": inv["id"]},
+            )
+            if cur.rowcount == 0:
+                row2 = conn.execute(
+                    "SELECT to_char(consumed_at, 'YYYY-MM-DD HH24:MI:SS'),"
+                    " to_char(revoked_at, 'YYYY-MM-DD HH24:MI:SS'),"
+                    " to_char(expires_at, 'YYYY-MM-DD HH24:MI:SS')"
+                    " FROM user_invitations WHERE id = %(i)s",
+                    {"i": inv["id"]},
+                ).fetchone()
+                if row2 is None:
+                    raise InvitationInvalidError(
+                        "邀请 token 无效（不存在）", reason="invalid"
+                    )
+                reason = self._invitation_reason(row2)
+                raise InvitationInvalidError(
+                    f"邀请不可用（{reason}）——并发消费单次语义", reason=reason
+                )
+            sets = [
+                "password_hash = %(p)s", "status = 'active'",
+                "token_version = token_version + 1",
+            ]
+            params: dict = {"p": password_hash, "id": inv["user_id"]}
+            if display_name is not None and display_name.strip():
+                sets.append("display_name = %(d)s")
+                params["d"] = display_name.strip()
+            conn.execute(
+                f"UPDATE users SET {', '.join(sets)} WHERE id = %(id)s", params
+            )
+            if inv["purpose"] == "invite" and inv["org_id"] and inv["role"]:
+                conn.execute(
+                    "INSERT INTO user_org_memberships(user_id, org_id, role)"
+                    " VALUES(%(u)s, %(o)s, %(r)s)"
+                    " ON CONFLICT (user_id, org_id) DO NOTHING",
+                    {"u": inv["user_id"], "o": inv["org_id"], "r": inv["role"]},
+                )
+            payload = {
+                "actor": actor_label, "user_id": inv["user_id"],
+                "invitation_id": inv["id"], "org_id": inv["org_id"],
+                "role": inv["role"], "purpose": inv["purpose"],
+            }
+            self._outbox_insert(conn, audit_event, _json.dumps(payload))
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return {
+            "user": self._account_user(inv["user_id"]),
+            "invitation": self._account_invitation(invitation_id=inv["id"]),
+        }
+
+    # ============ Agent Key 域（D26 / issue #34——语义见 store/backend.py） ============
+    #
+    # 事务纪律沿既有 audit= 先例：写路径 BEGIN/COMMIT，审计与业务写同事务；
+    # token_hash 冲突按 constraint 名 + 消息兜底映射 ValueError。PG 时间列经
+    # to_char 归一为库格式字符串（B⑦ 双方言 JSON 等价，datetime 不外泄）；now
+    # 一律取 taskclock.utc_now_ts 并 ::timestamp。last_used_at 热路径单条 UPDATE
+    # （autocommit，与 mark_upload_uploaded 同款，不包事务）。
+
+    _AGENT_KEY_SELECT = (
+        "id, org_id, user_id, label, token_hash, prefix, created_by,"
+        " to_char(created_at, 'YYYY-MM-DD HH24:MI:SS'),"
+        " to_char(last_used_at, 'YYYY-MM-DD HH24:MI:SS'),"
+        " to_char(revoked_at, 'YYYY-MM-DD HH24:MI:SS'), revoked_by,"
+        " to_char(expires_at, 'YYYY-MM-DD HH24:MI:SS')"
+    )
+
+    @staticmethod
+    def _agent_key_dict(row) -> dict:
+        return {
+            "id": row[0], "org_id": row[1], "user_id": row[2], "label": row[3],
+            "token_hash": row[4], "prefix": row[5], "created_by": row[6],
+            "created_at": row[7], "last_used_at": row[8], "revoked_at": row[9],
+            "revoked_by": row[10], "expires_at": row[11],
+        }
+
+    def _agent_key(self, key_id: str) -> dict | None:
+        row = self._conn.execute(
+            f"SELECT {self._AGENT_KEY_SELECT} FROM agent_keys WHERE id = %(id)s",
+            {"id": key_id},
+        ).fetchone()
+        return None if row is None else self._agent_key_dict(row)
+
+    def create_agent_key(
+        self, *, key_id: str, org_id: str, user_id: str, label: str,
+        token_hash: str, prefix: str, created_by: str,
+        expires_at: str | None, audit: tuple[str, str] | None = None,
+    ) -> dict:
+        from psycopg import errors as pg_errors
+
+        from knowledge_lattice.store.taskclock import normalize_expires_at
+
+        expires_norm = normalize_expires_at(expires_at)
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            try:
+                conn.execute(
+                    "INSERT INTO agent_keys(id, org_id, user_id, label, token_hash,"
+                    " prefix, created_by, expires_at)"
+                    " VALUES(%(i)s, %(o)s, %(u)s, %(l)s, %(th)s, %(p)s, %(cb)s,"
+                    " %(exp)s::timestamp)",
+                    {"i": key_id, "o": org_id, "u": user_id, "l": label,
+                     "th": token_hash, "p": prefix, "cb": created_by,
+                     "exp": expires_norm},
+                )
+            except pg_errors.UniqueViolation as exc:
+                diag = getattr(exc, "diag", None)
+                name = (getattr(diag, "constraint_name", None) or "")
+                if "token_hash" in name or "agent_keys_token_hash_key" in name:
+                    raise ValueError(
+                        "agent key 摘要冲突（32B 随机源撞库——重新签发）"
+                    ) from exc
+                raise
+            if audit is not None:
+                self._outbox_insert(conn, *audit)
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return self._agent_key(key_id)
+
+    def get_agent_key_by_hash(self, token_hash: str) -> dict | None:
+        row = self._conn.execute(
+            f"SELECT {self._AGENT_KEY_SELECT} FROM agent_keys"
+            " WHERE token_hash = %(th)s",
+            {"th": token_hash},
+        ).fetchone()
+        return None if row is None else self._agent_key_dict(row)
+
+    def list_agent_keys(self, org_id: str) -> list[dict]:
+        rows = self._conn.execute(
+            f"SELECT {self._AGENT_KEY_SELECT} FROM agent_keys WHERE org_id = %(o)s"
+            " ORDER BY created_at DESC, id DESC",
+            {"o": org_id},
+        ).fetchall()
+        return [self._agent_key_dict(row) for row in rows]
+
+    def revoke_agent_key(
+        self, *, key_id: str, org_id: str, revoked_by: str,
+        audit: tuple[str, str] | None = None,
+    ) -> dict | None:
+        from knowledge_lattice.store.taskclock import utc_now_ts
+
+        now = utc_now_ts()
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE agent_keys SET revoked_at = %(now)s::timestamp,"
+                " revoked_by = %(by)s"
+                " WHERE id = %(i)s AND org_id = %(o)s AND revoked_at IS NULL",
+                {"now": now, "by": revoked_by, "i": key_id, "o": org_id},
+            )
+            applied = cur.rowcount > 0
+            if applied and audit is not None:
+                self._outbox_insert(conn, *audit)
+            row = conn.execute(
+                f"SELECT {self._AGENT_KEY_SELECT} FROM agent_keys"
+                " WHERE id = %(i)s AND org_id = %(o)s",
+                {"i": key_id, "o": org_id},
+            ).fetchone()
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        return None if row is None else self._agent_key_dict(row)
+
+    def touch_agent_key_last_used(
+        self, key_id: str, *, now: str, cutoff: str,
+    ) -> bool:
+        cur = self._conn.execute(
+            "UPDATE agent_keys SET last_used_at = %(now)s::timestamp"
+            " WHERE id = %(i)s"
+            "   AND (last_used_at IS NULL OR last_used_at < %(cutoff)s::timestamp)",
+            {"now": now, "i": key_id, "cutoff": cutoff},
+        )
+        return cur.rowcount > 0
 
 
 def _month_upper(month: str) -> str:

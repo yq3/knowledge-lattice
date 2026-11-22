@@ -46,3 +46,60 @@
   为对照；黄金集扩充（真实 query 替换合成、TC-EVAL-02 双语三态）按 FR-7 节奏。
 - 区分度误报抽查：`scripts/quality_sample.py` 抽样 → 人工复核 → PATCH
   state/manual_tags 落记录（quality_flags 行 + audit_outbox 即记录形态）。
+
+## m3-4 扩容（TC-EVAL-02 M3 完整集——2026-11-08）
+
+- **规模**：语料 39 → **73 docs**（gk-zh-m01..09 纯中 9 + gk-en-m01..12 纯英 12
+  + gk-mx-m01..13 混排 13——`scripts/eval_corpus_m34.py` 构建）；黄金集 28 →
+  **60 query**（三态分布 zh 24 / en 18 / mix 18——`scripts/eval_golden_m34.py`
+  构建，含逐条**可达性机检**：query 实词 token ⊆ 标注语料分词集合，疑问功能
+  词不参与比对）。
+- **合成候选生成（ragas 选型口径）**：`scripts/eval_synth_m34.py`——LLM 端点
+  沿 m2-5 百炼先例（DashScope compatible-mode + `LATTICE_EVAL_LLM_*` env），
+  经 ragas `BaseRagasLLM` 接口（与 m3-5 judge 同一抽象——
+  `src/knowledge_lattice/eval/ragas_bridge.py`）。**当日真实端点受阻**：本 key
+  chat 免费配额耗尽（qwen-plus/qwen-max/qwen-flash 403 AllocationQuota；
+  qwen-turbo 持续 429 limit_requests；qwen3-max 404；无本地 ollama）——沿
+  m2-5 受阻先例申报，本批候选以 `--offline` 确定性模板模式生成（data/
+  eval-synth/m34-candidates-offline.jsonl，不入库），**人工抽检修正**后入库
+  （修正幅度：模板问法全部改写为自然问法；en 候选 procedure/deadline/scope
+  等不在档词逐条换为语料在档词；mix 候选取语料中英术语对重组）。配额恢复后
+  重跑脚本（缺省 LLM 模式）产出 LLM 候选供人工复核**增补**（替换需重走标注
+  评审）。
+- **legacy 勘误**：q27 标签 mix→**zh**（m3-4 三态一致性机检暴露：query 文本
+  「增值税发票开具规范 发票栏次」无 ASCII 字母，M1 标注笔误——非口径变更；
+  M1 期基线报告 m1-baseline-*.md 中的 lang 列为当时记录，不改档）。
+- **M3 基线**（`m3-baseline-*.md` / `*.json`——含逐 query hits 序）：
+
+| 后端 | recall@1 | recall@5 | recall@10 | MRR |
+|---|---|---|---|---|
+| sqlite | 0.7083 | 0.8417 | 0.9167 | 0.8031 |
+| pg | 0.6250 | 0.7833 | 0.8333 | 0.7213 |
+
+- 跨后端诚实零（逐 query recall@10=0，G-6 形态记录）：sqlite q24（M1 已知）/
+  q50/q57（同题语料竞争 + BM25/token 袋多 token 噪声）；pg q01/q02/q10/q11/
+  q20/q30/q36（含疑问词 query 的 AND 语义不可达——M1 既有差异面）。
+- **deepeval 门禁下限冻结**：逐 query recall@10 exact 值（tests/
+  test_eval_gate_m34.py `_R10_FLOORS`——门禁同环境实测，与 m3-baseline-*.json
+  逐条一致）+ 聚合 0.05 余量；注入实证见 `m3-4-injection-evidence.md`。
+
+## m3-5（TC-EVAL-03 judge 双语校准材料——2026-11-10）
+
+- **材料**：`judge-materials-m35.jsonl`（50 条）+ 标注回流模板
+  `judge-human-answersheet-m35.jsonl`——构建 `scripts/eval_judge_m35.py
+  --materials`（确定性 seed=20261110，复跑同产物）；三态 zh 20 / en 15 /
+  mix 15（黄金集三态等比抽样），构造 faithful 25 / unfaithful 25
+  （faithful=标注语料连续句片段〔有依据〕；unfaithful=**语料内其他文档**
+  句子〔跨文档真实业务表述、对 reference 无依据——幻觉面〕，非编造噪声）。
+- **reference 近似口径**：标注键 → 语料**全文**（chunk 边界近似为整文档
+  ——语料以单 chunk 文档为主；如实登记不冒充 chunk 精切）。
+- **人工双评双轨**（用户裁定 2026-11-10）：用户侧按 answersheet 模板标注
+  回流（label ∈ faithful|unfaithful + rater 标识）；coder 不代行——本轮
+  chat 端点受阻（见 m3-5-blocked-claims.md）judge 侧无对照面，无代行小样。
+- **judge 联调受阻申报**：chat 端点全档 403/429/404（与 m3-4 同形态）——
+  真实 judge 判定与一致率/κ 出数待配额恢复复跑（路径见 blocked-claims）；
+  校准框架与确定性用例已进门禁（tests/test_eval_judge_m35.py）。阈值定数
+  归附录 A-6（监督侧 docs 批）。
+- R2（2026-11-10）：`--materials` 增 answersheet 非空拒写保护——已含人工标注
+  （label/rater 任一非空）时默认拒写 rc=1（报错含标注行数），`--force` 显式
+  覆盖；拒写原子化（materials 亦不写）。人工标注前建议备份到 data/eval-judge/。

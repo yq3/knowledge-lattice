@@ -53,6 +53,30 @@ EVENT_MEMBER_REMOVE = "member.remove"      # 移出组织（DELETE——级联�
 EVENT_DIMENSION_VALUE_CREATE = "dimension.value_create"  # 新增取值（POST values）
 EVENT_DIMENSION_VALUE_ENABLE = "dimension.value_enable"   # 重新启用（D19 解锁路径）
 
+# ---- 管理面补强（m3-1——issue #13/#14：datasets/dimensions 写路径 + 组织停用） ----
+EVENT_DATASET_CREATED = "dataset.created"    # 新建知识库（POST datasets）
+EVENT_DATASET_UPDATED = "dataset.updated"    # 修改知识库（PATCH datasets）
+EVENT_DIMENSION_CREATED = "dimension.created"  # 新建维度（POST dimensions）
+EVENT_DIMENSION_UPDATED = "dimension.updated"  # 修改维度（PATCH dimensions）
+EVENT_ORG_DISABLED = "org.disabled"          # 组织停用（PATCH orgs——sysadmin 专属）
+EVENT_ORG_ENABLED = "org.enabled"            # 组织恢复（PATCH orgs——幂等翻转审计）
+
+# ---- 查询级异步审计（m3-2 A 组——G-22 / FR-6 / design §6.3⑥ + §4 detail_json） ----
+# action 域取 search 前缀（design §4 audit_events.action 注释字面含 search——
+# 查询级事件的域词）；第二段点名入口。ops 视图查询道泳道按 search. 前缀路由
+# （零前端改动口径）。载体=月库直写（不走 outbox——异步弱一致，丢失窗口 ≤5s）。
+EVENT_QUERY_SEARCH = "search.query"          # REST POST /api/search + MCP search
+EVENT_QUERY_ANNOTATE = "search.annotate"     # REST/MCP annotate（§6.3⑥）
+EVENT_QUERY_GET_ENTITY = "search.get_entity"  # REST/MCP get_entity（§6.3⑥）
+# search_entities / describe_table / l0 不入查询审计（design §6.3⑥ 字面未含
+# ——known-gaps 开放点，不在 m3-2 扩）。
+
+# ---- 语义侧权限事件（m2s-6 起接入；m3-2 G-24⑧ 迁入单一登记处） ----
+EVENT_SEMANTIC_RESTRICTED_ACCESS = "semantic.restricted_access"  # 持权访问
+                                              # restricted 实体（A-16 持权面——
+                                              # outbox；自 core/semantic/constants
+                                              # 迁入，G-24⑧）
+
 # ---- 认证事件（m2-4 M2.2 生产化认证段——TC-AUTH-03/04/05/T13） ----
 
 EVENT_AUTH_USER_JIT = "auth.user_jit_created"       # SSO 首次登录 JIT 建档（D16）
@@ -66,6 +90,27 @@ EVENT_AUTH_TRUSTED_SUBSYSTEM = "auth.trusted_subsystem"  # 可信子系统判定
 EVENT_AUTH_PERMISSIONS_IGNORED = "auth.request_permissions_ignored"  # 请求体权限
                                                     #  字段忽略并记审计（FR-4/D18
                                                     #  v0.6.1 统一口径——附录 A-9）
+
+# ---- 本地账号事件（M4/D25/FR-9——m4-2 API 接入；密码/token 永不进 payload） ----
+
+EVENT_AUTH_LOGIN = "auth.login"                    # 本地登录成功（username 登录键）
+EVENT_AUTH_LOGIN_REFUSED = "auth.login_refused"    # 本地登录拒绝（错密/停用/锁定）
+EVENT_AUTH_LOGOUT = "auth.logout"                  # 登出（客户端清 token；无服务端撤销）
+EVENT_AUTH_PASSWORD_CHANGED = "auth.password_changed"  # 用户自改密码（tv++ 撤销旧会话）
+EVENT_AUTH_PASSWORD_RESET = "auth.password_reset"  # 重置完成（一次性链接/管理员重置）
+EVENT_AUTH_INVITE_CREATED = "auth.invite_created"  # 邀请创建/重发（旧链接失效）
+EVENT_AUTH_INVITE_ACCEPTED = "auth.invite_accepted"  # 邀请接受（invited→active）
+EVENT_AUTH_INVITE_REVOKED = "auth.invite_revoked"  # 邀请撤销（管理员操作）
+EVENT_USER_CREATED = "user.created"                # 管理员建号/预登记（sysadmin）
+EVENT_USER_DISABLED = "user.disabled"              # 用户停用（即时 401；tv++）
+EVENT_USER_ENABLED = "user.enabled"                # 用户启用（tv 不回退——旧会话不复活）
+EVENT_USER_SYSADMIN_CHANGED = "user.sysadmin_changed"  # sysadmin 授/撤（末位守卫）
+EVENT_INSTANCE_SETUP = "instance.setup"            # 首启 setup 完成（建首管理员）
+
+# ---- agent 长寿命凭据（D26 / issue #34——与写行同事务；payload 不含明文 key） ----
+
+EVENT_AGENT_KEY_CREATED = "agent_key.created"      # 创建 agent key（org_admin/sysadmin 代签）
+EVENT_AGENT_KEY_REVOKED = "agent_key.revoked"      # 撤销 agent key（幂等：重复撤销零新审计）
 
 __all__ = [
     "EVENT_DOCUMENT_UPLOAD",
@@ -89,9 +134,34 @@ __all__ = [
     "EVENT_MEMBER_REMOVE",
     "EVENT_DIMENSION_VALUE_CREATE",
     "EVENT_DIMENSION_VALUE_ENABLE",
+    "EVENT_DATASET_CREATED",
+    "EVENT_DATASET_UPDATED",
+    "EVENT_DIMENSION_CREATED",
+    "EVENT_DIMENSION_UPDATED",
+    "EVENT_ORG_DISABLED",
+    "EVENT_ORG_ENABLED",
+    "EVENT_QUERY_SEARCH",
+    "EVENT_QUERY_ANNOTATE",
+    "EVENT_QUERY_GET_ENTITY",
+    "EVENT_SEMANTIC_RESTRICTED_ACCESS",
     "EVENT_AUTH_USER_JIT",
     "EVENT_AUTH_DELEGATED",
     "EVENT_AUTH_SSO_REFUSED",
     "EVENT_AUTH_TRUSTED_SUBSYSTEM",
     "EVENT_AUTH_PERMISSIONS_IGNORED",
+    "EVENT_AUTH_LOGIN",
+    "EVENT_AUTH_LOGIN_REFUSED",
+    "EVENT_AUTH_LOGOUT",
+    "EVENT_AUTH_PASSWORD_CHANGED",
+    "EVENT_AUTH_PASSWORD_RESET",
+    "EVENT_AUTH_INVITE_CREATED",
+    "EVENT_AUTH_INVITE_ACCEPTED",
+    "EVENT_AUTH_INVITE_REVOKED",
+    "EVENT_USER_CREATED",
+    "EVENT_USER_DISABLED",
+    "EVENT_USER_ENABLED",
+    "EVENT_USER_SYSADMIN_CHANGED",
+    "EVENT_INSTANCE_SETUP",
+    "EVENT_AGENT_KEY_CREATED",
+    "EVENT_AGENT_KEY_REVOKED",
 ]

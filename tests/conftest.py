@@ -46,6 +46,7 @@ _tune_hf_env()
 
 import sqlite3  # noqa: E402  (env 先于任何 docling/huggingface 导入)
 import contextlib  # noqa: E402
+import warnings  # noqa: E402
 from collections.abc import Iterator  # noqa: E402
 
 import psycopg  # noqa: E402
@@ -117,10 +118,41 @@ def backend(request, tmp_path: Path):
         yield db
 
 
+def _drop_pg_schema(raw, schema: str, *, attempts: int = 3) -> bool:
+    """DROP SCHEMA（带重试与显式告警——issue #16：teardown 失败不再静默吞）。
+
+    - 重试 ``attempts`` 次（指数退避 0.2s/0.4s/…——连接瞬断/锁等待的瞬时
+      失败自愈面）；
+    - 持续失败**不抛异常**（teardown 失败不得覆盖用例原始异常——既有纪律），
+      但以 ``warnings.warn`` 显式登记 schema 名与末次错误——残留 schema 可
+      据此手工清理/对账（此前 ``except: pass`` 会静默泄漏 schema）；
+    - 返回是否最终成功（调用方可观测，不改变异常语义）。
+    """
+    import time as _time
+
+    last: Exception | None = None
+    for i in range(attempts):
+        try:
+            raw.execute("SET search_path TO public")
+            raw.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            return True
+        except psycopg.Error as exc:
+            last = exc
+            if i < attempts - 1:
+                _time.sleep(0.2 * (i + 1))
+    warnings.warn(
+        f"pg teardown DROP SCHEMA 失败：schema={schema}"
+        f"（已重试 {attempts} 次，末次错误：{last}）——残留 schema 需手工清理",
+        stacklevel=2,
+    )
+    return False
+
+
 @contextlib.contextmanager
 def _pg_db(dsn: str):
     """pg 臂库的规范上下文：独立 schema 生命周期（CREATE → search_path → 工厂纪律
-    （dumper/版本/pgvector 断言 + 审计分区滚动）→ 迁移 → yield → DROP CASCADE）。"""
+    （dumper/版本/pgvector 断言 + 审计分区滚动）→ 迁移 → yield → DROP CASCADE——
+    teardown 经 ``_drop_pg_schema`` 重试+告警，不静默吞失败〔issue #16〕）。"""
     from knowledge_lattice.store.postgres import migrate_db, setup_connection
 
     schema = f"lattice_test_{uuid.uuid4().hex[:12]}"
@@ -132,13 +164,8 @@ def _pg_db(dsn: str):
         migrate_db(raw)
         yield PgDb(raw, schema, dsn)
     finally:
-        try:
-            raw.execute("SET search_path TO public")
-            raw.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-        except psycopg.Error:
-            pass  # teardown 失败不得覆盖用例原始异常
-        finally:
-            raw.close()
+        _drop_pg_schema(raw, schema)
+        raw.close()
 
 
 @pytest.fixture()
@@ -444,6 +471,132 @@ def app_env(tmp_path):
             ),
         }
     conn.close()
+
+
+# ============ M4/D25 local 形态 REST 壳（m4-2——setup/login/邀请/用户管理） ============
+
+
+@pytest.fixture(params=["sqlite", "pg"])
+def local_env(request, tmp_path):
+    """local 认证形态 REST 壳（**双后端参数化**——m4-2；不污染 ``app_env``）。
+
+    - sqlite 臂：默认工厂建 app（``settings.db_path``）+ 另开一条
+      ``connect(settings.db_path)`` 直连（app 启动后迁移已完成）供断言/造数；
+    - PG 臂：``pg_db`` 独立 schema 经 ``create_app(settings, backend=
+      pg_db.make_backend())`` 注入（与 ``rest_env`` 同款纪律）；
+    - 每用例**空库启动**（管理员由用例经 ``POST /api/setup`` 造出——首启语义
+      真实覆盖）；fake embedder + ``run_startup_probe=False`` +
+      ``probe_interval_s/maintenance_interval_s=0``（无周期任务）。
+
+    yield ``{client, app, settings, db, backend}``；PG 的 db 生命周期归 ``pg_db``
+    fixture（teardown DROP SCHEMA），sqlite 直连在此关闭。
+    """
+    from fastapi.testclient import TestClient
+
+    from knowledge_lattice.adapters.embedder import EmbeddingGate
+    from knowledge_lattice.app import create_app
+    from knowledge_lattice.config import Settings
+    from fake_providers import FakeEmbedder
+
+    settings = Settings(
+        environment="test",
+        data_dir=tmp_path,
+        auth_mode="local",
+        session_secret="test-session-secret-0123456789abcdef",
+        password_min_len=10,
+        probe_interval_s=0,
+        maintenance_interval_s=0,
+        worker_mode="inline",
+    )
+    kwargs = dict(
+        embedder=FakeEmbedder(dim=2560),
+        gate=EmbeddingGate(),
+        run_startup_probe=False,
+    )
+    if request.param == "sqlite":
+        app = create_app(settings, **kwargs)
+        from knowledge_lattice.store.sqlite import connect
+
+        db = connect(settings.db_path)
+        try:
+            with TestClient(app) as client:
+                yield {
+                    "client": client,
+                    "app": app,
+                    "settings": settings,
+                    "db": db,
+                    "backend": app.state.service.backend,
+                }
+        finally:
+            db.close()
+        return
+    db = request.getfixturevalue("pg_db")
+    app = create_app(settings, backend=db.make_backend(), **kwargs)
+    with TestClient(app) as client:
+        yield {
+            "client": client,
+            "app": app,
+            "settings": settings,
+            "db": db,
+            "backend": app.state.service.backend,
+        }
+
+
+# ============ M3-1 管理面 REST 壳（test_admin_m31_* / test_org_disable_m31 /
+#              test_docs_explain_m31 / test_az_m31_scan 共用） ============
+
+
+@pytest.fixture()
+def rest_env(matrix, tmp_path):
+    """M3-1 管理面 REST 壳：matrix 造数 + create_app(backend=) REST 壳
+    （pg 臂注入 / sqlite 臂默认工厂同 db 文件——az_matrix_m25 az_env 同款纪律）
+    + 矩阵 12 用户静态 token。
+
+    返回 dict(client, db, backend, tokens)——db=matrix 包装器（直写造数面）、
+    backend=make_backend()（store 直调面）。
+    """
+    from fastapi.testclient import TestClient
+
+    from knowledge_lattice.adapters.embedder import EmbeddingGate
+    from knowledge_lattice.app import create_app
+    from knowledge_lattice.config import Settings
+    from knowledge_lattice.domain.auth import hash_token
+    from fake_providers import FakeEmbedder
+
+    settings = Settings(
+        environment="test", data_dir=tmp_path, embed_dim=2560,
+        probe_interval_s=0, worker_mode="inline",
+    )
+    kwargs = dict(
+        embedder=FakeEmbedder(dim=2560), gate=EmbeddingGate(),
+        run_startup_probe=False,
+    )
+    if matrix.name == "pg":
+        app = create_app(settings, backend=matrix.make_backend(), **kwargs)
+    else:
+        app = create_app(settings, **kwargs)
+
+    tokens = {
+        uid: f"dev-static-{uid.replace('_', '-')}"
+        for uid in (
+            "u_full", "u_cn", "u_cn_vat", "u_os", "u_expired_grant",
+            "u_expired_member", "u_owner", "admin_tax", "admin_full",
+            "sysadmin", "u_gl", "u_multi",
+        )
+    }
+    for uid, token in tokens.items():
+        matrix.execute(
+            "UPDATE users SET token_hash = ? WHERE id = ?",
+            (hash_token(token), uid),
+        )
+    matrix.commit()
+
+    with TestClient(app) as client:
+        yield {
+            "client": client, "db": matrix,
+            "backend": matrix.make_backend(),
+            "tokens": tokens, "app": app,
+        }
 
 
 # ============ M1-3 上传凭证 fixtures ============

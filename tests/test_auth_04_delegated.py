@@ -45,7 +45,7 @@ from knowledge_lattice.domain.audit_events import (
 from knowledge_lattice.domain.auth import AuthError, authenticate
 from knowledge_lattice.store.sqlite import connect
 
-SECRET = "unit-sso-secret"
+SECRET = "unit-sso-secret-0123456789abcdef012"
 AUD = "knowledge-lattice"
 
 
