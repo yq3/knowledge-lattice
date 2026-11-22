@@ -60,6 +60,7 @@ from knowledge_lattice.store.backend import (
     UsernameTakenError,
 )
 from knowledge_lattice.store.taskclock import add_seconds, utc_now_ts
+from knowledge_lattice.tzdisplay import resolve_display_tz
 
 from .upload import get_auth, get_service
 
@@ -221,10 +222,14 @@ def _validated_password(raw: str, settings) -> None:
 
 @public_router.get("/api/auth/config")
 async def auth_config(request: Request) -> dict:
-    """Web boot 门（匿名）：``{auth_mode, setup_needed, local_login_enabled}``。
+    """Web boot 门（匿名）：``{auth_mode, setup_needed, local_login_enabled, display_tz}``。
 
     sso 形态：setup_needed/local_login_enabled 恒 false（D25 口径——sso 不首启、
     不本地登录）；local 形态：零用户且无 instance_setup 行 → setup_needed=true。
+
+    ``display_tz``（2026-11-22）：控制台时间**渲染**用的 IANA 时区名；``None`` =
+    前端用浏览器时区。**库内时间恒为 UTC**（见 ``tzdisplay`` 模块头）——本字段
+    只回答"渲染到哪个区"，不改变任何存储/接口时间语义。
     """
     service = get_service(request)
     local = service.settings.auth_mode == "local"
@@ -238,6 +243,7 @@ async def auth_config(request: Request) -> dict:
         "auth_mode": service.settings.auth_mode,
         "setup_needed": setup_needed,
         "local_login_enabled": local,
+        "display_tz": resolve_display_tz(service.settings),
     }
 
 

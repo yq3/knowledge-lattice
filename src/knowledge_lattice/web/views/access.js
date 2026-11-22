@@ -53,6 +53,11 @@ function grantRowsOf(uid) {
 function nowUtcStr() {
   return new Date().toISOString().slice(0, 19).replace("T", " ");
 }
+/* expires_at 输入面（2026-11-22）：**输入框里是显示时区墙钟**，提交前用
+ * toUtcStr() 换回 UTC；库里/接口里一律 UTC（比较、排序、审计都用 UTC）。
+ * 边界只有两处：seed（UTC→显示区）与提交（显示区→UTC）。
+ * CSV 导入导出**不换算**（交换格式保持 UTC，否则导出→导入会漂 8 小时）。 */
+function localOf(ts) { return ts ? fmtTs(ts) : ""; }
 
 /* 既有 expires 映射 + ui-1 chips 编辑器种子（B①——抽屉内逐行 expires） */
 function seedGrantEditor(member, preserve = false) {
@@ -62,7 +67,10 @@ function seedGrantEditor(member, preserve = false) {
   mine.forEach((r) => { state.g.existing[`${r.dimKey}=${r.value}`] = r.expiresAt; });
   if (!preserve) {
     state.g.picked = { ...state.g.existing };
-    state.g.expires = { ...state.g.existing }; // 行内初始值=库内值（未编辑即沿用——B①）
+    // 行内初始值=库内值（未编辑即沿用——B①），但表达成**显示时区墙钟**：
+    // 输入框里写什么就提交什么（提交时统一换回 UTC），不出现两套口径。
+    state.g.expires = Object.fromEntries(
+      Object.entries(state.g.existing).map(([k, v]) => [k, localOf(v)]));
   }
 }
 
@@ -95,7 +103,7 @@ function grantsHTML() {
           const row = mine.find((r) => r.dimKey === d.key && r.value === v.value);
           const on = !!row;
           const expired = on && row.expiresAt && row.expiresAt <= now;
-          const title = `${userLabel(u)} · ${d.name}=${v.label}` + (row && row.expiresAt ? ` · ${expired ? t("access.grants.grantExpiredAt") : t("access.expires.existing")}: ${row.expiresAt}` : "");
+          const title = `${userLabel(u)} · ${d.name}=${v.label}` + (row && row.expiresAt ? ` · ${expired ? t("access.grants.grantExpiredAt") : t("access.expires.existing")}: ${localOf(row.expiresAt)}` : "");
           return `<td class="${i === 0 ? "dg" : ""}"><button class="cellbtn ${on ? "on" : ""}" ${expired ? `style="opacity:.4;outline:1px dashed var(--danger);outline-offset:1px"` : ""}
             data-act="latCell" data-u="${esc(u)}" data-k="${esc(d.key)}" data-v="${esc(v.value)}" data-dim="${esc(d.id)}"
             title="${esc(title)}" aria-label="${esc(title)}" aria-pressed="${on}" ${g.saving ? "disabled" : ""}></button></td>`;
@@ -135,7 +143,7 @@ function grantDetailHTML(member) {
         const on = key in g.picked;
         const existing = g.existing[key];
         return `<span style="display:inline-flex;gap:6px;align-items:center">
-          <button class="vchip ${on ? "on" : ""}" data-act="gCell" data-k="${esc(key)}" title="${existing ? esc(t("access.expires.existing")) + ": " + esc(existing) : ""}">${esc(v.label)}<span class="vx">${esc(v.value)}</span></button>
+          <button class="vchip ${on ? "on" : ""}" data-act="gCell" data-k="${esc(key)}" title="${existing ? esc(t("access.expires.existing")) + ": " + esc(localOf(existing)) : ""}">${esc(v.label)}<span class="vx">${esc(v.value)}</span></button>
           ${on ? `<input class="chip-exp" data-in="gExp" data-id="${esc(key)}" placeholder="${esc(t("access.expires.rowPh"))}" value="${esc(g.expires[key] || "")}" title="${esc(t("access.expires.rowTitle"))}">` : ""}
         </span>`;
       }).join("")}</div>
@@ -540,7 +548,7 @@ Object.assign(actions, {
     } else {
       state.g.picked[key] = "";
       // 新选行预填：全局输入框值优先（显式意图），否则库内既有值
-      state.g.expires[key] = state.g.prefill.trim() || state.g.existing[key] || "";
+      state.g.expires[key] = state.g.prefill.trim() || localOf(state.g.existing[key]);
     }
   },
   async gSave() {
@@ -551,7 +559,9 @@ Object.assign(actions, {
       // R2 P2-5：按首个 = 分割——取值本身可含 =（split("=") 会截断）
       const eq = k.indexOf("=");
       const dimKey = k.slice(0, eq), value = k.slice(eq + 1);
-      const expires = state.g.expires[k] ?? state.g.existing[k] ?? "";
+      const expires = state.g.expires[k] !== undefined
+        ? toUtcStr(state.g.expires[k])      // 输入框值：显示时区 → UTC
+        : (state.g.existing[k] || "");      // 未进过输入框：库里本来即 UTC
       return { dim_key: dimKey, value, expires_at: expires || null };
     });
     try {
@@ -585,7 +595,7 @@ Object.assign(actions, {
     let body;
     try {
       body = await addMember(cfg.org, {
-        user_id: uid, role: d.role, expires_at: d.expires.trim() || null,
+        user_id: uid, role: d.role, expires_at: toUtcStr(d.expires.trim()) || null,
       });
     } catch (e) {
       if (e.status === 404) toast(t("access.mem.add404", { user: esc(uid) }));
@@ -647,7 +657,7 @@ Object.assign(actions, {
     state.mem.expAsk = u;
     // P1-4：显式二选一（设时点 / 改永久）——known 有值则预填；不再隐式空串=永久
     const known = knownUser(u);
-    state.mem.expVal = known && known.expiresAt ? known.expiresAt : "";
+    state.mem.expVal = localOf(known && known.expiresAt);
     state.mem.expMode = "set";
     state.mem.ask = null;
   },
@@ -657,7 +667,8 @@ Object.assign(actions, {
     const m = state.mem;
     let value;
     if (m.expMode === "perm") value = null;              // 显式改永久
-    else { value = m.expVal.trim(); if (!value) return false; } // 设时点必须非空（禁用隐式空=永久）
+    // 设时点必须非空（禁用隐式空=永久）；输入框是显示时区，提交前换回 UTC
+    else { value = toUtcStr(m.expVal.trim()); if (!value) return false; }
     let body;
     try {
       body = await patchMember(cfg.org, u, { expires_at: value }); // 键显式出现（null=改永久）
@@ -672,7 +683,7 @@ Object.assign(actions, {
       role: body.role !== undefined ? body.role : (prevExp.role ?? null),
       expiresAt: body.expires_at !== undefined ? body.expires_at : null, // 本动作显式改 expires
     });
-    toast(t("access.mem.expSet", { user: esc(u), v: esc(body.expires_at == null ? "null" : body.expires_at) }));
+    toast(t("access.mem.expSet", { user: esc(u), v: esc(body.expires_at == null ? "null" : localOf(body.expires_at)) }));
     state.mem.expAsk = null;
     render();
     return false;

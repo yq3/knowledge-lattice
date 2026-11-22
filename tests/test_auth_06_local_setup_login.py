@@ -105,7 +105,11 @@ def test_setup_config_status_and_first_admin(local_env) -> None:
     client = local_env["client"]
     config = client.get("/api/auth/config")
     assert config.status_code == 200
-    assert config.json() == {
+    body = config.json()
+    # display_tz（2026-11-22）：值取自服务器时区探测，随机器而变——单独断言，
+    # 其余字段仍按精确契约比对（多字段/少字段都红）。
+    assert body["display_tz"] is None or isinstance(body["display_tz"], str)
+    assert {k: v for k, v in body.items() if k != "display_tz"} == {
         "auth_mode": "local",
         "setup_needed": True,
         "local_login_enabled": True,
@@ -426,7 +430,9 @@ def test_sso_mode_d25_surface(app_env) -> None:
     client = app_env["client"]
     config = client.get("/api/auth/config")
     assert config.status_code == 200
-    assert config.json() == {
+    body = config.json()
+    assert body["display_tz"] is None or isinstance(body["display_tz"], str)
+    assert {k: v for k, v in body.items() if k != "display_tz"} == {
         "auth_mode": "sso",
         "setup_needed": False,
         "local_login_enabled": False,
